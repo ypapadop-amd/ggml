@@ -143,6 +143,7 @@ option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (llama.cpp on
 
 option(GGML_HIP                             "ggml: use HIP"                                   OFF)
 option(GGML_HIP_UMA                         "ggml: use HIP unified memory architecture"       OFF)
+option(GGML_HSA                             "ggml: use HSA"                                   OFF)
 option(GGML_VULKAN                          "ggml: use Vulkan"                                OFF)
 option(GGML_VULKAN_CHECK_RESULTS            "ggml: run Vulkan op checks"                      OFF)
 option(GGML_VULKAN_DEBUG                    "ggml: enable Vulkan debug output"                OFF)
@@ -226,6 +227,7 @@ set(GGML_PUBLIC_HEADERS
     include/ggml-blas.h
     include/ggml-cann.h
     include/ggml-cuda.h
+    include/ggml-hsa.h
     include/ggml-kompute.h
     include/ggml-opt.h
     include/ggml-metal.h
