@@ -9,7 +9,6 @@ else()
 endif()
 
 list(APPEND CMAKE_PREFIX_PATH  ${ROCM_PATH})
-list(APPEND CMAKE_PREFIX_PATH "${ROCM_PATH}/lib64/cmake")
 
 # Forward AMDGPU_TARGETS to CMAKE_HIP_ARCHITECTURES.
 if (AMDGPU_TARGETS AND NOT CMAKE_HIP_ARCHITECTURES)
@@ -22,10 +21,12 @@ message(STATUS "HSA found")
 
 add_library(ggml-hsa
     ggml-hsa.cpp
-)
+    ../../include/ggml-hsa.h)
 
 target_link_libraries(ggml-hsa PRIVATE ggml-base hsa-runtime64::hsa-runtime64)
 target_include_directories(ggml-hsa PRIVATE . ..)
+
+target_sources(ggml-hsa PRIVATE common.hpp)
 
 set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE CXX)
 
