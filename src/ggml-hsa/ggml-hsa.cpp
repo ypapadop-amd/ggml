@@ -32,7 +32,7 @@ static ggml_hsa_device_info ggml_hsa_init() {
             return HSA_STATUS_SUCCESS;
         }
 
-        auto& count = *static_cast<int*>(data);
+        auto & count = *static_cast<int *>(data);
         ++count;
         return HSA_STATUS_SUCCESS;
     };
@@ -50,9 +50,77 @@ const ggml_hsa_device_info & ggml_hsa_info() {
     return info;
 }
 
+// HSA buffer
+
+struct ggml_backend_hsa_buffer_context {
+    void * dev_ptr{nullptr};
+};
+
+static void ggml_backend_hsa_buffer_free_buffer(ggml_backend_buffer_t buffer) {
+    auto * ctx = static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
+    delete ctx;
+}
+
+static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
+    return buffer->iface.free_buffer == ggml_backend_hsa_buffer_free_buffer;
+}
+
+static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
+    auto * ctx = static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
+    return ctx->dev_ptr;
+}
+
+static void ggml_backend_hsa_buffer_memset_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
+}
+
+static void ggml_backend_hsa_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+}
+
+static void ggml_backend_hsa_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+}
+
+static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst) {
+}
+
+static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
+}
+
+static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
+    /* .free_buffer     = */ ggml_backend_hsa_buffer_free_buffer,
+    /* .get_base        = */ ggml_backend_hsa_buffer_get_base,
+    /* .init_tensor     = */ nullptr,
+    /* .memset_tensor   = */ ggml_backend_hsa_buffer_memset_tensor,
+    /* .set_tensor      = */ ggml_backend_hsa_buffer_set_tensor,
+    /* .get_tensor      = */ ggml_backend_hsa_buffer_get_tensor,
+    /* .cpy_tensor      = */ ggml_backend_hsa_buffer_cpy_tensor,
+    /* .clear           = */ ggml_backend_hsa_buffer_clear,
+    /* .reset           = */ nullptr,
+};
+
+// HSA buffer type
+
+// host buffer type
+
+////////////////////////////////////////////////////////////////////////////////
+
+// backend
+
+static const char * ggml_backend_hsa_get_name(ggml_backend_t backend) {
+    auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
+
+    return ctx->name.c_str();
+}
+
+static void ggml_backend_hsa_free(ggml_backend_t backend) {
+    auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
+
+    delete ctx;
+    delete backend;
+}
+
 static const ggml_backend_i ggml_backend_hsa_interface = {
-    /* .get_name                = */ nullptr,
-    /* .free                    = */ nullptr,
+    /* .get_name                = */ ggml_backend_hsa_get_name,
+    /* .free                    = */ ggml_backend_hsa_free,
     /* .set_tensor_async        = */ nullptr,
     /* .get_tensor_async        = */ nullptr,
     /* .cpy_tensor_async        = */ nullptr,
@@ -79,6 +147,10 @@ bool ggml_backend_is_hsa(ggml_backend_t backend) {
 int ggml_backend_hsa_get_device_count() {
     return ggml_hsa_info().device_count;
 }
+
+// backend device
+
+// backend reg
 
 // backend registry
 ggml_backend_reg_t ggml_backend_hsa_reg() {
