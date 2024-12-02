@@ -171,7 +171,7 @@ static int ggml_cuda_parse_id(char devName[]) {
 #endif // defined(GGML_USE_HIP) && defined(__HIP_PLATFORM_AMD__)
 
 static ggml_cuda_device_info ggml_cuda_init() {
-#ifdef __HIP_PLATFORM_AMD__
+#if defined(__HIP_PLATFORM_AMD__) && ROCM_VERSION_MAJOR < 6
     // Workaround for a rocBLAS bug when using multiple graphics cards:
     // https://github.com/ROCmSoftwarePlatform/rocBLAS/issues/1346
     {
