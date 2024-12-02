@@ -1248,6 +1248,63 @@ kernel void kernel_ssm_scan_f32(
     }
 }
 
+kernel void kernel_argmax(
+        device   const void * x,
+        device      int32_t * dst,
+        constant    int64_t & ncols,
+        constant   uint64_t & nb01,
+        threadgroup   float * shared_maxval [[threadgroup(0)]],
+        threadgroup int32_t * shared_argmax [[threadgroup(1)]],
+        uint  tgpig[[threadgroup_position_in_grid]],
+        uint  tpitg[[thread_position_in_threadgroup]],
+        uint  sgitg[[simdgroup_index_in_threadgroup]],
+        uint  tiisg[[thread_index_in_simdgroup]],
+        uint    ntg[[threads_per_threadgroup]]) {
+    device const float * x_row = (device const float *) ((device const char *) x + tgpig * nb01);
+
+    float   lmax = -INFINITY;
+    int32_t larg = -1;
+
+    for (int i00 = tpitg; i00 < ncols; i00 += ntg) {
+        if (x_row[i00] > lmax) {
+            lmax = x_row[i00];
+            larg = i00;
+        }
+    }
+
+    // find the argmax value in the block
+    float max_val = simd_max(lmax);
+    int32_t arg_val = simd_max(select(-1, larg, lmax == max_val));
+
+    if (ntg > N_SIMDWIDTH) {
+        if (sgitg == 0) {
+            shared_maxval[tiisg] = -INFINITY;
+            shared_argmax[tiisg] = -1;
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (tiisg == 0) {
+            shared_maxval[sgitg] = max_val;
+            shared_argmax[sgitg] = arg_val;
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        max_val = shared_maxval[tiisg];
+        arg_val = shared_argmax[tiisg];
+
+        float max_val_reduced   = simd_max(max_val);
+        int32_t arg_val_reduced = simd_max(select(-1, arg_val, max_val == max_val_reduced));
+
+        dst[tgpig] = arg_val_reduced;
+
+        return;
+    }
+
+    dst[tgpig] = arg_val;
+}
+
 kernel void kernel_norm(
         constant ggml_metal_kargs_norm & args,
         device const char * src0,
@@ -2257,6 +2314,79 @@ kernel void kernel_im2col_ext(
 
 template [[host_name("kernel_im2col_ext_f32")]] kernel im2col_ext_t kernel_im2col_ext<float>;
 template [[host_name("kernel_im2col_ext_f16")]] kernel im2col_ext_t kernel_im2col_ext<half>;
+
+typedef void (conv_transpose_1d_t)(
+        device const float * src0,
+        device const float * src1,
+        device        char * dst,
+        constant   int32_t & IC,
+        constant   int32_t & IL,
+        constant   int32_t & K,
+        constant   int32_t & s0,
+        constant  uint64_t & nb0,
+        constant  uint64_t & nb1,
+        uint3   tgpig[[threadgroup_position_in_grid]],
+        uint3    tgpg[[threadgroups_per_grid]]);
+
+template <typename T>
+kernel void kernel_conv_transpose_1d(
+        device const     T * src0,
+        device const float * src1,
+        device        char * dst,
+        constant   int32_t & IC,
+        constant   int32_t & IL,
+        constant   int32_t & K,
+        constant   int32_t & s0,
+        constant  uint64_t & nb0,
+        constant  uint64_t & nb1,
+        uint3   tgpig[[threadgroup_position_in_grid]],
+        uint3   tgpg[[threadgroups_per_grid]]) {
+
+    float v = 0.0f;
+
+    for (int64_t c = 0; c < IC; c++) {
+        const int32_t kernel_offset = c * tgpg[1] * K + K * tgpig[1];
+        const int32_t input_offset = c * IL;
+
+        for (int64_t i = 0; i < IL; i++) {
+            if (tgpig[0] >= i * s0 && tgpig[0] < i * s0 + K) {
+                v += src0[kernel_offset + tgpig[0] - i * s0] * src1[input_offset + i];
+            }
+        }
+    }
+
+    device float * dst_ptr = (device float *) (dst + tgpig[0] * nb0 + tgpig[1] * nb1);
+
+    dst_ptr[0] = v;
+}
+
+template [[host_name("kernel_conv_transpose_1d_f32_f32")]]
+kernel void kernel_conv_transpose_1d<float>(
+    device const float * src0,
+    device const float * src1,
+    device        char * dst,
+    constant   int32_t & IC,
+    constant   int32_t & IL,
+    constant   int32_t & K,
+    constant   int32_t & s0,
+    constant  uint64_t & nb0,
+    constant  uint64_t & nb1,
+    uint3   tgpig[[threadgroup_position_in_grid]],
+    uint3    tgpg[[threadgroups_per_grid]]);
+
+template [[host_name("kernel_conv_transpose_1d_f16_f32")]]
+kernel void kernel_conv_transpose_1d<half>(
+    device const half  * src0,
+    device const float * src1,
+    device        char * dst,
+    constant   int32_t & IC,
+    constant   int32_t & IL,
+    constant   int32_t & K,
+    constant   int32_t & s0,
+    constant  uint64_t & nb0,
+    constant  uint64_t & nb1,
+    uint3   tgpig[[threadgroup_position_in_grid]],
+    uint3    tgpg[[threadgroups_per_grid]]);
 
 kernel void kernel_upscale_f32(
     device  const char * src0,
