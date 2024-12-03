@@ -9,6 +9,8 @@
 
 #include "ggml-common.h"
 
+#define MATRIX_ROW_PADDING 512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
+
 [[noreturn]]
 void ggml_hsa_error(const char * stmt, const char * func, const char * file, int line, hsa_status_t status);
 
