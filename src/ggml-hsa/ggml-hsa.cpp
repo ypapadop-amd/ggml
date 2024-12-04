@@ -2,14 +2,12 @@
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 
+#include "ggml-hsa/common.hpp"
+
 #include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
-
-#include "ggml-hsa/common.hpp"
-
-#include <hsa/hsa.h>
 
 [[noreturn]]
 void ggml_hsa_error(const char * stmt, const char * func, const char * file, int line, hsa_status_t status) {
@@ -118,10 +116,10 @@ static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
 // HSA buffer type
 struct ggml_backend_hsa_buffer_type_context {
     std::string name;
+
     ggml_backend_hsa_buffer_type_context(int device) :
         name(GGML_HSA_NAME + std::to_string(device)) {
     }
-
 };
 
 static const char * ggml_backend_hsa_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
@@ -262,13 +260,11 @@ static bool ggml_hsa_compute_forward(ggml_backend_hsa_context & ctx, struct ggml
 
 static const char * ggml_backend_hsa_get_name(ggml_backend_t backend) {
     auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
-
     return ctx->name.c_str();
 }
 
 static void ggml_backend_hsa_free(ggml_backend_t backend) {
     auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
-
     delete ctx;
     delete backend;
 }
