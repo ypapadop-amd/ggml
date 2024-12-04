@@ -19,9 +19,13 @@ find_package(hsa-runtime64 1.0 REQUIRED)
 
 message(STATUS "HSA found")
 
-add_library(ggml-hsa
-    ggml-hsa.cpp
-    ../../include/ggml-hsa.h)
+set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
+set(GGML_SOURCES_HSA ggml-hsa.cpp)
+
+ggml_add_backend_library(ggml-hsa
+                         ${GGML_HEADERS_HSA}
+                         ${GGML_SOURCES_HSA}
+                         )
 
 target_link_libraries(ggml-hsa PRIVATE ggml-base hsa-runtime64::hsa-runtime64)
 target_include_directories(ggml-hsa PRIVATE . ..)
