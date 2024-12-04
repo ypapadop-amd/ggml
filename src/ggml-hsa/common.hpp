@@ -4,6 +4,7 @@
 #include "ggml-hsa.h"
 
 #include <string>
+#include <vector>
 
 #include <hsa/hsa.h>
 
@@ -27,17 +28,15 @@ void ggml_hsa_error(const char * stmt, const char * func, const char * file, int
   } while (0)
 
 struct ggml_hsa_device_info {
-    int device_count;
+    std::vector<hsa_agent_t> agents;
 };
 
 const ggml_hsa_device_info & ggml_hsa_info();
 
 struct ggml_backend_hsa_context {
     int device;
+    hsa_agent_t agent;
     std::string name;
 
-    explicit ggml_backend_hsa_context(int device) :
-        device(device),
-        name(GGML_HSA_NAME + std::to_string(device)) {
-    }
+    ggml_backend_hsa_context(int device, hsa_agent_t agent);
 };
