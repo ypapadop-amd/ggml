@@ -33,6 +33,13 @@ static std::string ggml_hsa_format_name(int device) {
     return GGML_HSA_NAME + std::to_string(device);
 }
 
+static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
+    constexpr std::size_t agent_name_size = 64;
+    char agent_name[agent_name_size];
+    HSA_CHECK(hsa_agent_get_info(agent, HSA_AGENT_INFO_DEVICE, &agent_name));
+    return GGML_HSA_NAME + std::string{agent_name};
+}
+
 static ggml_hsa_device_info ggml_hsa_init() {
     HSA_CHECK(hsa_init());
 
@@ -44,7 +51,7 @@ static ggml_hsa_device_info ggml_hsa_init() {
         }
 
         auto & info = *static_cast<ggml_hsa_device_info *>(data);
-        ++info.device_count;
+        info.agents.push_back(agent);
         return HSA_STATUS_SUCCESS;
     };
 
@@ -58,14 +65,20 @@ const ggml_hsa_device_info & ggml_hsa_info() {
     return info;
 }
 
+ggml_backend_hsa_context::ggml_backend_hsa_context(int device, hsa_agent_t agent) :
+        device(device), agent(agent), name(ggml_hsa_format_name(device)) {
+}
+
 // HSA buffer
 
 struct ggml_backend_hsa_buffer_context {
+    int device;
+    hsa_agent_t agent;
     void * dev_ptr{nullptr};
     std::string name;
 
-    ggml_backend_hsa_buffer_context(void * dev_ptr) :
-        dev_ptr(dev_ptr), name(ggml_hsa_format_name(0)) {
+    ggml_backend_hsa_buffer_context(int device, hsa_agent_t agent, void * dev_ptr) :
+        device(device), agent(agent), dev_ptr(dev_ptr), name(ggml_hsa_format_name(device)) {
     }
 
     ~ggml_backend_hsa_buffer_context() {
@@ -127,10 +140,12 @@ static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
 
 // HSA buffer type
 struct ggml_backend_hsa_buffer_type_context {
+    int device;
+    hsa_agent_t agent;
     std::string name;
 
-    ggml_backend_hsa_buffer_type_context(int device) :
-        name(ggml_hsa_format_name(device)) {
+    ggml_backend_hsa_buffer_type_context(int device, hsa_agent_t agent) :
+        device(device), agent(agent), name(ggml_hsa_format_name(device)) {
     }
 };
 
@@ -190,21 +205,21 @@ static struct {
 } ggml_backend_hsa_buffer_type_metadata;
 
 ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) {
-    std::lock_guard<std::mutex> lock(ggml_backend_hsa_buffer_type_metadata.mutex);
+    const auto & info = ggml_hsa_info();
 
-    auto const device_count = ggml_backend_hsa_get_device_count();
-    if (device >= device_count) {
+    const int agent_count = info.agents.size();
+    if (device >= agent_count) {
         return nullptr;
     }
 
-    static ggml_backend_buffer_type ggml_backend_hsa_buffer_types[GGML_HSA_MAX_DEVICES];
+    std::lock_guard<std::mutex> lock(ggml_backend_hsa_buffer_type_metadata.mutex);
 
     if (!ggml_backend_hsa_buffer_type_metadata.initialized) {
-        for (int i = 0; i < device_count; i++) {
+        for (int i = 0; i < agent_count; i++) {
             ggml_backend_hsa_buffer_type_metadata.type[i] = {
                 /* .iface    = */ ggml_backend_hsa_buffer_type_interface,
                 /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_hsa_reg(), i),
-                /* .context  = */ new ggml_backend_hsa_buffer_type_context{i},
+                /* .context  = */ new ggml_backend_hsa_buffer_type_context{i, info.agents[i]},
             };
         }
         ggml_backend_hsa_buffer_type_metadata.initialized = true;
@@ -351,7 +366,7 @@ bool ggml_backend_is_hsa(ggml_backend_t backend) {
 }
 
 int ggml_backend_hsa_get_device_count() {
-    return ggml_hsa_info().device_count;
+    return ggml_hsa_info().agents.size();
 }
 
 void ggml_backend_hsa_get_device_description(int device, char * description, size_t description_size) {
@@ -379,12 +394,12 @@ void ggml_backend_hsa_unregister_host_buffer(void * buffer) {
 
 struct ggml_backend_hsa_device_context {
     int device;
+    hsa_agent_t agent;
     std::string name;
     std::string description;
 
-    ggml_backend_hsa_device_context(int device) :
-        device(device), name(ggml_hsa_format_name(device)) {
-        // TODO get HSA name
+    ggml_backend_hsa_device_context(int device, hsa_agent_t agent) :
+        device(device), agent(agent), name(ggml_hsa_format_name(device)), description(ggml_hsa_agent_name(agent)) {
     }
 };
 
@@ -566,11 +581,14 @@ static struct {
 ggml_backend_reg_t ggml_backend_hsa_reg() {
     std::lock_guard<std::mutex> lock(ggml_backend_hsa_reg_metadata.mutex);
     if (!ggml_backend_hsa_reg_metadata.initialized) {
+        const auto & info = ggml_hsa_info();
+
         auto * ctx = new ggml_backend_hsa_reg_context;
 
-        auto const device_count = ggml_hsa_info().device_count;
-        for (int i = 0; i < device_count; i++) {
-            auto * dev_ctx = new ggml_backend_hsa_device_context{i};
+        const int agent_count = info.agents.size();
+        ctx->devices.reserve(agent_count);
+        for (int i = 0; i < agent_count; i++) {
+            auto * dev_ctx = new ggml_backend_hsa_device_context{i, info.agents[i]};
 
             auto dev = new ggml_backend_device {
                 /* .iface   = */ ggml_backend_hsa_device_interface,
@@ -593,14 +611,14 @@ ggml_backend_reg_t ggml_backend_hsa_reg() {
 }
 
 ggml_backend_t ggml_backend_hsa_init(int device) {
-    HSA_CHECK(hsa_init());
+    const auto & info = ggml_hsa_info();
 
     if (device < 0 || device >= ggml_backend_hsa_get_device_count()) {
         GGML_LOG_ERROR("%s: invalid device %d\n", __func__, device);
         return nullptr;
     }
 
-    auto * ctx = new ggml_backend_hsa_context(device);
+    auto * ctx = new ggml_backend_hsa_context(device, info.agents[device]);
     if (ctx == nullptr) {
         GGML_LOG_ERROR("%s: failed to allocate context\n", __func__);
         return nullptr;
