@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "ggml-hsa/common.hpp"
 
@@ -225,7 +226,7 @@ static ggml_backend_buffer_t ggml_backend_hsa_host_buffer_type_alloc_buffer(ggml
         return ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
     }
 
-    ggml_backend_buffer_t buffer = ggml_backend_cpu_buffer_from_ptr(ptr, size);
+    auto buffer = ggml_backend_cpu_buffer_from_ptr(ptr, size);
     buffer->buft = buft;
     buffer->iface.free_buffer = ggml_backend_hsa_host_buffer_free_buffer;
 
@@ -249,6 +250,11 @@ ggml_backend_buffer_type_t ggml_backend_hsa_host_buffer_type() {
     return &ggml_backend_hsa_buffer_type_host;
 }
 
+/// kernels
+
+static bool ggml_hsa_compute_forward(ggml_backend_hsa_context & ctx, struct ggml_tensor * dst) {
+    return false;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -267,20 +273,50 @@ static void ggml_backend_hsa_free(ggml_backend_t backend) {
     delete backend;
 }
 
+static void ggml_backend_hsa_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    // TODO
+}
+
+static void ggml_backend_hsa_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+    // TODO
+}
+
+static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
+    // TODO
+    return false;
+}
+
+static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
+    // TODO
+}
+
+static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+    // TODO
+    return GGML_STATUS_SUCCESS;
+}
+
+static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
+    // TODO
+}
+
+static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_event_t event) {
+    // TODO
+}
+
 static const ggml_backend_i ggml_backend_hsa_interface = {
     /* .get_name                = */ ggml_backend_hsa_get_name,
     /* .free                    = */ ggml_backend_hsa_free,
-    /* .set_tensor_async        = */ nullptr,
-    /* .get_tensor_async        = */ nullptr,
-    /* .cpy_tensor_async        = */ nullptr,
-    /* .synchronize             = */ nullptr,
+    /* .set_tensor_async        = */ ggml_backend_hsa_set_tensor_async,
+    /* .get_tensor_async        = */ ggml_backend_hsa_get_tensor_async,
+    /* .cpy_tensor_async        = */ ggml_backend_hsa_cpy_tensor_async,
+    /* .synchronize             = */ ggml_backend_hsa_synchronize,
     /* .graph_plan_create       = */ nullptr,
     /* .graph_plan_free         = */ nullptr,
     /* .graph_plan_update       = */ nullptr,
     /* .graph_plan_compute      = */ nullptr,
-    /* .graph_compute           = */ nullptr,
-    /* .event_record            = */ nullptr,
-    /* .event_wait              = */ nullptr,
+    /* .graph_compute           = */ ggml_backend_hsa_graph_compute,
+    /* .event_record            = */ ggml_backend_hsa_event_record,
+    /* .event_wait              = */ ggml_backend_hsa_event_wait,
 };
 
 static ggml_guid_t ggml_backend_hsa_guid() {
@@ -297,13 +333,228 @@ int ggml_backend_hsa_get_device_count() {
     return ggml_hsa_info().device_count;
 }
 
+void ggml_backend_hsa_get_device_description(int device, char * description, size_t description_size) {
+    // TODO
+}
+
+void ggml_backend_hsa_get_device_memory(int device, size_t * free, size_t * total) {
+    // TODO
+}
+
+bool ggml_backend_hsa_register_host_buffer(void * buffer, size_t size) {
+    // TODO
+    return false;
+}
+
+void ggml_backend_hsa_unregister_host_buffer(void * buffer) {
+    // TODO
+}
+
 // backend device
 
+struct ggml_backend_hsa_device_context {
+    int device;
+    std::string name;
+    std::string description;
+
+    ggml_backend_hsa_device_context(int device) :
+        device(device), name(GGML_HSA_NAME + std::to_string(device)) {
+        // TODO get HSA name
+    }
+};
+
+static const char * ggml_backend_hsa_device_get_name(ggml_backend_dev_t dev) {
+    auto * ctx = static_cast<ggml_backend_hsa_device_context *>(dev->context);
+    return ctx->name.c_str();
+}
+
+static const char * ggml_backend_hsa_device_get_description(ggml_backend_dev_t dev) {
+    auto * ctx = static_cast<ggml_backend_hsa_device_context *>(dev->context);
+    return ctx->description.c_str();
+}
+
+static void ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
+    // TODO
+}
+
+static enum ggml_backend_dev_type ggml_backend_hsa_device_get_type(ggml_backend_dev_t dev) {
+    // TODO if (dev == NPU) return GGML_BACKEND_DEVICE_TYPE_ACCEL; if (dev == GPU) return GGML_BACKEND_DEVICE_TYPE_GPU
+    GGML_UNUSED(dev);
+    return GGML_BACKEND_DEVICE_TYPE_GPU;
+}
+
+static void ggml_backend_hsa_device_get_props(ggml_backend_dev_t dev, ggml_backend_dev_props * props) {
+    props->name        = ggml_backend_hsa_device_get_name(dev);
+    props->description = ggml_backend_hsa_device_get_description(dev);
+    props->type        = ggml_backend_hsa_device_get_type(dev);
+    ggml_backend_hsa_device_get_memory(dev, &props->memory_free, &props->memory_total);
+
+    props->caps = {
+        /* .async                 = */ true,
+        /* .host_buffer           = */ true,
+        /* .buffer_from_host_ptr  = */ false,
+        /* .events                = */ false,
+    };
+}
+
+static ggml_backend_t ggml_backend_hsa_device_init_backend(ggml_backend_dev_t dev, const char * params) {
+    GGML_UNUSED(params);
+    auto * ctx = static_cast<ggml_backend_hsa_device_context *>(dev->context);
+    return ggml_backend_hsa_init(ctx->device);
+}
+
+static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_buffer_type(ggml_backend_dev_t dev) {
+    auto * ctx = static_cast<ggml_backend_hsa_device_context *>(dev->context);
+    return ggml_backend_hsa_buffer_type(ctx->device);
+}
+
+static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_host_buffer_type(ggml_backend_dev_t dev) {
+    GGML_UNUSED(dev);
+    return ggml_backend_hsa_host_buffer_type();
+}
+
+static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+    // TODO
+    return false;
+}
+
+static bool ggml_backend_hsa_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
+    return (ggml_backend_buft_is_hsa(buft) /* || ggml_backend_buft_is_cuda_split(buft) */) && buft->device == dev;
+}
+
+static int64_t get_op_batch_size(const ggml_tensor * op) {
+    switch (op->op) {
+        case GGML_OP_GET_ROWS:
+            return 0;
+        case GGML_OP_MUL_MAT:
+            return op->ne[1];
+        case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_ROPE:
+            return op->ne[2];
+        default:
+            return ggml_nrows(op);
+    }
+}
+
+static bool ggml_backend_hsa_device_offload_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+    const int min_batch_size = 32;
+
+    return get_op_batch_size(op) >= min_batch_size;
+
+    GGML_UNUSED(dev);
+}
+
+static ggml_backend_event_t ggml_backend_hsa_device_event_new(ggml_backend_dev_t dev) {
+    // TODO
+    return nullptr;
+}
+
+static void ggml_backend_hsa_device_event_free(ggml_backend_dev_t dev, ggml_backend_event_t event) {
+    // TODO
+}
+
+static void ggml_backend_hsa_device_event_synchronize(ggml_backend_dev_t dev, ggml_backend_event_t event) {
+    // TODO
+}
+
+static const ggml_backend_device_i ggml_backend_hsa_device_interface = {
+    /* .get_name                = */ ggml_backend_hsa_device_get_name,
+    /* .get_description         = */ ggml_backend_hsa_device_get_description,
+    /* .get_memory              = */ ggml_backend_hsa_device_get_memory,
+    /* .get_type                = */ ggml_backend_hsa_device_get_type,
+    /* .get_props               = */ ggml_backend_hsa_device_get_props,
+    /* .init_backend            = */ ggml_backend_hsa_device_init_backend,
+    /* .get_buffer_type         = */ ggml_backend_hsa_device_get_buffer_type,
+    /* .get_host_buffer_type    = */ ggml_backend_hsa_device_get_host_buffer_type,
+    /* .buffer_from_host_ptr    = */ nullptr,
+    /* .supports_op             = */ ggml_backend_hsa_device_supports_op,
+    /* .supports_buft           = */ ggml_backend_hsa_device_supports_buft,
+    /* .offload_op              = */ ggml_backend_hsa_device_offload_op,
+    /* .event_new               = */ ggml_backend_hsa_device_event_new,
+    /* .event_free              = */ ggml_backend_hsa_device_event_free,
+    /* .event_synchronize       = */ ggml_backend_hsa_device_event_synchronize,
+};
+
 // backend reg
+
+struct ggml_backend_hsa_reg_context {
+    std::vector<ggml_backend_dev_t> devices;
+};
+
+static const char * ggml_backend_hsa_reg_get_name(ggml_backend_reg_t reg) {
+    GGML_UNUSED(reg);
+    return GGML_HSA_NAME;
+}
+
+static size_t ggml_backend_hsa_reg_get_device_count(ggml_backend_reg_t reg) {
+    auto * ctx = static_cast<ggml_backend_hsa_reg_context *>(reg->context);
+    return ctx->devices.size();
+}
+
+static ggml_backend_dev_t ggml_backend_hsa_reg_get_device(ggml_backend_reg_t reg, size_t index) {
+    auto * ctx = static_cast<ggml_backend_hsa_reg_context *>(reg->context);
+    GGML_ASSERT(index < ctx->devices.size());
+    return ctx->devices[index];
+}
+
+static ggml_backend_feature * ggml_backend_hsa_get_features(ggml_backend_reg_t reg) {
+    // TODO
+    return nullptr;
+}
+
+static void * ggml_backend_hsa_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    GGML_UNUSED(reg);
+    if (strcmp(name, "ggml_backend_register_host_buffer") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_hsa_register_host_buffer);
+    }
+    if (strcmp(name, "ggml_backend_unregister_host_buffer") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_hsa_unregister_host_buffer);
+    }
+    if (strcmp(name, "ggml_backend_get_features") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_hsa_get_features);
+    }
+    return nullptr;
+}
+
+static const ggml_backend_reg_i ggml_backend_hsa_reg_interface = {
+    /* .get_name          = */ ggml_backend_hsa_reg_get_name,
+    /* .get_device_count  = */ ggml_backend_hsa_reg_get_device_count,
+    /* .get_device_get    = */ ggml_backend_hsa_reg_get_device,
+    /* .get_proc_address  = */ ggml_backend_hsa_reg_get_proc_address,
+};
 
 // backend registry
 ggml_backend_reg_t ggml_backend_hsa_reg() {
     static ggml_backend_reg reg;
+    static bool initialized = false;
+
+    {
+        static std::mutex mutex;
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!initialized) {
+            auto * ctx = new ggml_backend_hsa_reg_context;
+
+            for (int i = 0; i < ggml_hsa_info().device_count; i++) {
+                auto * dev_ctx = new ggml_backend_hsa_device_context{i};
+
+                auto dev = new ggml_backend_device {
+                    /* .iface   = */ ggml_backend_hsa_device_interface,
+                    /* .reg     = */ &reg,
+                    /* .context = */ dev_ctx
+                };
+                ctx->devices.push_back(dev);
+            }
+
+            reg = ggml_backend_reg {
+                /* .api_version = */ GGML_BACKEND_API_VERSION,
+                /* .iface       = */ ggml_backend_hsa_reg_interface,
+                /* .context     = */ ctx
+            };
+        }
+
+        initialized = true;
+    }
+
     return &reg;
 }
 
@@ -315,7 +566,7 @@ ggml_backend_t ggml_backend_hsa_init(int device) {
         return nullptr;
     }
 
-    ggml_backend_hsa_context * ctx = new ggml_backend_hsa_context(device);
+    auto * ctx = new ggml_backend_hsa_context(device);
     if (ctx == nullptr) {
         GGML_LOG_ERROR("%s: failed to allocate context\n", __func__);
         return nullptr;
@@ -330,3 +581,5 @@ ggml_backend_t ggml_backend_hsa_init(int device) {
 
     return hsa_backend;
 }
+
+GGML_BACKEND_DL_IMPL(ggml_backend_hsa_reg)
