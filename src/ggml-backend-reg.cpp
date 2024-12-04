@@ -30,6 +30,10 @@
 #include "ggml-cpu.h"
 #endif
 
+#ifdef GGML_USE_HSA
+#include "ggml-hsa.h"
+#endif
+
 #ifdef GGML_USE_CUDA
 #include "ggml-cuda.h"
 #endif
@@ -109,6 +113,9 @@ struct ggml_backend_registry {
     std::vector<ggml_backend_dev_t> devices;
 
     ggml_backend_registry() {
+#ifdef GGML_USE_HSA
+        register_backend(ggml_backend_hsa_reg());
+#endif
 #ifdef GGML_USE_CUDA
         register_backend(ggml_backend_cuda_reg());
 #endif
