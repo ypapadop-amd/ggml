@@ -3,15 +3,27 @@
 #include "ggml.h"
 #include "ggml-hsa.h"
 
+#include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include <hsa/hsa.h>
+#include <hsa/hsa_ext_amd.h>
 
 #include "ggml-common.h"
 
 #define MATRIX_ROW_PADDING 512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
 
+/**
+ * @brief Prints an error message based on the status and aborts.
+ *
+ * @param stmt statement that caused the error
+ * @param func function in which the error occurred
+ * @param file file in which the error occurred
+ * @param line line number where the error occurred
+ * @param status error code
+ */
 [[noreturn]]
 void ggml_hsa_error(const char * stmt, const char * func, const char * file, int line, hsa_status_t status);
 
@@ -28,15 +40,38 @@ void ggml_hsa_error(const char * stmt, const char * func, const char * file, int
   } while (0)
 
 struct ggml_hsa_device_info {
-    std::vector<hsa_agent_t> agents;
+    std::int32_t device_count{}; /**< Number of devices, up to @ref GGML_HSA_MAX_DEVICES. */
+
+    /**
+     * @brief Information about a single HSA device.
+     */
+    struct hsa_device_info {
+        hsa_agent_t agent{};                  /**< HSA agent associated with the device. */
+        hsa_amd_memory_pool_t data_memory_pool{};
+        hsa_amd_memory_pool_t kernarg_memory_pool{};
+    };
+
+    std::array<hsa_device_info, GGML_HSA_MAX_DEVICES> devices = {};
 };
 
+/**
+ * @brief Retrieve HSA device information.
+ *
+ * This function returns a reference to a structure containing the HSA device
+ * information. HSA and the information is initialized once and reused on all
+ * subsequent calls.
+ *
+ * @return structure with device information
+ */
 const ggml_hsa_device_info & ggml_hsa_info();
 
+/**
+ * @brief Context for HSA backend operations.
+ */
 struct ggml_backend_hsa_context {
-    int device;
-    hsa_agent_t agent;
-    std::string name;
+    int device;        /**< Device ID. */
+    hsa_agent_t agent; /**< HSA agent associated with the device. */
+    std::string name;  /**< Device name. */
 
     ggml_backend_hsa_context(int device, hsa_agent_t agent);
 };

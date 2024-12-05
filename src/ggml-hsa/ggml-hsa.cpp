@@ -29,10 +29,20 @@ void ggml_hsa_error(const char * stmt, const char * func, const char * file, int
     GGML_ABORT("HSA error");
 }
 
+/**
+ * @brief Creates a device name from the device index.
+ *
+ * @param device device index
+ */
 static std::string ggml_hsa_format_name(int device) {
     return GGML_HSA_NAME + std::to_string(device);
 }
 
+/**
+ * @brief Retrieves the agent info for the given agent.
+ *
+ * @param agent HSA agent
+ */
 static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
     constexpr std::size_t agent_name_size = 64;
     char agent_name[agent_name_size];
@@ -40,23 +50,76 @@ static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
     return GGML_HSA_NAME + std::string{agent_name};
 }
 
+/**
+ * @brief Discovers HSA memory pools.
+ */
+static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, void * data) {
+    hsa_amd_memory_pool_global_flag_t pool_flags = {};
+    auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_GLOBAL_FLAGS, &pool_flags);
+    if (status != HSA_STATUS_SUCCESS) {
+        return status;
+    }
+
+    auto & device_info = *static_cast<ggml_hsa_device_info::hsa_device_info *>(data);
+    const bool coarse_grained_pool = (pool_flags & HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED) != 0x0;
+    if (coarse_grained_pool) {
+        const bool kernarg_pool = (pool_flags & HSA_REGION_GLOBAL_FLAG_KERNARG) != 0x0;
+        if (kernarg_pool) {
+            device_info.kernarg_memory_pool = pool;
+        }
+        else {
+            device_info.data_memory_pool = pool;
+        }
+    }
+
+    return HSA_STATUS_SUCCESS;
+}
+
+/**
+ * @brief Discovers HSA agents.
+ */
+static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
+    hsa_device_type_t type = {};
+    auto status = hsa_agent_get_info(agent, HSA_AGENT_INFO_DEVICE, &type);
+    if (status != HSA_STATUS_SUCCESS) {
+        return status;
+    }
+    if (type != HSA_DEVICE_TYPE_AIE) {
+        return HSA_STATUS_SUCCESS;
+    }
+
+    auto & info = *static_cast<ggml_hsa_device_info *>(data);
+    if (info.device_count == GGML_HSA_MAX_DEVICES - 1) {
+        GGML_ABORT("Exceeded GGML_HSA_MAX_DEVICES limit");
+    }
+
+    // retrieve device information (agent, memory pools)
+    ggml_hsa_device_info::hsa_device_info device_info;
+    device_info.agent = agent;
+    status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &info);
+    if (status != HSA_STATUS_SUCCESS) {
+        return status;
+    }
+
+    // add device to known devices
+    info.devices[info.device_count] = device_info;
+    ++info.device_count;
+
+    return HSA_STATUS_SUCCESS;
+}
+
+/**
+ * @brief Initialize HSA device information.
+ *
+ * This function initializes HSA and retrieves all the appropriate agents and
+ * memory pools.
+ */
 static ggml_hsa_device_info ggml_hsa_init() {
     HSA_CHECK(hsa_init());
 
-    auto agent_visitor = [](hsa_agent_t agent, void* data) {
-        hsa_device_type_t type = {};
-        HSA_CHECK(hsa_agent_get_info(agent, HSA_AGENT_INFO_DEVICE, &type));
-        if (type != HSA_DEVICE_TYPE_AIE) {
-            return HSA_STATUS_SUCCESS;
-        }
-
-        auto & info = *static_cast<ggml_hsa_device_info *>(data);
-        info.agents.push_back(agent);
-        return HSA_STATUS_SUCCESS;
-    };
-
     ggml_hsa_device_info info = {};
-    HSA_CHECK(hsa_iterate_agents(agent_visitor, &info));
+    HSA_CHECK(hsa_iterate_agents(ggml_hsa_find_hsa_agents, &info));
+
     return info;
 }
 
@@ -71,10 +134,13 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(int device, hsa_agent_t agent
 
 // HSA buffer
 
+/**
+ * @brief Context for managing a HSA buffer associated with a specific device.
+ */
 struct ggml_backend_hsa_buffer_context {
-    int device;
+    int device;              ///< The device ID associated with this buffer context.
     hsa_agent_t agent;
-    void * dev_ptr{nullptr};
+    void * dev_ptr{nullptr}; ///< Pointer to the device memory allocated for the buffer.
     std::string name;
 
     ggml_backend_hsa_buffer_context(int device, hsa_agent_t agent, void * dev_ptr) :
@@ -87,15 +153,24 @@ struct ggml_backend_hsa_buffer_context {
     }
 };
 
+/**
+ * @brief Free resources associated with @p buffer.
+ */
 static void ggml_backend_hsa_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
     delete ctx;
 }
 
+/**
+ * @brief Return if @p buffer is a HSA buffer.
+ */
 static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
     return buffer->iface.free_buffer == ggml_backend_hsa_buffer_free_buffer;
 }
 
+/**
+ * @brief Return the base pointer of @p buffer.
+ */
 static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
     return ctx->dev_ptr;
@@ -139,6 +214,10 @@ static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
 };
 
 // HSA buffer type
+
+/**
+ * @brief Context information for HSA backend buffer type.
+ */
 struct ggml_backend_hsa_buffer_type_context {
     int device;
     hsa_agent_t agent;
@@ -165,11 +244,12 @@ static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_back
 }
 
 static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
+    auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
+    //buft->device
+
     // TODO is this true?
     NOT_IMPLEMENTED();
     return 128;
-
-    GGML_UNUSED(buft);
 }
 
 static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
@@ -207,19 +287,18 @@ static struct {
 ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) {
     const auto & info = ggml_hsa_info();
 
-    const int agent_count = info.agents.size();
-    if (device >= agent_count) {
+    if (device >= info.device_count) {
         return nullptr;
     }
 
     std::lock_guard<std::mutex> lock(ggml_backend_hsa_buffer_type_metadata.mutex);
 
     if (!ggml_backend_hsa_buffer_type_metadata.initialized) {
-        for (int i = 0; i < agent_count; i++) {
+        for (int i = 0; i < info.device_count; i++) {
             ggml_backend_hsa_buffer_type_metadata.type[i] = {
                 /* .iface    = */ ggml_backend_hsa_buffer_type_interface,
                 /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_hsa_reg(), i),
-                /* .context  = */ new ggml_backend_hsa_buffer_type_context{i, info.agents[i]},
+                /* .context  = */ new ggml_backend_hsa_buffer_type_context{i, info.devices[i].agent},
             };
         }
         ggml_backend_hsa_buffer_type_metadata.initialized = true;
@@ -366,7 +445,7 @@ bool ggml_backend_is_hsa(ggml_backend_t backend) {
 }
 
 int ggml_backend_hsa_get_device_count() {
-    return ggml_hsa_info().agents.size();
+    return ggml_hsa_info().device_count;
 }
 
 void ggml_backend_hsa_get_device_description(int device, char * description, size_t description_size) {
@@ -585,10 +664,9 @@ ggml_backend_reg_t ggml_backend_hsa_reg() {
 
         auto * ctx = new ggml_backend_hsa_reg_context;
 
-        const int agent_count = info.agents.size();
-        ctx->devices.reserve(agent_count);
-        for (int i = 0; i < agent_count; i++) {
-            auto * dev_ctx = new ggml_backend_hsa_device_context{i, info.agents[i]};
+        ctx->devices.reserve(info.device_count);
+        for (int i = 0; i <  info.device_count; i++) {
+            auto * dev_ctx = new ggml_backend_hsa_device_context{i, info.devices[i].agent};
 
             auto dev = new ggml_backend_device {
                 /* .iface   = */ ggml_backend_hsa_device_interface,
@@ -611,14 +689,14 @@ ggml_backend_reg_t ggml_backend_hsa_reg() {
 }
 
 ggml_backend_t ggml_backend_hsa_init(int device) {
-    const auto & info = ggml_hsa_info();
-
     if (device < 0 || device >= ggml_backend_hsa_get_device_count()) {
         GGML_LOG_ERROR("%s: invalid device %d\n", __func__, device);
         return nullptr;
     }
 
-    auto * ctx = new ggml_backend_hsa_context(device, info.agents[device]);
+    const auto & info = ggml_hsa_info();
+
+    auto * ctx = new ggml_backend_hsa_context(device, info.devices[device].agent);
     if (ctx == nullptr) {
         GGML_LOG_ERROR("%s: failed to allocate context\n", __func__);
         return nullptr;
