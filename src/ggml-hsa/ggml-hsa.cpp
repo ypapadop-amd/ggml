@@ -15,13 +15,20 @@
         abort(); \
     } while (false)
 
-[[noreturn]]
-void ggml_hsa_error(const char * stmt, const char * func, const char * file, int line, hsa_status_t status) {
+/**
+ * @brief Returns the status description of @p status.
+ */
+static const char* ggml_hsa_get_status_string(hsa_status_t status) {
     const char* msg = nullptr;
     if (hsa_status_string(status, &msg) != HSA_STATUS_SUCCESS) {
-        msg = "unknown";
+        return "unknown";
     }
+    return msg;
+}
 
+[[noreturn]]
+void ggml_hsa_error(const char * stmt, const char * func, const char * file, int line, hsa_status_t status) {
+    const char* msg = ggml_hsa_get_status_string(status);
     GGML_LOG_ERROR("HSA error: %s\n", msg);
     GGML_LOG_ERROR("  in function %s at %s:%d\n", func, file, line);
     GGML_LOG_ERROR("  %s\n", stmt);
@@ -272,9 +279,19 @@ static bool ggml_backend_buft_is_hsa(ggml_backend_buffer_type_t buft) {
 }
 
 static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
-    // TODO
-    NOT_IMPLEMENTED();
-    return {};
+    auto * buft_ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
+    const auto & info = ggml_hsa_info();
+    const auto & device = info.devices[buft_ctx->device];
+
+    void * buffer = nullptr;
+    auto status = hsa_amd_memory_pool_allocate(device.data_memory.memory_pool, size, /* flags = */ 0, &buffer);
+    if (status != HSA_STATUS_SUCCESS) {
+        GGML_LOG_ERROR("%s: allocating %.2f MiB on device %d: hsa_amd_memory_pool_allocate failed: %s\n", __func__, size / 1024.0 / 1024.0, buft_ctx->device, ggml_hsa_get_status_string(status));
+        return nullptr;
+    }
+
+    auto * ctx = new ggml_backend_hsa_buffer_context(buft_ctx->device, buffer);
+    return ggml_backend_buffer_init(buft, ggml_backend_hsa_buffer_interface, ctx, size);
 }
 
 /**
