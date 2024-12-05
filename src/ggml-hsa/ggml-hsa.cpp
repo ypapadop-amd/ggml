@@ -165,10 +165,10 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(int device, hsa_agent_t agent
  * @brief Context for managing a HSA buffer associated with a specific device.
  */
 struct ggml_backend_hsa_buffer_context {
-    int device;              ///< Device ID associated with this buffer context.
+    std::int32_t device;     ///< Device ID associated with this buffer context.
     void * dev_ptr{nullptr}; ///< Pointer to the device memory allocated for the buffer.
 
-    ggml_backend_hsa_buffer_context(int device, void * dev_ptr) :
+    ggml_backend_hsa_buffer_context(std::int32_t device, void * dev_ptr) :
         device(device), dev_ptr(dev_ptr) {
     }
 
@@ -345,7 +345,7 @@ ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) {
     std::lock_guard<std::mutex> lock(ggml_backend_hsa_buffer_type_metadata.mutex);
 
     if (!ggml_backend_hsa_buffer_type_metadata.initialized) {
-        for (int i = 0; i < info.device_count; i++) {
+        for (std::int32_t i = 0; i < info.device_count; i++) {
             ggml_backend_hsa_buffer_type_metadata.type[i] = {
                 /* .iface    = */ ggml_backend_hsa_buffer_type_interface,
                 /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_hsa_reg(), i),
@@ -523,12 +523,12 @@ void ggml_backend_hsa_unregister_host_buffer(void * buffer) {
 // backend device
 
 struct ggml_backend_hsa_device_context {
-    int device;
+    std::int32_t device;
     hsa_agent_t agent;
     std::string name;
     std::string description;
 
-    ggml_backend_hsa_device_context(int device, hsa_agent_t agent) :
+    ggml_backend_hsa_device_context(std::int32_t device, hsa_agent_t agent) :
         device(device), agent(agent), name(ggml_hsa_format_name(device)), description(ggml_hsa_agent_name(agent)) {
     }
 };
@@ -716,7 +716,7 @@ ggml_backend_reg_t ggml_backend_hsa_reg() {
         auto * ctx = new ggml_backend_hsa_reg_context;
 
         ctx->devices.reserve(info.device_count);
-        for (int i = 0; i <  info.device_count; i++) {
+        for (std::int32_t i = 0; i <  info.device_count; i++) {
             auto * dev_ctx = new ggml_backend_hsa_device_context{i, info.devices[i].agent};
 
             auto dev = new ggml_backend_device {
