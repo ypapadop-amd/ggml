@@ -5,6 +5,7 @@
 #include "ggml-hsa/common.hpp"
 
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -60,7 +61,9 @@ static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
 /**
  * @brief Populates the information in @p info from @p pool.
  */
-static hsa_status_t ggml_hsa_set_memory_pool_info(hsa_amd_memory_pool_t pool, ggml_hsa_device_info::hsa_memory_pool_info & info) {
+static hsa_status_t ggml_hsa_set_memory_pool_info(
+    hsa_amd_memory_pool_t pool,
+    ggml_hsa_device_info::hsa_memory_pool_info & info) {
     std::size_t alignment = 0;
     auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_ALIGNMENT, &alignment);
     if (status != HSA_STATUS_SUCCESS) {
@@ -173,20 +176,19 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, hsa_agen
  */
 struct ggml_backend_hsa_buffer_context {
     std::int32_t device;     ///< Device ID associated with this buffer context.
-    void * dev_ptr{nullptr}; ///< Pointer to the device memory allocated for the buffer.
+    void * dev_ptr{nullptr}; ///< Pointer to the device memory.
 
     ggml_backend_hsa_buffer_context(std::int32_t device, void * dev_ptr) :
         device(device), dev_ptr(dev_ptr) {
     }
 
     ~ggml_backend_hsa_buffer_context() {
-        // TODO deallocate memory
-        NOT_IMPLEMENTED();
+        HSA_CHECK(hsa_amd_memory_pool_free(dev_ptr));
     }
 };
 
 /**
- * @brief Free resources associated with @p buffer.
+ * @brief Frees resources associated with @p buffer.
  */
 static void ggml_backend_hsa_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
@@ -194,43 +196,112 @@ static void ggml_backend_hsa_buffer_free_buffer(ggml_backend_buffer_t buffer) {
 }
 
 /**
- * @brief Return if @p buffer is a HSA buffer.
+ * @brief Returns if @p buffer is a HSA buffer.
  */
 static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
     return buffer->iface.free_buffer == ggml_backend_hsa_buffer_free_buffer;
 }
 
 /**
- * @brief Return the base pointer of @p buffer.
+ * @brief Returns the base pointer of @p buffer.
  */
 static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
     return ctx->dev_ptr;
 }
 
-static void ggml_backend_hsa_buffer_memset_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
-    // TODO memset(tensor, value)
-    NOT_IMPLEMENTED();
+/**
+ * @brief Set tensor data to a specific value @p value.
+ *
+ * @param buffer tensor storage
+ * @param tensor destination tensor
+ * @param value value to set to the tensor
+ * @param offset offset in tensor
+ * @param size size of data to set, in bytes
+ */
+static void ggml_backend_hsa_buffer_memset_tensor(
+    ggml_backend_buffer_t buffer,
+    ggml_tensor * tensor,
+    uint8_t value,
+    size_t offset,
+    size_t size) {
+    // TODO do we need transformations here?
+    std::memset(static_cast<char *>(tensor->data) + offset, value, size);
+
+    GGML_UNUSED(buffer);
 }
 
-static void ggml_backend_hsa_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
-    // TODO memcpy(tensor, value)
-    NOT_IMPLEMENTED();
+/**
+ * @brief Set tensor data.
+ *
+ * @param buffer tensor storage
+ * @param tensor destination tensor
+ * @param data source data
+ * @param offset offset in source data
+ * @param size size of source data, in bytes
+ */
+static void ggml_backend_hsa_buffer_set_tensor(
+    ggml_backend_buffer_t buffer,
+    ggml_tensor * tensor,
+    const void * data,
+    size_t offset,
+    size_t size) {
+    // TODO do we need transformations here?
+    std::memcpy(static_cast<char *>(tensor->data) + offset, data, size);
+
+    GGML_UNUSED(buffer);
 }
 
-static void ggml_backend_hsa_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
-    // TODO memcpy(data, tensor)
-    NOT_IMPLEMENTED();
+/**
+ * @brief Get tensor data.
+ *
+ * @param buffer tensor storage
+ * @param tensor source tensor
+ * @param data pointer to destination
+ * @param offset offset in source tensor data
+ * @param size size of source data, in bytes
+ */
+static void ggml_backend_hsa_buffer_get_tensor(
+    ggml_backend_buffer_t buffer,
+    const ggml_tensor * tensor,
+    void * data,
+    size_t offset,
+    size_t size) {
+    // TODO do we need transformations here?
+    std::memcpy(data, static_cast<const char *>(tensor->data) + offset, size);
+
+    GGML_UNUSED(buffer);
 }
 
-static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst) {
-    // TODO memcpy(dst, src)
-    NOT_IMPLEMENTED();
+/**
+ * @brief Copy tensor data between buffers if possible.
+ *
+ * The size of the data to be copied is inferred by the source tensor @p src.
+ *
+ * @param buffer tensor storage
+ * @param src source tensor
+ * @param dst destination tensor
+ * @return true if the copy operation succeeded, false otherwise.
+ */
+static bool ggml_backend_hsa_buffer_cpy_tensor(
+    ggml_backend_buffer_t buffer,
+    const ggml_tensor * src,
+    ggml_tensor * dst) {
+    if (ggml_backend_buffer_is_host(src->buffer)) {
+        std::memcpy(dst->data, src->data, ggml_nbytes(src));
+        return true;
+    }
+    return false;
+
+    GGML_UNUSED(buffer);
 }
 
+/**
+ * @brief Clear buffer @p buffer by setting all its memory to @p value.
+ */
 static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
-    // TODO memset(buffer, value); sync
-    NOT_IMPLEMENTED();
+    auto * ctx = static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
+    std::memset(ctx->dev_ptr, value, buffer->size);
 }
 
 static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
