@@ -51,6 +51,34 @@ static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
 }
 
 /**
+ * @brief Populates the information in @p info from @p pool.
+ */
+static hsa_status_t ggml_hsa_set_memory_pool_info(hsa_amd_memory_pool_t pool, ggml_hsa_device_info::hsa_memory_pool_info & info) {
+    std::size_t alignment = 0;
+    auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_ALIGNMENT, &alignment);
+    if (status != HSA_STATUS_SUCCESS) {
+        return status;
+    }
+
+#if 0
+    // TODO BUG: HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE returns 0 for HSA_HEAPTYPE_DEVICE_SVM
+    std::size_t max_size = 0;
+    status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE, &max_size);
+    if (status != HSA_STATUS_SUCCESS) {
+        return status;
+    }
+#else
+    std::size_t max_size = SIZE_MAX;
+#endif
+
+    info.memory_pool = pool;
+    info.alignment = alignment;
+    info.max_size = max_size;
+
+    return HSA_STATUS_SUCCESS;
+}
+
+/**
  * @brief Discovers HSA memory pools.
  */
 static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, void * data) {
@@ -65,14 +93,14 @@ static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, v
     if (coarse_grained_pool) {
         const bool kernarg_pool = (pool_flags & HSA_REGION_GLOBAL_FLAG_KERNARG) != 0x0;
         if (kernarg_pool) {
-            device_info.kernarg_memory_pool = pool;
+            status = ggml_hsa_set_memory_pool_info(pool, device_info.kernarg_memory);
         }
         else {
-            device_info.data_memory_pool = pool;
+            status = ggml_hsa_set_memory_pool_info(pool, device_info.data_memory);
         }
     }
 
-    return HSA_STATUS_SUCCESS;
+    return status;
 }
 
 /**
@@ -94,7 +122,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     }
 
     // retrieve device information (agent, memory pools)
-    ggml_hsa_device_info::hsa_device_info device_info;
+    auto & device_info = info.devices[info.device_count];
     device_info.agent = agent;
     status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &device_info);
     if (status != HSA_STATUS_SUCCESS) {
@@ -102,7 +130,6 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     }
 
     // add device to known devices
-    info.devices[info.device_count] = device_info;
     ++info.device_count;
 
     return HSA_STATUS_SUCCESS;
@@ -239,7 +266,7 @@ static const char * ggml_backend_hsa_buffer_type_get_name(ggml_backend_buffer_ty
 }
 
 /**
- * @brief Returns if the buffer type is an HSA buffer type.
+ * @brief Returns if the buffer type is a HSA buffer type.
  *
  * @param buft buffer type context
  */
@@ -262,9 +289,7 @@ static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_typ
     auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & info = ggml_hsa_info();
     const auto & device = info.devices[ctx->device];
-    std::size_t alignment = 0;
-    HSA_CHECK(hsa_amd_memory_pool_get_info(device.data_memory_pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_ALIGNMENT, &alignment));
-    return alignment;
+    return device.data_memory.alignment;
 }
 
 /**
@@ -273,17 +298,10 @@ static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_typ
  * @param buft buffer type context
  */
 static size_t ggml_backend_hsa_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
-#if 0
-    // BUG: HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE returns 0 for HSA_HEAPTYPE_DEVICE_SVM
     auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & info = ggml_hsa_info();
     const auto & device = info.devices[ctx->device];
-    std::size_t max_size = 0;
-    HSA_CHECK(hsa_amd_memory_pool_get_info(device.data_memory_pool, HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE, &max_size));
-    return max_size;
-#else
-    return SIZE_MAX;
-#endif
+    return device.data_memory.max_size;
 }
 
 /**

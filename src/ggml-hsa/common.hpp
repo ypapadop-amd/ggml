@@ -43,12 +43,21 @@ struct ggml_hsa_device_info {
     std::int32_t device_count{}; /**< Number of devices, up to @ref GGML_HSA_MAX_DEVICES. */
 
     /**
+     * @brief Information about a single HSA memory pool.
+     */
+    struct hsa_memory_pool_info {
+        hsa_amd_memory_pool_t memory_pool{}; /**< HSA memory pool object. */
+        std::size_t alignment{};
+        std::size_t max_size{};
+    };
+
+    /**
      * @brief Information about a single HSA device.
      */
     struct hsa_device_info {
         hsa_agent_t agent{};                  /**< HSA agent associated with the device. */
-        hsa_amd_memory_pool_t data_memory_pool{};
-        hsa_amd_memory_pool_t kernarg_memory_pool{};
+        hsa_memory_pool_info data_memory;
+        hsa_memory_pool_info kernarg_memory;
     };
 
     std::array<hsa_device_info, GGML_HSA_MAX_DEVICES> devices = {};
