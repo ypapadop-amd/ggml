@@ -41,7 +41,7 @@ void ggml_hsa_error(const char * stmt, const char * func, const char * file, int
  *
  * @param device device index
  */
-static std::string ggml_hsa_format_name(int device) {
+static std::string ggml_hsa_format_name(std::int32_t device) {
     return GGML_HSA_NAME + std::to_string(device);
 }
 
@@ -162,7 +162,7 @@ const ggml_hsa_device_info & ggml_hsa_info() {
     return info;
 }
 
-ggml_backend_hsa_context::ggml_backend_hsa_context(int device, hsa_agent_t agent) :
+ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, hsa_agent_t agent) :
         device(device), agent(agent), name(ggml_hsa_format_name(device)) {
 }
 
@@ -251,10 +251,10 @@ static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
  * @brief Context information for HSA backend buffer type.
  */
 struct ggml_backend_hsa_buffer_type_context {
-    int device;       ///< ID of the device associated with this buffer type context.
-    std::string name; ///< Name of the device associated with this buffer type context.
+    std::int32_t device; ///< ID of the device associated with this buffer type context.
+    std::string name;    ///< Name of the device associated with this buffer type context.
 
-    ggml_backend_hsa_buffer_type_context(int device, hsa_agent_t agent) :
+    ggml_backend_hsa_buffer_type_context(std::int32_t device, hsa_agent_t agent) :
         device(device), name(ggml_hsa_format_name(device)) {
     }
 };
