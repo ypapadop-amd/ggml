@@ -40,31 +40,31 @@ void ggml_hsa_error(const char * stmt, const char * func, const char * file, int
   } while (0)
 
 struct ggml_hsa_device_info {
-    std::int32_t device_count{}; /**< Number of devices, up to @ref GGML_HSA_MAX_DEVICES. */
+    std::int32_t device_count{}; ///< Number of devices, up to @ref GGML_HSA_MAX_DEVICES.
 
     /**
      * @brief Information about a single HSA memory pool.
      */
     struct hsa_memory_pool_info {
-        hsa_amd_memory_pool_t memory_pool{}; /**< HSA memory pool object. */
-        std::size_t alignment{};
-        std::size_t max_size{};
+        hsa_amd_memory_pool_t memory_pool{}; ///< HSA memory pool object.
+        std::size_t alignment{};             ///< Memory pool alignment.
+        std::size_t max_size{};              ///< Memory pool maximum allocation.
     };
 
     /**
      * @brief Information about a single HSA device.
      */
     struct hsa_device_info {
-        hsa_agent_t agent{};                  /**< HSA agent associated with the device. */
-        hsa_memory_pool_info data_memory;
-        hsa_memory_pool_info kernarg_memory;
+        hsa_agent_t agent{};                  ///< HSA agent associated with the device.
+        hsa_memory_pool_info data_memory;     ///< Pool for data.
+        hsa_memory_pool_info kernarg_memory;  ///< Pool for kernel arguments.
     };
 
     std::array<hsa_device_info, GGML_HSA_MAX_DEVICES> devices = {};
 };
 
 /**
- * @brief Retrieve HSA device information.
+ * @brief Returns the HSA device information.
  *
  * This function returns a reference to a structure containing the HSA device
  * information. HSA and the information is initialized once and reused on all
@@ -78,9 +78,9 @@ const ggml_hsa_device_info & ggml_hsa_info();
  * @brief Context for HSA backend operations.
  */
 struct ggml_backend_hsa_context {
-    int device;        /**< Device ID. */
-    hsa_agent_t agent; /**< HSA agent associated with the device. */
-    std::string name;  /**< Device name. */
+    std::int32_t device; ///< Device ID.
+    hsa_agent_t agent;   ///< HSA agent associated with the device.
+    std::string name;    ///< Device name.
 
-    ggml_backend_hsa_context(int device, hsa_agent_t agent);
+    ggml_backend_hsa_context(std::int32_t device, hsa_agent_t agent);
 };

@@ -165,13 +165,11 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(int device, hsa_agent_t agent
  * @brief Context for managing a HSA buffer associated with a specific device.
  */
 struct ggml_backend_hsa_buffer_context {
-    int device;              ///< The device ID associated with this buffer context.
-    hsa_agent_t agent;
+    int device;              ///< Device ID associated with this buffer context.
     void * dev_ptr{nullptr}; ///< Pointer to the device memory allocated for the buffer.
-    std::string name;
 
-    ggml_backend_hsa_buffer_context(int device, hsa_agent_t agent, void * dev_ptr) :
-        device(device), agent(agent), dev_ptr(dev_ptr), name(ggml_hsa_format_name(device)) {
+    ggml_backend_hsa_buffer_context(int device, void * dev_ptr) :
+        device(device), dev_ptr(dev_ptr) {
     }
 
     ~ggml_backend_hsa_buffer_context() {
@@ -246,17 +244,16 @@ static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
  * @brief Context information for HSA backend buffer type.
  */
 struct ggml_backend_hsa_buffer_type_context {
-    int device;
-    hsa_agent_t agent;
-    std::string name;
+    int device;       ///< ID of the device associated with this buffer type context.
+    std::string name; ///< Name of the device associated with this buffer type context.
 
     ggml_backend_hsa_buffer_type_context(int device, hsa_agent_t agent) :
-        device(device), agent(agent), name(ggml_hsa_format_name(device)) {
+        device(device), name(ggml_hsa_format_name(device)) {
     }
 };
 
 /**
- * @brief Returns the name associated a buffer type.
+ * @brief Returns the name associated with the buffer type @p buft.
  *
  * @param buft buffer type context
  */
@@ -266,7 +263,7 @@ static const char * ggml_backend_hsa_buffer_type_get_name(ggml_backend_buffer_ty
 }
 
 /**
- * @brief Returns if the buffer type is a HSA buffer type.
+ * @brief Returns if the buffer type @p buft is a HSA buffer type.
  *
  * @param buft buffer type context
  */
@@ -281,7 +278,7 @@ static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_back
 }
 
 /**
- * @brief Returns the memory alignment requirement buffers in bytes.
+ * @brief Returns the memory alignment requirement for buffer type @p buft in bytes.
  *
  * @param buft buffer type context
  */
@@ -293,7 +290,7 @@ static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_typ
 }
 
 /**
- * @brief Returns the maximum allocation size for buffers in bytes.
+ * @brief Returns the maximum allocation size for buffer type @p buft in bytes.
  *
  * @param buft buffer type context
  */
