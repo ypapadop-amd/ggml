@@ -96,7 +96,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     // retrieve device information (agent, memory pools)
     ggml_hsa_device_info::hsa_device_info device_info;
     device_info.agent = agent;
-    status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &info);
+    status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &device_info);
     if (status != HSA_STATUS_SUCCESS) {
         return status;
     }
@@ -228,11 +228,21 @@ struct ggml_backend_hsa_buffer_type_context {
     }
 };
 
+/**
+ * @brief Returns the name associated a buffer type.
+ *
+ * @param buft buffer type context
+ */
 static const char * ggml_backend_hsa_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     return ctx->name.c_str();
 }
 
+/**
+ * @brief Returns if the buffer type is an HSA buffer type.
+ *
+ * @param buft buffer type context
+ */
 static bool ggml_backend_buft_is_hsa(ggml_backend_buffer_type_t buft) {
     return buft->iface.get_name == ggml_backend_hsa_buffer_type_get_name;
 }
@@ -243,25 +253,51 @@ static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_back
     return {};
 }
 
+/**
+ * @brief Returns the memory alignment requirement buffers in bytes.
+ *
+ * @param buft buffer type context
+ */
 static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
-    //buft->device
-
-    // TODO is this true?
-    NOT_IMPLEMENTED();
-    return 128;
+    const auto & info = ggml_hsa_info();
+    const auto & device = info.devices[ctx->device];
+    std::size_t alignment = 0;
+    HSA_CHECK(hsa_amd_memory_pool_get_info(device.data_memory_pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_ALIGNMENT, &alignment));
+    return alignment;
 }
 
-static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
-    // TODO is this true?
-    NOT_IMPLEMENTED();
-    size_t size = ggml_nbytes(tensor);
-    int64_t ne0 = tensor->ne[0];
+/**
+ * @brief Returns the maximum allocation size for buffers in bytes.
+ *
+ * @param buft buffer type context
+ */
+static size_t ggml_backend_hsa_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
+#if 0
+    // BUG: HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE returns 0 for HSA_HEAPTYPE_DEVICE_SVM
+    auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
+    const auto & info = ggml_hsa_info();
+    const auto & device = info.devices[ctx->device];
+    std::size_t max_size = 0;
+    HSA_CHECK(hsa_amd_memory_pool_get_info(device.data_memory_pool, HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE, &max_size));
+    return max_size;
+#else
+    return SIZE_MAX;
+#endif
+}
 
+/**
+ * @brief Returns the size required for a tensor.
+ *
+ * @param buft buffer type context
+ * @param tensor tensor to calculate size for
+ */
+static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
+    const size_t size = ggml_nbytes(tensor);
+
+    // TODO: quantized data types not supported
     if (ggml_is_quantized(tensor->type)) {
-        if (ne0 % MATRIX_ROW_PADDING != 0) {
-            size += ggml_row_size(tensor->type, MATRIX_ROW_PADDING - ne0 % MATRIX_ROW_PADDING);
-        }
+        NOT_IMPLEMENTED();
     }
 
     return size;
@@ -273,7 +309,7 @@ static const ggml_backend_buffer_type_i ggml_backend_hsa_buffer_type_interface =
     /* .get_name         = */ ggml_backend_hsa_buffer_type_get_name,
     /* .alloc_buffer     = */ ggml_backend_hsa_buffer_type_alloc_buffer,
     /* .get_alignment    = */ ggml_backend_hsa_buffer_type_get_alignment,
-    /* .get_max_size     = */ nullptr, // defaults to SIZE_MAX
+    /* .get_max_size     = */ ggml_backend_hsa_buffer_type_get_max_size,
     /* .get_alloc_size   = */ ggml_backend_hsa_buffer_type_get_alloc_size,
     /* .is_host          = */ nullptr,
 };
