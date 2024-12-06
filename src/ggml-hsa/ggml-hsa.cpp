@@ -13,7 +13,7 @@
 
 #define NOT_IMPLEMENTED() \
     do { \
-        printf("%s not implemented\n", __PRETTY_FUNCTION__); \
+        printf("(%s:%d) %s not implemented\n", __FILE__, __LINE__, __PRETTY_FUNCTION__); \
         abort(); \
     } while (false)
 
@@ -132,9 +132,14 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
         GGML_ABORT("Exceeded GGML_HSA_MAX_DEVICES limit");
     }
 
-    // retrieve device information (agent, memory pools)
+    // retrieve device information (agent, memory pools, etc.)
     auto & device_info = info.devices[info.device_count];
     device_info.agent = agent;
+    if (auto status = hsa_agent_get_info(agent, HSA_AGENT_INFO_DEVICE, &device_info.type);
+        status != HSA_STATUS_SUCCESS) {
+        return status;
+    }
+
     if (auto status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &device_info);
         status != HSA_STATUS_SUCCESS) {
         return status;
@@ -661,12 +666,11 @@ void ggml_backend_hsa_unregister_host_buffer(void * buffer) {
 
 struct ggml_backend_hsa_device_context {
     std::int32_t device;
-    hsa_agent_t agent;
     std::string name;
     std::string description;
 
     ggml_backend_hsa_device_context(std::int32_t device, hsa_agent_t agent) :
-        device(device), agent(agent), name(ggml_hsa_format_name(device)), description(ggml_hsa_agent_name(agent)) {
+        device(device), name(ggml_hsa_format_name(device)), description(ggml_hsa_agent_name(agent)) {
     }
 };
 
@@ -685,10 +689,20 @@ static void ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * 
 }
 
 static enum ggml_backend_dev_type ggml_backend_hsa_device_get_type(ggml_backend_dev_t dev) {
-    // TODO if (dev == NPU) return GGML_BACKEND_DEVICE_TYPE_ACCEL; if (dev == GPU) return GGML_BACKEND_DEVICE_TYPE_GPU
-    NOT_IMPLEMENTED();
-    GGML_UNUSED(dev);
-    return GGML_BACKEND_DEVICE_TYPE_GPU;
+    auto * ctx = static_cast<ggml_backend_hsa_device_context *>(dev->context);
+    const auto & info = ggml_hsa_info();
+    const auto & device = info.devices[ctx->device];
+    switch (device.type) {
+        case HSA_DEVICE_TYPE_CPU:
+            return GGML_BACKEND_DEVICE_TYPE_CPU;
+        case HSA_DEVICE_TYPE_GPU:
+            return GGML_BACKEND_DEVICE_TYPE_GPU;
+        case HSA_DEVICE_TYPE_DSP:
+        case HSA_DEVICE_TYPE_AIE:
+            return GGML_BACKEND_DEVICE_TYPE_ACCEL;
+        default:
+            GGML_ABORT("Unknown HSA device: %d", device.type);
+    }
 }
 
 static void ggml_backend_hsa_device_get_props(ggml_backend_dev_t dev, ggml_backend_dev_props * props) {
