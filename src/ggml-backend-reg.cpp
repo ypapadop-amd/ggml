@@ -526,6 +526,7 @@ void ggml_backend_load_all() {
     ggml_backend_load_best("cann", silent);
     ggml_backend_load_best("cuda", silent);
     ggml_backend_load_best("hip", silent);
+    ggml_backend_load_best("hsa", silent);
     ggml_backend_load_best("kompute", silent);
     ggml_backend_load_best("metal", silent);
     ggml_backend_load_best("rpc", silent);
