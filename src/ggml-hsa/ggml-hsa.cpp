@@ -684,10 +684,25 @@ static const char * ggml_backend_hsa_device_get_description(ggml_backend_dev_t d
     return ctx->description.c_str();
 }
 
+/**
+ * @brief Returns the free and total memory in @p free and @p total respectively for device @p dev.
+ */
 static void ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
-    NOT_IMPLEMENTED();
+    auto * ctx = static_cast<ggml_backend_hsa_device_context *>(dev->context);
+    const auto & info = ggml_hsa_info();
+    const auto & device = info.devices[ctx->device];
+    if (auto status = hsa_amd_memory_pool_get_info(device.data_memory.memory_pool, HSA_AMD_MEMORY_POOL_INFO_SIZE, total);
+        status != HSA_STATUS_SUCCESS) {
+        GGML_LOG_ERROR("%s: error: failed to get free memory (%s)\n", __func__, ggml_hsa_get_status_string(status));
+    }
+
+    // HSA does not report free memory, set it to total
+    *free = *total;
 }
 
+/**
+ * @brief Returns the device type of @p dev.
+ */
 static enum ggml_backend_dev_type ggml_backend_hsa_device_get_type(ggml_backend_dev_t dev) {
     auto * ctx = static_cast<ggml_backend_hsa_device_context *>(dev->context);
     const auto & info = ggml_hsa_info();
