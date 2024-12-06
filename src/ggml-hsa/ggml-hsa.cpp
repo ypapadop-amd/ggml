@@ -4,6 +4,7 @@
 
 #include "ggml-hsa/common.hpp"
 
+#include <cinttypes>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -65,16 +66,16 @@ static hsa_status_t ggml_hsa_set_memory_pool_info(
     hsa_amd_memory_pool_t pool,
     ggml_hsa_device_info::hsa_memory_pool_info & info) {
     std::size_t alignment = 0;
-    auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_ALIGNMENT, &alignment);
-    if (status != HSA_STATUS_SUCCESS) {
+    if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_ALIGNMENT, &alignment);
+        status != HSA_STATUS_SUCCESS) {
         return status;
     }
 
 #if 0
     // TODO BUG: HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE returns 0 for HSA_HEAPTYPE_DEVICE_SVM
     std::size_t max_size = 0;
-    status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE, &max_size);
-    if (status != HSA_STATUS_SUCCESS) {
+    if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE, &max_size);
+        status != HSA_STATUS_SUCCESS) {
         return status;
     }
 #else
@@ -93,8 +94,8 @@ static hsa_status_t ggml_hsa_set_memory_pool_info(
  */
 static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, void * data) {
     hsa_amd_memory_pool_global_flag_t pool_flags = {};
-    auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_GLOBAL_FLAGS, &pool_flags);
-    if (status != HSA_STATUS_SUCCESS) {
+    if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_GLOBAL_FLAGS, &pool_flags);
+        status != HSA_STATUS_SUCCESS) {
         return status;
     }
 
@@ -103,14 +104,14 @@ static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, v
     if (coarse_grained_pool) {
         const bool kernarg_pool = (pool_flags & HSA_REGION_GLOBAL_FLAG_KERNARG) != 0x0;
         if (kernarg_pool) {
-            status = ggml_hsa_set_memory_pool_info(pool, device_info.kernarg_memory);
+            return ggml_hsa_set_memory_pool_info(pool, device_info.kernarg_memory);
         }
         else {
-            status = ggml_hsa_set_memory_pool_info(pool, device_info.data_memory);
+            return ggml_hsa_set_memory_pool_info(pool, device_info.data_memory);
         }
     }
 
-    return status;
+    return HSA_STATUS_SUCCESS;
 }
 
 /**
@@ -118,8 +119,8 @@ static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, v
  */
 static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     hsa_device_type_t type = {};
-    auto status = hsa_agent_get_info(agent, HSA_AGENT_INFO_DEVICE, &type);
-    if (status != HSA_STATUS_SUCCESS) {
+    if (auto status = hsa_agent_get_info(agent, HSA_AGENT_INFO_DEVICE, &type);
+        status != HSA_STATUS_SUCCESS) {
         return status;
     }
     if (type != HSA_DEVICE_TYPE_AIE) {
@@ -134,8 +135,8 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     // retrieve device information (agent, memory pools)
     auto & device_info = info.devices[info.device_count];
     device_info.agent = agent;
-    status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &device_info);
-    if (status != HSA_STATUS_SUCCESS) {
+    if (auto status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &device_info);
+        status != HSA_STATUS_SUCCESS) {
         return status;
     }
 
@@ -371,10 +372,10 @@ static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_back
  * @param buft buffer type context
  */
 static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
-    auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
-    const auto & info = ggml_hsa_info();
-    const auto & device = info.devices[ctx->device];
-    return device.data_memory.alignment;
+    // TODO: verify if 256bytes is the best alignment for all agents (GPU, AIE)
+    return 256;
+
+    GGML_UNUSED(buft);
 }
 
 /**
@@ -396,11 +397,13 @@ static size_t ggml_backend_hsa_buffer_type_get_max_size(ggml_backend_buffer_type
  * @param tensor tensor to calculate size for
  */
 static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
-    const size_t size = ggml_nbytes(tensor);
+    std::size_t size = ggml_nbytes(tensor);
 
-    // TODO: quantized data types not supported
     if (ggml_is_quantized(tensor->type)) {
-        NOT_IMPLEMENTED();
+        const auto ne0 = tensor->ne[0];
+        if (ne0 % MATRIX_ROW_PADDING != 0) {
+            size += ggml_row_size(tensor->type, MATRIX_ROW_PADDING - ne0 % MATRIX_ROW_PADDING);
+        }
     }
 
     return size;
@@ -500,9 +503,32 @@ ggml_backend_buffer_type_t ggml_backend_hsa_host_buffer_type() {
 
 /// kernels
 
+#include <Eigen/Dense>
+
 static bool ggml_hsa_compute_forward(ggml_backend_hsa_context & ctx, struct ggml_tensor * dst) {
-    NOT_IMPLEMENTED();
-    return false;
+    switch (dst->op) {
+        case GGML_OP_MUL_MAT: {
+            if (dst->src[0]->ne[3] != dst->src[1]->ne[3]) {
+                GGML_LOG_ERROR("%s: cannot compute %s: src0->ne[3] = %" PRId64 ", src1->ne[3] = %" PRId64 " - fallback to CPU\n", __func__, dst->name, dst->src[0]->ne[3], dst->src[1]->ne[3]);
+                return false;
+            }
+
+            assert(dst->src[0]->type == GGML_TYPE_F32);
+            assert(dst->src[1]->type == GGML_TYPE_F32);
+            assert(dst->type == GGML_TYPE_F32);
+
+            using matrix_type = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic>;
+            auto m_in1 = matrix_type::Map(static_cast<float*>(dst->src[0]->data), dst->src[0]->ne[0], dst->src[0]->ne[1]);
+            auto m_in2 = matrix_type::Map(static_cast<float*>(dst->src[1]->data), dst->src[1]->ne[0], dst->src[1]->ne[1]);
+            auto m_out = matrix_type::Map(static_cast<float*>(dst->data), dst->ne[0], dst->ne[1]);
+            m_out = m_in1.transpose() * m_in2;
+            break;
+        }
+        default:
+            return false;
+    }
+
+    return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -521,39 +547,66 @@ static void ggml_backend_hsa_free(ggml_backend_t backend) {
 }
 
 static void ggml_backend_hsa_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
-    // TODO
     NOT_IMPLEMENTED();
 }
 
 static void ggml_backend_hsa_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
-    // TODO
     NOT_IMPLEMENTED();
 }
 
 static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
-    // TODO
     NOT_IMPLEMENTED();
     return false;
 }
 
 static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
     // TODO
-    NOT_IMPLEMENTED();
+    //NOT_IMPLEMENTED();
 }
 
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
-    // TODO
-    NOT_IMPLEMENTED();
+    auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
+
+    for (int i = 0; i < cgraph->n_nodes; i++) {
+        auto * node = cgraph->nodes[i];
+        if (ggml_is_empty(node)) {
+            continue;
+        }
+
+        switch (node->op) {
+            case GGML_OP_NONE:
+            case GGML_OP_PERMUTE:
+            case GGML_OP_RESHAPE:
+            case GGML_OP_TRANSPOSE:
+            case GGML_OP_VIEW:
+                continue;
+            default:
+                break;
+        }
+
+#ifndef NDEBUG
+        assert(node->buffer->buft == ggml_backend_hsa_buffer_type(ctx->device));
+        for (int j = 0; j < GGML_MAX_SRC; j++) {
+            if (node->src[j] != nullptr) {
+                assert(node->src[j]->buffer->buft == ggml_backend_hsa_buffer_type(ctx->device));
+            }
+        }
+#endif
+        const bool ok = ggml_hsa_compute_forward(*ctx, node);
+        if (!ok) {
+            GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
+        }
+        GGML_ASSERT(ok);
+    }
+
     return GGML_STATUS_SUCCESS;
 }
 
 static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
-    // TODO
     NOT_IMPLEMENTED();
 }
 
 static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_event_t event) {
-    // TODO
     NOT_IMPLEMENTED();
 }
 
@@ -588,23 +641,19 @@ int ggml_backend_hsa_get_device_count() {
 }
 
 void ggml_backend_hsa_get_device_description(int device, char * description, size_t description_size) {
-    // TODO
     NOT_IMPLEMENTED();
 }
 
 void ggml_backend_hsa_get_device_memory(int device, size_t * free, size_t * total) {
-    // TODO
     NOT_IMPLEMENTED();
 }
 
 bool ggml_backend_hsa_register_host_buffer(void * buffer, size_t size) {
-    // TODO
     NOT_IMPLEMENTED();
     return false;
 }
 
 void ggml_backend_hsa_unregister_host_buffer(void * buffer) {
-    // TODO
     NOT_IMPLEMENTED();
 }
 
@@ -632,7 +681,6 @@ static const char * ggml_backend_hsa_device_get_description(ggml_backend_dev_t d
 }
 
 static void ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
-    // TODO
     NOT_IMPLEMENTED();
 }
 
@@ -674,7 +722,6 @@ static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_host_buffer_type(g
 }
 
 static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
-    // TODO
     NOT_IMPLEMENTED();
     return false;
 }
@@ -706,18 +753,15 @@ static bool ggml_backend_hsa_device_offload_op(ggml_backend_dev_t dev, const ggm
 }
 
 static ggml_backend_event_t ggml_backend_hsa_device_event_new(ggml_backend_dev_t dev) {
-    // TODO
     NOT_IMPLEMENTED();
     return nullptr;
 }
 
 static void ggml_backend_hsa_device_event_free(ggml_backend_dev_t dev, ggml_backend_event_t event) {
-    // TODO
     NOT_IMPLEMENTED();
 }
 
 static void ggml_backend_hsa_device_event_synchronize(ggml_backend_dev_t dev, ggml_backend_event_t event) {
-    // TODO
     NOT_IMPLEMENTED();
 }
 
@@ -762,7 +806,6 @@ static ggml_backend_dev_t ggml_backend_hsa_reg_get_device(ggml_backend_reg_t reg
 }
 
 static ggml_backend_feature * ggml_backend_hsa_get_features(ggml_backend_reg_t reg) {
-    // TODO
     NOT_IMPLEMENTED();
     return nullptr;
 }
