@@ -56,6 +56,7 @@ struct ggml_hsa_device_info {
      */
     struct hsa_device_info {
         hsa_agent_t agent{};                  ///< HSA agent associated with the device.
+        hsa_device_type_t type{};             ///< Agent type.
         hsa_memory_pool_info data_memory;     ///< Pool for data.
         hsa_memory_pool_info kernarg_memory;  ///< Pool for kernel arguments.
     };
