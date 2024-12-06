@@ -39,18 +39,14 @@ void ggml_hsa_error(const char * stmt, const char * func, const char * file, int
 }
 
 /**
- * @brief Creates a device name from the device index.
- *
- * @param device device index
+ * @brief Creates a device name from the device index @p device.
  */
 static std::string ggml_hsa_format_name(std::int32_t device) {
     return GGML_HSA_NAME + std::to_string(device);
 }
 
 /**
- * @brief Retrieves the agent info for the given agent.
- *
- * @param agent HSA agent
+ * @brief Retrieves the agent info for the given agent @p agent.
  */
 static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
     constexpr std::size_t agent_name_size = 64;
@@ -237,6 +233,13 @@ static void ggml_backend_hsa_buffer_memset_tensor(
     GGML_UNUSED(buffer);
 }
 
+// The following data types are natively supported by AIEs:
+// - GGML_TYPE_F32 (emulated)
+// - GGML_TYPE_I8
+// - GGML_TYPE_I16
+// - GGML_TYPE_I32
+// - GGML_TYPE_BF16
+
 /**
  * @brief Set tensor data.
  *
@@ -338,8 +341,6 @@ struct ggml_backend_hsa_buffer_type_context {
 
 /**
  * @brief Returns the name associated with the buffer type @p buft.
- *
- * @param buft buffer type context
  */
 static const char * ggml_backend_hsa_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
@@ -348,13 +349,14 @@ static const char * ggml_backend_hsa_buffer_type_get_name(ggml_backend_buffer_ty
 
 /**
  * @brief Returns if the buffer type @p buft is a HSA buffer type.
- *
- * @param buft buffer type context
  */
 static bool ggml_backend_buft_is_hsa(ggml_backend_buffer_type_t buft) {
     return buft->iface.get_name == ggml_backend_hsa_buffer_type_get_name;
 }
 
+/**
+ * @brief Allocates a buffer in @p buft of size @p size.
+ */
 static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     auto * buft_ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & info = ggml_hsa_info();
@@ -373,8 +375,6 @@ static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_back
 
 /**
  * @brief Returns the memory alignment requirement for buffer type @p buft in bytes.
- *
- * @param buft buffer type context
  */
 static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
     // TODO: verify if 256bytes is the best alignment for all agents (GPU, AIE)
@@ -385,8 +385,6 @@ static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_typ
 
 /**
  * @brief Returns the maximum allocation size for buffer type @p buft in bytes.
- *
- * @param buft buffer type context
  */
 static size_t ggml_backend_hsa_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
@@ -396,10 +394,7 @@ static size_t ggml_backend_hsa_buffer_type_get_max_size(ggml_backend_buffer_type
 }
 
 /**
- * @brief Returns the size required for a tensor.
- *
- * @param buft buffer type context
- * @param tensor tensor to calculate size for
+ * @brief Returns the size required for tensor @p tensor in buffer @p buft.
  */
 static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
     std::size_t size = ggml_nbytes(tensor);
@@ -716,7 +711,8 @@ static enum ggml_backend_dev_type ggml_backend_hsa_device_get_type(ggml_backend_
         case HSA_DEVICE_TYPE_AIE:
             return GGML_BACKEND_DEVICE_TYPE_ACCEL;
         default:
-            GGML_ABORT("Unknown HSA device: %d", device.type);
+            GGML_ABORT("%s: error: unknown HSA device type %d", __func__, device.type);
+            return GGML_BACKEND_DEVICE_TYPE_CPU;
     }
 }
 
@@ -750,9 +746,23 @@ static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_host_buffer_type(g
     return ggml_backend_hsa_host_buffer_type();
 }
 
+/**
+ * @brief Returns if the operation in tensor @p op is supported by device @p dev.
+ */
 static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
-    NOT_IMPLEMENTED();
-    return false;
+    switch (op->op) {
+        case GGML_OP_NONE:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_TRANSPOSE:
+        case GGML_OP_VIEW:
+            return true;
+        case GGML_OP_MUL_MAT:
+            return true;
+        default:
+            GGML_LOG_ERROR("%s: error: unknown operator %d", __func__, op->op);
+            return false;
+    }
 }
 
 static bool ggml_backend_hsa_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
