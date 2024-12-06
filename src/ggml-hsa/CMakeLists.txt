@@ -30,6 +30,9 @@ ggml_add_backend_library(ggml-hsa
 target_link_libraries(ggml-hsa PRIVATE ggml-base hsa-runtime64::hsa-runtime64)
 target_include_directories(ggml-hsa PRIVATE . ..)
 
+find_package(Eigen3 3.3 REQUIRED)
+target_link_libraries(ggml-hsa PRIVATE Eigen3::Eigen)
+
 target_sources(ggml-hsa PRIVATE common.hpp)
 
 set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE CXX)
