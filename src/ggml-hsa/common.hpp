@@ -47,8 +47,9 @@ struct ggml_hsa_device_info {
      */
     struct hsa_memory_pool_info {
         hsa_amd_memory_pool_t memory_pool{}; ///< HSA memory pool object.
+        std::size_t size{};                  ///< Memory available to the pool in bytes.
         std::size_t alignment{};             ///< Memory pool alignment.
-        std::size_t max_size{};              ///< Memory pool maximum allocation.
+        std::size_t max_alloc_size{};        ///< Memory pool maximum allocation.
     };
 
     /**
