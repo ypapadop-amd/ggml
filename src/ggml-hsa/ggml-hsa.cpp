@@ -61,26 +61,36 @@ static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
 static hsa_status_t ggml_hsa_set_memory_pool_info(
     hsa_amd_memory_pool_t pool,
     ggml_hsa_device_info::hsa_memory_pool_info & info) {
+    bool alloc_allowed = true;
+    if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_ALLOWED, &alloc_allowed);
+        (status != HSA_STATUS_SUCCESS) || !alloc_allowed) {
+        // ignore pools that we can't allocate from
+        return status;
+    }
+
+    std::size_t size = 0;
+    if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_SIZE, &size);
+        status != HSA_STATUS_SUCCESS) {
+        return status;
+    }
+
     std::size_t alignment = 0;
     if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_ALIGNMENT, &alignment);
         status != HSA_STATUS_SUCCESS) {
         return status;
     }
 
-#if 0
-    // TODO BUG: HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE returns 0 for HSA_HEAPTYPE_DEVICE_SVM
-    std::size_t max_size = 0;
-    if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE, &max_size);
-        status != HSA_STATUS_SUCCESS) {
+    std::size_t max_alloc_size = 0;
+    if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE, &max_alloc_size);
+        status != HSA_STATUS_SUCCESS || (max_alloc_size == 0)) {
+        // XDNA dev heap has max_alloc_size == 0
         return status;
     }
-#else
-    std::size_t max_size = SIZE_MAX;
-#endif
 
     info.memory_pool = pool;
+    info.size = size;
     info.alignment = alignment;
-    info.max_size = max_size;
+    info.max_alloc_size = max_alloc_size;
 
     return HSA_STATUS_SUCCESS;
 }
@@ -89,6 +99,13 @@ static hsa_status_t ggml_hsa_set_memory_pool_info(
  * @brief Discovers HSA memory pools.
  */
 static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, void * data) {
+    // query only global segments
+    hsa_amd_segment_t segment_type = {};
+    if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_SEGMENT, &segment_type);
+        (status != HSA_STATUS_SUCCESS) || (segment_type != HSA_AMD_SEGMENT_GLOBAL)) {
+        return status;
+    }
+
     hsa_amd_memory_pool_global_flag_t pool_flags = {};
     if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_GLOBAL_FLAGS, &pool_flags);
         status != HSA_STATUS_SUCCESS) {
@@ -96,15 +113,14 @@ static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, v
     }
 
     auto & device_info = *static_cast<ggml_hsa_device_info::hsa_device_info *>(data);
+    const bool kernarg_pool = (pool_flags & HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_KERNARG_INIT) != 0x0;
+    if (kernarg_pool) {
+        return ggml_hsa_set_memory_pool_info(pool, device_info.kernarg_memory);
+    }
+
     const bool coarse_grained_pool = (pool_flags & HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED) != 0x0;
     if (coarse_grained_pool) {
-        const bool kernarg_pool = (pool_flags & HSA_REGION_GLOBAL_FLAG_KERNARG) != 0x0;
-        if (kernarg_pool) {
-            return ggml_hsa_set_memory_pool_info(pool, device_info.kernarg_memory);
-        }
-        else {
-            return ggml_hsa_set_memory_pool_info(pool, device_info.data_memory);
-        }
+        return ggml_hsa_set_memory_pool_info(pool, device_info.data_memory);
     }
 
     return HSA_STATUS_SUCCESS;
@@ -390,7 +406,7 @@ static size_t ggml_backend_hsa_buffer_type_get_max_size(ggml_backend_buffer_type
     auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & info = ggml_hsa_info();
     const auto & device = info.devices[ctx->device];
-    return device.data_memory.max_size;
+    return device.data_memory.max_alloc_size;
 }
 
 /**
@@ -686,11 +702,7 @@ static void ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * 
     auto * ctx = static_cast<ggml_backend_hsa_device_context *>(dev->context);
     const auto & info = ggml_hsa_info();
     const auto & device = info.devices[ctx->device];
-    if (auto status = hsa_amd_memory_pool_get_info(device.data_memory.memory_pool, HSA_AMD_MEMORY_POOL_INFO_SIZE, total);
-        status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: error: failed to get free memory (%s)\n", __func__, ggml_hsa_get_status_string(status));
-    }
-
+    *total = device.data_memory.size;
     // HSA does not report free memory, set it to total
     *free = *total;
 }
