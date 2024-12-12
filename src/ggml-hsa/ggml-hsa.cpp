@@ -4,12 +4,18 @@
 
 #include "ggml-hsa/common.hpp"
 
-#include <cinttypes>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
+
+// The following data types are natively supported by AIEs:
+// - GGML_TYPE_F32 (emulated)
+// - GGML_TYPE_I8
+// - GGML_TYPE_I16
+// - GGML_TYPE_I32
+// - GGML_TYPE_BF16
 
 #define NOT_IMPLEMENTED() \
     do { \
@@ -141,7 +147,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
 
     auto & info = *static_cast<ggml_hsa_device_info *>(data);
     if (info.device_count == GGML_HSA_MAX_DEVICES - 1) {
-        GGML_ABORT("Exceeded GGML_HSA_MAX_DEVICES limit");
+        GGML_ABORT("%s: Exceeded GGML_HSA_MAX_DEVICES limit (%d)", __func__, GGML_HSA_MAX_DEVICES);
     }
 
     // retrieve device information (agent, memory pools, etc.)
@@ -183,8 +189,8 @@ const ggml_hsa_device_info & ggml_hsa_info() {
     return info;
 }
 
-ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, hsa_agent_t agent) :
-        device(device), agent(agent), name(ggml_hsa_format_name(device)) {
+ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device) :
+        device(device), name(ggml_hsa_format_name(device)) {
 }
 
 // HSA buffer
@@ -238,23 +244,17 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
  * @param size size of data to set, in bytes
  */
 static void ggml_backend_hsa_buffer_memset_tensor(
-    ggml_backend_buffer_t buffer,
+    ggml_backend_buffer_t /* buffer */,
     ggml_tensor * tensor,
     uint8_t value,
     size_t offset,
     size_t size) {
-    // TODO do we need transformations here?
-    std::memset(static_cast<char *>(tensor->data) + offset, value, size);
-
-    GGML_UNUSED(buffer);
+#ifndef NDEBUG
+    // TODO: needs memset kernel
+    GGML_LOG_WARN("%s: uses memset\n", __func__);
+#endif
+    std::memset(static_cast<std::byte *>(tensor->data) + offset, value, size);
 }
-
-// The following data types are natively supported by AIEs:
-// - GGML_TYPE_F32 (emulated)
-// - GGML_TYPE_I8
-// - GGML_TYPE_I16
-// - GGML_TYPE_I32
-// - GGML_TYPE_BF16
 
 /**
  * @brief Set tensor data.
@@ -266,15 +266,16 @@ static void ggml_backend_hsa_buffer_memset_tensor(
  * @param size size of source data, in bytes
  */
 static void ggml_backend_hsa_buffer_set_tensor(
-    ggml_backend_buffer_t buffer,
+    ggml_backend_buffer_t /* buffer */,
     ggml_tensor * tensor,
     const void * data,
     size_t offset,
     size_t size) {
-    // TODO do we need transformations here?
-    std::memcpy(static_cast<char *>(tensor->data) + offset, data, size);
-
-    GGML_UNUSED(buffer);
+#ifndef NDEBUG
+    // TODO: needs memcpy kernel
+    GGML_LOG_WARN("%s: uses memcpy\n", __func__);
+#endif
+    std::memcpy(static_cast<std::byte *>(tensor->data) + offset, data, size);
 }
 
 /**
@@ -282,20 +283,21 @@ static void ggml_backend_hsa_buffer_set_tensor(
  *
  * @param buffer tensor storage
  * @param tensor source tensor
- * @param data pointer to destination
+ * @param data pointer to destination buffer
  * @param offset offset in source tensor data
  * @param size size of source data, in bytes
  */
 static void ggml_backend_hsa_buffer_get_tensor(
-    ggml_backend_buffer_t buffer,
+    ggml_backend_buffer_t /* buffer */,
     const ggml_tensor * tensor,
     void * data,
     size_t offset,
     size_t size) {
-    // TODO do we need transformations here?
+#ifndef NDEBUG
+    // TODO: needs memcpy kernel
+    GGML_LOG_WARN("%s: uses memcpy\n", __func__);
+#endif
     std::memcpy(data, static_cast<const char *>(tensor->data) + offset, size);
-
-    GGML_UNUSED(buffer);
 }
 
 /**
@@ -309,16 +311,18 @@ static void ggml_backend_hsa_buffer_get_tensor(
  * @return true if the copy operation succeeded, false otherwise.
  */
 static bool ggml_backend_hsa_buffer_cpy_tensor(
-    ggml_backend_buffer_t buffer,
+    ggml_backend_buffer_t /* buffer */,
     const ggml_tensor * src,
     ggml_tensor * dst) {
-    if (ggml_backend_buffer_is_host(src->buffer)) {
-        std::memcpy(dst->data, src->data, ggml_nbytes(src));
+    if (ggml_backend_buffer_is_hsa(src->buffer)) {
+#ifndef NDEBUG
+        // TODO: needs memcpy kernel
+        GGML_LOG_WARN("%s: uses memcpy\n", __func__);
+#endif
+        std::memcpy(dst->data, src->data, ggml_nbytes(dst));
         return true;
     }
     return false;
-
-    GGML_UNUSED(buffer);
 }
 
 /**
@@ -326,9 +330,16 @@ static bool ggml_backend_hsa_buffer_cpy_tensor(
  */
 static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
+#ifndef NDEBUG
+    // TODO: needs memset kernel
+    GGML_LOG_WARN("%s: uses memset\n", __func__);
+#endif
     std::memset(ctx->dev_ptr, value, buffer->size);
 }
 
+/**
+ * @brief Interface for HSA buffers.
+ */
 static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
     /* .free_buffer     = */ ggml_backend_hsa_buffer_free_buffer,
     /* .get_base        = */ ggml_backend_hsa_buffer_get_base,
@@ -379,8 +390,8 @@ static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_back
     const auto & device = info.devices[buft_ctx->device];
 
     void * buffer = nullptr;
-    auto status = hsa_amd_memory_pool_allocate(device.data_memory.memory_pool, size, /* flags = */ 0, &buffer);
-    if (status != HSA_STATUS_SUCCESS) {
+    if (auto status = hsa_amd_memory_pool_allocate(device.data_memory.memory_pool, size, /* flags = */ 0, &buffer);
+        status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: allocating %.2f MiB on device %d: hsa_amd_memory_pool_allocate failed: %s\n", __func__, size / 1024.0 / 1024.0, buft_ctx->device, ggml_hsa_get_status_string(status));
         return nullptr;
     }
@@ -392,11 +403,9 @@ static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_back
 /**
  * @brief Returns the memory alignment requirement for buffer type @p buft in bytes.
  */
-static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
+static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_type_t /* buft */) {
     // TODO: verify if 256bytes is the best alignment for all agents (GPU, AIE)
     return 256;
-
-    GGML_UNUSED(buft);
 }
 
 /**
@@ -412,7 +421,7 @@ static size_t ggml_backend_hsa_buffer_type_get_max_size(ggml_backend_buffer_type
 /**
  * @brief Returns the size required for tensor @p tensor in buffer @p buft.
  */
-static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
+static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_type_t /* buft */, const ggml_tensor * tensor) {
     std::size_t size = ggml_nbytes(tensor);
 
     if (ggml_is_quantized(tensor->type)) {
@@ -423,10 +432,11 @@ static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_ty
     }
 
     return size;
-
-    GGML_UNUSED(buft);
 }
 
+/**
+ * @brief Interface for managing HSA buffer types.
+ */
 static const ggml_backend_buffer_type_i ggml_backend_hsa_buffer_type_interface = {
     /* .get_name         = */ ggml_backend_hsa_buffer_type_get_name,
     /* .alloc_buffer     = */ ggml_backend_hsa_buffer_type_alloc_buffer,
@@ -436,6 +446,9 @@ static const ggml_backend_buffer_type_i ggml_backend_hsa_buffer_type_interface =
     /* .is_host          = */ nullptr,
 };
 
+/**
+ * @brief HSA buffer types metadata.
+ */
 static struct {
     std::mutex mutex;
     ggml_backend_buffer_type type[GGML_HSA_MAX_DEVICES];
@@ -465,13 +478,23 @@ ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) {
     return &ggml_backend_hsa_buffer_type_metadata.type[device];
 }
 
+// HSA split buffer
+
+// TODO
+
+// HSA split buffer type
+
+/**
+ * @brief Returns if @p buft is a split buffer.
+ */
+static bool ggml_backend_buft_is_hsa_split(ggml_backend_buffer_type_t /* buft */) {
+    return false;
+}
 
 // host buffer type
 
-static const char * ggml_backend_hsa_host_buffer_type_name(ggml_backend_buffer_type_t buft) {
+static const char * ggml_backend_hsa_host_buffer_type_name(ggml_backend_buffer_type_t /* buft */) {
     return GGML_HSA_NAME "_Host";
-
-    GGML_UNUSED(buft);
 }
 
 static void ggml_backend_hsa_host_buffer_free_buffer(ggml_backend_buffer_t buffer) {
@@ -521,63 +544,131 @@ ggml_backend_buffer_type_t ggml_backend_hsa_host_buffer_type() {
 
 #include <Eigen/Dense>
 
-static bool ggml_hsa_compute_forward(ggml_backend_hsa_context & ctx, struct ggml_tensor * dst) {
-    switch (dst->op) {
-        case GGML_OP_MUL_MAT: {
-            if (dst->src[0]->ne[3] != dst->src[1]->ne[3]) {
-                GGML_LOG_ERROR("%s: cannot compute %s: src0->ne[3] = %" PRId64 ", src1->ne[3] = %" PRId64 " - fallback to CPU\n", __func__, dst->name, dst->src[0]->ne[3], dst->src[1]->ne[3]);
-                return false;
-            }
+template<typename T>
+void ggml_hsa_mul_mat_impl(ggml_backend_hsa_context &, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    using matrix_type = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>;
+    auto m_in1 = matrix_type::Map(static_cast<T*>(src0->data), src0->ne[0], src0->ne[1]);
+    auto m_in2 = matrix_type::Map(static_cast<T*>(src1->data), src1->ne[0], src1->ne[1]);
+    auto m_out = matrix_type::Map(static_cast<T*>(dst->data), dst->ne[0], dst->ne[1]);
+    m_out = m_in1.transpose() * m_in2;
+}
 
-            assert(dst->src[0]->type == GGML_TYPE_F32);
-            assert(dst->src[1]->type == GGML_TYPE_F32);
-            assert(dst->type == GGML_TYPE_F32);
+static void ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    assert(src0->type == src1->type);
+    assert(dst->type == dst->type);
 
-            using matrix_type = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic>;
-            auto m_in1 = matrix_type::Map(static_cast<float*>(dst->src[0]->data), dst->src[0]->ne[0], dst->src[0]->ne[1]);
-            auto m_in2 = matrix_type::Map(static_cast<float*>(dst->src[1]->data), dst->src[1]->ne[0], dst->src[1]->ne[1]);
-            auto m_out = matrix_type::Map(static_cast<float*>(dst->data), dst->ne[0], dst->ne[1]);
-            m_out = m_in1.transpose() * m_in2;
-            break;
-        }
-        default:
-            return false;
+    if (ggml_is_transposed(dst->src[0]) ||
+        ggml_is_transposed(dst->src[1])) {
+        GGML_ABORT("%s: %s: matmul on tranposed tensor not supported", __func__, ggml_op_name(dst->op));
     }
 
-    return true;
+    switch (src0->type) {
+        case GGML_TYPE_F16:
+            ggml_hsa_mul_mat_impl<Eigen::half>(ctx, src0, src1, dst);
+            break;
+        case GGML_TYPE_F32:
+            ggml_hsa_mul_mat_impl<float>(ctx, src0, src1, dst);
+            break;
+        case GGML_TYPE_F64: {
+            ggml_hsa_mul_mat_impl<double>(ctx, src0, src1, dst);
+            break;
+        default:
+            GGML_ABORT("%s: Unsupported type %s", __func__, ggml_type_name(src0->type));
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 // backend
 
+/**
+ * @brief Returns the name of backend @p backend.
+ */
 static const char * ggml_backend_hsa_get_name(ggml_backend_t backend) {
     auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
     return ctx->name.c_str();
 }
 
+/**
+ * @brief Frees the resources associated with @p backend.
+ */
 static void ggml_backend_hsa_free(ggml_backend_t backend) {
     auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
     delete ctx;
     delete backend;
 }
 
+/**
+ * @brief Set tensor data asynchronously.
+ *
+ * @param backend backend
+ * @param tensor destination tensor
+ * @param data source data
+ * @param offset offset in source data
+ * @param size size of source data, in bytes
+ */
 static void ggml_backend_hsa_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
-    NOT_IMPLEMENTED();
+    auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
+    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+
+    GGML_ASSERT(buf->buft == ggml_backend_hsa_buffer_type(ctx->device) && "unsupported buffer type");
+
+#ifndef NDEBUG
+    // TODO: needs async memcpy kernel
+    GGML_LOG_WARN("%s: uses memcpy\n", __func__);
+#endif
+    std::memcpy(static_cast<std::byte *>(tensor->data) + offset, data, size);
 }
 
+/**
+ * @brief Get tensor data asynchronously.
+ *
+ * @param backend backend
+ * @param tensor source tensor
+ * @param data pointer to destination buffer
+ * @param offset offset in source tensor data
+ * @param size size of source data, in bytes
+ */
 static void ggml_backend_hsa_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
-    NOT_IMPLEMENTED();
+    auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
+    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+
+    GGML_ASSERT(buf->buft == ggml_backend_hsa_buffer_type(ctx->device) && "unsupported buffer type");
+
+#ifndef NDEBUG
+    // TODO: needs async memcpy kernel
+    GGML_LOG_WARN("%s: uses memcpy\n", __func__);
+#endif
+    std::memcpy(data, static_cast<std::byte *>(tensor->data) + offset, size);
 }
 
-static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
-    NOT_IMPLEMENTED();
-    return false;
+/**
+ * @brief Copy tensor data between buffers if possible.
+ *
+ * The size of the data to be copied is inferred by the source tensor @p src.
+ *
+ * @param backend_src source backend
+ * @param backend_dst destination backend
+ * @param src source tensor
+ * @param dst destination tensor
+ * @return true if the copy operation succeeded, false otherwise.
+ */
+static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t /* backend_src */, ggml_backend_t /* backend_dst */, const ggml_tensor * src, ggml_tensor * dst) {
+#ifndef NDEBUG
+    // TODO: needs async memcpy kernel
+    GGML_LOG_WARN("%s: uses memcpy\n", __func__);
+#endif
+    std::memcpy(dst->data, src->data, ggml_nbytes(dst));
+
+    return true;
 }
 
 static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
-    // TODO
-    //NOT_IMPLEMENTED();
+#ifndef NDEBUG
+    // TODO: needs sync implementation
+    GGML_LOG_WARN("%s: does not synchronize\n", __func__);
+#endif
 }
 
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
@@ -596,23 +687,15 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, g
             case GGML_OP_TRANSPOSE:
             case GGML_OP_VIEW:
                 continue;
-            default:
+            case GGML_OP_MUL_MAT:
+                ggml_hsa_mul_mat(*ctx, node->src[0], node->src[1], node);
                 break;
-        }
-
-#ifndef NDEBUG
-        assert(node->buffer->buft == ggml_backend_hsa_buffer_type(ctx->device));
-        for (int j = 0; j < GGML_MAX_SRC; j++) {
-            if (node->src[j] != nullptr) {
-                assert(node->src[j]->buffer->buft == ggml_backend_hsa_buffer_type(ctx->device));
+            default: {
+                GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
+                GGML_ASSERT(false);
+                return GGML_STATUS_FAILED;
             }
         }
-#endif
-        const bool ok = ggml_hsa_compute_forward(*ctx, node);
-        if (!ok) {
-            GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
-        }
-        GGML_ASSERT(ok);
     }
 
     return GGML_STATUS_SUCCESS;
@@ -642,20 +725,35 @@ static const ggml_backend_i ggml_backend_hsa_interface = {
     /* .event_wait              = */ ggml_backend_hsa_event_wait,
 };
 
+/**
+ * @brief Returns the UUID of the HSA backend.
+ */
 static ggml_guid_t ggml_backend_hsa_guid() {
-    // TODO: add UUID
+#ifndef NDEBUG
+    // TODO: needs proper UUID
+    GGML_LOG_WARN("%s: UUID is not correct\n", __func__);
+#endif
     static ggml_guid guid = { 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xc0, 0x0, 0x0 };
     return &guid;
 }
 
+/**
+ * @brief Returns if @p backend is an HSA backend.
+ */
 bool ggml_backend_is_hsa(ggml_backend_t backend) {
-    return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_hsa_guid());
+    return backend != nullptr && ggml_guid_matches(backend->guid, ggml_backend_hsa_guid());
 }
 
+/**
+ * @brief Returns if the number of devices (i.e., HSA agents) associated with the HSA backend.
+ */
 int ggml_backend_hsa_get_device_count() {
     return ggml_hsa_info().device_count;
 }
 
+/**
+ * @brief Returns the device description of device @p device.
+ */
 void ggml_backend_hsa_get_device_description(int device, char * description, size_t description_size) {
     NOT_IMPLEMENTED();
 }
@@ -772,13 +870,13 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         case GGML_OP_MUL_MAT:
             return true;
         default:
-            GGML_LOG_ERROR("%s: error: unknown operator %d", __func__, op->op);
+            GGML_LOG_ERROR("%s: error: unknown operator %s", __func__, ggml_op_name(op->op));
             return false;
     }
 }
 
 static bool ggml_backend_hsa_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
-    return (ggml_backend_buft_is_hsa(buft) /* || ggml_backend_buft_is_cuda_split(buft) */) && buft->device == dev;
+    return (ggml_backend_buft_is_hsa(buft) || ggml_backend_buft_is_hsa_split(buft)) && buft->device == dev;
 }
 
 static int64_t get_op_batch_size(const ggml_tensor * op) {
@@ -795,12 +893,10 @@ static int64_t get_op_batch_size(const ggml_tensor * op) {
     }
 }
 
-static bool ggml_backend_hsa_device_offload_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+static bool ggml_backend_hsa_device_offload_op(ggml_backend_dev_t /* dev */, const ggml_tensor * op) {
     const int min_batch_size = 32;
 
     return get_op_batch_size(op) >= min_batch_size;
-
-    GGML_UNUSED(dev);
 }
 
 static ggml_backend_event_t ggml_backend_hsa_device_event_new(ggml_backend_dev_t dev) {
@@ -840,8 +936,7 @@ struct ggml_backend_hsa_reg_context {
     std::vector<ggml_backend_dev_t> devices;
 };
 
-static const char * ggml_backend_hsa_reg_get_name(ggml_backend_reg_t reg) {
-    GGML_UNUSED(reg);
+static const char * ggml_backend_hsa_reg_get_name(ggml_backend_reg_t /* reg */) {
     return GGML_HSA_NAME;
 }
 
@@ -856,13 +951,14 @@ static ggml_backend_dev_t ggml_backend_hsa_reg_get_device(ggml_backend_reg_t reg
     return ctx->devices[index];
 }
 
-static ggml_backend_feature * ggml_backend_hsa_get_features(ggml_backend_reg_t reg) {
-    NOT_IMPLEMENTED();
-    return nullptr;
+static ggml_backend_feature * ggml_backend_hsa_get_features(ggml_backend_reg_t /* reg */) {
+    static std::vector<ggml_backend_feature> features = [] {
+        return std::vector<ggml_backend_feature>{};
+    }();
+    return features.data();
 }
 
-static void * ggml_backend_hsa_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
-    GGML_UNUSED(reg);
+static void * ggml_backend_hsa_reg_get_proc_address(ggml_backend_reg_t /* reg */, const char * name) {
     if (strcmp(name, "ggml_backend_register_host_buffer") == 0) {
         return reinterpret_cast<void *>(ggml_backend_hsa_register_host_buffer);
     }
@@ -922,15 +1018,17 @@ ggml_backend_reg_t ggml_backend_hsa_reg() {
 }
 
 ggml_backend_t ggml_backend_hsa_init(int device) {
-    if (device < 0 || device >= ggml_backend_hsa_get_device_count()) {
+    const auto & info = ggml_hsa_info();
+
+    if (device < 0 || device >= info.device_count) {
         GGML_LOG_ERROR("%s: invalid device %d\n", __func__, device);
         return nullptr;
     }
 
-    const auto & info = ggml_hsa_info();
-
-    auto * ctx = new ggml_backend_hsa_context(device, info.devices[device].agent);
-    if (ctx == nullptr) {
+    ggml_backend_hsa_context * ctx = nullptr;
+    try {
+        ctx = new ggml_backend_hsa_context{device};
+    } catch (const std::bad_alloc&) {
         GGML_LOG_ERROR("%s: failed to allocate context\n", __func__);
         return nullptr;
     }

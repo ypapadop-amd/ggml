@@ -81,8 +81,7 @@ const ggml_hsa_device_info & ggml_hsa_info();
  */
 struct ggml_backend_hsa_context {
     std::int32_t device; ///< Device ID.
-    hsa_agent_t agent;   ///< HSA agent associated with the device.
     std::string name;    ///< Device name.
 
-    ggml_backend_hsa_context(std::int32_t device, hsa_agent_t agent);
+    explicit ggml_backend_hsa_context(std::int32_t device);
 };
