@@ -147,7 +147,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
 
     auto & info = *static_cast<ggml_hsa_device_info *>(data);
     if (info.device_count == GGML_HSA_MAX_DEVICES - 1) {
-        GGML_ABORT("%s: Exceeded GGML_HSA_MAX_DEVICES limit (%d)", GGML_HSA_MAX_DEVICES);
+        GGML_ABORT("%s: Exceeded GGML_HSA_MAX_DEVICES limit (%d)", __func__, GGML_HSA_MAX_DEVICES);
     }
 
     // retrieve device information (agent, memory pools, etc.)
@@ -189,8 +189,8 @@ const ggml_hsa_device_info & ggml_hsa_info() {
     return info;
 }
 
-ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, hsa_agent_t agent) :
-        device(device), agent(agent), name(ggml_hsa_format_name(device)) {
+ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device) :
+        device(device), name(ggml_hsa_format_name(device)) {
 }
 
 // HSA buffer
@@ -1018,15 +1018,17 @@ ggml_backend_reg_t ggml_backend_hsa_reg() {
 }
 
 ggml_backend_t ggml_backend_hsa_init(int device) {
-    if (device < 0 || device >= ggml_backend_hsa_get_device_count()) {
+    const auto & info = ggml_hsa_info();
+
+    if (device < 0 || device >= info.device_count) {
         GGML_LOG_ERROR("%s: invalid device %d\n", __func__, device);
         return nullptr;
     }
 
-    const auto & info = ggml_hsa_info();
-
-    auto * ctx = new ggml_backend_hsa_context(device, info.devices[device].agent);
-    if (ctx == nullptr) {
+    ggml_backend_hsa_context * ctx = nullptr;
+    try {
+        ctx = new ggml_backend_hsa_context{device};
+    } catch (const std::bad_alloc&) {
         GGML_LOG_ERROR("%s: failed to allocate context\n", __func__);
         return nullptr;
     }
