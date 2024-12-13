@@ -86,6 +86,7 @@ const ggml_hsa_device_info & ggml_hsa_info();
 struct ggml_backend_hsa_context {
     std::int32_t device; ///< Device ID.
     std::string name;    ///< Device name.
+    ggml_backend_t backend_cpu;
 
     explicit ggml_backend_hsa_context(std::int32_t device);
 };

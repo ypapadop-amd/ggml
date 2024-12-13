@@ -198,6 +198,7 @@ const ggml_hsa_device_info & ggml_hsa_info() {
 
 ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device) :
         device(device), name(ggml_hsa_format_name(device)) {
+    backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
 }
 
 // HSA buffer
@@ -680,6 +681,9 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
 
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
+
+    ggml_backend_graph_compute(ctx->backend_cpu, cgraph);
+    return GGML_STATUS_SUCCESS;
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
         auto * node = cgraph->nodes[i];
