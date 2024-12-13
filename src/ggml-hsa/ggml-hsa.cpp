@@ -716,6 +716,9 @@ static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_eve
     NOT_IMPLEMENTED();
 }
 
+/**
+ * @brief Interface for managing HSA backends.
+ */
 static const ggml_backend_i ggml_backend_hsa_interface = {
     /* .get_name                = */ ggml_backend_hsa_get_name,
     /* .free                    = */ ggml_backend_hsa_free,
@@ -927,6 +930,9 @@ static void ggml_backend_hsa_device_event_synchronize(ggml_backend_dev_t dev, gg
     NOT_IMPLEMENTED();
 }
 
+/**
+ * @brief Interface for managing HSA devices.
+ */
 static const ggml_backend_device_i ggml_backend_hsa_device_interface = {
     /* .get_name                = */ ggml_backend_hsa_device_get_name,
     /* .get_description         = */ ggml_backend_hsa_device_get_description,
@@ -986,6 +992,9 @@ static void * ggml_backend_hsa_reg_get_proc_address(ggml_backend_reg_t /* reg */
     return nullptr;
 }
 
+/**
+ * @brief Interface for managing HSA registration.
+ */
 static const ggml_backend_reg_i ggml_backend_hsa_reg_interface = {
     /* .get_name          = */ ggml_backend_hsa_reg_get_name,
     /* .get_device_count  = */ ggml_backend_hsa_reg_get_device_count,

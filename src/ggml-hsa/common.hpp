@@ -39,6 +39,9 @@ void ggml_hsa_error(const char * stmt, const char * func, const char * file, int
           err_);                    \
   } while (0)
 
+/**
+ * @brief Device information.
+ */
 struct ggml_hsa_device_info {
     std::int32_t device_count{}; ///< Number of devices, up to @ref GGML_HSA_MAX_DEVICES.
 
