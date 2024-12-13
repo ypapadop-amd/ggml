@@ -25,6 +25,11 @@
         abort(); \
     } while (false)
 
+#define NEEDS_IMPROVEMENT(...) \
+    do { \
+        GGML_LOG_WARN(__VA_ARGS__); \
+    } while (false)
+
 /**
  * @brief Returns the status description of @p status.
  */
@@ -257,10 +262,7 @@ static void ggml_backend_hsa_buffer_memset_tensor(
     uint8_t value,
     size_t offset,
     size_t size) {
-#ifndef NDEBUG
-    // TODO: needs memset kernel
-    GGML_LOG_WARN("%s: uses memset\n", __func__);
-#endif
+    NEEDS_IMPROVEMENT("%s: needs memset kernel\n", __func__);
     std::memset(static_cast<std::byte *>(tensor->data) + offset, value, size);
 }
 
@@ -279,10 +281,7 @@ static void ggml_backend_hsa_buffer_set_tensor(
     const void * data,
     size_t offset,
     size_t size) {
-#ifndef NDEBUG
-    // TODO: needs memcpy kernel
-    GGML_LOG_WARN("%s: uses memcpy\n", __func__);
-#endif
+    NEEDS_IMPROVEMENT("%s: needs memcpy kernel\n", __func__);
     std::memcpy(static_cast<std::byte *>(tensor->data) + offset, data, size);
 }
 
@@ -301,10 +300,7 @@ static void ggml_backend_hsa_buffer_get_tensor(
     void * data,
     size_t offset,
     size_t size) {
-#ifndef NDEBUG
-    // TODO: needs memcpy kernel
-    GGML_LOG_WARN("%s: uses memcpy\n", __func__);
-#endif
+    NEEDS_IMPROVEMENT("%s: needs memcpy kernel\n", __func__);
     std::memcpy(data, static_cast<const char *>(tensor->data) + offset, size);
 }
 
@@ -323,10 +319,7 @@ static bool ggml_backend_hsa_buffer_cpy_tensor(
     const ggml_tensor * src,
     ggml_tensor * dst) {
     if (ggml_backend_buffer_is_hsa(src->buffer)) {
-#ifndef NDEBUG
-        // TODO: needs memcpy kernel
-        GGML_LOG_WARN("%s: uses memcpy\n", __func__);
-#endif
+        NEEDS_IMPROVEMENT("%s: needs memcpy kernel\n", __func__);
         std::memcpy(dst->data, src->data, ggml_nbytes(dst));
         return true;
     }
@@ -338,10 +331,7 @@ static bool ggml_backend_hsa_buffer_cpy_tensor(
  */
 static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
-#ifndef NDEBUG
-    // TODO: needs memset kernel
-    GGML_LOG_WARN("%s: uses memset\n", __func__);
-#endif
+    NEEDS_IMPROVEMENT("%s: needs memset kernel\n", __func__);
     std::memset(ctx->dev_ptr, value, buffer->size);
 }
 
@@ -622,10 +612,7 @@ static void ggml_backend_hsa_set_tensor_async(ggml_backend_t backend, ggml_tenso
 
     GGML_ASSERT(buf->buft == ggml_backend_hsa_buffer_type(ctx->device) && "unsupported buffer type");
 
-#ifndef NDEBUG
-    // TODO: needs async memcpy kernel
-    GGML_LOG_WARN("%s: uses memcpy\n", __func__);
-#endif
+    NEEDS_IMPROVEMENT("%s: needs memcpy kernel\n", __func__);
     std::memcpy(static_cast<std::byte *>(tensor->data) + offset, data, size);
 }
 
@@ -644,10 +631,7 @@ static void ggml_backend_hsa_get_tensor_async(ggml_backend_t backend, const ggml
 
     GGML_ASSERT(buf->buft == ggml_backend_hsa_buffer_type(ctx->device) && "unsupported buffer type");
 
-#ifndef NDEBUG
-    // TODO: needs async memcpy kernel
-    GGML_LOG_WARN("%s: uses memcpy\n", __func__);
-#endif
+    NEEDS_IMPROVEMENT("%s: needs memcpy kernel\n", __func__);
     std::memcpy(data, static_cast<std::byte *>(tensor->data) + offset, size);
 }
 
@@ -663,20 +647,13 @@ static void ggml_backend_hsa_get_tensor_async(ggml_backend_t backend, const ggml
  * @return true if the copy operation succeeded, false otherwise.
  */
 static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t /* backend_src */, ggml_backend_t /* backend_dst */, const ggml_tensor * src, ggml_tensor * dst) {
-#ifndef NDEBUG
-    // TODO: needs async memcpy kernel
-    GGML_LOG_WARN("%s: uses memcpy\n", __func__);
-#endif
+    NEEDS_IMPROVEMENT("%s: needs memcpy kernel\n", __func__);
     std::memcpy(dst->data, src->data, ggml_nbytes(dst));
-
     return true;
 }
 
 static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
-#ifndef NDEBUG
-    // TODO: needs sync implementation
-    GGML_LOG_WARN("%s: does not synchronize\n", __func__);
-#endif
+    NEEDS_IMPROVEMENT("%s: needs synchronize kernel\n", __func__);
 }
 
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
@@ -740,14 +717,12 @@ static const ggml_backend_i ggml_backend_hsa_interface = {
 };
 
 /**
- * @brief Returns the UUID of the HSA backend.
+ * @brief Returns the unique identifier of the HSA backend.
+ *
+ * @note The identifier is a UUID v4 that was randomly generated.
  */
 static ggml_guid_t ggml_backend_hsa_guid() {
-#ifndef NDEBUG
-    // TODO: needs proper UUID
-    GGML_LOG_WARN("%s: UUID is not correct\n", __func__);
-#endif
-    static ggml_guid guid = { 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xc0, 0x0, 0x0 };
+    static ggml_guid guid = {0xa2, 0xe9, 0xa0, 0x84, 0x2c, 0xf6, 0x4d, 0xa1, 0xb3, 0xb2, 0xb1, 0xdc, 0x5d, 0x59, 0x21, 0x95};
     return &guid;
 }
 
