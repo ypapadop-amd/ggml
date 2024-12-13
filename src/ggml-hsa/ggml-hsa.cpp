@@ -57,7 +57,7 @@ static std::string ggml_hsa_format_name(std::int32_t device) {
 static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
     constexpr std::size_t agent_name_size = 64;
     char agent_name[agent_name_size];
-    HSA_CHECK(hsa_agent_get_info(agent, HSA_AGENT_INFO_DEVICE, &agent_name));
+    HSA_CHECK(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, &agent_name));
     return GGML_HSA_NAME + std::string{agent_name};
 }
 
@@ -142,6 +142,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
         return status;
     }
     if (type != HSA_DEVICE_TYPE_AIE) {
+        // only consider NPUs for now
         return HSA_STATUS_SUCCESS;
     }
 
@@ -150,12 +151,14 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
         GGML_ABORT("%s: Exceeded GGML_HSA_MAX_DEVICES limit (%d)", __func__, GGML_HSA_MAX_DEVICES);
     }
 
-    // retrieve device information (agent, memory pools, etc.)
+    // create device information (agent, type, name, memory pools, etc.)
     auto & device_info = info.devices[info.device_count];
     device_info.agent = agent;
-    if (auto status = hsa_agent_get_info(agent, HSA_AGENT_INFO_DEVICE, &device_info.type);
-        status != HSA_STATUS_SUCCESS) {
-        return status;
+    device_info.type = type;
+
+    if (auto status = hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, device_info.name.data());
+       status != HSA_STATUS_SUCCESS) {
+       return status;
     }
 
     if (auto status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &device_info);
@@ -758,8 +761,15 @@ void ggml_backend_hsa_get_device_description(int device, char * description, siz
     NOT_IMPLEMENTED();
 }
 
+/**
+ * @brief Returns the free and total memory in @p free and @p total respectively for device @p dev.
+ */
 void ggml_backend_hsa_get_device_memory(int device, size_t * free, size_t * total) {
-    NOT_IMPLEMENTED();
+    const auto & info = ggml_hsa_info();
+    const auto & dev = info.devices[device];
+    *total = dev.data_memory.size;
+    // HSA does not report free memory, set it to total
+    *free = *total;
 }
 
 bool ggml_backend_hsa_register_host_buffer(void * buffer, size_t size) {
@@ -895,7 +905,6 @@ static int64_t get_op_batch_size(const ggml_tensor * op) {
 
 static bool ggml_backend_hsa_device_offload_op(ggml_backend_dev_t /* dev */, const ggml_tensor * op) {
     const int min_batch_size = 32;
-
     return get_op_batch_size(op) >= min_batch_size;
 }
 
