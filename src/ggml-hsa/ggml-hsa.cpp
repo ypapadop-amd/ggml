@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include <stdio.h>
+
 // The following data types are natively supported by AIEs:
 // - GGML_TYPE_F32 (emulated)
 // - GGML_TYPE_I8
@@ -156,10 +158,12 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     device_info.agent = agent;
     device_info.type = type;
 
-    if (auto status = hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, device_info.name.data());
+    char name[64] = {};
+    if (auto status = hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, name);
        status != HSA_STATUS_SUCCESS) {
        return status;
     }
+    device_info.name = std::string(name);
 
     if (auto status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &device_info);
         status != HSA_STATUS_SUCCESS) {
@@ -362,7 +366,7 @@ static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
  */
 struct ggml_backend_hsa_buffer_type_context {
     std::int32_t device; ///< ID of the device associated with this buffer type context.
-    std::string name;    ///< Name of the device associated with this buffer type context.
+    std::string name;    ///< Name of the buffer type context.
 
     ggml_backend_hsa_buffer_type_context(std::int32_t device, hsa_agent_t agent) :
         device(device), name(ggml_hsa_format_name(device)) {
@@ -758,7 +762,9 @@ int ggml_backend_hsa_get_device_count() {
  * @brief Returns the device description of device @p device.
  */
 void ggml_backend_hsa_get_device_description(int device, char * description, size_t description_size) {
-    NOT_IMPLEMENTED();
+    const auto & info = ggml_hsa_info();
+    const auto & dev = info.devices[device];
+    snprintf(description, description_size, "%s", dev.name.data());
 }
 
 /**

@@ -56,13 +56,11 @@ struct ggml_hsa_device_info {
      * @brief Information about a single HSA device.
      */
     struct hsa_device_info {
-        static constexpr std::size_t name_max_length = 64; ///< Agent name max length.
-
-        hsa_agent_t agent{};                              ///< HSA agent associated with the device.
-        hsa_device_type_t type{};                         ///< Agent type.
-        std::array<char, name_max_length> name = {};      ///< Agent name.
-        hsa_memory_pool_info data_memory;                 ///< Pool for data.
-        hsa_memory_pool_info kernarg_memory;              ///< Pool for kernel arguments.
+        hsa_agent_t agent{};                 ///< HSA agent associated with the device.
+        hsa_device_type_t type{};            ///< Agent type.
+        std::string name;                    ///< Agent name.
+        hsa_memory_pool_info data_memory;    ///< Pool for data.
+        hsa_memory_pool_info kernarg_memory; ///< Pool for kernel arguments.
     };
 
     std::array<hsa_device_info, GGML_HSA_MAX_DEVICES> devices = {};
