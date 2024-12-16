@@ -10,8 +10,6 @@
 #include <string>
 #include <vector>
 
-#include <stdio.h>
-
 // The following data types are natively supported by AIEs:
 // - GGML_TYPE_F32 (emulated)
 // - GGML_TYPE_I8
