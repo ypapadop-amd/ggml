@@ -39,6 +39,9 @@ void ggml_hsa_error(const char * stmt, const char * func, const char * file, int
           err_);                    \
   } while (0)
 
+/**
+ * @brief Device information.
+ */
 struct ggml_hsa_device_info {
     std::int32_t device_count{}; ///< Number of devices, up to @ref GGML_HSA_MAX_DEVICES.
 
@@ -56,10 +59,11 @@ struct ggml_hsa_device_info {
      * @brief Information about a single HSA device.
      */
     struct hsa_device_info {
-        hsa_agent_t agent{};                  ///< HSA agent associated with the device.
-        hsa_device_type_t type{};             ///< Agent type.
-        hsa_memory_pool_info data_memory;     ///< Pool for data.
-        hsa_memory_pool_info kernarg_memory;  ///< Pool for kernel arguments.
+        hsa_agent_t agent{};                 ///< HSA agent associated with the device.
+        hsa_device_type_t type{};            ///< Agent type.
+        std::string name;                    ///< Agent name.
+        hsa_memory_pool_info data_memory;    ///< Pool for data.
+        hsa_memory_pool_info kernarg_memory; ///< Pool for kernel arguments.
     };
 
     std::array<hsa_device_info, GGML_HSA_MAX_DEVICES> devices = {};
