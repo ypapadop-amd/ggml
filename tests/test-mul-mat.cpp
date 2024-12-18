@@ -7,6 +7,10 @@
 #include "ggml-cuda.h"
 #endif
 
+#ifdef GGML_USE_HSA
+#include "ggml-hsa.h"
+#endif
+
 #ifdef GGML_USE_METAL
 #include "ggml-metal.h"
 #endif
@@ -53,6 +57,16 @@ void load_model(test_model & model, float* a, float* b, int M, int N, int K, boo
         model.backend = ggml_backend_cuda_init(0);
         if (!model.backend) {
             fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
+        }
+    }
+#endif
+
+#ifdef GGML_USE_HSA
+    if (use_gpu) {
+        fprintf(stderr, "%s: using HSA backend\n", __func__);
+        model.backend = ggml_backend_hsa_init(0);
+        if (!model.backend) {
+            fprintf(stderr, "%s: ggml_backend_hsa_init() failed\n", __func__);
         }
     }
 #endif
