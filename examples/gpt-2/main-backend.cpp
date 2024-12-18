@@ -11,6 +11,10 @@
 #include "ggml-metal.h"
 #endif
 
+#ifdef GGML_USE_HSA
+#include "ggml-hsa.h"
+#endif
+
 #include "common.h"
 #include "common-ggml.h"
 
@@ -220,6 +224,16 @@ bool gpt2_model_load(const std::string & fname, gpt2_model & model, gpt_vocab & 
     }
 #endif
 
+#ifdef GGML_USE_HSA
+    if (n_gpu_layers > 0) {
+        fprintf(stderr, "%s: using HSA backend\n", __func__);
+        model.backend = ggml_backend_hsa_init(0);
+        if (!model.backend) {
+            fprintf(stderr, "%s: ggml_backend_hsa_init() failed\n", __func__);
+        }
+    }
+#endif
+
     if (!model.backend) {
         // fallback to CPU backend
         fprintf(stderr, "%s: using CPU backend\n", __func__);
@@ -230,6 +244,12 @@ bool gpt2_model_load(const std::string & fname, gpt2_model & model, gpt_vocab & 
         fprintf(stderr, "%s: ggml_backend_cpu_init() failed\n", __func__);
         return false;
     }
+
+    ggml_backend_dev_t device = ggml_backend_get_device(model.backend);
+    size_t total_memory = 0;
+    size_t free_memory = 0;
+    ggml_backend_dev_memory(device, &free_memory, &total_memory);
+    fprintf(stderr, "%s: free memory %zu, total memory %zu\n", __func__, free_memory, total_memory);
 
     // create the tensors for the model
     {
