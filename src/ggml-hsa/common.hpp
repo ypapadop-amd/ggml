@@ -84,8 +84,17 @@ const ggml_hsa_device_info & ggml_hsa_info();
  * @brief Context for HSA backend operations.
  */
 struct ggml_backend_hsa_context {
-    std::int32_t device; ///< Device ID.
-    std::string name;    ///< Device name.
+    std::int32_t device;  ///< Device ID.
+    std::string name;     ///< Device name.
+    hsa_queue_t* queue{}; ///< HSA queue associated with the context.
 
-    explicit ggml_backend_hsa_context(std::int32_t device);
+    ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::hsa_device_info& device_info);
+
+    ggml_backend_hsa_context(const ggml_backend_hsa_context &) = delete;
+    ggml_backend_hsa_context(ggml_backend_hsa_context &&) = delete;
+
+    ~ggml_backend_hsa_context();
+
+    ggml_backend_hsa_context& operator=(const ggml_backend_hsa_context &) = delete;
+    ggml_backend_hsa_context& operator=(ggml_backend_hsa_context &&) = delete;
 };
