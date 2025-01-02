@@ -84,9 +84,10 @@ const ggml_hsa_device_info & ggml_hsa_info();
  * @brief Context for HSA backend operations.
  */
 struct ggml_backend_hsa_context {
-    std::int32_t device{};  ///< Device ID.
-    std::string name;       ///< Device name.
-    hsa_queue_t* queue{};   ///< HSA queue associated with the context.
+    std::int32_t device{};          ///< Device ID.
+    std::string name;               ///< Device name.
+    hsa_queue_t* queue{};           ///< HSA queue associated with the context.
+    hsa_signal_t dispatch_signal{}; ///< Signal to wait for dispatches.
 
     ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::hsa_device_info& device_info);
 

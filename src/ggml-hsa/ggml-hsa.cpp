@@ -204,15 +204,23 @@ const ggml_hsa_device_info & ggml_hsa_info() {
 
 ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::hsa_device_info & device_info) :
         device(device), name(ggml_hsa_format_name(device)) {
+    // create queue
     const std::uint32_t min_queue_size = ggml_hsa_get_agent_min_queue_size(device_info.agent);
     if (auto status = hsa_queue_create(device_info.agent, min_queue_size, HSA_QUEUE_TYPE_SINGLE, nullptr, nullptr, 0, 0, &queue);
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: hsa_queue_create failed: %s", __func__, ggml_hsa_get_status_string(status));
         throw std::runtime_error("hsa_queue_create failed");
     }
+
+    // create signal to wait for packets
+    if (auto status = hsa_signal_create(0, 0, nullptr, &dispatch_signal); status != HSA_STATUS_SUCCESS) {
+        GGML_LOG_ERROR("%s: hsa_signal_create failed: %s", __func__, ggml_hsa_get_status_string(status));
+        throw std::runtime_error("hsa_signal_create failed");
+    }
 }
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
+    HSA_CHECK(hsa_signal_destroy(dispatch_signal));
     HSA_CHECK(hsa_queue_destroy(queue));
 }
 
@@ -667,7 +675,11 @@ static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t backend_src, ggml_b
 }
 
 static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
-    GGML_LOG_WARN("%s: needs synchronize kernel\n", __func__);
+    auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
+    if (auto val = hsa_signal_wait_scacquire(ctx->dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
+        val != 0) {
+      GGML_ABORT("%s: error: unexpected signal value (%d)\n", __func__, val);
+    }
 }
 
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
