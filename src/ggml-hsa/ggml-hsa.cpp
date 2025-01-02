@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,13 @@ static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
     char agent_name[agent_name_size];
     HSA_CHECK(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, &agent_name));
     return GGML_HSA_NAME + std::string{agent_name};
+}
+
+// Returns the minimum queue size
+static std::uint32_t ggml_hsa_get_agent_min_queue_size(hsa_agent_t agent) {
+  std::uint32_t min_queue_size = 0;
+  HSA_CHECK(hsa_agent_get_info(agent, HSA_AGENT_INFO_QUEUE_MIN_SIZE, &min_queue_size));
+  return min_queue_size;
 }
 
 /**
@@ -194,8 +202,26 @@ const ggml_hsa_device_info & ggml_hsa_info() {
     return info;
 }
 
-ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device) :
+ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::hsa_device_info & device_info) :
         device(device), name(ggml_hsa_format_name(device)) {
+    // create queue
+    const std::uint32_t min_queue_size = ggml_hsa_get_agent_min_queue_size(device_info.agent);
+    if (auto status = hsa_queue_create(device_info.agent, min_queue_size, HSA_QUEUE_TYPE_SINGLE, nullptr, nullptr, 0, 0, &queue);
+        status != HSA_STATUS_SUCCESS) {
+        GGML_LOG_ERROR("%s: hsa_queue_create failed: %s", __func__, ggml_hsa_get_status_string(status));
+        throw std::runtime_error("hsa_queue_create failed");
+    }
+
+    // create signal to wait for packets
+    if (auto status = hsa_signal_create(0, 0, nullptr, &dispatch_signal); status != HSA_STATUS_SUCCESS) {
+        GGML_LOG_ERROR("%s: hsa_signal_create failed: %s", __func__, ggml_hsa_get_status_string(status));
+        throw std::runtime_error("hsa_signal_create failed");
+    }
+}
+
+ggml_backend_hsa_context::~ggml_backend_hsa_context() {
+    HSA_CHECK(hsa_signal_destroy(dispatch_signal));
+    HSA_CHECK(hsa_queue_destroy(queue));
 }
 
 // HSA buffer
@@ -538,13 +564,13 @@ void ggml_hsa_mul_mat_impl(ggml_backend_hsa_context &, const ggml_tensor * src0,
     m_out = m_in1.transpose() * m_in2;
 }
 
-static void ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+static enum ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     assert(src0->type == src1->type);
-    assert(dst->type == dst->type);
+    assert(src0->type == dst->type);
 
-    if (ggml_is_transposed(dst->src[0]) ||
-        ggml_is_transposed(dst->src[1])) {
-        GGML_ABORT("%s: %s: matmul on tranposed tensor not supported", __func__, ggml_op_name(dst->op));
+    if (ggml_is_transposed(src0) || ggml_is_transposed(src1)) {
+        GGML_LOG_ERROR("%s: %s: matmul on tranposed tensor not supported", __func__, ggml_op_name(dst->op));
+        return GGML_STATUS_FAILED;
     }
 
     switch (src0->type) {
@@ -558,9 +584,12 @@ static void ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, const ggml_tensor *
             ggml_hsa_mul_mat_impl<double>(ctx, src0, src1, dst);
             break;
         default:
-            GGML_ABORT("%s: Unsupported type %s", __func__, ggml_type_name(src0->type));
+            GGML_LOG_ERROR("%s: Unsupported type %s", __func__, ggml_type_name(src0->type));
+            return GGML_STATUS_FAILED;
         }
     }
+
+    return GGML_STATUS_SUCCESS;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -646,12 +675,15 @@ static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t backend_src, ggml_b
 }
 
 static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
-    GGML_LOG_WARN("%s: needs synchronize kernel\n", __func__);
+    auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
+    if (auto val = hsa_signal_wait_scacquire(ctx->dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
+        val != 0) {
+      GGML_ABORT("%s: error: unexpected signal value (%d)\n", __func__, val);
+    }
 }
 
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
-
     ggml_status status = GGML_STATUS_SUCCESS;
     auto backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
 
@@ -669,8 +701,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, g
             case GGML_OP_VIEW:
                 break;
             case GGML_OP_MUL_MAT: {
-                // ggml_hsa_mul_mat(*ctx, node->src[0], node->src[1], node);
-                status = ggml_backend_graph_compute(backend_cpu, cgraph);
+                status = ggml_hsa_mul_mat(*ctx, node->src[0], node->src[1], node);
                 break;
             }
             default: {
@@ -862,12 +893,8 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         case GGML_OP_TRANSPOSE:
         case GGML_OP_VIEW:
             return true;
-        case GGML_OP_MUL_MAT: {
-            auto backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
-            auto result = ggml_backend_supports_op(backend_cpu, op);
-            ggml_backend_free(backend_cpu);
-            return result;
-        }
+        case GGML_OP_MUL_MAT:
+            return true;
         default: {
             // GGML_LOG_ERROR("%s: error: unknown operator %s", __func__, ggml_op_name(op->op));
             // return false;
@@ -1036,9 +1063,9 @@ ggml_backend_t ggml_backend_hsa_init(int device) {
 
     ggml_backend_hsa_context * ctx = nullptr;
     try {
-        ctx = new ggml_backend_hsa_context{device};
-    } catch (const std::bad_alloc&) {
-        GGML_LOG_ERROR("%s: failed to allocate context\n", __func__);
+        ctx = new ggml_backend_hsa_context{device, info.devices[device]};
+    } catch (const std::exception&) {
+        GGML_LOG_ERROR("%s: failed to create context\n", __func__);
         return nullptr;
     }
 
