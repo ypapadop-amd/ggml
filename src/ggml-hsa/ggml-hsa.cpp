@@ -20,12 +20,11 @@
 
 #define NOT_IMPLEMENTED() \
     do { \
-        printf("(%s:%d) %s not implemented\n", __FILE__, __LINE__, __PRETTY_FUNCTION__); \
-        abort(); \
+        GGML_ABORT("(%s:%d) %s not implemented\n", __FILE__, __LINE__, __PRETTY_FUNCTION__); \
     } while (false)
 
 /**
- * @brief Returns the status description of @p status.
+ * @brief Returns the description of @p status.
  */
 static const char* ggml_hsa_get_status_string(hsa_status_t status) {
     const char* msg = nullptr;
