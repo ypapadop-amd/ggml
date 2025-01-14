@@ -684,7 +684,6 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
     ggml_status status = GGML_STATUS_SUCCESS;
-    auto backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
 
     for (int i = 0; (i < cgraph->n_nodes) && (status == GGML_STATUS_SUCCESS); ++i) {
         auto * node = cgraph->nodes[i];
@@ -699,20 +698,14 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, g
             case GGML_OP_TRANSPOSE:
             case GGML_OP_VIEW:
                 break;
-            case GGML_OP_MUL_MAT: {
+            case GGML_OP_MUL_MAT:
                 status = ggml_hsa_mul_mat(*ctx, node->src[0], node->src[1], node);
                 break;
-            }
-            default: {
-                //GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
-                //return GGML_STATUS_FAILED;
-                status = ggml_backend_graph_compute(backend_cpu, cgraph);
-                break;
-            }
+            default:
+                GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
+                status = GGML_STATUS_FAILED;
         }
     }
-
-    ggml_backend_free(backend_cpu);
 
     return status;
 }
@@ -859,7 +852,7 @@ static void ggml_backend_hsa_device_get_props(ggml_backend_dev_t dev, ggml_backe
 
     props->caps = {
         /* .async                 = */ true,
-        /* .host_buffer           = */ true,
+        /* .host_buffer           = */ false,
         /* .buffer_from_host_ptr  = */ false,
         /* .events                = */ false,
     };
@@ -894,14 +887,8 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
             return true;
         case GGML_OP_MUL_MAT:
             return true;
-        default: {
-            // GGML_LOG_ERROR("%s: error: unknown operator %s", __func__, ggml_op_name(op->op));
-            // return false;
-            auto backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
-            auto result = ggml_backend_supports_op(backend_cpu, op);
-            ggml_backend_free(backend_cpu);
-            return result;
-        }
+        default:
+            return false;
     }
 }
 
