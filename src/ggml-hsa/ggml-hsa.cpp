@@ -429,7 +429,7 @@ static size_t ggml_backend_hsa_buffer_type_get_max_size(ggml_backend_buffer_type
 }
 
 /**
- * @brief Returns the size required for tensor @p tensor in buffer @p buft.
+ * @brief Returns the size required for tensor @p tensor in buffer type @p buft.
  */
 static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_type_t /* buft */, const ggml_tensor * tensor) {
     std::size_t size = ggml_nbytes(tensor);
@@ -445,6 +445,25 @@ static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_ty
 }
 
 /**
+ * @brief Returns if buffer type @p buft is a host buffer type.
+ */
+static bool ggml_backend_metal_buffer_type_is_host(ggml_backend_buffer_type_t buft) {
+    auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
+    const auto & info = ggml_hsa_info();
+    const auto & device = info.devices[ctx->device];
+
+    // we can infer if it is host memory from the agent type since the memory pools are
+    // derived from the agent
+    switch (device.type) {
+        case HSA_DEVICE_TYPE_CPU:
+        case HSA_DEVICE_TYPE_AIE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/**
  * @brief Interface for managing HSA buffer types.
  */
 static const ggml_backend_buffer_type_i ggml_backend_hsa_buffer_type_interface = {
@@ -453,7 +472,7 @@ static const ggml_backend_buffer_type_i ggml_backend_hsa_buffer_type_interface =
     /* .get_alignment    = */ ggml_backend_hsa_buffer_type_get_alignment,
     /* .get_max_size     = */ ggml_backend_hsa_buffer_type_get_max_size,
     /* .get_alloc_size   = */ ggml_backend_hsa_buffer_type_get_alloc_size,
-    /* .is_host          = */ nullptr,
+    /* .is_host          = */ ggml_backend_metal_buffer_type_is_host,
 };
 
 /**
