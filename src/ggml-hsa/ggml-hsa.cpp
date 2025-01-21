@@ -873,10 +873,14 @@ static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_host_buffer_type(g
 static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * tensor) {
     switch (tensor->op) {
         case GGML_OP_NONE:
+            return true;
         case GGML_OP_DUP:
+            return ggml_hsa_supports_cpy(tensor);
         case GGML_OP_MUL_MAT:
+            return ggml_hsa_supports_mul_mat(tensor);
         case GGML_OP_CPY:
         case GGML_OP_CONT:
+            return ggml_hsa_supports_cpy(tensor);
         case GGML_OP_PERMUTE:
         case GGML_OP_RESHAPE:
         case GGML_OP_TRANSPOSE:

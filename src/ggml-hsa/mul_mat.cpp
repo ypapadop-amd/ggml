@@ -15,10 +15,6 @@ ggml_status ggml_hsa_mul_mat_impl(const ggml_tensor * src0, const ggml_tensor * 
 }
 
 static ggml_status ggml_hsa_mul_mat_f32(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
-    assert(ggml_is_contiguous(src0));
-    assert(ggml_is_contiguous(src1));
-    assert(ggml_is_contiguous(dst));
-
     if (src1->type != GGML_TYPE_F32) {
         GGML_LOG_ERROR("%s: Unsupported type for src1 %s", __func__, ggml_type_name(src1->type));
         return GGML_STATUS_FAILED;
@@ -51,10 +47,43 @@ static ggml_status ggml_hsa_mul_mat_f32(const ggml_tensor * src0, const ggml_ten
     return GGML_STATUS_SUCCESS;
 }
 
+bool ggml_hsa_supports_mul_mat(const ggml_tensor * tensor) {
+    const ggml_tensor * src0 = tensor->src[0];
+    const ggml_tensor * src1 = tensor->src[1];
+    const ggml_tensor * dst = tensor;
+
+    if (ggml_is_transposed(src0) || ggml_is_transposed(src1)) {
+        return false;
+    }
+
+    if ((src0->type) == (src1->type)
+        && (src0->type == dst->type)
+        && ((src0->type == GGML_TYPE_F16) || (src0->type == GGML_TYPE_F32) || (src0->type == GGML_TYPE_F64))) {
+        return true;
+    }
+
+    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst)) {
+        return false;
+    }
+
+    if (((src0->type == GGML_TYPE_F16) || (src0->type == GGML_TYPE_F32))
+        && (src1->type == GGML_TYPE_F32)
+        && (dst->type == GGML_TYPE_F32)) {
+        return true;
+    }
+
+    return false;
+}
+
+
 ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * tensor) {
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * src1 = tensor->src[1];
     ggml_tensor * dst = tensor;
+
+    assert(ggml_is_contiguous(src0));
+    assert(ggml_is_contiguous(src1));
+    assert(ggml_is_contiguous(dst));
 
 
     if (ggml_is_transposed(src0) || ggml_is_transposed(src1)) {

@@ -1104,6 +1104,21 @@ static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * ten
     }
 }
 
+bool ggml_hsa_supports_cpy(const ggml_tensor * tensor) {
+    const ggml_tensor * src0 = tensor->src[0];
+    const ggml_tensor * dst = tensor;
+
+    if ((src0->type == dst->type)
+        || (src0->type == GGML_TYPE_F16)
+        || (src0->type == GGML_TYPE_BF16)
+        || (src0->type == GGML_TYPE_F32)) {
+        return true;
+    }
+
+    return false;
+}
+
+
 ggml_status ggml_hsa_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     const ggml_tensor * src0 = tensor->src[0];
     ggml_tensor * dst = tensor;
