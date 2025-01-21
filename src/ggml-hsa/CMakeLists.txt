@@ -20,7 +20,11 @@ find_package(hsa-runtime64 1.0 REQUIRED)
 message(STATUS "HSA found")
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
-set(GGML_SOURCES_HSA ggml-hsa.cpp)
+set(GGML_SOURCES_HSA
+    ggml-hsa.cpp
+    cpy.cpp
+    mul_mat.cpp
+    )
 
 ggml_add_backend_library(ggml-hsa
                          ${GGML_HEADERS_HSA}
@@ -33,7 +37,7 @@ target_include_directories(ggml-hsa PRIVATE . ..)
 find_package(Eigen3 3.3 REQUIRED)
 target_link_libraries(ggml-hsa PRIVATE Eigen3::Eigen)
 
-target_sources(ggml-hsa PRIVATE common.hpp)
+target_sources(ggml-hsa PRIVATE common.hpp kernels.hpp)
 
 set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE CXX)
 
