@@ -1,6 +1,7 @@
 #include "ggml-hsa.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
+#include "kernels.hpp"
 
 #include "ggml-hsa/common.hpp"
 
@@ -569,47 +570,6 @@ ggml_backend_buffer_type_t ggml_backend_hsa_host_buffer_type() {
     return &ggml_backend_hsa_buffer_type_host;
 }
 
-/// kernels
-
-#include <Eigen/Dense>
-
-template<typename T>
-void ggml_hsa_mul_mat_impl(ggml_backend_hsa_context &, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
-    using matrix_type = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>;
-    auto m_in1 = matrix_type::Map(static_cast<T*>(src0->data), src0->ne[0], src0->ne[1]);
-    auto m_in2 = matrix_type::Map(static_cast<T*>(src1->data), src1->ne[0], src1->ne[1]);
-    auto m_out = matrix_type::Map(static_cast<T*>(dst->data), dst->ne[0], dst->ne[1]);
-    m_out = m_in1.transpose() * m_in2;
-}
-
-static enum ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
-    assert(src0->type == src1->type);
-    assert(src0->type == dst->type);
-
-    if (ggml_is_transposed(src0) || ggml_is_transposed(src1)) {
-        GGML_LOG_ERROR("%s: %s: matmul on tranposed tensor not supported", __func__, ggml_op_name(dst->op));
-        return GGML_STATUS_FAILED;
-    }
-
-    switch (src0->type) {
-        case GGML_TYPE_F16:
-            ggml_hsa_mul_mat_impl<Eigen::half>(ctx, src0, src1, dst);
-            break;
-        case GGML_TYPE_F32:
-            ggml_hsa_mul_mat_impl<float>(ctx, src0, src1, dst);
-            break;
-        case GGML_TYPE_F64: {
-            ggml_hsa_mul_mat_impl<double>(ctx, src0, src1, dst);
-            break;
-        default:
-            GGML_LOG_ERROR("%s: Unsupported type %s", __func__, ggml_type_name(src0->type));
-            return GGML_STATUS_FAILED;
-        }
-    }
-
-    return GGML_STATUS_SUCCESS;
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 
 // backend
@@ -696,7 +656,7 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
     auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
     if (auto val = hsa_signal_wait_scacquire(ctx->dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
         val != 0) {
-      GGML_ABORT("%s: error: unexpected signal value (%d)\n", __func__, val);
+      GGML_ABORT("%s: error: unexpected signal value (%ld)\n", __func__, val);
     }
 }
 
@@ -712,17 +672,37 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, g
 
         switch (node->op) {
             case GGML_OP_NONE:
+                {
+                    // NOP
+                } break;
+
+            case GGML_OP_DUP:
+                {
+                    status = ggml_hsa_cpy(*ctx, node);
+                } break;
+
+            case GGML_OP_MUL_MAT:
+                {
+                    status = ggml_hsa_mul_mat(*ctx, node);
+                } break;
+
+            case GGML_OP_CPY:
+            case GGML_OP_CONT:
+                {
+                    status = ggml_hsa_cpy(*ctx, node);
+                } break;
             case GGML_OP_PERMUTE:
             case GGML_OP_RESHAPE:
             case GGML_OP_TRANSPOSE:
             case GGML_OP_VIEW:
-                break;
-            case GGML_OP_MUL_MAT:
-                status = ggml_hsa_mul_mat(*ctx, node->src[0], node->src[1], node);
-                break;
+                {
+                    // NOP
+                } break;
             default:
-                GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
-                status = GGML_STATUS_FAILED;
+                {
+                    GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
+                    status = GGML_STATUS_FAILED;
+                } break;
         }
     }
 
@@ -852,14 +832,22 @@ static enum ggml_backend_dev_type ggml_backend_hsa_device_get_type(ggml_backend_
     const auto & device = info.devices[ctx->device];
     switch (device.type) {
         case HSA_DEVICE_TYPE_CPU:
-            return GGML_BACKEND_DEVICE_TYPE_CPU;
+            {
+                return GGML_BACKEND_DEVICE_TYPE_CPU;
+            }
         case HSA_DEVICE_TYPE_GPU:
-            return GGML_BACKEND_DEVICE_TYPE_GPU;
+            {
+                return GGML_BACKEND_DEVICE_TYPE_GPU;
+            }
         case HSA_DEVICE_TYPE_DSP:
         case HSA_DEVICE_TYPE_AIE:
-            return GGML_BACKEND_DEVICE_TYPE_ACCEL;
+            {
+                return GGML_BACKEND_DEVICE_TYPE_ACCEL;
+            }
         default:
-            GGML_ABORT("%s: error: unknown HSA device type %d", __func__, device.type);
+            {
+                GGML_ABORT("%s: error: unknown HSA device type %d", __func__, device.type);
+            }
     }
 }
 
@@ -896,18 +884,24 @@ static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_host_buffer_type(g
 /**
  * @brief Returns if the operation in tensor @p op is supported by device @p dev.
  */
-static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
-    switch (op->op) {
+static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * node) {
+    switch (node->op) {
         case GGML_OP_NONE:
+        case GGML_OP_DUP:
+        case GGML_OP_MUL_MAT:
+        case GGML_OP_CPY:
+        case GGML_OP_CONT:
         case GGML_OP_PERMUTE:
         case GGML_OP_RESHAPE:
         case GGML_OP_TRANSPOSE:
         case GGML_OP_VIEW:
-            return true;
-        case GGML_OP_MUL_MAT:
-            return true;
+            {
+                return true;
+            }
         default:
-            return false;
+            {
+                return false;
+            }
     }
 }
 
