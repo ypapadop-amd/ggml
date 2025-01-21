@@ -15,6 +15,11 @@
 #include "ggml-blas.h"
 #endif
 
+#ifdef GGML_USE_HSA
+#include "ggml-hsa.h"
+#endif
+
+
 #include "common.h"
 #include "common-ggml.h"
 
@@ -142,6 +147,18 @@ void init_backends(gpt2_model & model, const gpt_params & params) {
     } else {
         ggml_backend_blas_set_n_threads(blas_backend, params.n_threads);
         model.backends.push_back(blas_backend);
+    }
+#endif
+
+#ifdef GGML_USE_HSA
+    if (params.n_gpu_layers > 0) {
+        fprintf(stderr, "%s: using HSA backend\n", __func__);
+        ggml_backend_t hsa_backend = ggml_backend_hsa_init(0);
+        if (!hsa_backend) {
+            fprintf(stderr, "%s: ggml_backend_hsa_init() failed\n", __func__);
+        } else {
+            model.backends.push_back(hsa_backend);
+        }
     }
 #endif
 
