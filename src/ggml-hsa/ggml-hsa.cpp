@@ -448,7 +448,7 @@ static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_ty
 /**
  * @brief Returns if buffer type @p buft is a host buffer type.
  */
-static bool ggml_backend_metal_buffer_type_is_host(ggml_backend_buffer_type_t buft) {
+static bool ggml_backend_hsa_buffer_type_is_host(ggml_backend_buffer_type_t buft) {
     auto * ctx = static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & info = ggml_hsa_info();
     const auto & device = info.devices[ctx->device];
@@ -473,7 +473,7 @@ static const ggml_backend_buffer_type_i ggml_backend_hsa_buffer_type_interface =
     /* .get_alignment    = */ ggml_backend_hsa_buffer_type_get_alignment,
     /* .get_max_size     = */ ggml_backend_hsa_buffer_type_get_max_size,
     /* .get_alloc_size   = */ ggml_backend_hsa_buffer_type_get_alloc_size,
-    /* .is_host          = */ ggml_backend_metal_buffer_type_is_host,
+    /* .is_host          = */ ggml_backend_hsa_buffer_type_is_host,
 };
 
 /**
