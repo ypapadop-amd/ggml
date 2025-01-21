@@ -5,6 +5,8 @@
 #include "ggml-cpu.h"
 #include "ggml-impl.h"
 
+// copied from src/ggml-cpu/ggml-cpu.c
+
 static void ggml_hsa_cpy_same_cont(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * node) {
     const ggml_tensor * src0 = node->src[0];
     ggml_tensor * dst = node;
@@ -107,6 +109,7 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * n
                     }
                 }
             } else if (ggml_get_type_traits_cpu(dst->type)->from_float) {
+                GGML_ABORT("Not implemented");
                 ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
                 float * src0_f32 = nullptr; /*(float *) params->wdata;*/
 
@@ -387,6 +390,7 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                 }
             } else if (ggml_get_type_traits_cpu(dst->type)->from_float) {
                 ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
+                GGML_ABORT("Not implemented");
                 float * src0_f32 = nullptr; /*(float *) params->wdata;*/
 
                 size_t id = 0;

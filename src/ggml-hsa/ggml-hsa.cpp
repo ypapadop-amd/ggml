@@ -672,37 +672,31 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, g
 
         switch (node->op) {
             case GGML_OP_NONE:
-                {
-                    // NOP
-                } break;
+                // NOP
+                break;
 
             case GGML_OP_DUP:
-                {
-                    status = ggml_hsa_cpy(*ctx, node);
-                } break;
+                status = ggml_hsa_cpy(*ctx, node);
+                break;
 
             case GGML_OP_MUL_MAT:
-                {
-                    status = ggml_hsa_mul_mat(*ctx, node);
-                } break;
+                status = ggml_hsa_mul_mat(*ctx, node);
+                break;
 
             case GGML_OP_CPY:
             case GGML_OP_CONT:
-                {
-                    status = ggml_hsa_cpy(*ctx, node);
-                } break;
+                status = ggml_hsa_cpy(*ctx, node);
+                break;
             case GGML_OP_PERMUTE:
             case GGML_OP_RESHAPE:
             case GGML_OP_TRANSPOSE:
             case GGML_OP_VIEW:
-                {
-                    // NOP
-                } break;
+                // NOP
+                break;
             default:
-                {
-                    GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
-                    status = GGML_STATUS_FAILED;
-                } break;
+                GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
+                status = GGML_STATUS_FAILED;
+                break;
         }
     }
 
@@ -832,22 +826,14 @@ static enum ggml_backend_dev_type ggml_backend_hsa_device_get_type(ggml_backend_
     const auto & device = info.devices[ctx->device];
     switch (device.type) {
         case HSA_DEVICE_TYPE_CPU:
-            {
-                return GGML_BACKEND_DEVICE_TYPE_CPU;
-            }
+            return GGML_BACKEND_DEVICE_TYPE_CPU;
         case HSA_DEVICE_TYPE_GPU:
-            {
-                return GGML_BACKEND_DEVICE_TYPE_GPU;
-            }
+            return GGML_BACKEND_DEVICE_TYPE_GPU;
         case HSA_DEVICE_TYPE_DSP:
         case HSA_DEVICE_TYPE_AIE:
-            {
-                return GGML_BACKEND_DEVICE_TYPE_ACCEL;
-            }
+            return GGML_BACKEND_DEVICE_TYPE_ACCEL;
         default:
-            {
-                GGML_ABORT("%s: error: unknown HSA device type %d", __func__, device.type);
-            }
+            GGML_ABORT("%s: error: unknown HSA device type %d", __func__, device.type);
     }
 }
 
@@ -895,13 +881,9 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         case GGML_OP_RESHAPE:
         case GGML_OP_TRANSPOSE:
         case GGML_OP_VIEW:
-            {
-                return true;
-            }
+            return true;
         default:
-            {
-                return false;
-            }
+            return false;
     }
 }
 
