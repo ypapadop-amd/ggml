@@ -1,5 +1,6 @@
 #include "kernels.hpp"
 
+#include <cstdlib>
 #include <cstring>
 
 #include "ggml-cpu.h"
@@ -7,9 +8,9 @@
 
 // copied from src/ggml-cpu/ggml-cpu.c
 
-static void ggml_hsa_cpy_same_cont(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * node) {
-    const ggml_tensor * src0 = node->src[0];
-    ggml_tensor * dst = node;
+static void ggml_hsa_cpy_same_cont(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * tensor) {
+    const ggml_tensor * src0 = tensor->src[0];
+    ggml_tensor * dst = tensor;
 
     GGML_ASSERT(ggml_nelements(dst) == ggml_nelements(src0));
     GGML_ASSERT(ggml_is_contiguous(dst) && ggml_is_contiguous(src0));
@@ -34,9 +35,9 @@ static void ggml_hsa_cpy_same_cont(ggml_backend_hsa_context & /*ctx*/, ggml_tens
     }
 }
 
-static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * node) {
-    const ggml_tensor * src0 = node->src[0];
-    ggml_tensor * dst = node;
+static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * tensor) {
+    const ggml_tensor * src0 = tensor->src[0];
+    ggml_tensor * dst = tensor;
 
     GGML_ASSERT(ggml_nelements(dst) == ggml_nelements(src0));
 
@@ -109,9 +110,8 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * n
                     }
                 }
             } else if (ggml_get_type_traits_cpu(dst->type)->from_float) {
-                GGML_ABORT("Not implemented");
                 ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
-                float * src0_f32 = nullptr; /*(float *) params->wdata;*/
+                float * src0_f32 = static_cast<float*>(std::malloc(ne00 * sizeof(float)));
 
                 size_t id = 0;
                 size_t rs = nb0 * (ne00 / ggml_blck_size(dst->type));
@@ -133,6 +133,8 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * n
                         id += rs * (ne01 - ir1);
                     }
                 }
+
+                std::free(src0_f32);
             } else {
                 GGML_ABORT("fatal error"); // TODO: implement
             }
@@ -297,9 +299,9 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * n
     }
 }
 
-static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * node) {
-    const ggml_tensor * src0 = node->src[0];
-    ggml_tensor * dst = node;
+static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * tensor) {
+    const ggml_tensor * src0 = tensor->src[0];
+    ggml_tensor * dst = tensor;
 
     GGML_ASSERT(ggml_nelements(dst) == ggml_nelements(src0));
 
@@ -391,7 +393,7 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
             } else if (ggml_get_type_traits_cpu(dst->type)->from_float) {
                 ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
                 GGML_ABORT("Not implemented");
-                float * src0_f32 = nullptr; /*(float *) params->wdata;*/
+                float * src0_f32 = static_cast<float*>(std::malloc(ne00 * sizeof(float)));
 
                 size_t id = 0;
                 size_t rs = nb0 * (ne00 / ggml_blck_size(dst->type));
@@ -413,6 +415,8 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                         id += rs * (ne01 - ir1);
                     }
                 }
+
+                std::free(src0_f32);
             } else {
                 GGML_ABORT("fatal error"); // TODO: implement
             }
@@ -647,9 +651,9 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
     }
 }
 
-static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * node) {
-    const ggml_tensor * src0 = node->src[0];
-    ggml_tensor * dst = node;
+static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * tensor) {
+    const ggml_tensor * src0 = tensor->src[0];
+    ggml_tensor * dst = tensor;
 
     GGML_ASSERT(ggml_nelements(dst) == ggml_nelements(src0));
 
@@ -957,9 +961,9 @@ static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * n
     }
 }
 
-static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * node) {
-    const ggml_tensor * src0 = node->src[0];
-    ggml_tensor * dst = node;
+static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
+    const ggml_tensor * src0 = tensor->src[0];
+    ggml_tensor * dst = tensor;
 
     GGML_ASSERT(ggml_nelements(dst) == ggml_nelements(src0));
     GGML_ASSERT(src0->type == dst->type);
@@ -967,7 +971,7 @@ static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * nod
     GGML_TENSOR_UNARY_OP_LOCALS;
 
     if (ggml_is_contiguous(src0) && ggml_is_contiguous(dst)) {
-        return ggml_hsa_cpy_same_cont(ctx, node);
+        return ggml_hsa_cpy_same_cont(ctx, tensor);
     }
 
     const size_t type_size = ggml_type_size(src0->type);
@@ -1100,33 +1104,28 @@ static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * nod
     }
 }
 
-ggml_status ggml_hsa_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * node) {
-    const ggml_tensor * src0 = node->src[0];
-    ggml_tensor * dst = node;
+ggml_status ggml_hsa_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
+    const ggml_tensor * src0 = tensor->src[0];
+    ggml_tensor * dst = tensor;
 
     if (src0->type == dst->type) {
-        ggml_hsa_cpy_bytes(ctx, node);
+        ggml_hsa_cpy_bytes(ctx, tensor);
         return GGML_STATUS_SUCCESS;
     }
 
     switch (src0->type) {
         case GGML_TYPE_F16:
-            {
-                ggml_hsa_cpy_f16(ctx, node);
-            } break;
+            ggml_hsa_cpy_f16(ctx, tensor);
+            break;
         case GGML_TYPE_BF16:
-            {
-                ggml_hsa_cpy_bf16(ctx, node);
-            } break;
+            ggml_hsa_cpy_bf16(ctx, tensor);
+            break;
         case GGML_TYPE_F32:
-            {
-                ggml_hsa_cpy_f32(ctx, node);
-            } break;
+            ggml_hsa_cpy_f32(ctx, tensor);
+            break;
         default:
-            {
-                GGML_LOG_ERROR("Unsupported data type: %s", ggml_type_name(src0->type));
-                return GGML_STATUS_FAILED;
-            }
+            GGML_LOG_ERROR("Unsupported data type: %s", ggml_type_name(src0->type));
+            return GGML_STATUS_FAILED;
     }
 
     return GGML_STATUS_SUCCESS;

@@ -51,10 +51,10 @@ static ggml_status ggml_hsa_mul_mat_f32(const ggml_tensor * src0, const ggml_ten
     return GGML_STATUS_SUCCESS;
 }
 
-ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * node) {
-    const ggml_tensor * src0 = node->src[0];
-    const ggml_tensor * src1 = node->src[1];
-    ggml_tensor * dst = node;
+ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * tensor) {
+    const ggml_tensor * src0 = tensor->src[0];
+    const ggml_tensor * src1 = tensor->src[1];
+    ggml_tensor * dst = tensor;
 
 
     if (ggml_is_transposed(src0) || ggml_is_transposed(src1)) {

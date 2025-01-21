@@ -870,8 +870,8 @@ static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_host_buffer_type(g
 /**
  * @brief Returns if the operation in tensor @p op is supported by device @p dev.
  */
-static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * node) {
-    switch (node->op) {
+static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * tensor) {
+    switch (tensor->op) {
         case GGML_OP_NONE:
         case GGML_OP_DUP:
         case GGML_OP_MUL_MAT:
