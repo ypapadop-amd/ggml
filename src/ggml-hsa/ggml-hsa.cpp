@@ -12,6 +12,11 @@
 #include <string>
 #include <vector>
 
+#ifdef GGML_HSA_CPU_FALLBACK
+#include <algorithm>
+#include "ggml-cpu.h"
+#endif
+
 // The following data types are natively supported by AIEs:
 // - GGML_TYPE_F32 (emulated)
 // - GGML_TYPE_I8
@@ -217,11 +222,28 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const gg
         GGML_LOG_ERROR("%s: hsa_signal_create failed: %s", __func__, ggml_hsa_get_status_string(status));
         throw std::runtime_error("hsa_signal_create failed");
     }
+
+#ifdef GGML_HSA_CPU_FALLBACK
+    // create fallback backend
+    if (fallback_backend = ggml_backend_cpu_init(); fallback_backend == nullptr) {
+        GGML_LOG_ERROR("%s: ggml_backend_cpu_init failed", __func__);
+        throw std::runtime_error("ggml_backend_cpu_init failed");
+    }
+    auto buft = ggml_backend_get_default_buffer_type(fallback_backend);
+    if (fallback_galloc = ggml_gallocr_new(buft); fallback_galloc == nullptr) {
+        GGML_LOG_ERROR("%s: ggml_gallocr_new failed", __func__);
+        throw std::runtime_error("ggml_gallocr_new failed");
+    }
+#endif
 }
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     HSA_CHECK(hsa_signal_destroy(dispatch_signal));
     HSA_CHECK(hsa_queue_destroy(queue));
+#ifdef GGML_HSA_CPU_FALLBACK
+    ggml_gallocr_free(fallback_galloc);
+    ggml_backend_free(fallback_backend);
+#endif
 }
 
 // HSA buffer
@@ -660,6 +682,67 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
     }
 }
 
+#ifdef GGML_HSA_CPU_FALLBACK
+
+struct fallback_tensor {
+    ggml_context * ctx{};
+    ggml_cgraph * graph{};
+
+    fallback_tensor(ggml_tensor * tensor, ggml_gallocr_t galloc) {
+        // create context
+        const ggml_init_params params = {
+            /*.mem_size   =*/ ggml_tensor_overhead() + ggml_graph_overhead() + 262144,
+            /*.mem_buffer =*/ nullptr,
+            /*.no_alloc   =*/ true,
+        };
+
+        ctx = ggml_init(params);
+        if (ctx == nullptr) {
+           GGML_LOG_ERROR("ggml_init(): failed to initialize context");
+           throw std::runtime_error("ggml_init(): failed to initialize context");
+        }
+
+        // create tensor
+        auto new_tensor = ggml_dup_tensor(ctx, tensor);
+        if (new_tensor == nullptr) {
+            GGML_LOG_ERROR("ggml_dup_tensor(): failed to dup tensor");
+            throw std::runtime_error("ggml_dup_tensor(): failed to dup tensor");
+        }
+        new_tensor->op = tensor->op;
+        new_tensor->data = tensor->data;
+        std::copy_n(tensor->op_params, GGML_MAX_OP_PARAMS / sizeof(int32_t), new_tensor->op_params);
+        std::copy_n(tensor->src, GGML_MAX_SRC, new_tensor->src);
+
+        // create graph
+        graph = ggml_new_graph(ctx);
+        if (graph == nullptr) {
+            GGML_LOG_ERROR("ggml_new_graph(): failed to create graph");
+            throw std::runtime_error("ggml_new_graph(): failed to create graph");
+        }
+        ggml_build_forward_expand(graph, new_tensor);
+
+        if (!ggml_gallocr_alloc_graph(galloc, graph)) {
+            GGML_LOG_ERROR("ggml_gallocr_alloc_graph(): failed to allocate graph");
+            throw std::runtime_error("ggml_gallocr_alloc_graph(): failed to allocate graph");
+        }
+    }
+
+    ~fallback_tensor() {
+        ggml_free(ctx);
+    }
+
+    ggml_status operator()() {
+        const auto num_threads = 4;
+        ggml_status status = GGML_STATUS_SUCCESS;
+        if (status = ggml_graph_compute_with_ctx(ctx, graph, num_threads); status != GGML_STATUS_SUCCESS) {
+            GGML_LOG_ERROR("ggml_graph_compute_with_ctx(): failed to compute graph");
+        }
+        return status;
+    }
+};
+
+#endif
+
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
     ggml_status status = GGML_STATUS_SUCCESS;
@@ -694,8 +777,15 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, g
                 // NOP
                 break;
             default:
+#ifdef GGML_HSA_CPU_FALLBACK
+                {
+                    fallback_tensor new_tensor(node, ctx->fallback_galloc);
+                    status = new_tensor();
+                }
+#else
                 GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
                 status = GGML_STATUS_FAILED;
+#endif
                 break;
         }
     }
