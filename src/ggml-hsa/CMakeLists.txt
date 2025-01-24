@@ -19,6 +19,8 @@ find_package(hsa-runtime64 1.0 REQUIRED)
 
 message(STATUS "HSA found")
 
+option(GGML_HSA_CPU_FALLBACK "ggml: use fallback to CPU if HSA kernel not implemented" OFF)
+
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
     ggml-hsa.cpp
@@ -40,5 +42,9 @@ target_link_libraries(ggml-hsa PRIVATE Eigen3::Eigen)
 target_sources(ggml-hsa PRIVATE common.hpp kernels.hpp)
 
 set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE CXX)
+
+if (GGML_HSA_CPU_FALLBACK)
+    target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_CPU_FALLBACK)
+endif ()
 
 add_compile_definitions(GGML_USE_HSA)
