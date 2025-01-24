@@ -88,6 +88,10 @@ struct ggml_backend_hsa_context {
     std::string name;               ///< Device name.
     hsa_queue_t* queue{};           ///< HSA queue associated with the context.
     hsa_signal_t dispatch_signal{}; ///< Signal to wait for dispatches.
+#ifdef GGML_HSA_CPU_FALLBACK
+    ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
+    ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
+#endif
 
     ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::hsa_device_info& device_info);
 
