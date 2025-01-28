@@ -689,9 +689,13 @@ struct fallback_tensor {
     ggml_cgraph * graph{};
 
     fallback_tensor(ggml_tensor * tensor, ggml_gallocr_t galloc) {
+        std::int32_t tensor_src_count = 0;
+        for (; (tensor_src_count < GGML_MAX_SRC) && (tensor->src[tensor_src_count] != nullptr) ; ++tensor_src_count);
+
         // create context
+        const auto tensor_count = (tensor->op == GGML_OP_UNARY) ? tensor_src_count + 1: tensor_src_count + 1;
         const ggml_init_params params = {
-            /*.mem_size   =*/ ggml_tensor_overhead() + ggml_graph_overhead() + 262144,
+            /*.mem_size   =*/ tensor_count * ggml_tensor_overhead() + ggml_graph_overhead() + 262144,
             /*.mem_buffer =*/ nullptr,
             /*.no_alloc   =*/ true,
         };
@@ -711,7 +715,8 @@ struct fallback_tensor {
         new_tensor->op = tensor->op;
         new_tensor->data = tensor->data;
         std::copy_n(tensor->op_params, GGML_MAX_OP_PARAMS / sizeof(int32_t), new_tensor->op_params);
-        std::copy_n(tensor->src, GGML_MAX_SRC, new_tensor->src);
+        std::copy_n(tensor->src, tensor_src_count, new_tensor->src);
+        std::strcpy(tensor->name, new_tensor->name);
 
         // create graph
         graph = ggml_new_graph(ctx);
