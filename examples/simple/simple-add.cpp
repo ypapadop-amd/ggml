@@ -33,7 +33,7 @@ int main(void) {
     ggml_tallocr_alloc(&alloc, tensor_a);
     ggml_tallocr_alloc(&alloc, tensor_b);
 
-    ggml_cgraph * gf = ggml_new_graph_custom(ctx, 3, false);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, tensor_count, false);
 
     ggml_tensor * tensor_result = ggml_add(ctx, tensor_a, tensor_b);
 
