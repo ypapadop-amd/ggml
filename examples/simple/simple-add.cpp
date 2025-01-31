@@ -44,7 +44,9 @@ int main(void) {
     ggml_backend_tensor_set(tensor_a, A, 0, ggml_nbytes(tensor_a));
     ggml_backend_tensor_set(tensor_b, B, 0, ggml_nbytes(tensor_b));
 
-    ggml_backend_graph_compute(backend, gf);
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        std::cout << "Execution failed\n";
+    }
 
     std::vector<float> result(N);
     ggml_backend_tensor_get(tensor_result, result.data(), 0, ggml_nbytes(tensor_result));
