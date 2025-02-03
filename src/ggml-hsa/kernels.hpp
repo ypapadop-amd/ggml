@@ -3,6 +3,9 @@
 #include "ggml.h"
 #include "ggml-hsa/common.hpp"
 
+bool ggml_hsa_supports_add(const ggml_tensor * tensor);
+ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
+
 bool ggml_hsa_supports_cpy(const ggml_tensor * tensor);
 ggml_status ggml_hsa_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
 
