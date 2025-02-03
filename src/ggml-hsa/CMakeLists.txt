@@ -23,6 +23,7 @@ option(GGML_HSA_CPU_FALLBACK "ggml: use fallback to CPU if HSA kernel not implem
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
+    add.cpp
     ggml-hsa.cpp
     cpy.cpp
     mul_mat.cpp
@@ -33,11 +34,31 @@ ggml_add_backend_library(ggml-hsa
                          ${GGML_SOURCES_HSA}
                          )
 
-target_link_libraries(ggml-hsa PRIVATE ggml-base hsa-runtime64::hsa-runtime64)
-target_include_directories(ggml-hsa PRIVATE . ..)
+#
+# XRT
+#
+
+set(XRT_INC_DIR /opt/xilinx/xrt/include CACHE STRING "Path to XRT cloned repo")
+set(XRT_LIB_DIR /opt/xilinx/xrt/lib CACHE STRING "Path to xrt_coreutil.lib")
+
+target_include_directories (ggml-hsa PUBLIC ${XRT_INC_DIR})
+target_link_directories(ggml-hsa PUBLIC ${XRT_LIB_DIR})
+target_link_libraries(ggml-hsa PUBLIC xrt_coreutil)
+
+#
+# Eigen
+#
 
 find_package(Eigen3 3.3 REQUIRED)
+
 target_link_libraries(ggml-hsa PRIVATE Eigen3::Eigen)
+
+#
+#
+#
+
+target_link_libraries(ggml-hsa PRIVATE ggml-base hsa-runtime64::hsa-runtime64)
+target_include_directories(ggml-hsa PRIVATE . ..)
 
 target_sources(ggml-hsa PRIVATE common.hpp kernels.hpp)
 

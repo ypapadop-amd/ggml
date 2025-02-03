@@ -209,6 +209,7 @@ const ggml_hsa_device_info & ggml_hsa_info() {
 
 ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::hsa_device_info & device_info) :
         device(device), name(ggml_hsa_format_name(device)) {
+#if 0
     // create queue
     const std::uint32_t min_queue_size = ggml_hsa_get_agent_min_queue_size(device_info.agent);
     if (auto status = hsa_queue_create(device_info.agent, min_queue_size, HSA_QUEUE_TYPE_SINGLE, nullptr, nullptr, 0, 0, &queue);
@@ -216,6 +217,7 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const gg
         GGML_LOG_ERROR("%s: hsa_queue_create failed: %s", __func__, ggml_hsa_get_status_string(status));
         throw std::runtime_error("hsa_queue_create failed");
     }
+#endif
 
     // create signal to wait for packets
     if (auto status = hsa_signal_create(0, 0, nullptr, &dispatch_signal); status != HSA_STATUS_SUCCESS) {
@@ -239,7 +241,9 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const gg
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     HSA_CHECK(hsa_signal_destroy(dispatch_signal));
+#if 0
     HSA_CHECK(hsa_queue_destroy(queue));
+#endif
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_gallocr_free(fallback_galloc);
     ggml_backend_free(fallback_backend);
@@ -693,9 +697,9 @@ struct fallback_tensor {
         for (; (tensor_src_count < GGML_MAX_SRC) && (tensor->src[tensor_src_count] != nullptr) ; ++tensor_src_count);
 
         // create context
-        const auto tensor_count = (tensor->op == GGML_OP_UNARY) ? tensor_src_count + 1: tensor_src_count + 1;
+        const auto tensor_count = tensor_src_count + 3;
         const ggml_init_params params = {
-            /*.mem_size   =*/ tensor_count * ggml_tensor_overhead() + ggml_graph_overhead() + 262144,
+            /*.mem_size   =*/ tensor_count * ggml_tensor_overhead() + ggml_graph_overhead_custom(tensor_count, false) + 262144,
             /*.mem_buffer =*/ nullptr,
             /*.no_alloc   =*/ true,
         };
@@ -716,10 +720,10 @@ struct fallback_tensor {
         new_tensor->data = tensor->data;
         std::copy_n(tensor->op_params, GGML_MAX_OP_PARAMS / sizeof(int32_t), new_tensor->op_params);
         std::copy_n(tensor->src, tensor_src_count, new_tensor->src);
-        std::strcpy(tensor->name, new_tensor->name);
+        ggml_set_name(new_tensor, tensor->name);
 
         // create graph
-        graph = ggml_new_graph(ctx);
+        graph = ggml_new_graph_custom(ctx, tensor_count, false);
         if (graph == nullptr) {
             GGML_LOG_ERROR("ggml_new_graph(): failed to create graph");
             throw std::runtime_error("ggml_new_graph(): failed to create graph");
@@ -752,8 +756,9 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, g
     auto * ctx = static_cast<ggml_backend_hsa_context *>(backend->context);
     ggml_status status = GGML_STATUS_SUCCESS;
 
-    for (int i = 0; (i < cgraph->n_nodes) && (status == GGML_STATUS_SUCCESS); ++i) {
-        auto * node = cgraph->nodes[i];
+    const int node_count = ggml_graph_n_nodes(cgraph);
+    for (int i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
+        ggml_tensor * node = ggml_graph_node(cgraph, i);
         if (ggml_is_empty(node)) {
             continue;
         }
@@ -761,6 +766,11 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, g
         switch (node->op) {
             case GGML_OP_NONE:
                 // NOP
+                break;
+
+            case GGML_OP_ADD:
+            case GGML_OP_ADD1:
+                status = ggml_hsa_add(*ctx, node);
                 break;
 
             case GGML_OP_DUP:
@@ -775,12 +785,14 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, g
             case GGML_OP_CONT:
                 status = ggml_hsa_cpy(*ctx, node);
                 break;
+
             case GGML_OP_PERMUTE:
             case GGML_OP_RESHAPE:
             case GGML_OP_TRANSPOSE:
             case GGML_OP_VIEW:
                 // NOP
                 break;
+
             default:
 #ifdef GGML_HSA_CPU_FALLBACK
                 {
@@ -969,6 +981,9 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
     switch (tensor->op) {
         case GGML_OP_NONE:
             return true;
+        case GGML_OP_ADD:
+        case GGML_OP_ADD1:
+            return ggml_hsa_supports_add(tensor);
         case GGML_OP_DUP:
             return ggml_hsa_supports_cpy(tensor);
         case GGML_OP_MUL_MAT:
