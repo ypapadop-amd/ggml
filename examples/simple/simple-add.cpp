@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <vector>
@@ -8,13 +9,13 @@
 
 int main(void) {
     const std::size_t N = 8;
-    float A[N] = {2, 8, 5, 1, 4, 2, 8, 6 };
-    float B[N] = {10, 5, 9, 9, 5, 4 };
+    std::int32_t A[N] = {2, 8, 5, 1, 4, 2, 8, 6 };
+    std::int32_t B[N] = {10, 5, 9, 9, 5, 4 };
 
     ggml_backend_t backend = ggml_backend_hsa_init(0);
     const std::size_t alignment = ggml_backend_get_alignment(backend);
     const std::size_t tensor_count = 3;
-    const std::size_t buffer_size = tensor_count * GGML_PAD((N * sizeof(float)), alignment);
+    const std::size_t buffer_size = tensor_count * GGML_PAD((N * sizeof(std::int32_t)), alignment);
     ggml_backend_buffer_t buffer = ggml_backend_alloc_buffer(backend, buffer_size);
     ggml_tallocr alloc = ggml_tallocr_new(buffer);
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
@@ -27,8 +28,8 @@ int main(void) {
     };
     ggml_context * ctx = ggml_init(params);
 
-    ggml_tensor * tensor_a = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, N);
-    ggml_tensor * tensor_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, N);
+    ggml_tensor * tensor_a = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, N);
+    ggml_tensor * tensor_b = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, N);
 
     ggml_tallocr_alloc(&alloc, tensor_a);
     ggml_tallocr_alloc(&alloc, tensor_b);
@@ -48,7 +49,7 @@ int main(void) {
         std::cout << "Execution failed\n";
     }
 
-    std::vector<float> result(N);
+    std::vector<std::int32_t> result(N);
     ggml_backend_tensor_get(tensor_result, result.data(), 0, ggml_nbytes(tensor_result));
 
     std::cout << "add (" << result.size() << "):\n[";
