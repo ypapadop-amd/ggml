@@ -161,9 +161,8 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     cmd_payload->data[12] = element_count * sizeof(std::uint32_t);
     cmd_payload->data[13] = element_count * sizeof(std::uint32_t);
 
-    std::uint64_t wr_idx = hsa_queue_add_write_index_screlease(ctx.queue, 1);
+    std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(ctx.queue, 1);
     std::uint64_t packet_id = wr_idx % ctx.queue->size;
-
     auto * cmd_pkt = static_cast<hsa_amd_aie_ert_packet_t *>(ctx.queue->base_address) + packet_id;
     cmd_pkt->state = HSA_AMD_AIE_ERT_STATE_NEW;
     cmd_pkt->count = 0xC; // # of arguments to put in command
