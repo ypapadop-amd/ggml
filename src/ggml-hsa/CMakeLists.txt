@@ -35,17 +35,6 @@ ggml_add_backend_library(ggml-hsa
                          )
 
 #
-# XRT
-#
-
-set(XRT_INC_DIR /opt/xilinx/xrt/include CACHE STRING "Path to XRT cloned repo")
-set(XRT_LIB_DIR /opt/xilinx/xrt/lib CACHE STRING "Path to xrt_coreutil.lib")
-
-target_include_directories (ggml-hsa PUBLIC ${XRT_INC_DIR})
-target_link_directories(ggml-hsa PUBLIC ${XRT_LIB_DIR})
-target_link_libraries(ggml-hsa PUBLIC xrt_coreutil)
-
-#
 # Eigen
 #
 
