@@ -8,7 +8,7 @@
 #include "ggml-hsa.h"
 
 int main(void) {
-    const std::size_t N = 8;
+    const std::size_t N = 1024;
     std::int32_t A[N] = {2, 8, 5, 1, 4, 2, 8, 6 };
     std::int32_t B[N] = {10, 5, 9, 9, 5, 4 };
 
@@ -37,6 +37,10 @@ int main(void) {
     ggml_cgraph * gf = ggml_new_graph_custom(ctx, tensor_count, false);
 
     ggml_tensor * tensor_result = ggml_add(ctx, tensor_a, tensor_b);
+    if (ggml_backend_supports_op(backend, tensor_result) == 0) {
+        std::cout << "Operation not supported\n";
+        return EXIT_FAILURE;
+    }
 
     ggml_build_forward_expand(gf, tensor_result);
 
