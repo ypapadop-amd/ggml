@@ -101,8 +101,7 @@ static hsa_status_t ggml_hsa_set_memory_pool_info(
 
     std::size_t max_alloc_size = 0;
     if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE, &max_alloc_size);
-        status != HSA_STATUS_SUCCESS || (max_alloc_size == 0)) {
-        // XDNA dev heap has max_alloc_size == 0
+        status != HSA_STATUS_SUCCESS) {
         return status;
     }
 
@@ -137,9 +136,22 @@ static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, v
         return ggml_hsa_set_memory_pool_info(pool, device_info.kernarg_memory);
     }
 
+    std::size_t max_alloc_size;
+    if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE, &max_alloc_size);
+        status != HSA_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
     const bool coarse_grained_pool = (pool_flags & HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED) != 0x0;
     if (coarse_grained_pool) {
-        return ggml_hsa_set_memory_pool_info(pool, device_info.data_memory);
+        if (max_alloc_size == 0) {
+            // XDNA dev heap has max_alloc_size == 0
+            return ggml_hsa_set_memory_pool_info(pool, device_info.dev_memory);
+        }
+        else {
+            return ggml_hsa_set_memory_pool_info(pool, device_info.data_memory);
+        }
     }
 
     return HSA_STATUS_SUCCESS;
@@ -209,7 +221,6 @@ const ggml_hsa_device_info & ggml_hsa_info() {
 
 ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::hsa_device_info & device_info) :
         device(device), name(ggml_hsa_format_name(device)) {
-#if 0
     // create queue
     const std::uint32_t min_queue_size = ggml_hsa_get_agent_min_queue_size(device_info.agent);
     if (auto status = hsa_queue_create(device_info.agent, min_queue_size, HSA_QUEUE_TYPE_SINGLE, nullptr, nullptr, 0, 0, &queue);
@@ -217,7 +228,6 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const gg
         GGML_LOG_ERROR("%s: hsa_queue_create failed: %s", __func__, ggml_hsa_get_status_string(status));
         throw std::runtime_error("hsa_queue_create failed");
     }
-#endif
 
     // create signal to wait for packets
     if (auto status = hsa_signal_create(0, 0, nullptr, &dispatch_signal); status != HSA_STATUS_SUCCESS) {
@@ -241,9 +251,7 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const gg
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     HSA_CHECK(hsa_signal_destroy(dispatch_signal));
-#if 0
     HSA_CHECK(hsa_queue_destroy(queue));
-#endif
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_gallocr_free(fallback_galloc);
     ggml_backend_free(fallback_backend);
