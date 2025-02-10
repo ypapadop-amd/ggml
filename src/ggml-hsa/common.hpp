@@ -4,6 +4,7 @@
 #include "ggml-hsa.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -104,3 +105,14 @@ struct ggml_backend_hsa_context {
     ggml_backend_hsa_context& operator=(const ggml_backend_hsa_context &) = delete;
     ggml_backend_hsa_context& operator=(ggml_backend_hsa_context &&) = delete;
 };
+
+/**
+ * @brief Reads a PDI file from @p filename and returns its contents and size in bytes in @p buffer and @p buffer_size respectively.
+ */
+ggml_status ggml_load_pdi(hsa_amd_memory_pool_t pool, const std::string & filename, std::uint64_t *& buffer, std::size_t & buffer_size);
+
+/**
+ * @brief Reads an instruction file from @p filename and returns its contents and number of instructions size in
+ *        @p instr_buf and @p instr_count respectively.
+ */
+ggml_status ggml_load_instr(hsa_amd_memory_pool_t pool, const std::string & filename, std::uint32_t *& buffer, std::size_t & instr_count);
