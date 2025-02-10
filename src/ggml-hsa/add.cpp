@@ -83,7 +83,7 @@ bool ggml_hsa_supports_add(const ggml_tensor * tensor) {
       return false;
     }
 
-    if (ggml_nelements(src0) > 1024) {
+    if (ggml_nelements(src0) != 256) {
       return false;
     }
 
@@ -104,9 +104,9 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
 
     GGML_ASSERT(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
 
-    const uint64_t element_count = ggml_nelements(src0);
+    const std::int64_t element_count = ggml_nelements(src0);
 
-    GGML_ASSERT(element_count <= 1024);
+    GGML_ASSERT(element_count == 256);
 
     std::uint64_t * pdi_buf = nullptr;
     std::size_t pdi_size = 0;
@@ -170,6 +170,7 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     cmd_pkt->header.AmdFormat = HSA_AMD_PACKET_TYPE_AIE_ERT;
     cmd_pkt->header.header = HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE;
     cmd_pkt->payload_data = reinterpret_cast<std::uint64_t>(cmd_payload);
+    // TODO add cmd_pkt->completion_signal = ctx.dispatch_signal
 
     hsa_signal_store_screlease(ctx.queue->doorbell_signal, wr_idx);
 
