@@ -1,16 +1,20 @@
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
-#include <vector>
+#include <numeric>
 
 #include "ggml.h"
 #include "ggml-hsa.h"
 
 int main(void) {
-    const std::size_t N = 1024;
-    std::int32_t A[N] = {2, 8, 5, 1, 4, 2, 8, 6 };
-    std::int32_t B[N] = {10, 5, 9, 9, 5, 4 };
+    const std::size_t N = 256;
+    std::array<std::int32_t, N> A = {};
+    std::array<std::int32_t, N> B = {};
+
+    std::iota(std::begin(A), std::end(A), 1);
+    std::iota(std::begin(B), std::end(B), 10);
 
     ggml_backend_t backend = ggml_backend_hsa_init(0);
     const std::size_t alignment = ggml_backend_get_alignment(backend);
@@ -46,15 +50,15 @@ int main(void) {
 
     ggml_gallocr_alloc_graph(galloc, gf);
 
-    ggml_backend_tensor_set(tensor_a, A, 0, ggml_nbytes(tensor_a));
-    ggml_backend_tensor_set(tensor_b, B, 0, ggml_nbytes(tensor_b));
+    ggml_backend_tensor_set(tensor_a, std::data(A), 0, ggml_nbytes(tensor_a));
+    ggml_backend_tensor_set(tensor_b, std::data(B), 0, ggml_nbytes(tensor_b));
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
         std::cout << "Execution failed\n";
     }
 
-    std::vector<std::int32_t> result(N);
-    ggml_backend_tensor_get(tensor_result, result.data(), 0, ggml_nbytes(tensor_result));
+    std::array<std::int32_t, N> result = {};
+    ggml_backend_tensor_get(tensor_result, std::data(result), 0, ggml_nbytes(tensor_result));
 
     std::cout << "add (" << result.size() << "):\n[";
     for (auto v : result) {
