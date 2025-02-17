@@ -13,6 +13,13 @@ add_executable(${TEST_TARGET} simple-backend.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml)
 
 #
+# test-add-sched
+
+set(TEST_TARGET simple-add-sched)
+add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
+target_link_libraries(${TEST_TARGET} PRIVATE ggml)
+
+#
 # test-add
 
 set(TEST_TARGET simple-add)

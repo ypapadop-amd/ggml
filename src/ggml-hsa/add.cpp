@@ -9,7 +9,7 @@ bool ggml_hsa_supports_add(const ggml_tensor * tensor) {
 
     GGML_ASSERT(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
 
-    if ((src0->type != src1->type) || (src0->type != dst->type) || src0->type != GGML_TYPE_I32) {
+    if ((src0->type != src1->type) || (src0->type != dst->type) || (src0->type != GGML_TYPE_I32 && src0->type != GGML_TYPE_F32)) {
       return false;
     }
 
@@ -24,15 +24,29 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     auto & info = ggml_hsa_info();
     auto & device_info = info.devices[ctx.device];
 
-    const std::string path = "/home/ypapadop/workspace-raiders/mlir-aie/programming_examples/basic/vector_vector_add/build/";
-    const std::string pdi_path = path + "add.pdi";
-    const std::string instr_path = path + "insts.txt";
+    std::string path = "/home/ypapadop/workspace-raiders/mlir-aie/programming_examples/basic/vector_vector_add/build/";
 
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * src1 = tensor->src[1];
     ggml_tensor * dst = tensor;
 
     GGML_ASSERT(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
+
+    // Note: Assuming src0 and src1 are of the same type
+    std::string pdi_path;
+    std::string instr_path;
+    if (tensor->src[0]->type == GGML_TYPE_I32) {
+      pdi_path = path + "vector_vector_add_i32.pdi";
+      instr_path = path + "vector_vector_add_insts_i32.txt";
+    }
+    else if (tensor->src[0]->type == GGML_TYPE_F32) {
+      pdi_path = path + "vector_vector_add_f32.pdi";
+      instr_path = path + "vector_vector_add_insts_f32.txt";
+    }
+    else {
+      // We check type in ggml_hsa_supports_add so shouldn't hit this
+      return GGML_STATUS_FAILED;
+    }
 
     const std::int64_t element_count = ggml_nelements(src0);
 
