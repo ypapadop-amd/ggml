@@ -52,20 +52,6 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
         return status;
     }
 
-    hsa_amd_aie_ert_hw_ctx_cu_config_addr_t cu_config = {};
-    cu_config.cu_config_addr = reinterpret_cast<std::uint64_t>(pdi_buf);
-    cu_config.cu_size = pdi_size;
-
-    hsa_amd_aie_ert_hw_ctx_config_cu_param_addr_t config_cu_args = {};
-    config_cu_args.num_cus = 1;
-    config_cu_args.cu_configs = &cu_config;
-
-    if (auto status = hsa_amd_queue_hw_ctx_config(ctx.queue, HSA_AMD_QUEUE_AIE_ERT_HW_CXT_CONFIG_CU, &config_cu_args);
-        status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: Could not configure hardware context (%d)\n", __func__, status);
-        return GGML_STATUS_FAILED;
-    }
-
 #define LOW_ADDR(addr) (reinterpret_cast<uint64_t>(addr) & 0xFFFFFFFF)
 #define HIGH_ADDR(addr) (reinterpret_cast<uint64_t>(addr) >> 32)
 
@@ -75,7 +61,7 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
         GGML_LOG_ERROR("%s: Could not allocate hsa_amd_aie_ert_start_kernel_data_t (%d)\n", __func__, status);
         return GGML_STATUS_FAILED;
     }
-    cmd_payload->cu_mask = 0x1; // PDI to use with this command
+    cmd_payload->pdi_addr = pdi_buf; // PDI to use with this command
     cmd_payload->data[0] = 0x3; // Transaction opcode
     cmd_payload->data[1] = 0x0;
     cmd_payload->data[2] = LOW_ADDR(instr_buf);
