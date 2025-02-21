@@ -117,7 +117,7 @@ constexpr ggml_hsa_operation_kernel op_kernel_map[] = {
 static_assert((sizeof(op_kernel_map) / sizeof(op_kernel_map[0])) - 1 == GGML_OP_COUNT,
               "Incorrect operation mapping");
 
-const std::filesystem::path kernel_base_path = "/home/ypapadop/workspace-raiders/mlir-aie/programming_examples/basic/vector_vector_add/build/";
+const std::filesystem::path kernel_base_path = "/home/ypapadop/workspace-raiders/ggml/src/ggml-hsa/kernels/add/build/";
 
 /**
  * @brief Returns if @p p is a file.
