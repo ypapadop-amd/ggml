@@ -11,15 +11,23 @@ namespace {
 
 /**
  * @brief Maps an operation to the relevant kernel files.
+ *
+ * The paths to the files are relative.
  */
 struct ggml_hsa_operation_kernel {
-  ggml_op op;
+  ggml_op op{GGML_OP_NONE};
   std::string_view pdi_file;
   std::string_view instr_file;
+
+  constexpr ggml_hsa_operation_kernel(ggml_op op, std::string_view pdi_file, std::string_view instr_file) :
+    op{op}, pdi_file{pdi_file}, instr_file{instr_file} {}
 
   constexpr bool valid() const noexcept { return !pdi_file.empty() && !instr_file.empty(); }
 };
 
+/**
+ * @brief Operation to kernel mapping.
+ */
 constexpr ggml_hsa_operation_kernel op_kernel_map[] = {
   { GGML_OP_NONE, "", "" },
   { GGML_OP_DUP, "", "" },
