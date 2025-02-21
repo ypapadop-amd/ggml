@@ -69,9 +69,9 @@ static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
 
 // Returns the minimum queue size
 static std::uint32_t ggml_hsa_get_agent_min_queue_size(hsa_agent_t agent) {
-  std::uint32_t min_queue_size = 0;
-  HSA_CHECK(hsa_agent_get_info(agent, HSA_AGENT_INFO_QUEUE_MIN_SIZE, &min_queue_size));
-  return min_queue_size;
+    std::uint32_t min_queue_size = 0;
+    HSA_CHECK(hsa_agent_get_info(agent, HSA_AGENT_INFO_QUEUE_MIN_SIZE, &min_queue_size));
+    return min_queue_size;
 }
 
 /**
@@ -499,12 +499,11 @@ static const ggml_backend_buffer_type_i ggml_backend_hsa_buffer_type_interface =
 };
 
 /**
- * @brief HSA buffer types metadata.
+ * @brief HSA buffer types.
  */
 static struct {
-    std::mutex mutex;
     ggml_backend_buffer_type type[GGML_HSA_MAX_DEVICES];
-    bool initialized{false};
+    std::once_flag flag;
 } ggml_backend_hsa_buffer_type_metadata;
 
 ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) {
@@ -514,18 +513,17 @@ ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) {
         return nullptr;
     }
 
-    std::lock_guard<std::mutex> lock(ggml_backend_hsa_buffer_type_metadata.mutex);
-
-    if (!ggml_backend_hsa_buffer_type_metadata.initialized) {
-        for (std::int32_t i = 0; i < device_count; ++i) {
-            ggml_backend_hsa_buffer_type_metadata.type[i] = {
-                /* .iface    = */ ggml_backend_hsa_buffer_type_interface,
-                /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_hsa_reg(), i),
-                /* .context  = */ new ggml_backend_hsa_buffer_type_context{i},
-            };
-        }
-        ggml_backend_hsa_buffer_type_metadata.initialized = true;
-    }
+    std::call_once(
+        ggml_backend_hsa_buffer_type_metadata.flag,
+        [&device_count] {
+            for (std::int32_t i = 0; i < device_count; ++i) {
+                ggml_backend_hsa_buffer_type_metadata.type[i] = {
+                    /* .iface    = */ ggml_backend_hsa_buffer_type_interface,
+                    /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_hsa_reg(), i),
+                    /* .context  = */ new ggml_backend_hsa_buffer_type_context{i},
+                };
+            }
+        });
 
     return &ggml_backend_hsa_buffer_type_metadata.type[device];
 }
@@ -1093,37 +1091,35 @@ static const ggml_backend_reg_i ggml_backend_hsa_reg_interface = {
 
 static struct {
     ggml_backend_reg reg;
-    std::mutex mutex;
-    bool initialized{false};
+    std::once_flag flag;
 } ggml_backend_hsa_reg_metadata;
 
 ggml_backend_reg_t ggml_backend_hsa_reg() {
-    std::lock_guard<std::mutex> lock(ggml_backend_hsa_reg_metadata.mutex);
-    if (!ggml_backend_hsa_reg_metadata.initialized) {
-        const auto & info = ggml_hsa_info();
+    std::call_once(
+        ggml_backend_hsa_reg_metadata.flag,
+        [] {
+            const auto & info = ggml_hsa_info();
 
-        auto * ctx = new ggml_backend_hsa_reg_context;
+            auto * ctx = new ggml_backend_hsa_reg_context;
 
-        ctx->devices.reserve(info.device_count);
-        for (std::int32_t i = 0; i <  info.device_count; i++) {
-            auto * dev_ctx = new ggml_backend_hsa_device_context{i, info.devices[i].agent};
+            ctx->devices.reserve(info.device_count);
+            for (std::int32_t i = 0; i <  info.device_count; i++) {
+                auto * dev_ctx = new ggml_backend_hsa_device_context{i, info.devices[i].agent};
 
-            auto dev = new ggml_backend_device {
-                /* .iface   = */ ggml_backend_hsa_device_interface,
-                /* .reg     = */ &ggml_backend_hsa_reg_metadata.reg,
-                /* .context = */ dev_ctx
+                auto dev = new ggml_backend_device {
+                    /* .iface   = */ ggml_backend_hsa_device_interface,
+                    /* .reg     = */ &ggml_backend_hsa_reg_metadata.reg,
+                    /* .context = */ dev_ctx
+                };
+                ctx->devices.push_back(dev);
+            }
+
+            ggml_backend_hsa_reg_metadata.reg = ggml_backend_reg {
+                /* .api_version = */ GGML_BACKEND_API_VERSION,
+                /* .iface       = */ ggml_backend_hsa_reg_interface,
+                /* .context     = */ ctx
             };
-            ctx->devices.push_back(dev);
-        }
-
-        ggml_backend_hsa_reg_metadata.reg = ggml_backend_reg {
-            /* .api_version = */ GGML_BACKEND_API_VERSION,
-            /* .iface       = */ ggml_backend_hsa_reg_interface,
-            /* .context     = */ ctx
-        };
-
-        ggml_backend_hsa_reg_metadata.initialized = true;
-    }
+        });
 
     return &ggml_backend_hsa_reg_metadata.reg;
 }
