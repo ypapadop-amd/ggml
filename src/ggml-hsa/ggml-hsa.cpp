@@ -8,11 +8,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
-#include <sstream>
 #include <vector>
 
 #ifdef GGML_HSA_CPU_FALLBACK
@@ -258,64 +256,6 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     ggml_gallocr_free(fallback_galloc);
     ggml_backend_free(fallback_backend);
 #endif
-}
-
-ggml_status ggml_load_pdi(hsa_amd_memory_pool_t pool, const std::string & filename, std::uint64_t *& buffer, std::size_t & buffer_size) {
-    std::ifstream is(filename, std::ios::binary | std::ios::ate | std::ios::in);
-    if (is.fail()) {
-        GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, filename.c_str());
-        return GGML_STATUS_FAILED;
-    }
-
-    const std::size_t size = is.tellg();
-    GGML_ASSERT(size > 0);
-    if (!is.seekg(0, std::ios::beg)) {
-        GGML_LOG_ERROR("%s: I/O error, could not get file size for %s\n", __func__, filename.c_str());
-        return GGML_STATUS_FAILED;
-    }
-    if (auto status = hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer));
-        status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: Could not allocate %zu bytes\n", __func__, size);
-        return GGML_STATUS_FAILED;
-    }
-
-    is.read(reinterpret_cast<char *>(buffer), size);
-    buffer_size = size;
-
-    return GGML_STATUS_SUCCESS;
-}
-
-ggml_status ggml_load_instr(hsa_amd_memory_pool_t pool, const std::string & filename, std::uint32_t *& buffer, std::size_t & instr_count) {
-    std::ifstream is(filename, std::ios::in);
-    if (is.fail()) {
-        GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, filename.c_str());
-        return GGML_STATUS_FAILED;
-    }
-
-    std::string line;
-    std::vector<std::uint32_t> instr_v;
-    while (std::getline(is, line)) {
-      std::istringstream iss(line);
-      std::uint32_t a;
-      if (!(iss >> std::hex >> a)) {
-        GGML_LOG_ERROR("%s: I/O error, could not read file %s\n", __func__, filename.c_str());
-          return GGML_STATUS_FAILED;
-      }
-      instr_v.push_back(a);
-    }
-    GGML_ASSERT(instr_v.empty() == false);
-
-    const std::size_t required_memory_size = instr_v.size() * sizeof(std::uint32_t);
-    if (auto status = hsa_amd_memory_pool_allocate(pool, required_memory_size, 0, reinterpret_cast<void **>(&buffer));
-        status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: Could not allocate %zu bytes\n", __func__, required_memory_size);
-        return GGML_STATUS_FAILED;
-    }
-
-    std::copy(instr_v.begin(), instr_v.end(), buffer);
-    instr_count = instr_v.size();
-
-    return GGML_STATUS_SUCCESS;
 }
 
 // HSA buffer

@@ -24,10 +24,6 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     auto & info = ggml_hsa_info();
     auto & device_info = info.devices[ctx.device];
 
-    const std::string path = "/home/ypapadop/workspace-raiders/mlir-aie/programming_examples/basic/vector_vector_add/build/";
-    const std::string pdi_path = path + "add.pdi";
-    const std::string instr_path = path + "insts.txt";
-
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * src1 = tensor->src[1];
     ggml_tensor * dst = tensor;
@@ -38,17 +34,9 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
 
     GGML_ASSERT(element_count == 256);
 
-    std::uint64_t * pdi_buf = nullptr;
-    std::size_t pdi_size = 0;
-    if (auto status = ggml_load_pdi(device_info.dev_memory.memory_pool, pdi_path, pdi_buf, pdi_size);
-        status != GGML_STATUS_SUCCESS) {
-        return status;
-    }
-
-    std::uint32_t * instr_buf = nullptr;
-    std::size_t instr_count = 0;
-    if (auto status = ggml_load_instr(device_info.dev_memory.memory_pool, instr_path, instr_buf, instr_count);
-        status != GGML_STATUS_SUCCESS) {
+    ggml_hsa_pdi_buffer pdi_buf;
+    ggml_hsa_instr_buffer instr_buf;
+    if (auto status = ggml_hsa_load_kernel(ctx, tensor, pdi_buf, instr_buf); status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
@@ -61,12 +49,12 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
         GGML_LOG_ERROR("%s: Could not allocate hsa_amd_aie_ert_start_kernel_data_t (%d)\n", __func__, status);
         return GGML_STATUS_FAILED;
     }
-    cmd_payload->pdi_addr = pdi_buf; // PDI to use with this command
+    cmd_payload->pdi_addr = pdi_buf.data; // PDI to use with this command
     cmd_payload->data[0] = 0x3; // Transaction opcode
     cmd_payload->data[1] = 0x0;
-    cmd_payload->data[2] = LOW_ADDR(instr_buf);
-    cmd_payload->data[3] = HIGH_ADDR(instr_buf);
-    cmd_payload->data[4] = static_cast<std::uint32_t>(instr_count);
+    cmd_payload->data[2] = LOW_ADDR(instr_buf.data);
+    cmd_payload->data[3] = HIGH_ADDR(instr_buf.data);
+    cmd_payload->data[4] = static_cast<std::uint32_t>(instr_buf.size);
     cmd_payload->data[5] = LOW_ADDR(src0->data);
     cmd_payload->data[6] = HIGH_ADDR(src0->data);
     cmd_payload->data[7] = LOW_ADDR(src1->data);
