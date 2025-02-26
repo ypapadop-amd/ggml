@@ -6,33 +6,33 @@
 #
 # (c) Copyright 2024-2025 Advanced Micro Devices, Inc. or its affiliates
 
+import argparse
 import numpy as np
 import sys
-
 from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
-from aie.iron.device import NPU1Col1, XCVC1902
+from aie.iron.device import NPU1Col1, NPU2
 from aie.iron.controlflow import range_
+from ml_dtypes import bfloat16
+
+supported_devices = ["npu", "npu2"]
+
+supported_dtypes = {
+    "bfloat16_t": bfloat16,
+    "int8_t": np.int8,
+    "int16_t": np.int16,
+    "int32_t": np.int32,
+    "float": np.float32,
+}
 
 
-def my_vector_add():
-    N = 256
+def vector_add(dev, dtype, dims):
     n = 16
-    N_div_n = N // n
-
-    if len(sys.argv) != 3:
-        raise ValueError("[ERROR] Need 2 command line arguments (Device name, Col)")
-
-    if sys.argv[1] == "npu":
-        dev = NPU1Col1()
-    elif sys.argv[1] == "xcvc1902":
-        dev = XCVC1902()
-    else:
-        raise ValueError("[ERROR] Device name {} is unknown".format(sys.argv[1]))
+    N_div_n = dims[0] // n
 
     # Define tensor types
-    tensor_ty = np.ndarray[(N,), np.dtype[np.int32]]
-    tile_ty = np.ndarray[(n,), np.dtype[np.int32]]
+    tensor_ty = np.ndarray[dims, dtype]
+    tile_ty = np.ndarray[(n,), dtype]
 
     # AIE-array data movement with object fifos
     of_in1 = ObjectFifo(tile_ty, name="in1")
@@ -68,7 +68,40 @@ def my_vector_add():
 
 
 def main():
-    module = my_vector_add()
+    parser = argparse.ArgumentParser(
+        prog="add.py",
+        description="AIE Vector Add MLIR Design (Whole Array)",
+    )
+    parser.add_argument(
+        "--dev",
+        type=str,
+        required=True,
+        choices=supported_devices,
+        help="Target device",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        required=True,
+        choices=list(supported_dtypes.keys()),
+        help="Input and output vector sizes",
+    )
+    parser.add_argument(
+        "--size", type=int, required=True, help="Input and output vector sizes"
+    )
+    args = parser.parse_args()
+
+    if args.dev == "npu":
+        dev = NPU1Col1()
+    elif args.dev == "npu2":
+        dev = NPU2()
+    else:
+        raise ValueError("[ERROR] Device name {} is unknown".format(args.dev))
+
+    dtype = np.dtype[supported_dtypes[args.dtype]]
+    dims = (args.size,)
+
+    module = vector_add(dev, dtype, dims)
     print(module)
 
 

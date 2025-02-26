@@ -8,30 +8,28 @@
 #
 ##===----------------------------------------------------------------------===##
 
-targetname = add
-devicename = npu
-col = 0
+kernel = add
+dev = npu
+dtype = int32_t
+size = 256
 
-all: build/${targetname}.pdi
+all: build/${kernel}.pdi
 
-build/${targetname}.mlir: ${targetname}.py
+build/${kernel}.mlir: ${kernel}.py
 	mkdir -p ${@D}
-	python3 $< ${devicename} ${col} > $@
+	python3 $< --dev ${dev} --dtype ${dtype} --size ${size} > $@
 
-build/${targetname}.xclbin: build/${targetname}.mlir
+build/${kernel}.xclbin: build/${kernel}.mlir
 	cd ${@D} && \
 	aiecc.py --aie-generate-cdo --aie-generate-npu --no-compile-host \
 		--no-xchesscc --no-xbridge \
-		--xclbin-name=${@F} --npu-insts-name=${targetname}_insts.txt ${<F}
+		--xclbin-name=${@F} --npu-insts-name=${kernel}_insts.txt ${<F}
 
-build/${targetname}.pdi: build/${targetname}.xclbin
+build/${kernel}.pdi: build/${kernel}.xclbin
 	cd ${@D} && \
 	xclbinutil --dump-section AIE_PARTITION:JSON:aie_partition.json --force --input ${<F} && \
 	PDI_FILENAME=$$(jq .aie_partition.PDIs.[0].file_name aie_partition.json) && \
 	bash -c "cp $$PDI_FILENAME ${@F}"
-
-convert: build/aie_partition.json
-	cd build && jq .aie_partition.PDIs.[0].file_name aie_partition.json
 
 clean:
 	rm -rf build *.pdi
