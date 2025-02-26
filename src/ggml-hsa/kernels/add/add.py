@@ -27,26 +27,32 @@ supported_dtypes = {
 
 
 def create_device(device_name):
+    """Return the device from the given device name."""
     if device_name == "npu":
         dev = NPU1Col1()
     elif device_name == "npu2":
         dev = NPU2()
     else:
-        raise ValueError("[ERROR] Device name {} is unknown".format(device_name))
+        raise ValueError("Device name {} is unknown".format(device_name))
     return dev
 
 
 def create_dtype(dtype_name):
+    """Return the numpy datatype from the datatype name."""
     return np.dtype[supported_dtypes[dtype_name]]
 
 
 def create_dims(dims_str):
+    """Return a tuple of dimensions from the string."""
     dims_str = dims_str.replace("(", "").replace(")", "")
     dims_ints = map(int, dims_str.split(","))
     return tuple(dims_ints)
 
 
 def vector_add(dev, dtype, dims):
+    if len(dims) > 1:
+        raise ValueError("Function accepts only 1D dims")
+
     n = 16
     N_div_n = dims[0] // n
 
