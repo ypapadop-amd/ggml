@@ -26,6 +26,26 @@ supported_dtypes = {
 }
 
 
+def create_device(device_name):
+    if device_name == "npu":
+        dev = NPU1Col1()
+    elif device_name == "npu2":
+        dev = NPU2()
+    else:
+        raise ValueError("[ERROR] Device name {} is unknown".format(device_name))
+    return dev
+
+
+def create_dtype(dtype_name):
+    return np.dtype[supported_dtypes[dtype_name]]
+
+
+def create_dims(dims_str):
+    dims_str = dims_str.replace("(", "").replace(")", "")
+    dims_ints = map(int, dims_str.split(","))
+    return tuple(dims_ints)
+
+
 def vector_add(dev, dtype, dims):
     n = 16
     N_div_n = dims[0] // n
@@ -87,20 +107,13 @@ def main():
         help="Input and output vector sizes",
     )
     parser.add_argument(
-        "--size", type=int, required=True, help="Input and output vector sizes"
+        "--dims", type=str, required=True, help="Input and output vector sizes"
     )
     args = parser.parse_args()
 
-    if args.dev == "npu":
-        dev = NPU1Col1()
-    elif args.dev == "npu2":
-        dev = NPU2()
-    else:
-        raise ValueError("[ERROR] Device name {} is unknown".format(args.dev))
-
-    dtype = np.dtype[supported_dtypes[args.dtype]]
-    dims = (args.size,)
-
+    dev = create_device(args.dev)
+    dtype = create_dtype(args.dtype)
+    dims = create_dims(args.dims)
     module = vector_add(dev, dtype, dims)
     print(module)
 

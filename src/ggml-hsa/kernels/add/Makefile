@@ -11,13 +11,13 @@
 kernel = add
 dev = npu
 dtype = int32_t
-size = 256
+dims = 256
 
 all: build/${kernel}.pdi
 
 build/${kernel}.mlir: ${kernel}.py
 	mkdir -p ${@D}
-	python3 $< --dev ${dev} --dtype ${dtype} --size ${size} > $@
+	python3 $< --dev ${dev} --dtype ${dtype} --dims ${dims} > $@
 
 build/${kernel}.xclbin: build/${kernel}.mlir
 	cd ${@D} && \
