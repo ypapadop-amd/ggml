@@ -25,9 +25,9 @@ struct ggml_hsa_operation_kernel {
 };
 
 /**
- * @brief Operation to kernel mapping.
+ * @brief Operation to kernel name mapping.
  */
-constexpr ggml_hsa_operation_kernel op_kernel_map[] = {
+constexpr ggml_hsa_operation_kernel op_kernel_name_map[] = {
   { GGML_OP_NONE, "" },
   { GGML_OP_DUP, "" },
   { GGML_OP_ADD, "add" },
@@ -113,13 +113,12 @@ constexpr ggml_hsa_operation_kernel op_kernel_map[] = {
   { GGML_OP_OPT_STEP_ADAMW, "" },
   { GGML_OP_COUNT, "" },
 };
-static_assert((sizeof(op_kernel_map) / sizeof(op_kernel_map[0])) - 1 == GGML_OP_COUNT,
+static_assert((sizeof(op_kernel_name_map) / sizeof(op_kernel_name_map[0])) - 1 == GGML_OP_COUNT,
               "Incorrect operation mapping");
 
-static const std::filesystem::path kernel_base_path = "/home/ypapadop/workspace-raiders/ggml/src/ggml-hsa/kernels/add/build/";
-static const std::string_view pdi_file_suffix = ".pdi";
-static const std::string_view inst_file_suffix = "_insts.txt";
-
+const std::filesystem::path kernel_base_path = "/home/ypapadop/workspace-raiders/ggml/src/ggml-hsa/kernels/add/build/";
+const std::string_view pdi_file_suffix = ".pdi";
+const std::string_view inst_file_suffix = "_insts.txt";
 
 /**
  * @brief Returns if @p p is a file.
@@ -132,23 +131,31 @@ bool ggml_hsa_is_file(const std::filesystem::path & p) {
  * @brief Returns the paths for PDI and insts for the kernel of @p tensor.
  */
 ggml_status ggml_hsa_create_kernel_paths(const ggml_tensor * tensor, std::filesystem::path & pdi_path, std::filesystem::path & instr_path) {
-  const auto & op_kernel_mapping = op_kernel_map[tensor->op];
-  if (tensor->op != op_kernel_mapping.op) {
+  if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
+    GGML_LOG_ERROR("%s: Tensor operation index out of bounds (%d >= GGML_OP_COUNT)\n", __func__, tensor->op);
+    return GGML_STATUS_FAILED;
+  }
+
+  const auto & kernel = op_kernel_name_map[tensor->op];
+  if (tensor->op != kernel.op) {
     GGML_ABORT("%s: Inconsistent index in kernel/operation map for operation %s\n", __func__, ggml_op_name(tensor->op));
   }
 
-  if (!op_kernel_mapping.valid()) {
+  if (!kernel.valid()) {
     GGML_LOG_WARN("%s: No kernel found for operation %s\n", __func__, ggml_op_name(tensor->op));
     return GGML_STATUS_FAILED;
   }
 
-  pdi_path = kernel_base_path / op_kernel_mapping.file_prefix;
+  const auto partial_path = kernel_base_path / kernel.file_prefix;
+
+  pdi_path = partial_path;
   pdi_path += pdi_file_suffix;
   if (!ggml_hsa_is_file(pdi_path)) {
     GGML_LOG_WARN("%s: No PDI file found for operation %s in %s\n", __func__, ggml_op_name(tensor->op), pdi_path.c_str());
     return GGML_STATUS_FAILED;
   }
-  instr_path = kernel_base_path / op_kernel_mapping.file_prefix;
+
+  instr_path = partial_path;
   instr_path += inst_file_suffix;
   if (!ggml_hsa_is_file(instr_path)) {
     GGML_LOG_WARN("%s: No instr file found for operation %s in %s\n", __func__, ggml_op_name(tensor->op), instr_path.c_str());
@@ -226,11 +233,6 @@ ggml_status ggml_hsa_load_instr(hsa_amd_memory_pool_t pool, const std::filesyste
 } // namespace
 
 ggml_status ggml_hsa_load_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor,  ggml_hsa_pdi_buffer & pdi_buf, ggml_hsa_instr_buffer & instr_buf) {
-  if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
-    GGML_LOG_ERROR("%s: Tensor operation index out of bounds (%d >= GGML_OP_COUNT)\n", __func__, tensor->op);
-    return GGML_STATUS_FAILED;
-  }
-
   std::filesystem::path pdi_path;
   std::filesystem::path instr_path;
   if (auto status = ggml_hsa_create_kernel_paths(tensor, pdi_path, instr_path); status != GGML_STATUS_SUCCESS) {
