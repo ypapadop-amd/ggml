@@ -22,7 +22,7 @@ build/${targetname}.xclbin: build/${targetname}.mlir
 	cd ${@D} && \
 	aiecc.py --aie-generate-cdo --aie-generate-npu --no-compile-host \
 		--no-xchesscc --no-xbridge \
-		--xclbin-name=${@F} --npu-insts-name=insts.txt ${<F}
+		--xclbin-name=${@F} --npu-insts-name=${targetname}_insts.txt ${<F}
 
 build/${targetname}.pdi: build/${targetname}.xclbin
 	cd ${@D} && \
