@@ -64,8 +64,16 @@ def my_vector_add():
         rt.drain(of_out.cons(), C, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(NPU1Col1(), rt).resolve_program(SequentialPlacer())
+    return Program(dev, rt).resolve_program(SequentialPlacer())
 
 
-module = my_vector_add()
-print(module)
+def main():
+    module = my_vector_add()
+    print(module)
+
+
+if __name__ == "__main__":
+    main()
+else:
+    print("Not meant to be imported")
+    sys.exit(1)
