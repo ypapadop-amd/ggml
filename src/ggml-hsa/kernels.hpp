@@ -22,6 +22,13 @@ struct ggml_hsa_instr_buffer {
 };
 
 /**
+ * @brief Returns if the kernel exists.
+ *
+ * @param tensor tensor to load a kernel for
+ */
+bool ggml_hsa_kernel_exists(const ggml_tensor * tensor);
+
+/**
  * @brief Loads the kernel for the tensor's operation.
  *
  * @param ctx backend context

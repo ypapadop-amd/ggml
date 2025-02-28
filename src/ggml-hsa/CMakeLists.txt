@@ -89,8 +89,8 @@ function(add_aie_kernel TARGET KERNEL DEV DTYPE DIMS)
     add_dependencies(${TARGET} ggml_hsa_kernel_${KERNEL_NAME})
 endfunction()
 
-add_aie_kernel(ggml-hsa add npu int32_t 256)
-add_aie_kernel(ggml-hsa add npu int32_t 1024)
+add_aie_kernel(ggml-hsa add npu i32 256)
+add_aie_kernel(ggml-hsa add npu i32 512)
 
 #
 # Eigen

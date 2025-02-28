@@ -14,7 +14,7 @@ int main(void) {
     std::array<std::int32_t, N> B = {};
 
     std::iota(std::begin(A), std::end(A), 1);
-    std::iota(std::begin(B), std::end(B), 10);
+    std::iota(std::begin(B), std::end(B), 2);
 
     ggml_backend_t backend = ggml_backend_hsa_init(0);
     const std::size_t alignment = ggml_backend_get_alignment(backend);

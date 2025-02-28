@@ -14,11 +14,11 @@ from ml_dtypes import bfloat16
 supported_devices = ["npu", "npu2"]
 
 supported_dtypes = {
-    "bfloat16_t": bfloat16,
-    "int8_t": np.int8,
-    "int16_t": np.int16,
-    "int32_t": np.int32,
-    "float": np.float32,
+    "bf16": bfloat16,
+    "i8": np.int8,
+    "i16": np.int16,
+    "i32": np.int32,
+    "f32": np.float32,
 }
 
 

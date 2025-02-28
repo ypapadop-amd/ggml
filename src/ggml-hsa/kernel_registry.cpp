@@ -11,113 +11,6 @@
 
 namespace {
 
-/**
- * @brief Maps an operation to the relevant kernel files.
- *
- * The paths to the files are relative.
- */
-struct ggml_hsa_operation_kernel {
-    ggml_op op{GGML_OP_NONE};
-    std::string_view file_prefix;
-
-    constexpr ggml_hsa_operation_kernel(ggml_op op, std::string_view file_prefix) :
-      op{op}, file_prefix{file_prefix} {}
-
-    constexpr bool valid() const noexcept { return !file_prefix.empty(); }
-};
-
-/**
- * @brief Operation to kernel name mapping.
- */
-constexpr ggml_hsa_operation_kernel op_kernel_name_map[] = {
-    { GGML_OP_NONE, "" },
-    { GGML_OP_DUP, "" },
-    { GGML_OP_ADD, "add" },
-    { GGML_OP_ADD1, "" },
-    { GGML_OP_ACC, "" },
-    { GGML_OP_SUB, "" },
-    { GGML_OP_MUL, "" },
-    { GGML_OP_DIV, "" },
-    { GGML_OP_SQR, "" },
-    { GGML_OP_SQRT, "" },
-    { GGML_OP_LOG, "" },
-    { GGML_OP_SIN, "" },
-    { GGML_OP_COS, "" },
-    { GGML_OP_SUM, "" },
-    { GGML_OP_SUM_ROWS, "" },
-    { GGML_OP_MEAN, "" },
-    { GGML_OP_ARGMAX, "" },
-    { GGML_OP_COUNT_EQUAL, "" },
-    { GGML_OP_REPEAT, "" },
-    { GGML_OP_REPEAT_BACK, "" },
-    { GGML_OP_CONCAT, "" },
-    { GGML_OP_SILU_BACK, "" },
-    { GGML_OP_NORM, "" },
-    { GGML_OP_RMS_NORM, "" },
-    { GGML_OP_RMS_NORM_BACK, "" },
-    { GGML_OP_GROUP_NORM, "" },
-    { GGML_OP_MUL_MAT, "" },
-    { GGML_OP_MUL_MAT_ID, "" },
-    { GGML_OP_OUT_PROD, "" },
-    { GGML_OP_SCALE, "" },
-    { GGML_OP_SET, "" },
-    { GGML_OP_CPY, "" },
-    { GGML_OP_CONT, "" },
-    { GGML_OP_RESHAPE, "" },
-    { GGML_OP_VIEW, "" },
-    { GGML_OP_PERMUTE, "" },
-    { GGML_OP_TRANSPOSE, "" },
-    { GGML_OP_GET_ROWS, "" },
-    { GGML_OP_GET_ROWS_BACK, "" },
-    { GGML_OP_DIAG, "" },
-    { GGML_OP_DIAG_MASK_INF, "" },
-    { GGML_OP_DIAG_MASK_ZERO, "" },
-    { GGML_OP_SOFT_MAX, "" },
-    { GGML_OP_SOFT_MAX_BACK, "" },
-    { GGML_OP_ROPE, "" },
-    { GGML_OP_ROPE_BACK, "" },
-    { GGML_OP_CLAMP, "" },
-    { GGML_OP_CONV_TRANSPOSE_1D, "" },
-    { GGML_OP_IM2COL, "" },
-    { GGML_OP_IM2COL_BACK, "" },
-    { GGML_OP_CONV_TRANSPOSE_2D, "" },
-    { GGML_OP_POOL_1D, "" },
-    { GGML_OP_POOL_2D, "" },
-    { GGML_OP_POOL_2D_BACK, "" },
-    { GGML_OP_UPSCALE, "" },
-    { GGML_OP_PAD, "" },
-    { GGML_OP_PAD_REFLECT_1D, "" },
-    { GGML_OP_ARANGE, "" },
-    { GGML_OP_TIMESTEP_EMBEDDING, "" },
-    { GGML_OP_ARGSORT, "" },
-    { GGML_OP_LEAKY_RELU, "" },
-    { GGML_OP_FLASH_ATTN_EXT, "" },
-    { GGML_OP_FLASH_ATTN_BACK, "" },
-    { GGML_OP_SSM_CONV, "" },
-    { GGML_OP_SSM_SCAN, "" },
-    { GGML_OP_WIN_PART, "" },
-    { GGML_OP_WIN_UNPART, "" },
-    { GGML_OP_GET_REL_POS, "" },
-    { GGML_OP_ADD_REL_POS, "" },
-    { GGML_OP_RWKV_WKV6, "" },
-    { GGML_OP_GATED_LINEAR_ATTN, "" },
-    { GGML_OP_UNARY, "" },
-    { GGML_OP_MAP_UNARY, "" },
-    { GGML_OP_MAP_BINARY, "" },
-    { GGML_OP_MAP_CUSTOM1_F32, "" },
-    { GGML_OP_MAP_CUSTOM2_F32, "" },
-    { GGML_OP_MAP_CUSTOM3_F32, "" },
-    { GGML_OP_MAP_CUSTOM1, "" },
-    { GGML_OP_MAP_CUSTOM2, "" },
-    { GGML_OP_MAP_CUSTOM3, "" },
-    { GGML_OP_CROSS_ENTROPY_LOSS, "" },
-    { GGML_OP_CROSS_ENTROPY_LOSS_BACK, "" },
-    { GGML_OP_OPT_STEP_ADAMW, "" },
-    { GGML_OP_COUNT, "" },
-};
-static_assert((sizeof(op_kernel_name_map) / sizeof(op_kernel_name_map[0])) - 1 == GGML_OP_COUNT,
-              "Incorrect operation mapping");
-
 const std::filesystem::path kernel_base_path = "/home/ypapadop/workspace-raiders/ggml/build/src/ggml-hsa/kernels/";
 const std::string_view pdi_file_suffix = ".pdi";
 const std::string_view inst_file_suffix = "_insts.txt";
@@ -138,23 +31,13 @@ ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor, std::string 
         return GGML_STATUS_FAILED;
     }
 
-    const auto & kernel = op_kernel_name_map[tensor->op];
-    if (tensor->op != kernel.op) {
-        GGML_ABORT("%s: Inconsistent index in kernel/operation map for operation %s\n", __func__, ggml_op_name(tensor->op));
-    }
-
-    if (!kernel.valid()) {
-        GGML_LOG_WARN("%s: No kernel found for operation %s\n", __func__, ggml_op_name(tensor->op));
-        return GGML_STATUS_FAILED;
-    }
-
     std::ostringstream oss;
 
     std::string_view op_name = ggml_op_name(tensor->op);
     std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss), [&](char c) { return std::tolower(c); });
     oss << "-npu";
-    oss << "-int32_t";
-    oss << "-256";
+    oss << '-' << ggml_type_name(tensor->type);
+    oss << '-' << ggml_nelements(tensor->src[0]);
     kernel_name = oss.str();
 
     return GGML_STATUS_SUCCESS;
@@ -254,6 +137,12 @@ ggml_status ggml_hsa_load_instr(hsa_amd_memory_pool_t pool, const std::filesyste
 }
 
 } // namespace
+
+bool ggml_hsa_kernel_exists(const ggml_tensor * tensor) {
+    std::filesystem::path pdi_path;
+    std::filesystem::path instr_path;
+    return ggml_hsa_create_kernel_paths(tensor, pdi_path, instr_path) == GGML_STATUS_SUCCESS;
+}
 
 ggml_status ggml_hsa_load_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor,  ggml_hsa_pdi_buffer & pdi_buf, ggml_hsa_instr_buffer & instr_buf) {
     std::filesystem::path pdi_path;

@@ -13,11 +13,7 @@ bool ggml_hsa_supports_add(const ggml_tensor * tensor) {
       return false;
     }
 
-    if (ggml_nelements(src0) != 256) {
-      return false;
-    }
-
-    return true;
+    return ggml_hsa_kernel_exists(tensor);
 }
 
 ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
@@ -31,8 +27,6 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     GGML_ASSERT(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
 
     const std::int64_t element_count = ggml_nelements(src0);
-
-    GGML_ASSERT(element_count == 256);
 
     ggml_hsa_pdi_buffer pdi_buf;
     ggml_hsa_instr_buffer instr_buf;
