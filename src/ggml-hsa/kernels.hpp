@@ -9,16 +9,24 @@
  * @brief PDI buffer.
  */
 struct ggml_hsa_pdi_buffer {
-  std::uint64_t * data{};
-  std::size_t size{};
+    std::uint64_t * data{};
+    std::size_t size{};
 };
 
 /**
  * @brief Instructions buffer.
  */
-struct ggml_hsa_instr_buffer {
-  std::uint32_t * data{};
-  std::size_t size{};
+struct ggml_hsa_insts_buffer {
+    std::uint32_t * data{};
+    std::size_t size{};
+};
+
+/**
+ * @brief NPU kernel.
+ */
+struct ggml_hsa_npu_kernel {
+    ggml_hsa_pdi_buffer pdi_buffer;
+    ggml_hsa_insts_buffer insts_buffer;
 };
 
 /**
@@ -29,14 +37,21 @@ struct ggml_hsa_instr_buffer {
 bool ggml_hsa_kernel_exists(const ggml_tensor * tensor);
 
 /**
- * @brief Loads the kernel for the tensor's operation.
+ * @brief Creates a kernel for the tensor's operation.
  *
  * @param ctx backend context
- * @param tensor tensor to load a kernel for
- * @param pdi_buf PDI buffer
- * @param instr_buf instructions buffer
+ * @param tensor tensor to create a kernel for
+ * @param kernel kernel for the operation of @p tensor
  */
-ggml_status ggml_hsa_load_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor, ggml_hsa_pdi_buffer & pdi_buf, ggml_hsa_instr_buffer & instr_buf);
+ggml_status ggml_hsa_create_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor, ggml_hsa_npu_kernel & kernel);
+
+/**
+ * @brief Unloads the kernel.
+ *
+ * @param ctx backend context
+ * @param kernel kernel to destroy
+ */
+void ggml_hsa_destroy_kernel(ggml_backend_hsa_context & ctx, ggml_hsa_npu_kernel & kernel);
 
 bool ggml_hsa_supports_add(const ggml_tensor * tensor);
 ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);

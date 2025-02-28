@@ -16,13 +16,6 @@ const std::string_view pdi_file_suffix = ".pdi";
 const std::string_view inst_file_suffix = "_insts.txt";
 
 /**
- * @brief Returns if @p p is a file.
- */
-bool ggml_hsa_is_file(const std::filesystem::path & p) {
-    return std::filesystem::is_regular_file(p) || std::filesystem::is_symlink(p);
-}
-
-/**
  * @brief Creates a kernel name for the operation in tensor @p tensor.
  */
 ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor, std::string & kernel_name) {
@@ -32,7 +25,6 @@ ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor, std::string 
     }
 
     std::ostringstream oss;
-
     std::string_view op_name = ggml_op_name(tensor->op);
     std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss), [&](char c) { return std::tolower(c); });
     oss << "-npu";
@@ -41,6 +33,13 @@ ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor, std::string 
     kernel_name = oss.str();
 
     return GGML_STATUS_SUCCESS;
+}
+
+/**
+ * @brief Returns if @p p is a file.
+ */
+bool ggml_hsa_is_file(const std::filesystem::path & p) {
+    return std::filesystem::is_regular_file(p) || std::filesystem::is_symlink(p);
 }
 
 /**
@@ -74,7 +73,7 @@ ggml_status ggml_hsa_create_kernel_paths(const ggml_tensor * tensor, std::filesy
 /**
  * @brief Reads a PDI file from @p p and returns its contents and size in bytes in @p buffer and @p buffer_size respectively.
  */
-ggml_status ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const std::filesystem::path & p, std::uint64_t *& buffer, std::size_t & buffer_size) {
+ggml_status ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const std::filesystem::path & p, ggml_hsa_pdi_buffer & buffer) {
     std::ifstream is(p.string(), std::ios::binary | std::ios::ate | std::ios::in);
     if (is.fail()) {
         GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, p.c_str());
@@ -87,14 +86,14 @@ ggml_status ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const std::filesystem:
         GGML_LOG_ERROR("%s: I/O error, could not get file size for %s\n", __func__, p.c_str());
         return GGML_STATUS_FAILED;
     }
-    if (auto status = hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer));
+    if (auto status = hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer.data));
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: Could not allocate %zu bytes\n", __func__, size);
         return GGML_STATUS_FAILED;
     }
 
-    is.read(reinterpret_cast<char *>(buffer), size);
-    buffer_size = size;
+    is.read(reinterpret_cast<char *>(buffer.data), size);
+    buffer.size = size;
 
     return GGML_STATUS_SUCCESS;
 }
@@ -103,7 +102,7 @@ ggml_status ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const std::filesystem:
  * @brief Reads an instruction file from @p p and returns its contents and number of instructions size in @p buffer
  *        and @p instr_count respectively.
  */
-ggml_status ggml_hsa_load_instr(hsa_amd_memory_pool_t pool, const std::filesystem::path & p, std::uint32_t *& buffer, std::size_t & instr_count) {
+ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool, const std::filesystem::path & p, ggml_hsa_insts_buffer & buffer) {
     std::ifstream is(p.string(), std::ios::in);
     if (is.fail()) {
         GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, p.c_str());
@@ -124,14 +123,14 @@ ggml_status ggml_hsa_load_instr(hsa_amd_memory_pool_t pool, const std::filesyste
     GGML_ASSERT(instr_v.empty() == false);
 
     const std::size_t required_memory_size = instr_v.size() * sizeof(std::uint32_t);
-    if (auto status = hsa_amd_memory_pool_allocate(pool, required_memory_size, 0, reinterpret_cast<void **>(&buffer));
+    if (auto status = hsa_amd_memory_pool_allocate(pool, required_memory_size, 0, reinterpret_cast<void **>(&buffer.data));
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: Could not allocate %zu bytes\n", __func__, required_memory_size);
         return GGML_STATUS_FAILED;
     }
 
-    std::copy(instr_v.begin(), instr_v.end(), buffer);
-    instr_count = instr_v.size();
+    std::copy(instr_v.begin(), instr_v.end(), buffer.data);
+    buffer.size = instr_v.size();
 
     return GGML_STATUS_SUCCESS;
 }
@@ -144,7 +143,7 @@ bool ggml_hsa_kernel_exists(const ggml_tensor * tensor) {
     return ggml_hsa_create_kernel_paths(tensor, pdi_path, instr_path) == GGML_STATUS_SUCCESS;
 }
 
-ggml_status ggml_hsa_load_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor,  ggml_hsa_pdi_buffer & pdi_buf, ggml_hsa_instr_buffer & instr_buf) {
+ggml_status ggml_hsa_create_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor, ggml_hsa_npu_kernel & kernel) {
     std::filesystem::path pdi_path;
     std::filesystem::path instr_path;
     if (auto status = ggml_hsa_create_kernel_paths(tensor, pdi_path, instr_path); status != GGML_STATUS_SUCCESS) {
@@ -154,15 +153,26 @@ ggml_status ggml_hsa_load_kernel(ggml_backend_hsa_context & ctx, const ggml_tens
     auto & info = ggml_hsa_info();
     auto & device_info = info.devices[ctx.device];
 
-    if (auto status = ggml_hsa_load_pdi(device_info.dev_memory.memory_pool, pdi_path, pdi_buf.data, pdi_buf.size);
+    if (auto status = ggml_hsa_load_pdi(device_info.dev_memory.memory_pool, pdi_path, kernel.pdi_buffer);
         status != GGML_STATUS_SUCCESS) {
       return status;
     }
 
-    if (auto status = ggml_hsa_load_instr(device_info.dev_memory.memory_pool, instr_path, instr_buf.data, instr_buf.size);
+    if (auto status = ggml_hsa_load_insts(device_info.dev_memory.memory_pool, instr_path, kernel.insts_buffer);
         status != GGML_STATUS_SUCCESS) {
       return status;
     }
 
     return GGML_STATUS_SUCCESS;
+}
+
+void ggml_hsa_destroy_kernel(ggml_backend_hsa_context & ctx, ggml_hsa_npu_kernel & kernel) {
+    if (auto status = hsa_amd_memory_pool_free(kernel.pdi_buffer.data); status != HSA_STATUS_SUCCESS) {
+        GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
+
+    }
+    if (auto status = hsa_amd_memory_pool_free(kernel.insts_buffer.data); status != HSA_STATUS_SUCCESS) {
+        GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
+    }
+    kernel = {};
 }

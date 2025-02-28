@@ -28,9 +28,8 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
 
     const std::int64_t element_count = ggml_nelements(src0);
 
-    ggml_hsa_pdi_buffer pdi_buf;
-    ggml_hsa_instr_buffer instr_buf;
-    if (auto status = ggml_hsa_load_kernel(ctx, tensor, pdi_buf, instr_buf); status != GGML_STATUS_SUCCESS) {
+    ggml_hsa_npu_kernel kernel;
+    if (auto status = ggml_hsa_create_kernel(ctx, tensor, kernel); status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
@@ -43,12 +42,12 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
         GGML_LOG_ERROR("%s: Could not allocate hsa_amd_aie_ert_start_kernel_data_t (%d)\n", __func__, status);
         return GGML_STATUS_FAILED;
     }
-    cmd_payload->pdi_addr = pdi_buf.data; // PDI to use with this command
+    cmd_payload->pdi_addr = kernel.pdi_buffer.data; // PDI to use with this command
     cmd_payload->data[0] = 0x3; // Transaction opcode
     cmd_payload->data[1] = 0x0;
-    cmd_payload->data[2] = LOW_ADDR(instr_buf.data);
-    cmd_payload->data[3] = HIGH_ADDR(instr_buf.data);
-    cmd_payload->data[4] = static_cast<std::uint32_t>(instr_buf.size);
+    cmd_payload->data[2] = LOW_ADDR(kernel.insts_buffer.data);
+    cmd_payload->data[3] = HIGH_ADDR(kernel.insts_buffer.data);
+    cmd_payload->data[4] = static_cast<std::uint32_t>(kernel.insts_buffer.size);
     cmd_payload->data[5] = LOW_ADDR(src0->data);
     cmd_payload->data[6] = HIGH_ADDR(src0->data);
     cmd_payload->data[7] = LOW_ADDR(src1->data);
