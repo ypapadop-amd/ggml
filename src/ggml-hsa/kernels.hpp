@@ -13,13 +13,15 @@
 bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor);
 
 /**
- * @brief Creates an AIE agent kernel for the tensor's operation.
+ * @brief Finds the AIE agent kernel for the tensor's operation.
+ *
+ * This function will attempt to load the kernel if not found in @ref ggml_backend_hsa_context::aie_kernels.
  *
  * @param ctx backend context
- * @param tensor tensor to create a kernel for
+ * @param tensor tensor to find the kernel for
  * @param kernel kernel for the operation of @p tensor
  */
-ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor, ggml_hsa_aie_kernel & kernel);
+ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor, ggml_hsa_aie_kernel & kernel);
 
 /**
  * @brief Destroys the kernel.

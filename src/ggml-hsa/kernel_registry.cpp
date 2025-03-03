@@ -18,7 +18,7 @@ const std::string_view inst_file_suffix = "_insts.txt";
 /**
  * @brief Creates a kernel name for the operation in tensor @p tensor.
  */
-ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor, std::string & kernel_name) {
+ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::device_info & /*device_info*/, const ggml_tensor * tensor, std::string & kernel_name) {
     if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
         GGML_LOG_ERROR("%s: Tensor operation index out of bounds (%d >= GGML_OP_COUNT)\n", __func__, tensor->op);
         return GGML_STATUS_FAILED;
@@ -45,25 +45,20 @@ bool ggml_hsa_is_file(const std::filesystem::path & p) {
 /**
  * @brief Returns the paths for PDI and insts for the kernel of @p tensor.
  */
-ggml_status ggml_hsa_create_kernel_paths(const ggml_hsa_device_info::device_info & /*device_info*/, const ggml_tensor * tensor, std::filesystem::path & pdi_path, std::filesystem::path & instr_path) {
-    std::string kernel_name;
-    if (auto status = ggml_hsa_create_kernel_name(tensor, kernel_name); status != GGML_STATUS_SUCCESS) {
-        return status;
-    }
-
+ggml_status ggml_hsa_create_kernel_paths(const std::string & kernel_name, std::filesystem::path & pdi_path, std::filesystem::path & instr_path) {
     const auto partial_path = kernel_base_path / kernel_name;
 
     pdi_path = partial_path;
     pdi_path += pdi_file_suffix;
     if (!ggml_hsa_is_file(pdi_path)) {
-        GGML_LOG_WARN("%s: No PDI file found for operation %s in %s\n", __func__, ggml_op_name(tensor->op), pdi_path.c_str());
+        GGML_LOG_WARN("%s: No PDI file found for kernel %s in %s\n", __func__, kernel_name.c_str(), pdi_path.c_str());
         return GGML_STATUS_FAILED;
     }
 
     instr_path = partial_path;
     instr_path += inst_file_suffix;
     if (!ggml_hsa_is_file(instr_path)) {
-        GGML_LOG_WARN("%s: No instr file found for operation %s in %s\n", __func__, ggml_op_name(tensor->op), instr_path.c_str());
+        GGML_LOG_WARN("%s: No instr file found for kernel %s in %s\n", __func__, kernel_name.c_str(), instr_path.c_str());
         return GGML_STATUS_FAILED;
     }
 
@@ -138,30 +133,52 @@ ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool, const std::filesyste
 } // namespace
 
 bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor) {
-    std::filesystem::path pdi_path;
-    std::filesystem::path instr_path;
-    return ggml_hsa_create_kernel_paths(dev_info, tensor, pdi_path, instr_path) == GGML_STATUS_SUCCESS;
-}
-
-ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor, ggml_hsa_aie_kernel & kernel) {
-    const auto & info = ggml_hsa_info();
-    const auto & dev_info = info.devices[ctx.device];
-
-    std::filesystem::path pdi_path;
-    std::filesystem::path instr_path;
-    if (auto status = ggml_hsa_create_kernel_paths(dev_info, tensor, pdi_path, instr_path); status != GGML_STATUS_SUCCESS) {
+    std::string kernel_name;
+    if (auto status = ggml_hsa_create_kernel_name(dev_info, tensor, kernel_name); status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
-    if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, kernel.pdi_buffer);
+    std::filesystem::path pdi_path;
+    std::filesystem::path instr_path;
+    return ggml_hsa_create_kernel_paths(kernel_name, pdi_path, instr_path) == GGML_STATUS_SUCCESS;
+}
+
+ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor, ggml_hsa_aie_kernel & kernel) {
+    const auto & info = ggml_hsa_info();
+    const auto & dev_info = info.devices[ctx.device];
+
+    std::string kernel_name;
+    if (auto status = ggml_hsa_create_kernel_name(dev_info, tensor, kernel_name); status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
+
+    // find kernel in already loaded kernels
+    auto it = ctx.aie_kernels.find(kernel_name);
+    if (it != ctx.aie_kernels.end()) {
+        kernel = it->second;
+        return GGML_STATUS_SUCCESS;
+    }
+
+    // kernel not found, locate it and load it
+    std::filesystem::path pdi_path;
+    std::filesystem::path instr_path;
+    if (auto status = ggml_hsa_create_kernel_paths(kernel_name, pdi_path, instr_path); status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
+
+    ggml_hsa_aie_kernel tmp_kernel;
+    if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, tmp_kernel.pdi_buffer);
         status != GGML_STATUS_SUCCESS) {
       return status;
     }
 
-    if (auto status = ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, instr_path, kernel.insts_buffer);
+    if (auto status = ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, instr_path, tmp_kernel.insts_buffer);
         status != GGML_STATUS_SUCCESS) {
       return status;
     }
+
+    ctx.aie_kernels.emplace(std::move(kernel_name), tmp_kernel);
+    kernel = tmp_kernel;
 
     return GGML_STATUS_SUCCESS;
 }

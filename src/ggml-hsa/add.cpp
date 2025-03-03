@@ -20,16 +20,16 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     auto & info = ggml_hsa_info();
     auto & dev_info = info.devices[ctx.device];
 
+    GGML_ASSERT(ggml_hsa_supports_add(dev_info, tensor));
+
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * src1 = tensor->src[1];
     ggml_tensor * dst = tensor;
 
-    GGML_ASSERT(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
-
     const std::int64_t element_count = ggml_nelements(src0);
 
     ggml_hsa_aie_kernel kernel;
-    if (auto status = ggml_hsa_create_aie_kernel(ctx, tensor, kernel); status != GGML_STATUS_SUCCESS) {
+    if (auto status = ggml_hsa_find_aie_kernel(ctx, tensor, kernel); status != GGML_STATUS_SUCCESS) {
         return status;
     }
 

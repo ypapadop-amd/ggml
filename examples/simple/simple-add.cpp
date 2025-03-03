@@ -27,7 +27,7 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& v) {
 
 int main(void) {
     // create data
-    const std::size_t N = 16;
+    const std::size_t N = 256;
     const std::vector<std::int32_t> A = create_data<std::int32_t>(N, 0);
     const std::vector<std::int32_t> B = create_data<std::int32_t>(N, 1);
 
