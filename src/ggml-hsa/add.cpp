@@ -2,7 +2,7 @@
 
 #include "ggml-impl.h"
 
-bool ggml_hsa_supports_add(const ggml_tensor * tensor) {
+bool ggml_hsa_supports_add(const ggml_hsa_device_info::device_info & device_info, const ggml_tensor * tensor) {
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * src1 = tensor->src[1];
     const ggml_tensor * dst = tensor;
@@ -13,7 +13,7 @@ bool ggml_hsa_supports_add(const ggml_tensor * tensor) {
       return false;
     }
 
-    return ggml_hsa_kernel_exists(tensor);
+    return ggml_hsa_kernel_exists(device_info, tensor);
 }
 
 ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {

@@ -45,7 +45,7 @@ bool ggml_hsa_is_file(const std::filesystem::path & p) {
 /**
  * @brief Returns the paths for PDI and insts for the kernel of @p tensor.
  */
-ggml_status ggml_hsa_create_kernel_paths(const ggml_tensor * tensor, std::filesystem::path & pdi_path, std::filesystem::path & instr_path) {
+ggml_status ggml_hsa_create_kernel_paths(const ggml_hsa_device_info::device_info & /*device_info*/, const ggml_tensor * tensor, std::filesystem::path & pdi_path, std::filesystem::path & instr_path) {
     std::string kernel_name;
     if (auto status = ggml_hsa_create_kernel_name(tensor, kernel_name); status != GGML_STATUS_SUCCESS) {
         return status;
@@ -137,21 +137,21 @@ ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool, const std::filesyste
 
 } // namespace
 
-bool ggml_hsa_kernel_exists(const ggml_tensor * tensor) {
+bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & device_info, const ggml_tensor * tensor) {
     std::filesystem::path pdi_path;
     std::filesystem::path instr_path;
-    return ggml_hsa_create_kernel_paths(tensor, pdi_path, instr_path) == GGML_STATUS_SUCCESS;
+    return ggml_hsa_create_kernel_paths(device_info, tensor, pdi_path, instr_path) == GGML_STATUS_SUCCESS;
 }
 
 ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor, ggml_hsa_aie_kernel & kernel) {
+    const auto & info = ggml_hsa_info();
+    const auto & device_info = info.devices[ctx.device];
+
     std::filesystem::path pdi_path;
     std::filesystem::path instr_path;
-    if (auto status = ggml_hsa_create_kernel_paths(tensor, pdi_path, instr_path); status != GGML_STATUS_SUCCESS) {
+    if (auto status = ggml_hsa_create_kernel_paths(device_info, tensor, pdi_path, instr_path); status != GGML_STATUS_SUCCESS) {
         return status;
     }
-
-    auto & info = ggml_hsa_info();
-    auto & device_info = info.devices[ctx.device];
 
     if (auto status = ggml_hsa_load_pdi(device_info.dev_memory.memory_pool, pdi_path, kernel.pdi_buffer);
         status != GGML_STATUS_SUCCESS) {

@@ -50,7 +50,7 @@ struct ggml_hsa_device_info {
     /**
      * @brief Information about a single HSA memory pool.
      */
-    struct hsa_memory_pool_info {
+    struct memory_pool_info {
         hsa_amd_memory_pool_t memory_pool{}; ///< HSA memory pool object.
         std::size_t size{};                  ///< Memory available to the pool in bytes.
         std::size_t alignment{};             ///< Memory pool alignment.
@@ -60,16 +60,16 @@ struct ggml_hsa_device_info {
     /**
      * @brief Information about a single HSA device.
      */
-    struct hsa_device_info {
-        hsa_agent_t agent{};                   ///< HSA agent associated with the device.
-        hsa_device_type_t type{};              ///< Agent type.
-        std::string name;                      ///< Agent name.
-        hsa_memory_pool_info dev_memory{};     ///< Pool for kernels.
-        hsa_memory_pool_info kernarg_memory{}; ///< Pool for kernel arguments.
-        hsa_memory_pool_info data_memory{};    ///< Pool for data.
+    struct device_info {
+        hsa_agent_t agent{};               ///< HSA agent associated with the device.
+        hsa_device_type_t type{};          ///< Agent type.
+        std::string name;                  ///< Agent name.
+        memory_pool_info dev_memory{};     ///< Pool for kernels.
+        memory_pool_info kernarg_memory{}; ///< Pool for kernel arguments.
+        memory_pool_info data_memory{};    ///< Pool for data.
     };
 
-    std::array<hsa_device_info, GGML_HSA_MAX_DEVICES> devices = {};
+    std::array<device_info, GGML_HSA_MAX_DEVICES> devices = {};
 };
 
 /**
@@ -121,7 +121,7 @@ struct ggml_backend_hsa_context {
     ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
 #endif
 
-    ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::hsa_device_info& device_info);
+    ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::device_info& device_info);
 
     ggml_backend_hsa_context(const ggml_backend_hsa_context &) = delete;
     ggml_backend_hsa_context(ggml_backend_hsa_context &&) = delete;
