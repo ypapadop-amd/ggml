@@ -612,10 +612,6 @@ ggml_backend_buffer_type_t ggml_backend_hsa_host_buffer_type() {
     return &ggml_backend_hsa_buffer_type_host;
 }
 
-// HSA kernel support
-
-
-
 ////////////////////////////////////////////////////////////////////////////////
 
 // backend
@@ -1002,6 +998,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
     const auto & info = ggml_hsa_info();
     const auto & dev_info = info.devices[dev_ctx.device];
 
+    // for now, only contiguous tensors are supported
     if (!ggml_is_contiguous(tensor)) {
         return false;
     }

@@ -8,10 +8,10 @@
 
 import numpy as np
 
-from aie.iron.device import NPU1Col1, NPU2
+from aie.iron.device import NPU1Col1
 from ml_dtypes import bfloat16
 
-supported_devices = ["npu", "npu2"]
+supported_devices = ["aie2"]
 
 supported_dtypes = {
     "bf16": bfloat16,
@@ -24,10 +24,8 @@ supported_dtypes = {
 
 def create_device(device_name):
     """Return the device from the given device name."""
-    if device_name == "npu":
+    if device_name == "aie2":
         dev = NPU1Col1()
-    elif device_name == "npu2":
-        dev = NPU2()
     else:
         raise ValueError("Device name {} is unknown".format(device_name))
     return dev

@@ -18,7 +18,7 @@ const std::string_view inst_file_suffix = "_insts.txt";
 /**
  * @brief Creates a kernel name for the operation in tensor @p tensor.
  */
-ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::device_info & /*device_info*/, const ggml_tensor * tensor, std::string & kernel_name) {
+ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor, std::string & kernel_name) {
     if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
         GGML_LOG_ERROR("%s: Tensor operation index out of bounds (%d >= GGML_OP_COUNT)\n", __func__, tensor->op);
         return GGML_STATUS_FAILED;
@@ -27,7 +27,7 @@ ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::device_info 
     std::ostringstream oss;
     std::string_view op_name = ggml_op_name(tensor->op);
     std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss), [&](char c) { return std::tolower(c); });
-    oss << "-npu";
+    oss << '-' << dev_info.name;
     oss << '-' << ggml_type_name(tensor->type);
     oss << '-' << ggml_nelements(tensor->src[0]);
     kernel_name = oss.str();
