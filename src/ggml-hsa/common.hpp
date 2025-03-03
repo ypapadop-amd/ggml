@@ -121,7 +121,7 @@ struct ggml_backend_hsa_context {
     ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
 #endif
 
-    ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::device_info& device_info);
+    ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::device_info& dev_info);
 
     ggml_backend_hsa_context(const ggml_backend_hsa_context &) = delete;
     ggml_backend_hsa_context(ggml_backend_hsa_context &&) = delete;

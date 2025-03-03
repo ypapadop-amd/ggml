@@ -10,7 +10,7 @@
  *
  * @param tensor tensor to load a kernel for
  */
-bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & device_info, const ggml_tensor * tensor);
+bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor);
 
 /**
  * @brief Creates an AIE agent kernel for the tensor's operation.
@@ -29,11 +29,11 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx, const ggm
  */
 void ggml_hsa_destroy_aie_kernel(ggml_backend_hsa_context & ctx, ggml_hsa_aie_kernel & kernel);
 
-bool ggml_hsa_supports_add(const ggml_hsa_device_info::device_info & device_info, const ggml_tensor * tensor);
+bool ggml_hsa_supports_add(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor);
 ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
 
-bool ggml_hsa_supports_cpy(const ggml_hsa_device_info::device_info & device_info, const ggml_tensor * tensor);
+bool ggml_hsa_supports_cpy(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor);
 ggml_status ggml_hsa_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
 
-bool ggml_hsa_supports_mul_mat(const ggml_hsa_device_info::device_info & device_info, const ggml_tensor * tensor);
+bool ggml_hsa_supports_mul_mat(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor);
 ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);

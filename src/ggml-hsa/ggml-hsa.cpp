@@ -130,10 +130,10 @@ static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, v
         return status;
     }
 
-    auto & device_info = *static_cast<ggml_hsa_device_info::device_info *>(data);
+    auto & dev_info = *static_cast<ggml_hsa_device_info::device_info *>(data);
     const bool kernarg_pool = (pool_flags & HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_KERNARG_INIT) != 0x0;
     if (kernarg_pool) {
-        return ggml_hsa_set_memory_pool_info(pool, device_info.kernarg_memory);
+        return ggml_hsa_set_memory_pool_info(pool, dev_info.kernarg_memory);
     }
 
     std::size_t max_alloc_size;
@@ -147,10 +147,10 @@ static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, v
     if (coarse_grained_pool) {
         if (max_alloc_size == 0) {
             // XDNA dev heap has max_alloc_size == 0
-            return ggml_hsa_set_memory_pool_info(pool, device_info.dev_memory);
+            return ggml_hsa_set_memory_pool_info(pool, dev_info.dev_memory);
         }
         else {
-            return ggml_hsa_set_memory_pool_info(pool, device_info.data_memory);
+            return ggml_hsa_set_memory_pool_info(pool, dev_info.data_memory);
         }
     }
 
@@ -177,18 +177,18 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     }
 
     // create device information (agent, type, name, memory pools, etc.)
-    auto & device_info = info.devices[info.device_count];
-    device_info.agent = agent;
-    device_info.type = type;
+    auto & dev_info = info.devices[info.device_count];
+    dev_info.agent = agent;
+    dev_info.type = type;
 
     char name[64] = {};
     if (auto status = hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, name);
        status != HSA_STATUS_SUCCESS) {
        return status;
     }
-    device_info.name = std::string(name);
+    dev_info.name = std::string(name);
 
-    if (auto status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &device_info);
+    if (auto status = hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &dev_info);
         status != HSA_STATUS_SUCCESS) {
         return status;
     }
@@ -219,9 +219,9 @@ const ggml_hsa_device_info & ggml_hsa_info() {
     return info;
 }
 
-ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::device_info & device_info) :
+ggml_backend_hsa_context::ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::device_info & dev_info) :
         device(device), name(ggml_hsa_format_name(device)) {
-    hsa_agent_t agent = device_info.agent;
+    hsa_agent_t agent = dev_info.agent;
 
     // create queue
     const std::uint32_t min_queue_size = ggml_hsa_get_agent_min_queue_size(agent);
@@ -442,10 +442,10 @@ static bool ggml_backend_buft_is_hsa(ggml_backend_buffer_type_t buft) {
 static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     const auto & buft_ctx = *static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & info = ggml_hsa_info();
-    const auto & device_info = info.devices[buft_ctx.device];
+    const auto & dev_info = info.devices[buft_ctx.device];
 
     void * buffer = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(device_info.data_memory.memory_pool, size, /* flags = */ 0, &buffer);
+    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size, /* flags = */ 0, &buffer);
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: allocating %.2f MiB on device %d: hsa_amd_memory_pool_allocate failed: %s\n", __func__, size / 1024.0 / 1024.0, buft_ctx.device, ggml_hsa_get_status_string(status));
         return nullptr;
@@ -469,8 +469,8 @@ static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_typ
 static size_t ggml_backend_hsa_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
     const auto & buft_ctx = *static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & info = ggml_hsa_info();
-    const auto & device_info = info.devices[buft_ctx.device];
-    return device_info.data_memory.max_alloc_size;
+    const auto & dev_info = info.devices[buft_ctx.device];
+    return dev_info.data_memory.max_alloc_size;
 }
 
 /**
@@ -495,11 +495,11 @@ static size_t ggml_backend_hsa_buffer_type_get_alloc_size(ggml_backend_buffer_ty
 static bool ggml_backend_hsa_buffer_type_is_host(ggml_backend_buffer_type_t buft) {
     const auto & buft_ctx = *static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & info = ggml_hsa_info();
-    const auto & device_info = info.devices[buft_ctx.device];
+    const auto & dev_info = info.devices[buft_ctx.device];
 
     // we can infer if it is host memory from the agent type since the memory pools are
     // derived from the agent
-    switch (device_info.type) {
+    switch (dev_info.type) {
         case HSA_DEVICE_TYPE_CPU:
         case HSA_DEVICE_TYPE_AIE:
             return true;
@@ -886,8 +886,8 @@ int ggml_backend_hsa_get_device_count() {
  */
 void ggml_backend_hsa_get_device_description(int device, char * description, size_t description_size) {
     const auto & info = ggml_hsa_info();
-    const auto & device_info = info.devices[device];
-    snprintf(description, description_size, "%s", device_info.name.data());
+    const auto & dev_info = info.devices[device];
+    snprintf(description, description_size, "%s", dev_info.name.data());
 }
 
 /**
@@ -895,8 +895,8 @@ void ggml_backend_hsa_get_device_description(int device, char * description, siz
  */
 void ggml_backend_hsa_get_device_memory(int device, size_t * free, size_t * total) {
     const auto & info = ggml_hsa_info();
-    const auto & device_info = info.devices[device];
-    *total = device_info.data_memory.size;
+    const auto & dev_info = info.devices[device];
+    *total = dev_info.data_memory.size;
     // HSA does not report free memory, set it to total
     *free = *total;
 }
@@ -938,8 +938,8 @@ static const char * ggml_backend_hsa_device_get_description(ggml_backend_dev_t d
 static void ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
     const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
     const auto & info = ggml_hsa_info();
-    const auto & device_info = info.devices[dev_ctx.device];
-    *total = device_info.data_memory.size;
+    const auto & dev_info = info.devices[dev_ctx.device];
+    *total = dev_info.data_memory.size;
     // HSA does not report free memory, set it to total
     *free = *total;
 }
@@ -950,8 +950,8 @@ static void ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * 
 static enum ggml_backend_dev_type ggml_backend_hsa_device_get_type(ggml_backend_dev_t dev) {
     const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
     const auto & info = ggml_hsa_info();
-    const auto & device_info = info.devices[dev_ctx.device];
-    switch (device_info.type) {
+    const auto & dev_info = info.devices[dev_ctx.device];
+    switch (dev_info.type) {
         case HSA_DEVICE_TYPE_CPU:
             return GGML_BACKEND_DEVICE_TYPE_CPU;
         case HSA_DEVICE_TYPE_GPU:
@@ -960,7 +960,7 @@ static enum ggml_backend_dev_type ggml_backend_hsa_device_get_type(ggml_backend_
         case HSA_DEVICE_TYPE_AIE:
             return GGML_BACKEND_DEVICE_TYPE_ACCEL;
         default:
-            GGML_ABORT("%s: error: unknown HSA device type %d", __func__, device_info.type);
+            GGML_ABORT("%s: error: unknown HSA device type %d", __func__, dev_info.type);
     }
 }
 
@@ -1000,7 +1000,7 @@ static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_host_buffer_type(g
 static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * tensor) {
     const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
     const auto & info = ggml_hsa_info();
-    const auto & device_info = info.devices[dev_ctx.device];
+    const auto & dev_info = info.devices[dev_ctx.device];
 
     if (!ggml_is_contiguous(tensor)) {
         return false;
@@ -1019,14 +1019,14 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
             return true;
         case GGML_OP_ADD:
         case GGML_OP_ADD1:
-            return ggml_hsa_supports_add(device_info, tensor);
+            return ggml_hsa_supports_add(dev_info, tensor);
         case GGML_OP_DUP:
-            return ggml_hsa_supports_cpy(device_info, tensor);
+            return ggml_hsa_supports_cpy(dev_info, tensor);
         case GGML_OP_MUL_MAT:
-            return ggml_hsa_supports_mul_mat(device_info, tensor);
+            return ggml_hsa_supports_mul_mat(dev_info, tensor);
         case GGML_OP_CPY:
         case GGML_OP_CONT:
-            return ggml_hsa_supports_cpy(device_info, tensor);
+            return ggml_hsa_supports_cpy(dev_info, tensor);
         case GGML_OP_PERMUTE:
         case GGML_OP_RESHAPE:
         case GGML_OP_TRANSPOSE:

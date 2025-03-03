@@ -2,7 +2,7 @@
 
 #include "ggml-impl.h"
 
-bool ggml_hsa_supports_add(const ggml_hsa_device_info::device_info & device_info, const ggml_tensor * tensor) {
+bool ggml_hsa_supports_add(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor) {
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * src1 = tensor->src[1];
     const ggml_tensor * dst = tensor;
@@ -13,12 +13,12 @@ bool ggml_hsa_supports_add(const ggml_hsa_device_info::device_info & device_info
       return false;
     }
 
-    return ggml_hsa_kernel_exists(device_info, tensor);
+    return ggml_hsa_kernel_exists(dev_info, tensor);
 }
 
 ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     auto & info = ggml_hsa_info();
-    auto & device_info = info.devices[ctx.device];
+    auto & dev_info = info.devices[ctx.device];
 
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * src1 = tensor->src[1];
@@ -37,7 +37,7 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
 #define HIGH_ADDR(addr) (reinterpret_cast<uint64_t>(addr) >> 32)
 
     hsa_amd_aie_ert_start_kernel_data_t * cmd_payload = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(device_info.kernarg_memory.memory_pool, 64, 0, reinterpret_cast<void **>(&cmd_payload));
+    if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0, reinterpret_cast<void **>(&cmd_payload));
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: Could not allocate hsa_amd_aie_ert_start_kernel_data_t (%d)\n", __func__, status);
         return GGML_STATUS_FAILED;
