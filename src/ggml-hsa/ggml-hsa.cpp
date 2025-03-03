@@ -258,6 +258,13 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
 #endif
 }
 
+void ggml_backend_hsa_context::destroy_aie_kernels() {
+    for (auto & t : aie_kernels) {
+        ggml_hsa_destroy_aie_kernel(*this, t.second);
+    }
+    aie_kernels.clear();
+}
+
 // HSA buffer
 
 /**
@@ -988,6 +995,9 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         return false;
     }
     for (int i = 0; i < GGML_MAX_SRC; ++i) {
+        if (tensor->src[i] == nullptr) {
+            break;
+        }
         if (!ggml_is_contiguous(tensor->src[i])) {
             return false;
         }

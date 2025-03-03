@@ -143,7 +143,7 @@ bool ggml_hsa_kernel_exists(const ggml_tensor * tensor) {
     return ggml_hsa_create_kernel_paths(tensor, pdi_path, instr_path) == GGML_STATUS_SUCCESS;
 }
 
-ggml_status ggml_hsa_create_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor, ggml_hsa_npu_kernel & kernel) {
+ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor, ggml_hsa_aie_kernel & kernel) {
     std::filesystem::path pdi_path;
     std::filesystem::path instr_path;
     if (auto status = ggml_hsa_create_kernel_paths(tensor, pdi_path, instr_path); status != GGML_STATUS_SUCCESS) {
@@ -166,7 +166,7 @@ ggml_status ggml_hsa_create_kernel(ggml_backend_hsa_context & ctx, const ggml_te
     return GGML_STATUS_SUCCESS;
 }
 
-void ggml_hsa_destroy_kernel(ggml_backend_hsa_context & ctx, ggml_hsa_npu_kernel & kernel) {
+void ggml_hsa_destroy_aie_kernel(ggml_backend_hsa_context & ctx, ggml_hsa_aie_kernel & kernel) {
     if (auto status = hsa_amd_memory_pool_free(kernel.pdi_buffer.data); status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
 

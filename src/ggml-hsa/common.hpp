@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <hsa/hsa.h>
@@ -83,13 +84,38 @@ struct ggml_hsa_device_info {
 const ggml_hsa_device_info & ggml_hsa_info();
 
 /**
+ * @brief PDI buffer.
+ */
+struct ggml_hsa_pdi_buffer {
+    std::uint64_t * data{};
+    std::size_t size{};
+};
+
+/**
+ * @brief Instructions buffer.
+ */
+struct ggml_hsa_insts_buffer {
+    std::uint32_t * data{};
+    std::size_t size{};
+};
+
+/**
+ * @brief AIE agent kernel.
+ */
+struct ggml_hsa_aie_kernel {
+    ggml_hsa_pdi_buffer pdi_buffer;
+    ggml_hsa_insts_buffer insts_buffer;
+};
+
+/**
  * @brief Context for HSA backend operations.
  */
 struct ggml_backend_hsa_context {
-    std::int32_t device{};          ///< Device ID.
-    std::string name;               ///< Device name.
-    hsa_queue_t* queue{};           ///< HSA queue associated with the context.
-    hsa_signal_t dispatch_signal{}; ///< Signal to wait for dispatches.
+    std::int32_t device{};                                            ///< Device ID.
+    std::string name;                                                 ///< Device name.
+    hsa_queue_t* queue{};                                             ///< HSA queue.
+    hsa_signal_t dispatch_signal{};                                   ///< Signal to wait for dispatches.
+    std::unordered_map<std::string, ggml_hsa_aie_kernel> aie_kernels; ///< AIE agent kernels.
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
     ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
@@ -104,4 +130,9 @@ struct ggml_backend_hsa_context {
 
     ggml_backend_hsa_context& operator=(const ggml_backend_hsa_context &) = delete;
     ggml_backend_hsa_context& operator=(ggml_backend_hsa_context &&) = delete;
+
+    /**
+     * @brief Destroys all stored AIE kernels.
+     */
+    void destroy_aie_kernels();
 };

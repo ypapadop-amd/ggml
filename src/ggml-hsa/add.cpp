@@ -28,8 +28,8 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
 
     const std::int64_t element_count = ggml_nelements(src0);
 
-    ggml_hsa_npu_kernel kernel;
-    if (auto status = ggml_hsa_create_kernel(ctx, tensor, kernel); status != GGML_STATUS_SUCCESS) {
+    ggml_hsa_aie_kernel kernel;
+    if (auto status = ggml_hsa_create_aie_kernel(ctx, tensor, kernel); status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
