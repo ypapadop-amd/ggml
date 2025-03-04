@@ -47,7 +47,7 @@ static ggml_status ggml_hsa_mul_mat_f32(const ggml_tensor * src0, const ggml_ten
     return GGML_STATUS_SUCCESS;
 }
 
-bool ggml_hsa_supports_mul_mat(const ggml_tensor * tensor) {
+bool ggml_hsa_supports_mul_mat(const ggml_hsa_device_info::device_info & /*dev_info*/, const ggml_tensor * tensor) {
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * src1 = tensor->src[1];
     const ggml_tensor * dst = tensor;
