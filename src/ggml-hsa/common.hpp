@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -16,6 +17,11 @@
 #include "ggml-common.h"
 
 #define MATRIX_ROW_PADDING 512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
+
+/**
+ * @brief Returns the description of @p status as a string.
+ */
+const char* ggml_hsa_get_status_string(hsa_status_t status);
 
 /**
  * @brief Prints an error message based on the status and aborts.
@@ -29,17 +35,24 @@
 [[noreturn]]
 void ggml_hsa_error(const char * stmt, const char * func, const char * file, int line, hsa_status_t status);
 
-#define HSA_CHECK(err)              \
-  do {                              \
-    auto err_ = (err);              \
-    if (err_ != HSA_STATUS_SUCCESS) \
-      ggml_hsa_error(               \
-          #err,                     \
-          __func__,                 \
-          __FILE__,                 \
-          __LINE__,                 \
-          err_);                    \
-  } while (0)
+#define HSA_CHECK(status)              \
+  do {                                 \
+    auto status_ = (status);           \
+    if (status_ != HSA_STATUS_SUCCESS) \
+      ggml_hsa_error(                  \
+          #status,                     \
+          __func__,                    \
+          __FILE__,                    \
+          __LINE__,                    \
+          status_);                    \
+  } while (false)
+
+#define HSA_CHECK_THROW(status)                                      \
+  do {                                                               \
+    auto status_ = (status);                                         \
+    if (status_ != HSA_STATUS_SUCCESS)                               \
+      throw std::runtime_error{ggml_hsa_get_status_string(status_)}; \
+  } while (false)
 
 /**
  * @brief Device information.
