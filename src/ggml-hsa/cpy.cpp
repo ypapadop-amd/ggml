@@ -1104,7 +1104,7 @@ static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * ten
     }
 }
 
-bool ggml_hsa_supports_cpy(const ggml_tensor * tensor) {
+bool ggml_hsa_supports_cpy(const ggml_hsa_device_info::device_info & /*dev_info*/, const ggml_tensor * tensor) {
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * dst = tensor;
 
