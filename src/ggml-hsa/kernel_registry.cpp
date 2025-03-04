@@ -199,7 +199,6 @@ ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx, const ggml_
 void ggml_hsa_destroy_aie_kernel(ggml_backend_hsa_context & /*ctx*/, ggml_hsa_aie_kernel & kernel) {
     if (auto status = hsa_amd_memory_pool_free(kernel.pdi_buffer.data); status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
-
     }
     if (auto status = hsa_amd_memory_pool_free(kernel.insts_buffer.data); status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);

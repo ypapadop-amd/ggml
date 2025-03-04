@@ -32,7 +32,7 @@
 /**
  * @brief Returns the description of @p status.
  */
-static const char* ggml_hsa_get_status_string(hsa_status_t status) {
+const char* ggml_hsa_get_status_string(hsa_status_t status) {
     const char* msg = nullptr;
     if (hsa_status_string(status, &msg) != HSA_STATUS_SUCCESS) {
         return "unknown";
@@ -63,14 +63,14 @@ static std::string ggml_hsa_format_name(std::int32_t device) {
 static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
     constexpr std::size_t agent_name_size = 64;
     char agent_name[agent_name_size];
-    HSA_CHECK(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, &agent_name));
+    HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, &agent_name));
     return std::string{agent_name};
 }
 
 // Returns the minimum queue size
 static std::uint32_t ggml_hsa_get_agent_min_queue_size(hsa_agent_t agent) {
     std::uint32_t min_queue_size = 0;
-    HSA_CHECK(hsa_agent_get_info(agent, HSA_AGENT_INFO_QUEUE_MIN_SIZE, &min_queue_size));
+    HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_QUEUE_MIN_SIZE, &min_queue_size));
     return min_queue_size;
 }
 
@@ -206,10 +206,10 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
  * memory pools.
  */
 static ggml_hsa_device_info ggml_hsa_init() {
-    HSA_CHECK(hsa_init());
+    HSA_CHECK_THROW(hsa_init());
 
     ggml_hsa_device_info info = {};
-    HSA_CHECK(hsa_iterate_agents(ggml_hsa_find_hsa_agents, &info));
+    HSA_CHECK_THROW(hsa_iterate_agents(ggml_hsa_find_hsa_agents, &info));
 
     return info;
 }
@@ -274,8 +274,8 @@ void ggml_backend_hsa_context::destroy_aie_kernels() {
  * @brief Context for managing a HSA buffer associated with a specific device.
  */
 struct ggml_backend_hsa_buffer_context {
-    std::int32_t device;     ///< Device ID associated with this buffer context.
-    void * dev_ptr{nullptr}; ///< Pointer to the device memory.
+    std::int32_t device{}; ///< Device ID associated with this buffer context.
+    void * dev_ptr{};      ///< Pointer to the device memory.
 
     ggml_backend_hsa_buffer_context(std::int32_t device, void * dev_ptr) :
         device(device), dev_ptr(dev_ptr) {
@@ -439,7 +439,7 @@ static bool ggml_backend_buft_is_hsa(ggml_backend_buffer_type_t buft) {
 /**
  * @brief Allocates a buffer in @p buft of size @p size.
  */
-static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
+static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) try {
     const auto & buft_ctx = *static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & info = ggml_hsa_info();
     const auto & dev_info = info.devices[buft_ctx.device];
@@ -453,6 +453,9 @@ static ggml_backend_buffer_t ggml_backend_hsa_buffer_type_alloc_buffer(ggml_back
 
     auto * buf_ctx = new ggml_backend_hsa_buffer_context(buft_ctx.device, buffer);
     return ggml_backend_buffer_init(buft, ggml_backend_hsa_buffer_interface, buf_ctx, size);
+}  catch (const std::exception & ex) {
+    GGML_LOG_ERROR("%s: Could not allocate buffer (%s)\n", __func__, ex.what());
+    return nullptr;
 }
 
 /**
@@ -528,7 +531,7 @@ static struct {
     std::once_flag flag;
 } ggml_backend_hsa_buffer_type_metadata;
 
-ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) {
+ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) try {
     const auto device_count = ggml_backend_hsa_get_device_count();
 
     if (device >= device_count) {
@@ -548,6 +551,9 @@ ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) {
         });
 
     return &ggml_backend_hsa_buffer_type_metadata.type[device];
+}  catch (const std::exception & ex) {
+    GGML_LOG_ERROR("%s: Could not create buffer type (%s)\n", __func__, ex.what());
+    return nullptr;
 }
 
 // HSA split buffer
@@ -768,7 +774,7 @@ struct fallback_tensor {
 
 #endif
 
-static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) try {
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
     ggml_status status = GGML_STATUS_SUCCESS;
 
@@ -824,6 +830,9 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend, g
     }
 
     return status;
+} catch (const std::exception & ex) {
+    GGML_LOG_ERROR("%s: Could not execute graph (%s)\n", __func__, ex.what());
+    return GGML_STATUS_FAILED;
 }
 
 static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
@@ -974,8 +983,7 @@ static void ggml_backend_hsa_device_get_props(ggml_backend_dev_t dev, ggml_backe
     };
 }
 
-static ggml_backend_t ggml_backend_hsa_device_init_backend(ggml_backend_dev_t dev, const char * params) {
-    GGML_UNUSED(params);
+static ggml_backend_t ggml_backend_hsa_device_init_backend(ggml_backend_dev_t dev, const char * /*params*/) {
     const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
     return ggml_backend_hsa_init(dev_ctx.device);
 }
@@ -985,15 +993,14 @@ static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_buffer_type(ggml_b
     return ggml_backend_hsa_buffer_type(dev_ctx.device);
 }
 
-static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_host_buffer_type(ggml_backend_dev_t dev) {
-    GGML_UNUSED(dev);
+static ggml_backend_buffer_type_t ggml_backend_hsa_device_get_host_buffer_type(ggml_backend_dev_t /*dev*/) {
     return ggml_backend_hsa_host_buffer_type();
 }
 
 /**
  * @brief Returns if the operation in tensor @p op is supported by device @p dev.
  */
-static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * tensor) {
+static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * tensor) try {
     const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
     const auto & info = ggml_hsa_info();
     const auto & dev_info = info.devices[dev_ctx.device];
@@ -1032,6 +1039,9 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         default:
             return false;
     }
+} catch (const std::exception & ex) {
+    GGML_LOG_ERROR("%s: Could not check operation (%s)\n", __func__, ex.what());
+    return false;
 }
 
 static bool ggml_backend_hsa_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
@@ -1149,7 +1159,7 @@ static struct {
     std::once_flag flag;
 } ggml_backend_hsa_reg_metadata;
 
-ggml_backend_reg_t ggml_backend_hsa_reg() {
+ggml_backend_reg_t ggml_backend_hsa_reg() try {
     std::call_once(
         ggml_backend_hsa_reg_metadata.flag,
         [] {
@@ -1177,9 +1187,12 @@ ggml_backend_reg_t ggml_backend_hsa_reg() {
         });
 
     return &ggml_backend_hsa_reg_metadata.reg;
+} catch (const std::exception & ex) {
+    GGML_LOG_ERROR("%s: Could not register backend (%s)\n", __func__, ex.what());
+    return nullptr;
 }
 
-ggml_backend_t ggml_backend_hsa_init(int device) {
+ggml_backend_t ggml_backend_hsa_init(int device) try {
     const auto & info = ggml_hsa_info();
 
     if (device < 0 || device >= info.device_count) {
@@ -1187,13 +1200,7 @@ ggml_backend_t ggml_backend_hsa_init(int device) {
         return nullptr;
     }
 
-    ggml_backend_hsa_context * ctx = nullptr;
-    try {
-        ctx = new ggml_backend_hsa_context{device, info.devices[device]};
-    } catch (const std::exception&) {
-        GGML_LOG_ERROR("%s: failed to create context\n", __func__);
-        return nullptr;
-    }
+    auto * ctx = new ggml_backend_hsa_context{device, info.devices[device]};
 
     ggml_backend_t hsa_backend = new ggml_backend {
         /* .guid      = */ ggml_backend_hsa_guid(),
@@ -1203,6 +1210,9 @@ ggml_backend_t ggml_backend_hsa_init(int device) {
     };
 
     return hsa_backend;
+} catch (const std::exception & ex) {
+    GGML_LOG_ERROR("%s: Could not initialize backend (%s)\n", __func__, ex.what());
+    return nullptr;
 }
 
 GGML_BACKEND_DL_IMPL(ggml_backend_hsa_reg)
