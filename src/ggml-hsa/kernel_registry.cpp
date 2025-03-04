@@ -7,11 +7,28 @@
 #include <sstream>
 #include <string_view>
 
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE
+#endif
+#include <dlfcn.h>
+#include <iostream>
+
 #include "ggml-impl.h"
 
 namespace {
 
-const std::filesystem::path kernel_base_path = "/home/ypapadop/workspace-raiders/ggml/build/src/ggml-hsa/kernels/";
+const std::filesystem::path kernel_base_path = [] {
+    // retrieve the kernel directory as a relative path from this shared library
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void*>(&ggml_hsa_find_aie_kernel), &info) == 0) {
+        GGML_ABORT("Could not retrieve kernel base directory\n");
+    }
+    auto library_path = std::filesystem::path{info.dli_fname}.parent_path() / "kernels";
+    if (!std::filesystem::is_directory(library_path)) {
+        GGML_ABORT("Directory %s is not a valid path.\n", library_path.c_str());
+    }
+    return library_path;
+}();
 const std::string_view pdi_file_suffix = ".pdi";
 const std::string_view inst_file_suffix = "_insts.txt";
 
@@ -183,7 +200,7 @@ ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx, const ggml_
     return GGML_STATUS_SUCCESS;
 }
 
-void ggml_hsa_destroy_aie_kernel(ggml_backend_hsa_context & ctx, ggml_hsa_aie_kernel & kernel) {
+void ggml_hsa_destroy_aie_kernel(ggml_backend_hsa_context & /*ctx*/, ggml_hsa_aie_kernel & kernel) {
     if (auto status = hsa_amd_memory_pool_free(kernel.pdi_buffer.data); status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
 
