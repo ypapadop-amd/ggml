@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ggml.h"
 #include "ggml-hsa.h"
+#include "ggml.h"
 
 #include <array>
 #include <cstddef>
@@ -16,12 +16,13 @@
 
 #include "ggml-common.h"
 
-#define MATRIX_ROW_PADDING 512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
+#define MATRIX_ROW_PADDING                                                                         \
+    512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
 
 /**
  * @brief Returns the description of @p status as a string.
  */
-const char* ggml_hsa_get_status_string(hsa_status_t status);
+const char * ggml_hsa_get_status_string(hsa_status_t status);
 
 /**
  * @brief Prints an error message based on the status and aborts.
@@ -33,26 +34,22 @@ const char* ggml_hsa_get_status_string(hsa_status_t status);
  * @param status error code
  */
 [[noreturn]]
-void ggml_hsa_error(const char * stmt, const char * func, const char * file, int line, hsa_status_t status);
+void ggml_hsa_error(
+    const char * stmt, const char * func, const char * file, int line, hsa_status_t status);
 
-#define HSA_CHECK(status)              \
-  do {                                 \
-    auto status_ = (status);           \
-    if (status_ != HSA_STATUS_SUCCESS) \
-      ggml_hsa_error(                  \
-          #status,                     \
-          __func__,                    \
-          __FILE__,                    \
-          __LINE__,                    \
-          status_);                    \
-  } while (false)
+#define HSA_CHECK(status)                                                                          \
+    do {                                                                                           \
+        auto status_ = (status);                                                                   \
+        if (status_ != HSA_STATUS_SUCCESS)                                                         \
+            ggml_hsa_error(#status, __func__, __FILE__, __LINE__, status_);                        \
+    } while (false)
 
-#define HSA_CHECK_THROW(status)                                      \
-  do {                                                               \
-    auto status_ = (status);                                         \
-    if (status_ != HSA_STATUS_SUCCESS)                               \
-      throw std::runtime_error{ggml_hsa_get_status_string(status_)}; \
-  } while (false)
+#define HSA_CHECK_THROW(status)                                                                    \
+    do {                                                                                           \
+        auto status_ = (status);                                                                   \
+        if (status_ != HSA_STATUS_SUCCESS)                                                         \
+            throw std::runtime_error{ggml_hsa_get_status_string(status_)};                         \
+    } while (false)
 
 /**
  * @brief Device information.
@@ -124,25 +121,26 @@ struct ggml_hsa_aie_kernel {
  * @brief Context for HSA backend operations.
  */
 struct ggml_backend_hsa_context {
-    std::int32_t device{};                                            ///< Device ID.
-    std::string name;                                                 ///< Device name.
-    hsa_queue_t* queue{};                                             ///< HSA queue.
-    hsa_signal_t dispatch_signal{};                                   ///< Signal to wait for dispatches.
+    std::int32_t device{};          ///< Device ID.
+    std::string name;               ///< Device name.
+    hsa_queue_t * queue{};          ///< HSA queue.
+    hsa_signal_t dispatch_signal{}; ///< Signal to wait for dispatches.
     std::unordered_map<std::string, ggml_hsa_aie_kernel> aie_kernels; ///< AIE agent kernels.
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
     ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
 #endif
 
-    ggml_backend_hsa_context(std::int32_t device, const ggml_hsa_device_info::device_info& dev_info);
+    ggml_backend_hsa_context(std::int32_t device,
+                             const ggml_hsa_device_info::device_info & dev_info);
 
     ggml_backend_hsa_context(const ggml_backend_hsa_context &) = delete;
     ggml_backend_hsa_context(ggml_backend_hsa_context &&) = delete;
 
     ~ggml_backend_hsa_context();
 
-    ggml_backend_hsa_context& operator=(const ggml_backend_hsa_context &) = delete;
-    ggml_backend_hsa_context& operator=(ggml_backend_hsa_context &&) = delete;
+    ggml_backend_hsa_context & operator=(const ggml_backend_hsa_context &) = delete;
+    ggml_backend_hsa_context & operator=(ggml_backend_hsa_context &&) = delete;
 
     /**
      * @brief Destroys all stored AIE kernels.
