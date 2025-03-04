@@ -15,9 +15,7 @@
 
 #include "ggml-impl.h"
 
-namespace {
-
-const std::filesystem::path kernel_base_path = [] {
+static const std::filesystem::path kernel_base_path = [] {
     // retrieve the kernel directory as a relative path from this shared library
     Dl_info info;
     if (dladdr(reinterpret_cast<void*>(&ggml_hsa_find_aie_kernel), &info) == 0) {
@@ -29,13 +27,13 @@ const std::filesystem::path kernel_base_path = [] {
     }
     return library_path;
 }();
-const std::string_view pdi_file_suffix = ".pdi";
-const std::string_view inst_file_suffix = "_insts.txt";
+static const std::string_view pdi_file_suffix = ".pdi";
+static const std::string_view inst_file_suffix = "_insts.txt";
 
 /**
  * @brief Creates a kernel name for the operation in tensor @p tensor.
  */
-ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor, std::string & kernel_name) {
+static ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor, std::string & kernel_name) {
     if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
         GGML_LOG_ERROR("%s: Tensor operation index out of bounds (%d >= GGML_OP_COUNT)\n", __func__, tensor->op);
         return GGML_STATUS_FAILED;
@@ -55,14 +53,14 @@ ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::device_info 
 /**
  * @brief Returns if @p p is a file.
  */
-bool ggml_hsa_is_file(const std::filesystem::path & p) {
+static bool ggml_hsa_is_file(const std::filesystem::path & p) {
     return std::filesystem::is_regular_file(p) || std::filesystem::is_symlink(p);
 }
 
 /**
  * @brief Returns the paths for PDI and insts for the kernel of @p tensor.
  */
-ggml_status ggml_hsa_create_kernel_paths(const std::string & kernel_name, std::filesystem::path & pdi_path, std::filesystem::path & instr_path) {
+static ggml_status ggml_hsa_create_kernel_paths(const std::string & kernel_name, std::filesystem::path & pdi_path, std::filesystem::path & instr_path) {
     const auto partial_path = kernel_base_path / kernel_name;
 
     pdi_path = partial_path;
@@ -85,7 +83,7 @@ ggml_status ggml_hsa_create_kernel_paths(const std::string & kernel_name, std::f
 /**
  * @brief Reads a PDI file from @p p and returns its contents and size in bytes in @p buffer and @p buffer_size respectively.
  */
-ggml_status ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const std::filesystem::path & p, ggml_hsa_pdi_buffer & buffer) {
+static ggml_status ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const std::filesystem::path & p, ggml_hsa_pdi_buffer & buffer) {
     std::ifstream is(p.string(), std::ios::binary | std::ios::ate | std::ios::in);
     if (is.fail()) {
         GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, p.c_str());
@@ -114,7 +112,7 @@ ggml_status ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const std::filesystem:
  * @brief Reads an instruction file from @p p and returns its contents and number of instructions size in @p buffer
  *        and @p instr_count respectively.
  */
-ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool, const std::filesystem::path & p, ggml_hsa_insts_buffer & buffer) {
+static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool, const std::filesystem::path & p, ggml_hsa_insts_buffer & buffer) {
     std::ifstream is(p.string(), std::ios::in);
     if (is.fail()) {
         GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, p.c_str());
@@ -146,8 +144,6 @@ ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool, const std::filesyste
 
     return GGML_STATUS_SUCCESS;
 }
-
-} // namespace
 
 bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor) {
     std::string kernel_name;
@@ -203,7 +199,6 @@ ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx, const ggml_
 void ggml_hsa_destroy_aie_kernel(ggml_backend_hsa_context & /*ctx*/, ggml_hsa_aie_kernel & kernel) {
     if (auto status = hsa_amd_memory_pool_free(kernel.pdi_buffer.data); status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
-
     }
     if (auto status = hsa_amd_memory_pool_free(kernel.insts_buffer.data); status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
