@@ -33,6 +33,10 @@ int main(void) {
 
     // initialize GGML backend and allocators
     ggml_backend_t backend = ggml_backend_hsa_init(0);
+    if (backend == nullptr) {
+        std::cerr << "Could not create backend\n";
+        return EXIT_FAILURE;
+    }
     const std::size_t alignment = ggml_backend_get_alignment(backend);
     const std::size_t tensor_count = 3;
     const std::size_t buffer_size = tensor_count * GGML_PAD((N * sizeof(std::int32_t)), alignment);
