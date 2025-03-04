@@ -28,10 +28,8 @@ static void ggml_hsa_cpy_same_cont(ggml_backend_hsa_context & /*ctx*/, ggml_tens
     const int ie1 = MIN(ie0 + dr, ne);
 
     if (ie0 < ie1) {
-        memcpy(
-            ((char *)  dst->data + ie0*nb0),
-            ((char *) src0->data + ie0*nb0),
-            (ie1 - ie0) * nb0);
+        memcpy(((char *)dst->data + ie0 * nb0), ((char *)src0->data + ie0 * nb0),
+               (ie1 - ie0) * nb0);
     }
 }
 
@@ -54,38 +52,37 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
     const int ir0 = dr * ith;
     const int ir1 = MIN(ir0 + dr, nr);
 
-    if (src0->type == dst->type &&
-        ne00 == ne0 &&
-        nb00 == ggml_type_size(src0->type) && nb0 == ggml_type_size(dst->type)) {
+    if (src0->type == dst->type && ne00 == ne0 && nb00 == ggml_type_size(src0->type) &&
+        nb0 == ggml_type_size(dst->type)) {
         // copy by rows
-        const size_t rs = ne00*nb00;
+        const size_t rs = ne00 * nb00;
         for (int64_t i03 = 0; i03 < ne03; i03++) {
             for (int64_t i02 = 0; i02 < ne02; i02++) {
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
-                    memcpy(
-                        ((char *)  dst->data + i01*nb1  + i02*nb2  + i03*nb3),
-                        ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03),
-                        rs);
+                    memcpy(((char *)dst->data + i01 * nb1 + i02 * nb2 + i03 * nb3),
+                           ((char *)src0->data + i01 * nb01 + i02 * nb02 + i03 * nb03), rs);
                 }
             }
         }
         return;
     }
 
-    // TODO: add more special-case implementations for tensor shapes/strides that can benefit from memcpy
+    // TODO: add more special-case implementations for tensor shapes/strides that can benefit from
+    // memcpy
 
     if (ggml_is_contiguous(dst)) {
         if (nb00 == sizeof(ggml_fp16_t)) {
             if (dst->type == GGML_TYPE_F16) {
                 size_t id = 0;
                 const size_t rs = ne00 * nb00;
-                char * dst_ptr = (char *) dst->data;
+                char * dst_ptr = (char *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += rs * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
-                            const char * src0_ptr = (char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03;
+                            const char * src0_ptr =
+                                (char *)src0->data + i01 * nb01 + i02 * nb02 + i03 * nb03;
                             memcpy(dst_ptr + id, src0_ptr, rs);
                             id += rs;
                         }
@@ -94,13 +91,15 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 }
             } else if (dst->type == GGML_TYPE_F32) {
                 size_t id = 0;
-                float * dst_ptr = (float *) dst->data;
+                float * dst_ptr = (float *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
-                            const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
+                            const ggml_fp16_t * src0_ptr =
+                                (ggml_fp16_t *)((char *)src0->data + i01 * nb01 + i02 * nb02 +
+                                                i03 * nb03);
                             for (int i00 = 0; i00 < ne00; i00++) {
                                 dst_ptr[id] = GGML_FP16_TO_FP32(src0_ptr[i00]);
                                 id++;
@@ -110,18 +109,21 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                     }
                 }
             } else if (ggml_get_type_traits_cpu(dst->type)->from_float) {
-                ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
-                float * src0_f32 = static_cast<float*>(std::malloc(ne00 * sizeof(float)));
+                ggml_from_float_t const quantize_row_q =
+                    ggml_get_type_traits_cpu(dst->type)->from_float;
+                float * src0_f32 = static_cast<float *>(std::malloc(ne00 * sizeof(float)));
 
                 size_t id = 0;
                 size_t rs = nb0 * (ne00 / ggml_blck_size(dst->type));
-                char * dst_ptr = (char *) dst->data;
+                char * dst_ptr = (char *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += rs * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
-                            const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
+                            const ggml_fp16_t * src0_ptr =
+                                (ggml_fp16_t *)((char *)src0->data + i01 * nb01 + i02 * nb02 +
+                                                i03 * nb03);
 
                             for (int i00 = 0; i00 < ne00; i00++) {
                                 src0_f32[i00] = GGML_FP16_TO_FP32(src0_ptr[i00]);
@@ -139,18 +141,20 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 GGML_ABORT("fatal error"); // TODO: implement
             }
         } else {
-            //printf("%s: this is not optimal - fix me\n", __func__);
+            // printf("%s: this is not optimal - fix me\n", __func__);
 
             if (dst->type == GGML_TYPE_F32) {
                 size_t id = 0;
-                float * dst_ptr = (float *) dst->data;
+                float * dst_ptr = (float *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
                             for (int i00 = 0; i00 < ne00; i00++) {
-                                const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+                                const ggml_fp16_t * src0_ptr =
+                                    (ggml_fp16_t *)((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                    i02 * nb02 + i03 * nb03);
 
                                 dst_ptr[id] = GGML_FP16_TO_FP32(*src0_ptr);
                                 id++;
@@ -161,14 +165,16 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 }
             } else if (dst->type == GGML_TYPE_F16) {
                 size_t id = 0;
-                ggml_fp16_t * dst_ptr = (ggml_fp16_t *) dst->data;
+                ggml_fp16_t * dst_ptr = (ggml_fp16_t *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
                             for (int i00 = 0; i00 < ne00; i00++) {
-                                const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+                                const ggml_fp16_t * src0_ptr =
+                                    (ggml_fp16_t *)((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                    i02 * nb02 + i03 * nb03);
 
                                 dst_ptr[id] = *src0_ptr;
                                 id++;
@@ -208,8 +214,10 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 }
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
                     for (int64_t i00 = 0; i00 < ne00; i00++) {
-                        const char * src0_ptr = ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                              char * dst_ptr  = ((char *)  dst->data + i10*nb0  + i11*nb1  + i12*nb2  + i13*nb3);
+                        const char * src0_ptr = ((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                 i02 * nb02 + i03 * nb03);
+                        char * dst_ptr =
+                            ((char *)dst->data + i10 * nb0 + i11 * nb1 + i12 * nb2 + i13 * nb3);
 
                         memcpy(dst_ptr, src0_ptr, sizeof(ggml_fp16_t));
 
@@ -260,10 +268,12 @@ static void ggml_hsa_cpy_f16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 }
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
                     for (int64_t i00 = 0; i00 < ne00; i00++) {
-                        const char * src0_ptr = ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                              char * dst_ptr  = ((char *)  dst->data + i10*nb0  + i11*nb1  + i12*nb2  + i13*nb3);
+                        const char * src0_ptr = ((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                 i02 * nb02 + i03 * nb03);
+                        char * dst_ptr =
+                            ((char *)dst->data + i10 * nb0 + i11 * nb1 + i12 * nb2 + i13 * nb3);
 
-                        *(float *) dst_ptr = GGML_FP16_TO_FP32(*(const ggml_fp16_t *) src0_ptr);
+                        *(float *)dst_ptr = GGML_FP16_TO_FP32(*(const ggml_fp16_t *)src0_ptr);
 
                         if (++i10 == ne0) {
                             i10 = 0;
@@ -318,38 +328,37 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
     const int ir0 = dr * ith;
     const int ir1 = MIN(ir0 + dr, nr);
 
-    if (src0->type == dst->type &&
-        ne00 == ne0 &&
-        nb00 == ggml_type_size(src0->type) && nb0 == ggml_type_size(dst->type)) {
+    if (src0->type == dst->type && ne00 == ne0 && nb00 == ggml_type_size(src0->type) &&
+        nb0 == ggml_type_size(dst->type)) {
         // copy by rows
-        const size_t rs = ne00*nb00;
+        const size_t rs = ne00 * nb00;
         for (int64_t i03 = 0; i03 < ne03; i03++) {
             for (int64_t i02 = 0; i02 < ne02; i02++) {
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
-                    memcpy(
-                        ((char *)  dst->data + i01*nb1  + i02*nb2  + i03*nb3),
-                        ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03),
-                        rs);
+                    memcpy(((char *)dst->data + i01 * nb1 + i02 * nb2 + i03 * nb3),
+                           ((char *)src0->data + i01 * nb01 + i02 * nb02 + i03 * nb03), rs);
                 }
             }
         }
         return;
     }
 
-    // TODO: add more special-case implementations for tensor shapes/strides that can benefit from memcpy
+    // TODO: add more special-case implementations for tensor shapes/strides that can benefit from
+    // memcpy
 
     if (ggml_is_contiguous(dst)) {
         if (nb00 == sizeof(ggml_bf16_t)) {
             if (dst->type == GGML_TYPE_BF16) {
                 size_t id = 0;
                 const size_t rs = ne00 * nb00;
-                char * dst_ptr = (char *) dst->data;
+                char * dst_ptr = (char *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += rs * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
-                            const char * src0_ptr = (char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03;
+                            const char * src0_ptr =
+                                (char *)src0->data + i01 * nb01 + i02 * nb02 + i03 * nb03;
                             memcpy(dst_ptr + id, src0_ptr, rs);
                             id += rs;
                         }
@@ -358,13 +367,15 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                 }
             } else if (dst->type == GGML_TYPE_F16) {
                 size_t id = 0;
-                ggml_fp16_t * dst_ptr = (ggml_fp16_t *) dst->data;
+                ggml_fp16_t * dst_ptr = (ggml_fp16_t *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
-                            const ggml_bf16_t * src0_ptr = (ggml_bf16_t *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
+                            const ggml_bf16_t * src0_ptr =
+                                (ggml_bf16_t *)((char *)src0->data + i01 * nb01 + i02 * nb02 +
+                                                i03 * nb03);
                             for (int i00 = 0; i00 < ne00; i00++) {
                                 dst_ptr[id] = GGML_FP32_TO_FP16(GGML_BF16_TO_FP32(src0_ptr[i00]));
                                 id++;
@@ -375,13 +386,15 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                 }
             } else if (dst->type == GGML_TYPE_F32) {
                 size_t id = 0;
-                float * dst_ptr = (float *) dst->data;
+                float * dst_ptr = (float *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
-                            const ggml_bf16_t * src0_ptr = (ggml_bf16_t *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
+                            const ggml_bf16_t * src0_ptr =
+                                (ggml_bf16_t *)((char *)src0->data + i01 * nb01 + i02 * nb02 +
+                                                i03 * nb03);
                             for (int i00 = 0; i00 < ne00; i00++) {
                                 dst_ptr[id] = GGML_BF16_TO_FP32(src0_ptr[i00]);
                                 id++;
@@ -391,19 +404,22 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                     }
                 }
             } else if (ggml_get_type_traits_cpu(dst->type)->from_float) {
-                ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
+                ggml_from_float_t const quantize_row_q =
+                    ggml_get_type_traits_cpu(dst->type)->from_float;
                 GGML_ABORT("Not implemented");
-                float * src0_f32 = static_cast<float*>(std::malloc(ne00 * sizeof(float)));
+                float * src0_f32 = static_cast<float *>(std::malloc(ne00 * sizeof(float)));
 
                 size_t id = 0;
                 size_t rs = nb0 * (ne00 / ggml_blck_size(dst->type));
-                char * dst_ptr = (char *) dst->data;
+                char * dst_ptr = (char *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += rs * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
-                            const ggml_bf16_t * src0_ptr = (ggml_bf16_t *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
+                            const ggml_bf16_t * src0_ptr =
+                                (ggml_bf16_t *)((char *)src0->data + i01 * nb01 + i02 * nb02 +
+                                                i03 * nb03);
 
                             for (int i00 = 0; i00 < ne00; i00++) {
                                 src0_f32[i00] = GGML_BF16_TO_FP32(src0_ptr[i00]);
@@ -421,18 +437,20 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                 GGML_ABORT("fatal error"); // TODO: implement
             }
         } else {
-            //printf("%s: this is not optimal - fix me\n", __func__);
+            // printf("%s: this is not optimal - fix me\n", __func__);
 
             if (dst->type == GGML_TYPE_F32) {
                 size_t id = 0;
-                float * dst_ptr = (float *) dst->data;
+                float * dst_ptr = (float *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
                             for (int i00 = 0; i00 < ne00; i00++) {
-                                const ggml_bf16_t * src0_ptr = (ggml_bf16_t *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+                                const ggml_bf16_t * src0_ptr =
+                                    (ggml_bf16_t *)((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                    i02 * nb02 + i03 * nb03);
 
                                 dst_ptr[id] = GGML_BF16_TO_FP32(*src0_ptr);
                                 id++;
@@ -443,14 +461,16 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                 }
             } else if (dst->type == GGML_TYPE_BF16) {
                 size_t id = 0;
-                ggml_bf16_t * dst_ptr = (ggml_bf16_t *) dst->data;
+                ggml_bf16_t * dst_ptr = (ggml_bf16_t *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
                             for (int i00 = 0; i00 < ne00; i00++) {
-                                const ggml_bf16_t * src0_ptr = (ggml_bf16_t *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+                                const ggml_bf16_t * src0_ptr =
+                                    (ggml_bf16_t *)((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                    i02 * nb02 + i03 * nb03);
 
                                 dst_ptr[id] = *src0_ptr;
                                 id++;
@@ -461,14 +481,16 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                 }
             } else if (dst->type == GGML_TYPE_F16) {
                 size_t id = 0;
-                ggml_fp16_t * dst_ptr = (ggml_fp16_t *) dst->data;
+                ggml_fp16_t * dst_ptr = (ggml_fp16_t *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
                             for (int i00 = 0; i00 < ne00; i00++) {
-                                const ggml_bf16_t * src0_ptr = (ggml_bf16_t *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+                                const ggml_bf16_t * src0_ptr =
+                                    (ggml_bf16_t *)((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                    i02 * nb02 + i03 * nb03);
 
                                 dst_ptr[id] = GGML_FP32_TO_FP16(GGML_BF16_TO_FP32(*src0_ptr));
                                 id++;
@@ -508,8 +530,10 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                 }
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
                     for (int64_t i00 = 0; i00 < ne00; i00++) {
-                        const char * src0_ptr = ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                              char * dst_ptr  = ((char *)  dst->data + i10*nb0  + i11*nb1  + i12*nb2  + i13*nb3);
+                        const char * src0_ptr = ((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                 i02 * nb02 + i03 * nb03);
+                        char * dst_ptr =
+                            ((char *)dst->data + i10 * nb0 + i11 * nb1 + i12 * nb2 + i13 * nb3);
 
                         memcpy(dst_ptr, src0_ptr, sizeof(ggml_bf16_t));
 
@@ -560,10 +584,13 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                 }
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
                     for (int64_t i00 = 0; i00 < ne00; i00++) {
-                        const char * src0_ptr = ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                              char * dst_ptr  = ((char *)  dst->data + i10*nb0  + i11*nb1  + i12*nb2  + i13*nb3);
+                        const char * src0_ptr = ((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                 i02 * nb02 + i03 * nb03);
+                        char * dst_ptr =
+                            ((char *)dst->data + i10 * nb0 + i11 * nb1 + i12 * nb2 + i13 * nb3);
 
-                        *(ggml_fp16_t *) dst_ptr = GGML_FP32_TO_FP16(GGML_BF16_TO_FP32(*(const ggml_bf16_t *) src0_ptr));
+                        *(ggml_fp16_t *)dst_ptr =
+                            GGML_FP32_TO_FP16(GGML_BF16_TO_FP32(*(const ggml_bf16_t *)src0_ptr));
 
                         if (++i10 == ne0) {
                             i10 = 0;
@@ -612,10 +639,12 @@ static void ggml_hsa_cpy_bf16(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * 
                 }
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
                     for (int64_t i00 = 0; i00 < ne00; i00++) {
-                        const char * src0_ptr = ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                              char * dst_ptr  = ((char *)  dst->data + i10*nb0  + i11*nb1  + i12*nb2  + i13*nb3);
+                        const char * src0_ptr = ((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                 i02 * nb02 + i03 * nb03);
+                        char * dst_ptr =
+                            ((char *)dst->data + i10 * nb0 + i11 * nb1 + i12 * nb2 + i13 * nb3);
 
-                        *(float *) dst_ptr = GGML_BF16_TO_FP32(*(const ggml_bf16_t *) src0_ptr);
+                        *(float *)dst_ptr = GGML_BF16_TO_FP32(*(const ggml_bf16_t *)src0_ptr);
 
                         if (++i10 == ne0) {
                             i10 = 0;
@@ -670,18 +699,15 @@ static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
     const int ir0 = dr * ith;
     const int ir1 = MIN(ir0 + dr, nr);
 
-    if (src0->type == dst->type &&
-        ne00 == ne0 &&
-        nb00 == ggml_type_size(src0->type) && nb0 == ggml_type_size(dst->type)) {
+    if (src0->type == dst->type && ne00 == ne0 && nb00 == ggml_type_size(src0->type) &&
+        nb0 == ggml_type_size(dst->type)) {
         // copy by rows
-        const size_t rs = ne00*nb00;
+        const size_t rs = ne00 * nb00;
         for (int64_t i03 = 0; i03 < ne03; i03++) {
             for (int64_t i02 = 0; i02 < ne02; i02++) {
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
-                    memcpy(
-                        ((char *)  dst->data + i01*nb1  + i02*nb2  + i03*nb3),
-                        ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03),
-                        rs);
+                    memcpy(((char *)dst->data + i01 * nb1 + i02 * nb2 + i03 * nb3),
+                           ((char *)src0->data + i01 * nb01 + i02 * nb02 + i03 * nb03), rs);
                 }
             }
         }
@@ -694,13 +720,14 @@ static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
             if (dst->type == GGML_TYPE_F32) {
                 size_t id = 0;
                 const size_t rs = ne00 * nb00;
-                char * dst_ptr = (char *) dst->data;
+                char * dst_ptr = (char *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += rs * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
-                            const char * src0_ptr = (char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03;
+                            const char * src0_ptr =
+                                (char *)src0->data + i01 * nb01 + i02 * nb02 + i03 * nb03;
                             memcpy(dst_ptr + id, src0_ptr, rs);
                             id += rs;
                         }
@@ -708,17 +735,19 @@ static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                     }
                 }
             } else if (ggml_get_type_traits_cpu(dst->type)->from_float) {
-                ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
+                ggml_from_float_t const quantize_row_q =
+                    ggml_get_type_traits_cpu(dst->type)->from_float;
 
                 size_t id = 0;
                 size_t rs = nb0 * (ne00 / ggml_blck_size(dst->type));
-                char * dst_ptr = (char *) dst->data;
+                char * dst_ptr = (char *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += rs * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
-                            const float * src0_ptr = (float *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
+                            const float * src0_ptr = (float *)((char *)src0->data + i01 * nb01 +
+                                                               i02 * nb02 + i03 * nb03);
                             quantize_row_q(src0_ptr, dst_ptr + id, ne00);
                             id += rs;
                         }
@@ -729,18 +758,20 @@ static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 GGML_ABORT("fatal error"); // TODO: implement
             }
         } else {
-            //printf("%s: this is not optimal - fix me\n", __func__);
+            // printf("%s: this is not optimal - fix me\n", __func__);
 
             if (dst->type == GGML_TYPE_F32) {
                 size_t id = 0;
-                float * dst_ptr = (float *) dst->data;
+                float * dst_ptr = (float *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
                             for (int i00 = 0; i00 < ne00; i00++) {
-                                const float * src0_ptr = (float *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+                                const float * src0_ptr =
+                                    (float *)((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                              i02 * nb02 + i03 * nb03);
 
                                 dst_ptr[id] = *src0_ptr;
                                 id++;
@@ -751,14 +782,16 @@ static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 }
             } else if (dst->type == GGML_TYPE_F16) {
                 size_t id = 0;
-                ggml_fp16_t * dst_ptr = (ggml_fp16_t *) dst->data;
+                ggml_fp16_t * dst_ptr = (ggml_fp16_t *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
                             for (int i00 = 0; i00 < ne00; i00++) {
-                                const float * src0_ptr = (float *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+                                const float * src0_ptr =
+                                    (float *)((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                              i02 * nb02 + i03 * nb03);
 
                                 dst_ptr[id] = GGML_FP32_TO_FP16(*src0_ptr);
                                 id++;
@@ -769,14 +802,16 @@ static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 }
             } else if (dst->type == GGML_TYPE_BF16) {
                 size_t id = 0;
-                ggml_bf16_t * dst_ptr = (ggml_bf16_t *) dst->data;
+                ggml_bf16_t * dst_ptr = (ggml_bf16_t *)dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += ne00 * ir0;
                         for (int i01 = ir0; i01 < ir1; i01++) {
                             for (int i00 = 0; i00 < ne00; i00++) {
-                                const float * src0_ptr = (float *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+                                const float * src0_ptr =
+                                    (float *)((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                              i02 * nb02 + i03 * nb03);
 
                                 dst_ptr[id] = GGML_FP32_TO_BF16(*src0_ptr);
                                 id++;
@@ -818,8 +853,10 @@ static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 }
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
                     for (int64_t i00 = 0; i00 < ne00; i00++) {
-                        const char * src0_ptr = ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                              char * dst_ptr  = ((char *)  dst->data + i10*nb0  + i11*nb1  + i12*nb2  + i13*nb3);
+                        const char * src0_ptr = ((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                 i02 * nb02 + i03 * nb03);
+                        char * dst_ptr =
+                            ((char *)dst->data + i10 * nb0 + i11 * nb1 + i12 * nb2 + i13 * nb3);
 
                         memcpy(dst_ptr, src0_ptr, sizeof(float));
 
@@ -870,10 +907,12 @@ static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 }
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
                     for (int64_t i00 = 0; i00 < ne00; i00++) {
-                        const char * src0_ptr = ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                              char * dst_ptr  = ((char *)  dst->data + i10*nb0  + i11*nb1  + i12*nb2  + i13*nb3);
+                        const char * src0_ptr = ((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                 i02 * nb02 + i03 * nb03);
+                        char * dst_ptr =
+                            ((char *)dst->data + i10 * nb0 + i11 * nb1 + i12 * nb2 + i13 * nb3);
 
-                        *(ggml_fp16_t *) dst_ptr = GGML_FP32_TO_FP16(*(const float *) src0_ptr);
+                        *(ggml_fp16_t *)dst_ptr = GGML_FP32_TO_FP16(*(const float *)src0_ptr);
 
                         if (++i10 == ne0) {
                             i10 = 0;
@@ -922,10 +961,12 @@ static void ggml_hsa_cpy_f32(ggml_backend_hsa_context & /*ctx*/, ggml_tensor * t
                 }
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
                     for (int64_t i00 = 0; i00 < ne00; i00++) {
-                        const char * src0_ptr = ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                              char * dst_ptr  = ((char *)  dst->data + i10*nb0  + i11*nb1  + i12*nb2  + i13*nb3);
+                        const char * src0_ptr = ((char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                 i02 * nb02 + i03 * nb03);
+                        char * dst_ptr =
+                            ((char *)dst->data + i10 * nb0 + i11 * nb1 + i12 * nb2 + i13 * nb3);
 
-                        *(ggml_bf16_t *) dst_ptr = GGML_FP32_TO_BF16(*(const float *) src0_ptr);
+                        *(ggml_bf16_t *)dst_ptr = GGML_FP32_TO_BF16(*(const float *)src0_ptr);
 
                         if (++i10 == ne0) {
                             i10 = 0;
@@ -986,18 +1027,14 @@ static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * ten
     const int ir0 = dr * ith;
     const int ir1 = MIN(ir0 + dr, nr);
 
-    if (src0->type == dst->type &&
-        ne00 == ne0 &&
-        nb00 == type_size && nb0 == type_size) {
+    if (src0->type == dst->type && ne00 == ne0 && nb00 == type_size && nb0 == type_size) {
         // copy by rows
         const size_t rs = ne00 * type_size;
         for (int64_t i03 = 0; i03 < ne03; i03++) {
             for (int64_t i02 = 0; i02 < ne02; i02++) {
                 for (int64_t i01 = ir0; i01 < ir1; i01++) {
-                    memcpy(
-                        ((char *)  dst->data + i01*nb1  + i02*nb2  + i03*nb3),
-                        ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03),
-                        rs);
+                    memcpy(((char *)dst->data + i01 * nb1 + i02 * nb2 + i03 * nb3),
+                           ((char *)src0->data + i01 * nb01 + i02 * nb02 + i03 * nb03), rs);
                 }
             }
         }
@@ -1006,7 +1043,7 @@ static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * ten
 
     if (ggml_is_contiguous(dst)) {
         size_t id = 0;
-        char * dst_ptr = (char *) dst->data;
+        char * dst_ptr = (char *)dst->data;
         const size_t rs = ne00 * type_size;
 
         if (nb00 == type_size) {
@@ -1015,7 +1052,8 @@ static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * ten
                 for (int64_t i02 = 0; i02 < ne02; i02++) {
                     id += rs * ir0;
                     for (int64_t i01 = ir0; i01 < ir1; i01++) {
-                        const char * src0_ptr = (char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03;
+                        const char * src0_ptr =
+                            (char *)src0->data + i01 * nb01 + i02 * nb02 + i03 * nb03;
                         memcpy(dst_ptr + id, src0_ptr, rs);
                         id += rs;
                     }
@@ -1023,14 +1061,15 @@ static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * ten
                 }
             }
         } else {
-            //printf("%s: this is not optimal - fix me\n", __func__);
+            // printf("%s: this is not optimal - fix me\n", __func__);
 
             for (int64_t i03 = 0; i03 < ne03; i03++) {
                 for (int64_t i02 = 0; i02 < ne02; i02++) {
                     id += rs * ir0;
                     for (int64_t i01 = ir0; i01 < ir1; i01++) {
                         for (int64_t i00 = 0; i00 < ne00; i00++) {
-                            const char * src0_ptr = (char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
+                            const char * src0_ptr = (char *)src0->data + i00 * nb00 + i01 * nb01 +
+                                                    i02 * nb02 + i03 * nb03;
                             memcpy(dst_ptr + id, src0_ptr, type_size);
 
                             id += type_size;
@@ -1068,8 +1107,10 @@ static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * ten
             }
             for (int64_t i01 = ir0; i01 < ir1; i01++) {
                 for (int64_t i00 = 0; i00 < ne00; i00++) {
-                    const char * src0_ptr = ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                          char * dst_ptr  = ((char *)  dst->data + i10*nb0  + i11*nb1  + i12*nb2  + i13*nb3);
+                    const char * src0_ptr =
+                        ((char *)src0->data + i00 * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03);
+                    char * dst_ptr =
+                        ((char *)dst->data + i10 * nb0 + i11 * nb1 + i12 * nb2 + i13 * nb3);
 
                     memcpy(dst_ptr, src0_ptr, type_size);
 
@@ -1104,20 +1145,18 @@ static void ggml_hsa_cpy_bytes(ggml_backend_hsa_context & ctx, ggml_tensor * ten
     }
 }
 
-bool ggml_hsa_supports_cpy(const ggml_hsa_device_info::device_info & /*dev_info*/, const ggml_tensor * tensor) {
+bool ggml_hsa_supports_cpy(const ggml_hsa_device_info::device_info & /*dev_info*/,
+                           const ggml_tensor * tensor) {
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * dst = tensor;
 
-    if ((src0->type == dst->type)
-        || (src0->type == GGML_TYPE_F16)
-        || (src0->type == GGML_TYPE_BF16)
-        || (src0->type == GGML_TYPE_F32)) {
+    if ((src0->type == dst->type) || (src0->type == GGML_TYPE_F16) ||
+        (src0->type == GGML_TYPE_BF16) || (src0->type == GGML_TYPE_F32)) {
         return true;
     }
 
     return false;
 }
-
 
 ggml_status ggml_hsa_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     const ggml_tensor * src0 = tensor->src[0];
@@ -1129,16 +1168,16 @@ ggml_status ggml_hsa_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     }
 
     switch (src0->type) {
-        case GGML_TYPE_F16:
+        case GGML_TYPE_F16 :
             ggml_hsa_cpy_f16(ctx, tensor);
             break;
-        case GGML_TYPE_BF16:
+        case GGML_TYPE_BF16 :
             ggml_hsa_cpy_bf16(ctx, tensor);
             break;
-        case GGML_TYPE_F32:
+        case GGML_TYPE_F32 :
             ggml_hsa_cpy_f32(ctx, tensor);
             break;
-        default:
+        default :
             GGML_LOG_ERROR("Unsupported data type: %s", ggml_type_name(src0->type));
             return GGML_STATUS_FAILED;
     }
