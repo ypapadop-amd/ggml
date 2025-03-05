@@ -351,6 +351,31 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
 }
 
 /**
+ * @brief Initializes the tensor.
+ */
+static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
+                                                            ggml_tensor * tensor) {
+    if (tensor->view_src != nullptr) {
+        assert(tensor->view_src->buffer->buft == buffer->buft);
+        return GGML_STATUS_SUCCESS;
+    }
+
+    if (ggml_is_quantized(tensor->type) &&
+        (ggml_backend_buffer_get_usage(buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE)) {
+        // initialize padding to 0 to avoid possible NaN values
+        const std::size_t original_size = ggml_nbytes(tensor);
+        const std::size_t padded_size = ggml_backend_buft_get_alloc_size(buffer->buft, tensor);
+
+        if (padded_size > original_size) {
+            std::memset(static_cast<std::byte *>(tensor->data) + original_size, 0,
+                        (padded_size - original_size));
+        }
+    }
+
+    return GGML_STATUS_SUCCESS;
+}
+
+/**
  * @brief Set tensor data to a specific value @p value.
  *
  * @param buffer tensor storage
@@ -435,7 +460,7 @@ static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t 
 static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
     /* .free_buffer   = */ ggml_backend_hsa_buffer_free_buffer,
     /* .get_base      = */ ggml_backend_hsa_buffer_get_base,
-    /* .init_tensor   = */ nullptr,
+    /* .init_tensor   = */ ggml_backend_hsa_buffer_init_tensor,
     /* .memset_tensor = */ ggml_backend_hsa_buffer_memset_tensor,
     /* .set_tensor    = */ ggml_backend_hsa_buffer_set_tensor,
     /* .get_tensor    = */ ggml_backend_hsa_buffer_get_tensor,
@@ -1182,7 +1207,7 @@ struct ggml_backend_hsa_reg_context {
     std::vector<ggml_backend_feature> features;
 };
 
-static const char * ggml_backend_hsa_reg_get_name(ggml_backend_reg_t reg) {
+static const char * ggml_backend_hsa_reg_get_name(ggml_backend_reg_t /* reg */) {
     return ggml_backend_hsa_reg_context::name;
 }
 
