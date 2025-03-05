@@ -11,7 +11,6 @@
 #define _GNU_SOURCE
 #endif
 #include <dlfcn.h>
-#include <iostream>
 
 #include "ggml-impl.h"
 
@@ -201,14 +200,13 @@ ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx,
     }
 
     ggml_hsa_aie_kernel tmp_kernel;
-    if (auto status =
-            ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, tmp_kernel.pdi_buffer);
+    if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, tmp_kernel.pdi);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
-    if (auto status = ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, instr_path,
-                                          tmp_kernel.insts_buffer);
+    if (auto status =
+            ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, instr_path, tmp_kernel.insts);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
@@ -220,12 +218,10 @@ ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx,
 }
 
 void ggml_hsa_destroy_aie_kernel(ggml_backend_hsa_context & /*ctx*/, ggml_hsa_aie_kernel & kernel) {
-    if (auto status = hsa_amd_memory_pool_free(kernel.pdi_buffer.data);
-        status != HSA_STATUS_SUCCESS) {
+    if (auto status = hsa_amd_memory_pool_free(kernel.pdi.data); status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
     }
-    if (auto status = hsa_amd_memory_pool_free(kernel.insts_buffer.data);
-        status != HSA_STATUS_SUCCESS) {
+    if (auto status = hsa_amd_memory_pool_free(kernel.insts.data); status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
     }
     kernel = {};
