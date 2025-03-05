@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -53,6 +54,15 @@ void ggml_hsa_error(
         if (status_ != HSA_STATUS_SUCCESS)                                                         \
             throw std::runtime_error{ggml_hsa_get_status_string(status_)};                         \
     } while (false)
+
+/**
+ * @brief Decomposes a 64-bit address to two @c std::uint32_t.
+ */
+inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * address) {
+    static_assert(sizeof(void *) == 2 * sizeof(std::uint32_t));
+    return {reinterpret_cast<uint64_t>(address) >> 32,
+            reinterpret_cast<uint64_t>(address) & 0xFFFFFFFF};
+}
 
 /**
  * @brief Device information.
@@ -116,8 +126,8 @@ struct ggml_hsa_insts_buffer {
  * @brief AIE agent kernel.
  */
 struct ggml_hsa_aie_kernel {
-    ggml_hsa_pdi_buffer pdi_buffer;
-    ggml_hsa_insts_buffer insts_buffer;
+    ggml_hsa_pdi_buffer pdi;
+    ggml_hsa_insts_buffer insts;
 };
 
 /**
