@@ -54,8 +54,11 @@ int main(void) {
     ggml_context * ctx = ggml_init(params);
     ggml_tensor * tensor_a = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, N);
     ggml_tensor * tensor_b = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, N);
-    ggml_tallocr_alloc(&alloc, tensor_a);
-    ggml_tallocr_alloc(&alloc, tensor_b);
+    if ((ggml_tallocr_alloc(&alloc, tensor_a) != GGML_STATUS_SUCCESS) ||
+        (ggml_tallocr_alloc(&alloc, tensor_b) != GGML_STATUS_SUCCESS)) {
+        std::cerr << "Could not allocate tensor\n";
+        return EXIT_FAILURE;
+    }
 
     // create graph
     ggml_cgraph * gf = ggml_new_graph_custom(ctx, tensor_count, /*grads*/ false);
