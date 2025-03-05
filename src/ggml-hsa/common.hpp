@@ -137,8 +137,9 @@ struct ggml_backend_hsa_context {
     std::int32_t device{};          ///< Device ID.
     std::string name;               ///< Device name.
     hsa_queue_t * queue{};          ///< HSA queue.
-    hsa_signal_t dispatch_signal{}; ///< Signal to wait for dispatches.
+    hsa_signal_t dispatch_signal{}; ///< Signal to wait dispatches.
     std::unordered_map<std::string, ggml_hsa_aie_kernel> aie_kernels; ///< AIE agent kernels.
+    std::vector<void *> pending_packets; ///< Packets since last synchronization.
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
     ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
@@ -156,10 +157,16 @@ struct ggml_backend_hsa_context {
     ggml_backend_hsa_context & operator=(ggml_backend_hsa_context &&) = delete;
 
     /**
-     * @brief
-     *
+     * @brief Destroys all loaded AIE kernels and frees the used memory.
      */
     void destroy_aie_kernels();
+
+    /**
+     * @brief Frees all memory associated with pending packets.
+     *
+     * @warning This function assumes that packets have been executed.
+     */
+    void free_pending_packets();
 };
 
 /**

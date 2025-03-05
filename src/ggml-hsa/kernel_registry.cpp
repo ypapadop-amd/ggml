@@ -11,7 +11,6 @@
 #define _GNU_SOURCE
 #endif
 #include <dlfcn.h>
-#include <iostream>
 
 #include "ggml-impl.h"
 

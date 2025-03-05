@@ -280,6 +280,13 @@ void ggml_backend_hsa_context::destroy_aie_kernels() {
     aie_kernels.clear();
 }
 
+void ggml_backend_hsa_context::free_pending_packets() {
+    for (auto ptr : pending_packets) {
+        hsa_amd_memory_pool_free(ptr);
+    }
+    pending_packets.clear();
+}
+
 void ggml_hsa_dispatch_patch(ggml_backend_hsa_context & ctx,
                              hsa_amd_aie_ert_start_kernel_data_t * payload,
                              std::size_t payload_size) {
@@ -745,6 +752,8 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
         val != 0) {
         GGML_ABORT("%s: error: unexpected signal value (%ld)\n", __func__, val);
     }
+
+    ctx.free_pending_packets();
 }
 
 #ifdef GGML_HSA_CPU_FALLBACK
