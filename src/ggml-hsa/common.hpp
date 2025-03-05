@@ -16,9 +16,6 @@
 
 #include "ggml-common.h"
 
-#define MATRIX_ROW_PADDING                                                                         \
-    512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
-
 /**
  * @brief Returns the description of @p status as a string.
  */
@@ -37,13 +34,19 @@ const char * ggml_hsa_get_status_string(hsa_status_t status);
 void ggml_hsa_error(
     const char * stmt, const char * func, const char * file, int line, hsa_status_t status);
 
-#define HSA_CHECK(status)                                                                          \
+/**
+ * @brief Checks if @p status is an error code, prints an error message and aborts.
+ */
+#define HSA_CHECK_ABORT(status)                                                                    \
     do {                                                                                           \
         auto status_ = (status);                                                                   \
         if (status_ != HSA_STATUS_SUCCESS)                                                         \
             ggml_hsa_error(#status, __func__, __FILE__, __LINE__, status_);                        \
     } while (false)
 
+/**
+ * @brief Checks if @p status is an error code and throws an exception.
+ */
 #define HSA_CHECK_THROW(status)                                                                    \
     do {                                                                                           \
         auto status_ = (status);                                                                   \
