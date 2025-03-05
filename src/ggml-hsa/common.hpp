@@ -156,7 +156,21 @@ struct ggml_backend_hsa_context {
     ggml_backend_hsa_context & operator=(ggml_backend_hsa_context &&) = delete;
 
     /**
-     * @brief Destroys all stored AIE kernels.
+     * @brief
+     *
      */
     void destroy_aie_kernels();
 };
+
+/**
+ * @brief Dispatches an HSA packet.
+ *
+ * @note This function assumes ownership of @p payload.
+ *
+ * @param ctx backend context
+ * @param payload packet payload
+ * @param payload_size payload size in dwords
+ */
+void ggml_hsa_dispatch_patch(ggml_backend_hsa_context & ctx,
+                             hsa_amd_aie_ert_start_kernel_data_t * payload,
+                             std::size_t payload_size);

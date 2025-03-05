@@ -280,6 +280,25 @@ void ggml_backend_hsa_context::destroy_aie_kernels() {
     aie_kernels.clear();
 }
 
+void ggml_hsa_dispatch_patch(ggml_backend_hsa_context & ctx,
+                             hsa_amd_aie_ert_start_kernel_data_t * payload,
+                             std::size_t payload_size) {
+    auto * queue = ctx.queue;
+
+    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
+    const std::uint64_t packet_id = wr_idx % queue->size;
+    auto * pkt = static_cast<hsa_amd_aie_ert_packet_t *>(queue->base_address) + packet_id;
+    pkt->state = HSA_AMD_AIE_ERT_STATE_NEW;
+    pkt->count = payload_size;
+    pkt->opcode = HSA_AMD_AIE_ERT_START_CU;
+    pkt->header.AmdFormat = HSA_AMD_PACKET_TYPE_AIE_ERT;
+    pkt->header.header = HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE;
+    pkt->payload_data = reinterpret_cast<std::uint64_t>(payload);
+    // TODO add cmd_pkt->completion_signal = ctx.dispatch_signal
+
+    hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
+}
+
 // HSA buffer
 
 /**
