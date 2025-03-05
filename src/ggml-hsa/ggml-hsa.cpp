@@ -24,6 +24,9 @@
 // - GGML_TYPE_I32
 // - GGML_TYPE_BF16
 
+#define MATRIX_ROW_PADDING                                                                         \
+    512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
+
 #define NOT_IMPLEMENTED()                                                                          \
     do {                                                                                           \
         GGML_ABORT("(%s:%d) %s not implemented\n", __FILE__, __LINE__, __PRETTY_FUNCTION__);       \
@@ -251,12 +254,10 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
 #ifdef GGML_HSA_CPU_FALLBACK
     // create fallback backend
     if (fallback_backend = ggml_backend_cpu_init(); fallback_backend == nullptr) {
-        GGML_LOG_ERROR("%s: ggml_backend_cpu_init failed", __func__);
         throw std::runtime_error("ggml_backend_cpu_init failed");
     }
     auto buft = ggml_backend_get_default_buffer_type(fallback_backend);
     if (fallback_galloc = ggml_gallocr_new(buft); fallback_galloc == nullptr) {
-        GGML_LOG_ERROR("%s: ggml_gallocr_new failed", __func__);
         throw std::runtime_error("ggml_gallocr_new failed");
     }
 #endif
@@ -264,8 +265,8 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     destroy_aie_kernels();
-    HSA_CHECK(hsa_signal_destroy(dispatch_signal));
-    HSA_CHECK(hsa_queue_destroy(queue));
+    HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
+    HSA_CHECK_ABORT(hsa_queue_destroy(queue));
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_gallocr_free(fallback_galloc);
     ggml_backend_free(fallback_backend);
@@ -277,6 +278,32 @@ void ggml_backend_hsa_context::destroy_aie_kernels() {
         ggml_hsa_destroy_aie_kernel(*this, t.second);
     }
     aie_kernels.clear();
+}
+
+void ggml_backend_hsa_context::free_pending_packets() {
+    for (auto ptr : pending_packets) {
+        hsa_amd_memory_pool_free(ptr);
+    }
+    pending_packets.clear();
+}
+
+void ggml_hsa_dispatch_patch(ggml_backend_hsa_context & ctx,
+                             hsa_amd_aie_ert_start_kernel_data_t * payload,
+                             std::size_t payload_size) {
+    auto * queue = ctx.queue;
+
+    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
+    const std::uint64_t packet_id = wr_idx % queue->size;
+    auto * pkt = static_cast<hsa_amd_aie_ert_packet_t *>(queue->base_address) + packet_id;
+    pkt->state = HSA_AMD_AIE_ERT_STATE_NEW;
+    pkt->count = payload_size;
+    pkt->opcode = HSA_AMD_AIE_ERT_START_CU;
+    pkt->header.AmdFormat = HSA_AMD_PACKET_TYPE_AIE_ERT;
+    pkt->header.header = HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE;
+    pkt->payload_data = reinterpret_cast<std::uint64_t>(payload);
+    // TODO add cmd_pkt->completion_signal = ctx.dispatch_signal
+
+    hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
 }
 
 // HSA buffer
@@ -291,7 +318,13 @@ struct ggml_backend_hsa_buffer_context {
     ggml_backend_hsa_buffer_context(std::int32_t device, void * dev_ptr) :
         device(device), dev_ptr(dev_ptr) {}
 
-    ~ggml_backend_hsa_buffer_context() { HSA_CHECK(hsa_amd_memory_pool_free(dev_ptr)); }
+    ggml_backend_hsa_buffer_context(const ggml_backend_hsa_buffer_context &) = delete;
+    ggml_backend_hsa_buffer_context(ggml_backend_hsa_buffer_context &&) = delete;
+
+    ~ggml_backend_hsa_buffer_context() { HSA_CHECK_ABORT(hsa_amd_memory_pool_free(dev_ptr)); }
+
+    ggml_backend_hsa_buffer_context & operator=(const ggml_backend_hsa_buffer_context &) = delete;
+    ggml_backend_hsa_buffer_context & operator=(ggml_backend_hsa_buffer_context &&) = delete;
 };
 
 /**
@@ -400,15 +433,15 @@ static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t 
  * @brief Interface for HSA buffers.
  */
 static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
-    /* .free_buffer     = */ ggml_backend_hsa_buffer_free_buffer,
-    /* .get_base        = */ ggml_backend_hsa_buffer_get_base,
-    /* .init_tensor     = */ nullptr,
-    /* .memset_tensor   = */ ggml_backend_hsa_buffer_memset_tensor,
-    /* .set_tensor      = */ ggml_backend_hsa_buffer_set_tensor,
-    /* .get_tensor      = */ ggml_backend_hsa_buffer_get_tensor,
-    /* .cpy_tensor      = */ ggml_backend_hsa_buffer_cpy_tensor,
-    /* .clear           = */ ggml_backend_hsa_buffer_clear,
-    /* .reset           = */ nullptr,
+    /* .free_buffer   = */ ggml_backend_hsa_buffer_free_buffer,
+    /* .get_base      = */ ggml_backend_hsa_buffer_get_base,
+    /* .init_tensor   = */ nullptr,
+    /* .memset_tensor = */ ggml_backend_hsa_buffer_memset_tensor,
+    /* .set_tensor    = */ ggml_backend_hsa_buffer_set_tensor,
+    /* .get_tensor    = */ ggml_backend_hsa_buffer_get_tensor,
+    /* .cpy_tensor    = */ ggml_backend_hsa_buffer_cpy_tensor,
+    /* .clear         = */ ggml_backend_hsa_buffer_clear,
+    /* .reset         = */ nullptr,
 };
 
 // HSA buffer type
@@ -420,7 +453,7 @@ struct ggml_backend_hsa_buffer_type_context {
     std::int32_t device; ///< ID of the device associated with this buffer type context.
     std::string name;    ///< Name of the buffer type context.
 
-    ggml_backend_hsa_buffer_type_context(std::int32_t device) :
+    explicit ggml_backend_hsa_buffer_type_context(std::int32_t device) :
         device(device), name(ggml_hsa_format_name(device)) {}
 };
 
@@ -523,12 +556,12 @@ static bool ggml_backend_hsa_buffer_type_is_host(ggml_backend_buffer_type_t buft
  * @brief Interface for managing HSA buffer types.
  */
 static const ggml_backend_buffer_type_i ggml_backend_hsa_buffer_type_interface = {
-    /* .get_name         = */ ggml_backend_hsa_buffer_type_get_name,
-    /* .alloc_buffer     = */ ggml_backend_hsa_buffer_type_alloc_buffer,
-    /* .get_alignment    = */ ggml_backend_hsa_buffer_type_get_alignment,
-    /* .get_max_size     = */ ggml_backend_hsa_buffer_type_get_max_size,
-    /* .get_alloc_size   = */ ggml_backend_hsa_buffer_type_get_alloc_size,
-    /* .is_host          = */ ggml_backend_hsa_buffer_type_is_host,
+    /* .get_name       = */ ggml_backend_hsa_buffer_type_get_name,
+    /* .alloc_buffer   = */ ggml_backend_hsa_buffer_type_alloc_buffer,
+    /* .get_alignment  = */ ggml_backend_hsa_buffer_type_get_alignment,
+    /* .get_max_size   = */ ggml_backend_hsa_buffer_type_get_max_size,
+    /* .get_alloc_size = */ ggml_backend_hsa_buffer_type_get_alloc_size,
+    /* .is_host        = */ ggml_backend_hsa_buffer_type_is_host,
 };
 
 /**
@@ -549,9 +582,9 @@ ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) try {
     std::call_once(ggml_backend_hsa_buffer_type_metadata.flag, [&device_count] {
         for (std::int32_t i = 0; i < device_count; ++i) {
             ggml_backend_hsa_buffer_type_metadata.type[i] = {
-                /* .iface    = */ ggml_backend_hsa_buffer_type_interface,
-                /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_hsa_reg(), i),
-                /* .context  = */ new ggml_backend_hsa_buffer_type_context{i},
+                /* .iface   = */ ggml_backend_hsa_buffer_type_interface,
+                /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_hsa_reg(), i),
+                /* .context = */ new ggml_backend_hsa_buffer_type_context{i},
             };
         }
     });
@@ -609,12 +642,12 @@ ggml_backend_hsa_host_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, 
 ggml_backend_buffer_type_t ggml_backend_hsa_host_buffer_type() {
     static struct ggml_backend_buffer_type ggml_backend_hsa_buffer_type_host = {
         /* .iface    = */ {
-            /* .get_name         = */ ggml_backend_hsa_host_buffer_type_name,
-            /* .alloc_buffer     = */ ggml_backend_hsa_host_buffer_type_alloc_buffer,
-            /* .get_alignment    = */ ggml_backend_cpu_buffer_type()->iface.get_alignment,
-            /* .get_max_size     = */ nullptr, // defaults to SIZE_MAX
-            /* .get_alloc_size   = */ ggml_backend_cpu_buffer_type()->iface.get_alloc_size,
-            /* .is_host          = */ ggml_backend_cpu_buffer_type()->iface.is_host,
+            /* .get_name       = */ ggml_backend_hsa_host_buffer_type_name,
+            /* .alloc_buffer   = */ ggml_backend_hsa_host_buffer_type_alloc_buffer,
+            /* .get_alignment  = */ ggml_backend_cpu_buffer_type()->iface.get_alignment,
+            /* .get_max_size   = */ nullptr, // defaults to SIZE_MAX
+            /* .get_alloc_size = */ ggml_backend_cpu_buffer_type()->iface.get_alloc_size,
+            /* .is_host        = */ ggml_backend_cpu_buffer_type()->iface.is_host,
         },
         /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_hsa_reg(), 0),
         /* .context  = */ nullptr,
@@ -719,6 +752,8 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
         val != 0) {
         GGML_ABORT("%s: error: unexpected signal value (%ld)\n", __func__, val);
     }
+
+    ctx.free_pending_packets();
 }
 
 #ifdef GGML_HSA_CPU_FALLBACK
@@ -774,7 +809,13 @@ struct fallback_tensor {
         }
     }
 
+    fallback_tensor(const fallback_tensor &) = delete;
+    fallback_tensor(fallback_tensor &&) = delete;
+
     ~fallback_tensor() { ggml_free(ctx); }
+
+    fallback_tensor & operator=(const fallback_tensor &) = delete;
+    fallback_tensor & operator=(fallback_tensor &&) = delete;
 
     ggml_status operator()() {
         const auto num_threads = 4;
@@ -834,8 +875,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             default :
 #ifdef GGML_HSA_CPU_FALLBACK
                 {
-                    fallback_tensor new_tensor(node, ctx.fallback_galloc);
-                    status = new_tensor();
+                    fallback_tensor emulated_op(node, ctx.fallback_galloc);
+                    status = emulated_op();
                 }
 #else
                 GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name,
@@ -864,19 +905,19 @@ static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_eve
  * @brief Interface for managing HSA backends.
  */
 static const ggml_backend_i ggml_backend_hsa_interface = {
-    /* .get_name                = */ ggml_backend_hsa_get_name,
-    /* .free                    = */ ggml_backend_hsa_free,
-    /* .set_tensor_async        = */ ggml_backend_hsa_set_tensor_async,
-    /* .get_tensor_async        = */ ggml_backend_hsa_get_tensor_async,
-    /* .cpy_tensor_async        = */ ggml_backend_hsa_cpy_tensor_async,
-    /* .synchronize             = */ ggml_backend_hsa_synchronize,
-    /* .graph_plan_create       = */ nullptr,
-    /* .graph_plan_free         = */ nullptr,
-    /* .graph_plan_update       = */ nullptr,
-    /* .graph_plan_compute      = */ nullptr,
-    /* .graph_compute           = */ ggml_backend_hsa_graph_compute,
-    /* .event_record            = */ ggml_backend_hsa_event_record,
-    /* .event_wait              = */ ggml_backend_hsa_event_wait,
+    /* .get_name           = */ ggml_backend_hsa_get_name,
+    /* .free               = */ ggml_backend_hsa_free,
+    /* .set_tensor_async   = */ ggml_backend_hsa_set_tensor_async,
+    /* .get_tensor_async   = */ ggml_backend_hsa_get_tensor_async,
+    /* .cpy_tensor_async   = */ ggml_backend_hsa_cpy_tensor_async,
+    /* .synchronize        = */ ggml_backend_hsa_synchronize,
+    /* .graph_plan_create  = */ nullptr,
+    /* .graph_plan_free    = */ nullptr,
+    /* .graph_plan_update  = */ nullptr,
+    /* .graph_plan_compute = */ nullptr,
+    /* .graph_compute      = */ ggml_backend_hsa_graph_compute,
+    /* .event_record       = */ ggml_backend_hsa_event_record,
+    /* .event_wait         = */ ggml_backend_hsa_event_wait,
 };
 
 /**
@@ -933,6 +974,9 @@ void ggml_backend_hsa_unregister_host_buffer(void * buffer) { NOT_IMPLEMENTED();
 
 // backend device
 
+/**
+ * @brief HSA device context.
+ */
 struct ggml_backend_hsa_device_context {
     std::int32_t device;
     std::string name;
@@ -995,10 +1039,10 @@ static void ggml_backend_hsa_device_get_props(ggml_backend_dev_t dev,
     ggml_backend_hsa_device_get_memory(dev, &props->memory_free, &props->memory_total);
 
     props->caps = {
-        /* .async                 = */ true,
-        /* .host_buffer           = */ false,
-        /* .buffer_from_host_ptr  = */ false,
-        /* .events                = */ false,
+        /* .async                = */ true,
+        /* .host_buffer          = */ false,
+        /* .buffer_from_host_ptr = */ false,
+        /* .events               = */ false,
     };
 }
 
@@ -1072,7 +1116,7 @@ static bool ggml_backend_hsa_device_supports_buft(ggml_backend_dev_t dev,
            buft->device == dev;
 }
 
-static int64_t get_op_batch_size(const ggml_tensor * op) {
+static std::int64_t get_op_batch_size(const ggml_tensor * op) {
     switch (op->op) {
         case GGML_OP_GET_ROWS :
             return 0;
@@ -1088,7 +1132,7 @@ static int64_t get_op_batch_size(const ggml_tensor * op) {
 
 static bool ggml_backend_hsa_device_offload_op(ggml_backend_dev_t /* dev */,
                                                const ggml_tensor * op) {
-    const int min_batch_size = 32;
+    const std::int64_t min_batch_size = 32;
     return get_op_batch_size(op) >= min_batch_size;
 }
 
@@ -1110,31 +1154,36 @@ static void ggml_backend_hsa_device_event_synchronize(ggml_backend_dev_t dev,
  * @brief Interface for managing HSA devices.
  */
 static const ggml_backend_device_i ggml_backend_hsa_device_interface = {
-    /* .get_name                = */ ggml_backend_hsa_device_get_name,
-    /* .get_description         = */ ggml_backend_hsa_device_get_description,
-    /* .get_memory              = */ ggml_backend_hsa_device_get_memory,
-    /* .get_type                = */ ggml_backend_hsa_device_get_type,
-    /* .get_props               = */ ggml_backend_hsa_device_get_props,
-    /* .init_backend            = */ ggml_backend_hsa_device_init_backend,
-    /* .get_buffer_type         = */ ggml_backend_hsa_device_get_buffer_type,
-    /* .get_host_buffer_type    = */ ggml_backend_hsa_device_get_host_buffer_type,
-    /* .buffer_from_host_ptr    = */ nullptr,
-    /* .supports_op             = */ ggml_backend_hsa_device_supports_op,
-    /* .supports_buft           = */ ggml_backend_hsa_device_supports_buft,
-    /* .offload_op              = */ ggml_backend_hsa_device_offload_op,
-    /* .event_new               = */ ggml_backend_hsa_device_event_new,
-    /* .event_free              = */ ggml_backend_hsa_device_event_free,
-    /* .event_synchronize       = */ ggml_backend_hsa_device_event_synchronize,
+    /* .get_name             = */ ggml_backend_hsa_device_get_name,
+    /* .get_description      = */ ggml_backend_hsa_device_get_description,
+    /* .get_memory           = */ ggml_backend_hsa_device_get_memory,
+    /* .get_type             = */ ggml_backend_hsa_device_get_type,
+    /* .get_props            = */ ggml_backend_hsa_device_get_props,
+    /* .init_backend         = */ ggml_backend_hsa_device_init_backend,
+    /* .get_buffer_type      = */ ggml_backend_hsa_device_get_buffer_type,
+    /* .get_host_buffer_type = */ ggml_backend_hsa_device_get_host_buffer_type,
+    /* .buffer_from_host_ptr = */ nullptr,
+    /* .supports_op          = */ ggml_backend_hsa_device_supports_op,
+    /* .supports_buft        = */ ggml_backend_hsa_device_supports_buft,
+    /* .offload_op           = */ ggml_backend_hsa_device_offload_op,
+    /* .event_new            = */ ggml_backend_hsa_device_event_new,
+    /* .event_free           = */ ggml_backend_hsa_device_event_free,
+    /* .event_synchronize    = */ ggml_backend_hsa_device_event_synchronize,
 };
 
 // backend reg
 
+/**
+ * @brief HSA registration context.
+ */
 struct ggml_backend_hsa_reg_context {
+    static inline const char * name = GGML_HSA_NAME;
     std::vector<ggml_backend_dev_t> devices;
+    std::vector<ggml_backend_feature> features;
 };
 
-static const char * ggml_backend_hsa_reg_get_name(ggml_backend_reg_t /* reg */) {
-    return GGML_HSA_NAME;
+static const char * ggml_backend_hsa_reg_get_name(ggml_backend_reg_t reg) {
+    return ggml_backend_hsa_reg_context::name;
 }
 
 static size_t ggml_backend_hsa_reg_get_device_count(ggml_backend_reg_t reg) {
@@ -1148,11 +1197,9 @@ static ggml_backend_dev_t ggml_backend_hsa_reg_get_device(ggml_backend_reg_t reg
     return reg_ctx.devices[index];
 }
 
-static ggml_backend_feature * ggml_backend_hsa_get_features(ggml_backend_reg_t /* reg */) {
-    static std::vector<ggml_backend_feature> features = [] {
-        return std::vector<ggml_backend_feature>{};
-    }();
-    return features.data();
+static ggml_backend_feature * ggml_backend_hsa_get_features(ggml_backend_reg_t reg) {
+    auto & reg_ctx = *static_cast<ggml_backend_hsa_reg_context *>(reg->context);
+    return reg_ctx.features.data();
 }
 
 static void * ggml_backend_hsa_reg_get_proc_address(ggml_backend_reg_t /* reg */,
