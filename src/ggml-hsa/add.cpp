@@ -8,9 +8,10 @@ bool ggml_hsa_supports_add(const ggml_hsa_device_info::device_info & dev_info,
     const ggml_tensor * src1 = tensor->src[1];
     const ggml_tensor * dst = tensor;
 
-    GGML_ASSERT(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
+    GGML_ASSERT(ggml_is_vector(src0) && ggml_are_same_shape(src0, src1) &&
+                ggml_are_same_shape(src0, dst));
 
-    if ((src0->type != src1->type) || (src0->type != dst->type) || src0->type != GGML_TYPE_I32) {
+    if ((src0->type != src1->type) || (src0->type != dst->type)) {
         return false;
     }
 
@@ -27,14 +28,13 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     const ggml_tensor * src1 = tensor->src[1];
     ggml_tensor * dst = tensor;
 
-    const std::int64_t element_count = ggml_nelements(src0);
-
     ggml_hsa_aie_kernel kernel;
     if (auto status = ggml_hsa_find_aie_kernel(ctx, tensor, kernel);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
+    const std::int64_t element_count = ggml_nelements(src0);
     hsa_amd_aie_ert_start_kernel_data_t * cmd_payload = nullptr;
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0,
                                                    reinterpret_cast<void **>(&cmd_payload));
