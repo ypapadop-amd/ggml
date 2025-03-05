@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -15,9 +16,6 @@
 #include <hsa/hsa_ext_amd.h>
 
 #include "ggml-common.h"
-
-#define MATRIX_ROW_PADDING                                                                         \
-    512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
 
 /**
  * @brief Returns the description of @p status as a string.
@@ -37,19 +35,34 @@ const char * ggml_hsa_get_status_string(hsa_status_t status);
 void ggml_hsa_error(
     const char * stmt, const char * func, const char * file, int line, hsa_status_t status);
 
-#define HSA_CHECK(status)                                                                          \
+/**
+ * @brief Checks if @p status is an error code, prints an error message and aborts.
+ */
+#define HSA_CHECK_ABORT(status)                                                                    \
     do {                                                                                           \
         auto status_ = (status);                                                                   \
         if (status_ != HSA_STATUS_SUCCESS)                                                         \
             ggml_hsa_error(#status, __func__, __FILE__, __LINE__, status_);                        \
     } while (false)
 
+/**
+ * @brief Checks if @p status is an error code and throws an exception.
+ */
 #define HSA_CHECK_THROW(status)                                                                    \
     do {                                                                                           \
         auto status_ = (status);                                                                   \
         if (status_ != HSA_STATUS_SUCCESS)                                                         \
             throw std::runtime_error{ggml_hsa_get_status_string(status_)};                         \
     } while (false)
+
+/**
+ * @brief Decomposes a 64-bit address to two @c std::uint32_t.
+ */
+inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * address) {
+    static_assert(sizeof(void *) == 2 * sizeof(std::uint32_t));
+    return {reinterpret_cast<uint64_t>(address) >> 32,
+            reinterpret_cast<uint64_t>(address) & 0xFFFFFFFF};
+}
 
 /**
  * @brief Device information.
@@ -113,8 +126,8 @@ struct ggml_hsa_insts_buffer {
  * @brief AIE agent kernel.
  */
 struct ggml_hsa_aie_kernel {
-    ggml_hsa_pdi_buffer pdi_buffer;
-    ggml_hsa_insts_buffer insts_buffer;
+    ggml_hsa_pdi_buffer pdi;
+    ggml_hsa_insts_buffer insts;
 };
 
 /**
@@ -124,8 +137,9 @@ struct ggml_backend_hsa_context {
     std::int32_t device{};          ///< Device ID.
     std::string name;               ///< Device name.
     hsa_queue_t * queue{};          ///< HSA queue.
-    hsa_signal_t dispatch_signal{}; ///< Signal to wait for dispatches.
+    hsa_signal_t dispatch_signal{}; ///< Signal to wait dispatches.
     std::unordered_map<std::string, ggml_hsa_aie_kernel> aie_kernels; ///< AIE agent kernels.
+    std::vector<void *> pending_packets; ///< Packets since last synchronization.
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
     ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
@@ -143,7 +157,27 @@ struct ggml_backend_hsa_context {
     ggml_backend_hsa_context & operator=(ggml_backend_hsa_context &&) = delete;
 
     /**
-     * @brief Destroys all stored AIE kernels.
+     * @brief Destroys all loaded AIE kernels and frees the used memory.
      */
     void destroy_aie_kernels();
+
+    /**
+     * @brief Frees all memory associated with pending packets.
+     *
+     * @warning This function assumes that packets have been executed.
+     */
+    void free_pending_packets();
 };
+
+/**
+ * @brief Dispatches an HSA packet.
+ *
+ * @note This function assumes ownership of @p payload.
+ *
+ * @param ctx backend context
+ * @param payload packet payload
+ * @param payload_size payload size in dwords
+ */
+void ggml_hsa_dispatch_patch(ggml_backend_hsa_context & ctx,
+                             hsa_amd_aie_ert_start_kernel_data_t * payload,
+                             std::size_t payload_size);
