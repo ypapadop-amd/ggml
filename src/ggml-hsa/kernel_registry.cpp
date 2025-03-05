@@ -32,11 +32,34 @@ static const std::string_view pdi_file_suffix = ".pdi";
 static const std::string_view inst_file_suffix = "_insts.txt";
 
 /**
+ * @brief Creates a string representation of the tensor.
+ */
+template <typename OutputStream>
+void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os) {
+    // output dimensions
+    int max_dim = GGML_MAX_DIMS - 1;
+    for (; max_dim > 0; --max_dim) {
+        if (tensor->ne[max_dim] > 1) {
+            break;
+        }
+    }
+    os << tensor->ne[0];
+    for (int i = 1; i <= max_dim; ++i) {
+        os << 'x' << tensor->ne[0];
+    }
+
+    // output datatype
+    os << ggml_type_name(tensor->type);
+}
+
+/**
  * @brief Creates a kernel name for the operation in tensor @p tensor.
  */
 static ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::device_info & dev_info,
                                                const ggml_tensor * tensor,
                                                std::string & kernel_name) {
+    GGML_ASSERT(tensor != nullptr);
+
     if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
         GGML_LOG_ERROR("%s: Tensor operation index out of bounds (%d >= GGML_OP_COUNT)\n", __func__,
                        tensor->op);
@@ -48,8 +71,8 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::devic
     std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss),
                    [&](char c) { return std::tolower(c); });
     oss << '-' << dev_info.name;
-    oss << '-' << ggml_type_name(tensor->type);
-    oss << '-' << ggml_nelements(tensor->src[0]);
+    oss << '-';
+    ggml_hsa_output_tensor(tensor, oss);
     kernel_name = oss.str();
 
     return GGML_STATUS_SUCCESS;

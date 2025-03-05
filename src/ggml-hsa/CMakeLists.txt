@@ -43,7 +43,7 @@ find_package(PythonInterp REQUIRED)
 find_package(Python REQUIRED)
 
 function(add_aie_kernel TARGET KERNEL DEV DTYPE DIMS)
-    set(KERNEL_NAME "${KERNEL}-${DEV}-${DTYPE}-${DIMS}")
+    set(KERNEL_NAME "${KERNEL}-${DEV}-${DIMS}${DTYPE}")
     set(KERNEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/kernels/${KERNEL}.py")
     set(OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/kernels")
 
