@@ -91,6 +91,7 @@ endfunction()
 
 add_aie_kernel(ggml-hsa add aie2 i32 16)
 add_aie_kernel(ggml-hsa add aie2 i32 256)
+add_aie_kernel(ggml-hsa add aie2 f32 256)
 add_aie_kernel(ggml-hsa add aie2 i32 512)
 
 #
