@@ -14,14 +14,16 @@
 
 #include "ggml-impl.h"
 
-static const std::filesystem::path kernel_base_path = [] {
+namespace fs = std::filesystem;
+
+static const fs::path kernel_base_path = [] {
     // retrieve the kernel directory as a relative path from this shared library
     Dl_info info;
     if (dladdr(reinterpret_cast<void *>(&ggml_hsa_find_aie_kernel), &info) == 0) {
         GGML_ABORT("Could not retrieve kernel base directory\n");
     }
-    auto library_path = std::filesystem::path{info.dli_fname}.parent_path() / "kernels";
-    if (!std::filesystem::is_directory(library_path)) {
+    auto library_path = fs::path{info.dli_fname}.parent_path() / "kernels";
+    if (!fs::is_directory(library_path)) {
         GGML_ABORT("Directory %s is not a valid path.\n", library_path.c_str());
     }
     return library_path;
@@ -56,16 +58,16 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::devic
 /**
  * @brief Returns if @p p is a file.
  */
-static bool ggml_hsa_is_file(const std::filesystem::path & p) {
-    return std::filesystem::is_regular_file(p) || std::filesystem::is_symlink(p);
+static bool ggml_hsa_is_file(const fs::path & p) {
+    return fs::is_regular_file(p) || fs::is_symlink(p);
 }
 
 /**
  * @brief Returns the paths for PDI and insts for the kernel of @p tensor.
  */
 static ggml_status ggml_hsa_create_kernel_paths(const std::string & kernel_name,
-                                                std::filesystem::path & pdi_path,
-                                                std::filesystem::path & instr_path) {
+                                                fs::path & pdi_path,
+                                                fs::path & instr_path) {
     const auto partial_path = kernel_base_path / kernel_name;
 
     pdi_path = partial_path;
@@ -91,9 +93,8 @@ static ggml_status ggml_hsa_create_kernel_paths(const std::string & kernel_name,
  * @brief Reads a PDI file from @p p and returns its contents and size in bytes in @p buffer and @p
  * buffer_size respectively.
  */
-static ggml_status ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool,
-                                     const std::filesystem::path & p,
-                                     ggml_hsa_pdi_buffer & buffer) {
+static ggml_status
+ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & p, ggml_hsa_pdi_buffer & buffer) {
     std::ifstream is(p.string(), std::ios::binary | std::ios::ate | std::ios::in);
     if (is.fail()) {
         GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, p.c_str());
@@ -124,7 +125,7 @@ static ggml_status ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool,
  * size in @p buffer and @p instr_count respectively.
  */
 static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
-                                       const std::filesystem::path & p,
+                                       const fs::path & p,
                                        ggml_hsa_insts_buffer & buffer) {
     std::ifstream is(p.string(), std::ios::in);
     if (is.fail()) {
@@ -167,8 +168,8 @@ bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
         return status;
     }
 
-    std::filesystem::path pdi_path;
-    std::filesystem::path instr_path;
+    fs::path pdi_path;
+    fs::path instr_path;
     return ggml_hsa_create_kernel_paths(kernel_name, pdi_path, instr_path) == GGML_STATUS_SUCCESS;
 }
 
@@ -192,8 +193,8 @@ ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx,
     }
 
     // kernel not found, locate it and load it
-    std::filesystem::path pdi_path;
-    std::filesystem::path instr_path;
+    fs::path pdi_path;
+    fs::path instr_path;
     if (auto status = ggml_hsa_create_kernel_paths(kernel_name, pdi_path, instr_path);
         status != GGML_STATUS_SUCCESS) {
         return status;
