@@ -39,20 +39,20 @@ mark_as_advanced(MLIR_AIE_INCLUDE_DIR)
 # Arguments:
 #     TARGET (string): target
 #     KERNEL (string): kernel source file
-#     DEV (string): target device
-#     DTYPE (string): input datatype
-#     DIMS (string): input dimensions
+#     DEVICE (string): target device
+#     INPUT_DTYPE (string): input datatype
+#     INPUT_DIMS (string): input dimensions
 #
 function(add_aie_kernel TARGET)
     set(options)
-    set(oneValueArgs KERNEL DEVICE DTYPE DIMS)
+    set(oneValueArgs KERNEL DEVICE INPUT_DTYPE INPUT_DIMS)
     set(multiValueArgs)
 
     cmake_parse_arguments(PARSE_ARGV 0 arg
         "${options}" "${oneValueArgs}" "${multiValueArgs}")
 
     set(KERNEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/${arg_KERNEL}.py")
-    set(KERNEL_NAME "${arg_KERNEL}-${arg_DEVICE}-${arg_DIMS}${arg_DTYPE}")
+    set(KERNEL_NAME "${arg_KERNEL}-${arg_DEVICE}-${arg_INPUT_DIMS}${arg_INPUT_DTYPE}")
     set(MLIR_OUTPUT "${KERNEL_NAME}.mlir")
     set(XCLBIN_OUTPUT "${KERNEL_NAME}.xclbin")
     set(INSTS_OUTPUT "${KERNEL_NAME}_insts.txt")
@@ -62,7 +62,7 @@ function(add_aie_kernel TARGET)
     add_custom_command(
         OUTPUT ${MLIR_OUTPUT}
         COMMAND ${PYTHON_EXECUTABLE} ${KERNEL_FILE}
-                --dev ${arg_DEVICE} --dtype ${arg_DTYPE} --dims ${arg_DIMS}
+                --dev ${arg_DEVICE} --dtype ${arg_INPUT_DTYPE} --dims ${arg_INPUT_DIMS}
                 > ${MLIR_OUTPUT}
         DEPENDS ${KERNEL_FILE}
         BYPRODUCTS ${KERNEL_NAME}.mlir.prj
@@ -106,28 +106,31 @@ add_aie_kernel(ggml-hsa
         add
     DEVICE
         aie2
-    DTYPE
+    INPUT_DTYPE
         i32
-    DIMS
-        256)
+    INPUT_DIMS
+        256
+)
 add_aie_kernel(ggml-hsa
     KERNEL
         add
     DEVICE
         aie2
-    DTYPE
+    INPUT_DTYPE
         f32
-    DIMS
-        256)
+    INPUT_DIMS
+        256
+)
 add_aie_kernel(ggml-hsa
     KERNEL
         add
     DEVICE
         aie2
-    DTYPE
+    INPUT_DTYPE
         i32
-    DIMS
-        512)
+    INPUT_DIMS
+        512
+)
 
 # Compile an AIE kernel for a specific device, input/output dimensions and datatypes.
 #
@@ -214,10 +217,10 @@ endfunction()
 add_aie_mm_kernel(ggml-hsa
     KERNEL
         mul_mat
-    KERNEL_SUFFIX
-        "128x128x128i16"
     DEVICE
         aie2
+    KERNEL_SUFFIX
+        "128x128i16"
     OBJECT_FILE
         "mm_8x8x8.o"
     KERNEL_ARGS
