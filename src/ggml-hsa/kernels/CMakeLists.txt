@@ -97,7 +97,7 @@ function(add_aie_kernel TARGET)
         VERBATIM
     )
 
-    add_custom_target(ggml_hsa_kernel_${KERNEL_NAME} ALL DEPENDS ${PDI_OUTPUT})
+    add_custom_target(ggml_hsa_kernel_${KERNEL_NAME} ALL DEPENDS ${PDI_OUTPUT} ${INSTS_OUTPUT})
     add_dependencies(${TARGET} ggml_hsa_kernel_${KERNEL_NAME})
 endfunction()
 
@@ -141,13 +141,13 @@ add_aie_kernel(ggml-hsa
 #
 function(add_aie_mm_kernel TARGET)
     set(options)
-    set(oneValueArgs KERNEL DEVICE OBJECT_FILE)
+    set(oneValueArgs KERNEL KERNEL_SUFFIX DEVICE OBJECT_FILE)
     set(multiValueArgs KERNEL_ARGS COMPILE_FLAGS)
 
     cmake_parse_arguments(PARSE_ARGV 0 arg
         "${options}" "${oneValueArgs}" "${multiValueArgs}")
 
-    set(KERNEL_NAME "${arg_KERNEL}-${arg_DEVICE}-128x128i16")
+    set(KERNEL_NAME "${arg_KERNEL}-${arg_DEVICE}-${arg_KERNEL_SUFFIX}")
     set(KERNEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/${arg_KERNEL}.py")
     set(MLIR_OUTPUT "${KERNEL_NAME}.mlir")
     set(XCLBIN_OUTPUT "${KERNEL_NAME}.xclbin")
@@ -207,19 +207,21 @@ function(add_aie_mm_kernel TARGET)
         VERBATIM
     )
 
-    add_custom_target(ggml_hsa_kernel_${KERNEL_NAME} ALL DEPENDS ${PDI_OUTPUT})
+    add_custom_target(ggml_hsa_kernel_${KERNEL_NAME} ALL DEPENDS ${PDI_OUTPUT} ${INSTS_OUTPUT})
     add_dependencies(${TARGET} ggml_hsa_kernel_${KERNEL_NAME})
 endfunction()
 
 add_aie_mm_kernel(ggml-hsa
     KERNEL
         mul_mat
+    KERNEL_SUFFIX
+        "128x128x128i16"
     DEVICE
         aie2
     OBJECT_FILE
-        "mm_64x64x64.o"
+        "mm_8x8x8.o"
     KERNEL_ARGS
-        -M 512 -K 512 -N 512 -m 64 -k 64 -n 64 --dtype_in i16 --dtype_out i16 --n-aie-cols 2 --b-col-maj 0
+        -M 128 -K 128 -N 128 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 2 --b-col-maj 0
     COMPILE_FLAGS
-        BIT_WIDTH=8 i16_i16_ONLY DIM_M=64 DIM_K=64 DIM_N=64
+        BIT_WIDTH=8 i16_i16_ONLY DIM_M=8 DIM_K=8 DIM_N=8
 )
