@@ -220,11 +220,11 @@ add_aie_mm_kernel(ggml-hsa
     DEVICE
         aie2
     KERNEL_SUFFIX
-        "128x128i16"
+        "32x32i16"
     OBJECT_FILE
         "mm_8x8x8.o"
     KERNEL_ARGS
-        -M 128 -K 128 -N 128 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 2 --b-col-maj 0
+        -M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 --b-col-maj 0
     COMPILE_FLAGS
         BIT_WIDTH=8 i16_i16_ONLY DIM_M=8 DIM_K=8 DIM_N=8
 )
