@@ -1,7 +1,6 @@
 include(FindPackageHandleStandardArgs)
 
-find_package(PythonInterp REQUIRED)
-find_package(Python REQUIRED)
+find_package(Python REQUIRED COMPONENTS Interpreter)
 
 # Find Peano
 find_program(Peano_EXECUTABLE
@@ -42,7 +41,7 @@ mark_as_advanced(MLIR_AIE_INCLUDE_DIR)
 #     DEVICE (string): target device
 #     OBJECT_FILE (string): Peano output file
 #
-function(add_aie_mm_kernel TARGET)
+function(add_aie_kernel TARGET)
     set(options)
     set(oneValueArgs KERNEL KERNEL_SUFFIX DEVICE OBJECT_FILE)
     set(multiValueArgs KERNEL_ARGS COMPILE_FLAGS)
@@ -60,7 +59,7 @@ function(add_aie_mm_kernel TARGET)
 
     add_custom_command(
         OUTPUT ${MLIR_OUTPUT}
-        COMMAND ${PYTHON_EXECUTABLE} ${KERNEL_FILE} ${arg_KERNEL_ARGS} > ${MLIR_OUTPUT}
+        COMMAND ${Python_EXECUTABLE} ${KERNEL_FILE} ${arg_KERNEL_ARGS} > ${MLIR_OUTPUT}
         DEPENDS ${KERNEL_FILE}
         BYPRODUCTS ${KERNEL_NAME}.mlir.prj
         COMMENT "Generating AIE MLIR file for ${KERNEL_NAME} in ${MLIR_OUTPUT}"
@@ -119,7 +118,7 @@ function(add_aie_mm_kernel TARGET)
     add_dependencies(${TARGET} ggml_hsa_kernel_${KERNEL_NAME})
 endfunction()
 
-add_aie_mm_kernel(ggml-hsa
+add_aie_kernel(ggml-hsa
     KERNEL
         add
     DEVICE
@@ -130,7 +129,7 @@ add_aie_mm_kernel(ggml-hsa
         --dev aie2 --dtype i32 --dims 256
 )
 
-add_aie_mm_kernel(ggml-hsa
+add_aie_kernel(ggml-hsa
     KERNEL
         add
     DEVICE
@@ -141,7 +140,7 @@ add_aie_mm_kernel(ggml-hsa
         --dev aie2 --dtype f32 --dims 256
 )
 
-add_aie_mm_kernel(ggml-hsa
+add_aie_kernel(ggml-hsa
     KERNEL
         mul_mat
     DEVICE
