@@ -204,7 +204,7 @@ function(add_aie_mm_kernel TARGET)
 
     add_custom_command(
         OUTPUT ${PDI_OUTPUT}
-        COMMAND bash -c "mv `jq --raw-output \".aie_partition.PDIs.[0].file_name\" ${PARTITION_OUTPUT}` ${PDI_OUTPUT}"
+        COMMAND bash -c "cp `jq --raw-output \".aie_partition.PDIs.[0].file_name\" ${PARTITION_OUTPUT}` ${PDI_OUTPUT}"
         DEPENDS ${PARTITION_OUTPUT}
         COMMENT "Copying PDI for ${KERNEL_NAME} to ${PDI_OUTPUT}"
         VERBATIM
