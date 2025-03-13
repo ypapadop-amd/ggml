@@ -119,7 +119,9 @@ function(add_aie_iron_kernel TARGET)
 
     # copy kernel to install directory
     install(
-        FILES ${CMAKE_CURRENT_BINARY_DIR}/${PDI_OUTPUT}
+        FILES
+            ${CMAKE_CURRENT_BINARY_DIR}/${PDI_OUTPUT}
+            ${CMAKE_CURRENT_BINARY_DIR}/${INSTS_OUTPUT}
         DESTINATION lib/kernels/
     )
 endfunction()

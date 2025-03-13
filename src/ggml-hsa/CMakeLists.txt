@@ -35,7 +35,7 @@ ggml_add_backend_library(ggml-hsa
 
 add_subdirectory(kernels)
 
-target_link_libraries(ggml-hsa PRIVATE ggml-base hsa-runtime64::hsa-runtime64)
+target_link_libraries(ggml-hsa PRIVATE ggml-base hsa-runtime64::hsa-runtime64 ${GGML_CPU_NAME})
 target_include_directories(ggml-hsa PRIVATE . ..)
 
 target_sources(ggml-hsa PRIVATE common.hpp kernels.hpp)
