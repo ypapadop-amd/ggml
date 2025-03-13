@@ -31,7 +31,7 @@ find_path(MLIR_AIE_INCLUDE_DIR
 )
 mark_as_advanced(MLIR_AIE_INCLUDE_DIR)
 
-# Compile an AIE kernel for a specific device, input/output dimensions and datatypes.
+# Compile an AIE kernel using IRON.
 #
 # This function generates PDI and insts files that are set as dependencies to `TARGET`.
 #
@@ -41,7 +41,7 @@ mark_as_advanced(MLIR_AIE_INCLUDE_DIR)
 #     DEVICE (string): target device
 #     OBJECT_FILE (string): Peano output file
 #
-function(add_aie_kernel TARGET)
+function(add_aie_iron_kernel TARGET)
     set(options)
     set(oneValueArgs KERNEL KERNEL_SUFFIX DEVICE OBJECT_FILE)
     set(multiValueArgs KERNEL_ARGS COMPILE_FLAGS)
@@ -69,7 +69,7 @@ function(add_aie_kernel TARGET)
     set(XCLBIN_DEPS ${MLIR_OUTPUT})
     if (DEFINED arg_OBJECT_FILE)
         set(PEANO_WARNING_FLAGS -Wno-parentheses -Wno-attributes -Wno-macro-redefined)
-        set(PEANO_FLAGS -O2 -v -std=c++20 --target=aie2-none-unknown-elf ${PEANO_WARNING_FLAGS} -DNDEBUG)
+        set(PEANO_FLAGS -O2 -std=c++20 --target=aie2-none-unknown-elf ${PEANO_WARNING_FLAGS} -DNDEBUG)
         set(AIE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${arg_KERNEL}.cc")
         set(AIE_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/${arg_OBJECT_FILE}")
 
@@ -116,9 +116,15 @@ function(add_aie_kernel TARGET)
 
     add_custom_target(ggml_hsa_kernel_${KERNEL_NAME} ALL DEPENDS ${PDI_OUTPUT} ${INSTS_OUTPUT})
     add_dependencies(${TARGET} ggml_hsa_kernel_${KERNEL_NAME})
+
+    # copy kernel to install directory
+    install(
+        FILES ${CMAKE_CURRENT_BINARY_DIR}/${PDI_OUTPUT}
+        DESTINATION lib/kernels/
+    )
 endfunction()
 
-add_aie_kernel(ggml-hsa
+add_aie_iron_kernel(ggml-hsa
     KERNEL
         add
     DEVICE
@@ -129,7 +135,7 @@ add_aie_kernel(ggml-hsa
         --dev aie2 --dtype i32 --dims 256
 )
 
-add_aie_kernel(ggml-hsa
+add_aie_iron_kernel(ggml-hsa
     KERNEL
         add
     DEVICE
@@ -140,7 +146,7 @@ add_aie_kernel(ggml-hsa
         --dev aie2 --dtype f32 --dims 256
 )
 
-add_aie_kernel(ggml-hsa
+add_aie_iron_kernel(ggml-hsa
     KERNEL
         mul_mat
     DEVICE
