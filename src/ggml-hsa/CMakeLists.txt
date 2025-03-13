@@ -8,7 +8,7 @@ else()
     set(ROCM_PATH $ENV{ROCM_PATH})
 endif()
 
-list(APPEND CMAKE_PREFIX_PATH  ${ROCM_PATH})
+list(APPEND CMAKE_PREFIX_PATH ${ROCM_PATH})
 
 # Forward AMDGPU_TARGETS to CMAKE_HIP_ARCHITECTURES.
 if (AMDGPU_TARGETS AND NOT CMAKE_HIP_ARCHITECTURES)
@@ -16,8 +16,6 @@ if (AMDGPU_TARGETS AND NOT CMAKE_HIP_ARCHITECTURES)
 endif()
 
 find_package(hsa-runtime64 1.0 REQUIRED)
-
-message(STATUS "HSA found")
 
 option(GGML_HSA_CPU_FALLBACK "ggml: use fallback to CPU if HSA kernel not implemented" OFF)
 
