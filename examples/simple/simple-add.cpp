@@ -7,7 +7,14 @@
 #include <vector>
 
 #include "ggml.h"
+
+#ifdef GGML_USE_CUDA
+#include "ggml-cuda.h"
+#endif
+
+#ifdef GGML_USE_HSA
 #include "ggml-hsa.h"
+#endif
 
 template<typename T>
 auto create_data(std::size_t N, T value) {
@@ -32,7 +39,20 @@ int main(void) {
     const std::vector<std::int32_t> B = create_data<std::int32_t>(N, 1);
 
     // initialize GGML backend and allocators
-    ggml_backend_t backend = ggml_backend_hsa_init(0);
+    ggml_backend_t backend = {};
+
+#ifdef GGML_USE_HSA
+    std::cout << "Using HSA backend\n";
+    backend = ggml_backend_hsa_init(0);
+#endif
+
+#ifdef GGML_USE_CUDA
+    if (!backend) {
+        std::cout << "Using CUDA backend\n";
+        backend = ggml_backend_cuda_init(0); // init device 0
+    }
+#endif
+
     if (backend == nullptr) {
         std::cerr << "Could not create backend\n";
         return EXIT_FAILURE;
