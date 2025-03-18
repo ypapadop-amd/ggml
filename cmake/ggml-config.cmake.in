@@ -83,6 +83,11 @@ if (NOT GGML_SHARED_LIB)
         set(GGML_HIP_INTERFACE_LINK_LIBRARIES hip::host roc::rocblas roc::hipblas)
     endif()
 
+    if (GGML_HSA)
+        find_package(hsa-runtime64 1.0 REQUIRED)
+        set(GGML_HSA_INTERFACE_LINK_LIBRARIES hsa-runtime64::hsa-runtime64)
+    endif()
+
     if (GGML_SYCL)
         set(GGML_SYCL_INTERFACE_LINK_LIBRARIES "")
         find_package(DNNL)
