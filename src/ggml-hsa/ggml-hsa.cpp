@@ -1096,19 +1096,6 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
     const auto & info = ggml_hsa_info();
     const auto & dev_info = info.devices[dev_ctx.device];
 
-    // for now, only contiguous tensors are supported
-    if (!ggml_is_contiguous(tensor)) {
-        return false;
-    }
-    for (int i = 0; i < GGML_MAX_SRC; ++i) {
-        if (tensor->src[i] == nullptr) {
-            break;
-        }
-        if (!ggml_is_contiguous(tensor->src[i])) {
-            return false;
-        }
-    }
-
     switch (tensor->op) {
         case GGML_OP_NONE :
             return true;
