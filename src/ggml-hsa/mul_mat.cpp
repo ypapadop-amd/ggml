@@ -4,20 +4,6 @@
 
 bool ggml_hsa_supports_mul_mat(const ggml_hsa_device_info::device_info & dev_info,
                                const ggml_tensor * tensor) {
-    const ggml_tensor * src0 = tensor->src[0];
-    const ggml_tensor * src1 = tensor->src[1];
-    const ggml_tensor * dst = tensor;
-
-    // only contiguous tensors are supported
-    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst)) {
-        return false;
-    }
-
-    // input and output datatypes need to match
-    if ((src0->type != src1->type) || (src0->type != dst->type)) {
-        return false;
-    }
-
     return ggml_hsa_kernel_exists(dev_info, tensor);
 }
 
