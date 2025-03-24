@@ -29,7 +29,7 @@ static const fs::path kernel_base_path = [] {
     return library_path;
 }();
 static const std::string_view pdi_file_suffix = ".pdi";
-static const std::string_view inst_file_suffix = "_insts.txt";
+static const std::string_view inst_file_suffix = "_insts.bin";
 
 /**
  * @brief Creates a string representation of the tensor.
@@ -174,35 +174,33 @@ ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & p, ggml_hsa_pdi_b
 static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
                                        const fs::path & p,
                                        ggml_hsa_insts_buffer & buffer) {
-    std::ifstream is(p.string(), std::ios::in);
+    std::ifstream is(p.string(), std::ios::binary | std::ios::ate | std::ios::in);
     if (is.fail()) {
         GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, p.c_str());
         return GGML_STATUS_FAILED;
     }
 
-    std::string line;
-    std::vector<std::uint32_t> instr_v;
-    while (std::getline(is, line)) {
-        std::istringstream iss(line);
-        std::uint32_t a;
-        if (!(iss >> std::hex >> a)) {
-            GGML_LOG_ERROR("%s: I/O error, could not read file %s\n", __func__, p.c_str());
-            return GGML_STATUS_FAILED;
-        }
-        instr_v.push_back(a);
+    const std::size_t size = is.tellg();
+    GGML_ASSERT(size > 0);
+    if (!is.seekg(0, std::ios::beg)) {
+        GGML_LOG_ERROR("%s: I/O error, could not get file size for %s\n", __func__, p.c_str());
+        return GGML_STATUS_FAILED;
     }
-    GGML_ASSERT(instr_v.empty() == false);
-
-    const std::size_t required_memory_size = instr_v.size() * sizeof(std::uint32_t);
-    if (auto status = hsa_amd_memory_pool_allocate(pool, required_memory_size, 0,
-                                                   reinterpret_cast<void **>(&buffer.data));
+    if (auto status =
+            hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer.data));
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: Could not allocate %zu bytes\n", __func__, required_memory_size);
+        GGML_LOG_ERROR("%s: Could not allocate %zu bytes\n", __func__, size);
         return GGML_STATUS_FAILED;
     }
 
-    std::copy(instr_v.begin(), instr_v.end(), buffer.data);
-    buffer.size = instr_v.size();
+    if (size % sizeof(std::uint32_t) != 0) {
+        GGML_LOG_ERROR("%s: File size is not a multiple of %zu bytes\n", __func__,
+                       sizeof(std::uint32_t));
+        return GGML_STATUS_FAILED;
+    }
+
+    is.read(reinterpret_cast<char *>(buffer.data), size);
+    buffer.size = size / sizeof(std::uint32_t);
 
     return GGML_STATUS_SUCCESS;
 }
