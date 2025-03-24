@@ -303,6 +303,8 @@ void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
     pkt->payload_data = reinterpret_cast<std::uint64_t>(payload);
     // TODO add cmd_pkt->completion_signal = ctx.dispatch_signal
 
+    ctx.pending_packets.push_back(payload);
+
     hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
 }
 
