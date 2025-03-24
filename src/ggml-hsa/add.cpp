@@ -27,6 +27,7 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
         return status;
     }
 
+    const std::size_t packet_dwords = 12;
     const std::int64_t element_count = ggml_nelements(src0);
     hsa_amd_aie_ert_start_kernel_data_t * cmd_payload = nullptr;
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0,
@@ -48,7 +49,7 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     cmd_payload->data[12] = element_count * sizeof(std::uint32_t);
     cmd_payload->data[13] = element_count * sizeof(std::uint32_t);
 
-    ggml_hsa_dispatch_patch(ctx, cmd_payload, 12);
+    ggml_hsa_dispatch_packet(ctx, cmd_payload, packet_dwords);
 
     return GGML_STATUS_SUCCESS;
 }
