@@ -287,9 +287,9 @@ void ggml_backend_hsa_context::free_pending_packets() {
     pending_packets.clear();
 }
 
-void ggml_hsa_dispatch_patch(ggml_backend_hsa_context & ctx,
-                             hsa_amd_aie_ert_start_kernel_data_t * payload,
-                             std::size_t payload_size) {
+void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
+                              hsa_amd_aie_ert_start_kernel_data_t * payload,
+                              std::size_t payload_size) {
     auto * queue = ctx.queue;
 
     const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
