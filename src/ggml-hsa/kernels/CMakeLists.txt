@@ -16,6 +16,7 @@ find_program(Peano_EXECUTABLE
 find_package_handle_standard_args(Peano REQUIRED_VARS Peano_EXECUTABLE)
 if (Peano_FOUND)
     mark_as_advanced(Peano_EXECUTABLE)
+    set(Peano_ROOT $ENV{PEANO_INSTALL_DIR})
 endif()
 
 # Find MLIR-AIE
@@ -57,7 +58,7 @@ function(add_aie_iron_kernel TARGET_NAME)
     set(KERNEL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${arg_SOURCE}")
     set(MLIR_OUTPUT "${KERNEL_NAME}.mlir")
     set(XCLBIN_OUTPUT "${KERNEL_NAME}.xclbin")
-    set(INSTS_OUTPUT "${KERNEL_NAME}_insts.txt")
+    set(INSTS_OUTPUT "${KERNEL_NAME}_insts.bin")
     set(PARTITION_OUTPUT "${KERNEL_NAME}_partition.json")
     set(PDI_OUTPUT "${KERNEL_NAME}.pdi")
 
@@ -70,10 +71,9 @@ function(add_aie_iron_kernel TARGET_NAME)
         VERBATIM
     )
 
-    set(XCLBIN_DEPS ${MLIR_OUTPUT})
     if (DEFINED arg_OBJECT_FILE)
         set(PEANO_WARNING_FLAGS -Wno-parentheses -Wno-attributes -Wno-macro-redefined)
-        set(PEANO_FLAGS -O2 -std=c++20 --target=aie2-none-unknown-elf ${PEANO_WARNING_FLAGS} -DNDEBUG)
+        set(PEANO_FLAGS -O2 -std=c++20 --target=aie2-none-unknown-elf ${PEANO_WARNING_FLAGS} -DNDEBUG -DBIT_WIDTH=8)
         set(PEANO_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${arg_SOURCE}")
         string(REPLACE ".py" ".cc" PEANO_SOURCE ${PEANO_SOURCE})
         set(PEANO_OUTPUT "${arg_OBJECT_FILE}")
@@ -91,17 +91,26 @@ function(add_aie_iron_kernel TARGET_NAME)
             COMMENT "Compiling ${PEANO_SOURCE} for ${KERNEL_NAME} in ${PEANO_OUTPUT}"
             VERBATIM
         )
-        list(APPEND XCLBIN_DEPS ${PEANO_OUTPUT})
-    endif()
 
-    add_custom_command(
-        OUTPUT ${XCLBIN_OUTPUT} ${INSTS_OUTPUT}
-        COMMAND aiecc.py --aie-generate-cdo --aie-generate-npu --no-compile-host --no-xchesscc --no-xbridge
-                --xclbin-name=${XCLBIN_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
-        DEPENDS ${XCLBIN_DEPS}
-        COMMENT "Generating xclbin for ${KERNEL_NAME} in ${XCLBIN_OUTPUT}"
-        VERBATIM
-    )
+        add_custom_command(
+            OUTPUT ${XCLBIN_OUTPUT} ${INSTS_OUTPUT}
+            COMMAND aiecc.py --alloc-scheme=basic-sequential --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --no-xchesscc --no-xbridge
+                    --peano=${Peano_ROOT}
+                    --xclbin-name=${XCLBIN_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
+            DEPENDS ${PEANO_OUTPUT} ${MLIR_OUTPUT}
+            COMMENT "Generating xclbin for ${KERNEL_NAME} in ${XCLBIN_OUTPUT}"
+            VERBATIM
+        )
+    else ()
+        add_custom_command(
+            OUTPUT ${XCLBIN_OUTPUT} ${INSTS_OUTPUT}
+            COMMAND aiecc.py --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --no-xchesscc --no-xbridge
+                    --xclbin-name=${XCLBIN_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
+            DEPENDS ${MLIR_OUTPUT}
+            COMMENT "Generating xclbin for ${KERNEL_NAME} in ${XCLBIN_OUTPUT}"
+            VERBATIM
+        )
+    endif()
 
     add_custom_command(
         OUTPUT ${PARTITION_OUTPUT}
@@ -189,5 +198,5 @@ add_aie_iron_kernel(ggml-hsa
     OBJECT_FILE
         "mm_8x8x8.o"
     COMPILE_ARGS
-        BIT_WIDTH=8 i16_i16_ONLY DIM_M=8 DIM_K=8 DIM_N=8
+        i16_i16_ONLY DIM_M=8 DIM_K=8 DIM_N=8
 )
