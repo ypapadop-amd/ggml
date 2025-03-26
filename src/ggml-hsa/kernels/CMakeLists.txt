@@ -93,40 +93,24 @@ function(add_aie_iron_kernel TARGET_NAME)
         )
 
         add_custom_command(
-            OUTPUT ${XCLBIN_OUTPUT} ${INSTS_OUTPUT}
-            COMMAND aiecc.py --alloc-scheme=basic-sequential --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --no-xchesscc --no-xbridge
+            OUTPUT ${PDI_OUTPUT} ${INSTS_OUTPUT}
+            COMMAND aiecc.py --alloc-scheme=basic-sequential --aie-generate-pdi --aie-generate-npu-insts --no-compile-host --no-xchesscc --no-xbridge
                     --peano=${Peano_ROOT}
-                    --xclbin-name=${XCLBIN_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
+                    --pdi-name=${PDI_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
             DEPENDS ${PEANO_OUTPUT} ${MLIR_OUTPUT}
-            COMMENT "Generating xclbin for ${KERNEL_NAME} in ${XCLBIN_OUTPUT}"
+            COMMENT "Generating PDI for ${KERNEL_NAME} in ${PDI_OUTPUT}"
             VERBATIM
         )
     else ()
         add_custom_command(
-            OUTPUT ${XCLBIN_OUTPUT} ${INSTS_OUTPUT}
-            COMMAND aiecc.py --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --no-xchesscc --no-xbridge
-                    --xclbin-name=${XCLBIN_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
+            OUTPUT ${PDI_OUTPUT} ${INSTS_OUTPUT}
+            COMMAND aiecc.py --aie-generate-pdi --aie-generate-npu-insts --no-compile-host --no-xchesscc --no-xbridge
+                    --pdi-name=${PDI_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
             DEPENDS ${MLIR_OUTPUT}
-            COMMENT "Generating xclbin for ${KERNEL_NAME} in ${XCLBIN_OUTPUT}"
+            COMMENT "Generating PDI for ${KERNEL_NAME} in ${PDI_OUTPUT}"
             VERBATIM
         )
     endif()
-
-    add_custom_command(
-        OUTPUT ${PARTITION_OUTPUT}
-        COMMAND xclbinutil --dump-section AIE_PARTITION:JSON:${PARTITION_OUTPUT} --force --input ${XCLBIN_OUTPUT}
-        DEPENDS ${XCLBIN_OUTPUT}
-        COMMENT "Extracting PDI for ${KERNEL_NAME} with JSON in ${PARTITION_OUTPUT}"
-        VERBATIM
-    )
-
-    add_custom_command(
-        OUTPUT ${PDI_OUTPUT}
-        COMMAND bash -c "cp `jq --raw-output \".aie_partition.PDIs.[0].file_name\" ${PARTITION_OUTPUT}` ${PDI_OUTPUT}"
-        DEPENDS ${XCLBIN_OUTPUT} ${PARTITION_OUTPUT}
-        COMMENT "Copying PDI for ${KERNEL_NAME} to ${PDI_OUTPUT}"
-        VERBATIM
-    )
 
     add_custom_target(ggml_hsa_kernel_${KERNEL_NAME} ALL DEPENDS ${PDI_OUTPUT} ${INSTS_OUTPUT})
     add_dependencies(${TARGET_NAME} ggml_hsa_kernel_${KERNEL_NAME})
