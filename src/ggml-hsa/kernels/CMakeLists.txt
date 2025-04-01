@@ -72,7 +72,7 @@ function(add_aie_iron_kernel TARGET_NAME)
     )
 
     if (DEFINED arg_OBJECT_FILE)
-        set(PEANO_WARNING_FLAGS -Wno-parentheses -Wno-attributes -Wno-macro-redefined)
+        set(PEANO_WARNING_FLAGS -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body)
         set(PEANO_FLAGS -O2 -std=c++20 --target=aie2-none-unknown-elf ${PEANO_WARNING_FLAGS} -DNDEBUG -DBIT_WIDTH=8)
         set(PEANO_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${arg_SOURCE}")
         string(REPLACE ".py" ".cc" PEANO_SOURCE ${PEANO_SOURCE})
