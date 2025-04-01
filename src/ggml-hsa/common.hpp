@@ -112,6 +112,8 @@ const ggml_hsa_device_info & ggml_hsa_info();
 struct ggml_hsa_pdi_buffer {
     std::uint64_t * data{};
     std::size_t size{};
+
+    bool is_valid() const { return data != nullptr; }
 };
 
 /**
@@ -120,6 +122,8 @@ struct ggml_hsa_pdi_buffer {
 struct ggml_hsa_insts_buffer {
     std::uint32_t * data{};
     std::size_t size{};
+
+    bool is_valid() const { return data != nullptr; }
 };
 
 /**
@@ -128,12 +132,19 @@ struct ggml_hsa_insts_buffer {
 struct ggml_hsa_aie_kernel {
     ggml_hsa_pdi_buffer pdi;
     ggml_hsa_insts_buffer insts;
+
+    bool is_valid() const {
+        GGML_ASSERT(pdi.is_valid() == insts.is_valid());
+        return pdi.is_valid();
+    }
 };
 
 /**
  * @brief Tensor extra information.
  */
-struct ggml_backend_hsa_tensor_extra {};
+struct ggml_backend_hsa_tensor_extra {
+    ggml_hsa_aie_kernel kernel; ///< Kernel associated with this tensor.
+};
 
 /**
  * @brief Context for HSA backend operations.
