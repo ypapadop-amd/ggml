@@ -17,7 +17,8 @@ bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
  * @brief Finds the AIE agent kernel for the tensor's operation.
  *
  * This function will attempt to load the kernel if not found in @ref
- * ggml_backend_hsa_context::aie_kernels.
+ * ggml_backend_hsa_context::aie_kernels. The kernel is cached in a
+ * data structure in the `extra` member of @ref ggml_tensor.
  *
  * @param ctx backend context
  * @param tensor tensor to find the kernel for
