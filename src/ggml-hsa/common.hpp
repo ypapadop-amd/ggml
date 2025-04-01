@@ -131,6 +131,11 @@ struct ggml_hsa_aie_kernel {
 };
 
 /**
+ * @brief Tensor extra information.
+ */
+struct ggml_backend_hsa_tensor_extra {};
+
+/**
  * @brief Context for HSA backend operations.
  */
 struct ggml_backend_hsa_context {
