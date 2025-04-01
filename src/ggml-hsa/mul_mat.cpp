@@ -13,15 +13,18 @@ ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, ggml_tensor * tenso
 
     GGML_ASSERT(ggml_hsa_supports_mul_mat(dev_info, tensor));
 
+    auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * src1 = tensor->src[1];
     ggml_tensor * dst = tensor;
 
-    ggml_hsa_aie_kernel kernel;
-    if (auto status = ggml_hsa_find_aie_kernel(ctx, tensor, kernel);
-        status != GGML_STATUS_SUCCESS) {
-        return status;
+    if (!tensor_extra.kernel.is_valid()) {
+        if (auto status = ggml_hsa_find_aie_kernel(ctx, tensor, tensor_extra.kernel);
+            status != GGML_STATUS_SUCCESS) {
+            return status;
+        }
     }
+    const auto & kernel = tensor_extra.kernel;
 
     const std::size_t packet_dwords = 12;
     const std::int64_t element_count = ggml_nelements(src0);
