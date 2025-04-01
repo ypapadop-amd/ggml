@@ -207,10 +207,15 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
 
 bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
                             const ggml_tensor * tensor) {
+    const auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
+    if (tensor_extra.kernel.is_valid()) {
+        return true;
+    }
+
     std::string kernel_name;
     if (auto status = ggml_hsa_create_kernel_name(dev_info, tensor, kernel_name);
         status != GGML_STATUS_SUCCESS) {
-        return status;
+        return false;
     }
 
     fs::path pdi_path;
@@ -224,6 +229,7 @@ ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx,
     const auto & info = ggml_hsa_info();
     const auto & dev_info = info.devices[ctx.device];
 
+    // generate kernel name
     std::string kernel_name;
     if (auto status = ggml_hsa_create_kernel_name(dev_info, tensor, kernel_name);
         status != GGML_STATUS_SUCCESS) {
