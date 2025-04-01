@@ -891,18 +891,22 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 status = ggml_hsa_add(ctx, node);
                 break;
 
+#ifdef GGML_HSA_CPU_FALLBACK
             case GGML_OP_DUP :
                 status = ggml_hsa_cpy(ctx, node);
                 break;
+#endif
 
             case GGML_OP_MUL_MAT :
                 status = ggml_hsa_mul_mat(ctx, node);
                 break;
 
+#ifdef GGML_HSA_CPU_FALLBACK
             case GGML_OP_CPY :
             case GGML_OP_CONT :
                 status = ggml_hsa_cpy(ctx, node);
                 break;
+#endif
 
             case GGML_OP_PERMUTE :
             case GGML_OP_RESHAPE :
@@ -1116,13 +1120,17 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
         case GGML_OP_ADD :
         case GGML_OP_ADD1 :
             return ggml_hsa_supports_add(dev_info, tensor);
+#ifdef GGML_HSA_CPU_FALLBACK
         case GGML_OP_DUP :
             return ggml_hsa_supports_cpy(dev_info, tensor);
+#endif
         case GGML_OP_MUL_MAT :
             return ggml_hsa_supports_mul_mat(dev_info, tensor);
+#ifdef GGML_HSA_CPU_FALLBACK
         case GGML_OP_CPY :
         case GGML_OP_CONT :
             return ggml_hsa_supports_cpy(dev_info, tensor);
+#endif
         case GGML_OP_PERMUTE :
         case GGML_OP_RESHAPE :
         case GGML_OP_TRANSPOSE :
