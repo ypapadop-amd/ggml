@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -316,6 +317,7 @@ void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
 struct ggml_backend_hsa_buffer_context {
     std::int32_t device{}; ///< Device ID associated with this buffer context.
     void * dev_ptr{};      ///< Pointer to the device memory.
+    std::vector<std::unique_ptr<ggml_backend_hsa_tensor_extra>> tensor_extras;
 
     ggml_backend_hsa_buffer_context(std::int32_t device, void * dev_ptr) :
         device(device), dev_ptr(dev_ptr) {}
@@ -356,9 +358,14 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
  * @brief Initializes the tensor.
  */
 static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
-                                                            ggml_tensor * tensor) {
+                                                            ggml_tensor * tensor) try {
+    auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
+    GGML_ASSERT(tensor->extra == nullptr);
+    buf_ctx.tensor_extras.push_back(std::make_unique<ggml_backend_hsa_tensor_extra>());
+    tensor->extra = buf_ctx.tensor_extras.back().get();
+
     if (tensor->view_src != nullptr) {
-        assert(tensor->view_src->buffer->buft == buffer->buft);
+        GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
         return GGML_STATUS_SUCCESS;
     }
 
@@ -375,6 +382,9 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
     }
 
     return GGML_STATUS_SUCCESS;
+} catch (const std::exception & ex) {
+    GGML_LOG_ERROR("%s: Could not create tensor (%s)\n", __func__, ex.what());
+    return GGML_STATUS_FAILED;
 }
 
 /**
