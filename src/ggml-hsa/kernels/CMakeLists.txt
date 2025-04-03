@@ -1,36 +1,8 @@
-include(FindPackageHandleStandardArgs)
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/../cmake)
 
 find_package(Python REQUIRED COMPONENTS Interpreter)
-
-# Find Peano
-find_program(Peano_EXECUTABLE
-    NAMES
-        clang++
-    PATHS
-        $ENV{PEANO_INSTALL_DIR}/bin
-    DOC
-        "Path to Peano"
-    NO_DEFAULT_PATH
-    REQUIRED
-)
-find_package_handle_standard_args(Peano REQUIRED_VARS Peano_EXECUTABLE)
-if (Peano_FOUND)
-    mark_as_advanced(Peano_EXECUTABLE)
-    set(Peano_ROOT $ENV{PEANO_INSTALL_DIR})
-endif()
-
-# Find MLIR-AIE
-find_path(MLIR_AIE_INCLUDE_DIR
-    NAMES
-        aie/version.h
-    PATHS
-        $ENV{MLIR_AIE_INSTALL_DIR}/include
-    DOC
-        "Path to MLIR-AIE"
-    NO_DEFAULT_PATH
-    REQUIRED
-)
-mark_as_advanced(MLIR_AIE_INCLUDE_DIR)
+find_package(Peano REQUIRED)
+find_package(MLIR-AIE REQUIRED)
 
 # Compile an AIE kernel using IRON.
 #
