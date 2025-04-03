@@ -82,10 +82,6 @@ function(add_aie_iron_kernel TARGET_NAME)
 
     add_custom_target(ggml_hsa_kernel_${KERNEL_NAME} ALL DEPENDS ${PDI_OUTPUT} ${INSTS_OUTPUT})
     add_dependencies(${TARGET_NAME} ggml_hsa_kernel_${KERNEL_NAME})
-    set_property(TARGET ${TARGET_NAME}
-        APPEND
-        PROPERTY ADDITIONAL_CLEAN_FILES "*.pdi" "core*.elf"
-    )
 
     # copy kernel to install directory
     install(
