@@ -27,7 +27,6 @@ function(add_aie_iron_kernel TARGET_NAME)
         "${options}" "${oneValueArgs}" "${multiValueArgs}")
 
     set(KERNEL_NAME "${arg_KERNEL_NAME}-${arg_DEVICE}-${arg_KERNEL_SUFFIX}")
-    set(KERNEL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${arg_SOURCE}")
     set(MLIR_OUTPUT "${KERNEL_NAME}.mlir")
     set(XCLBIN_OUTPUT "${KERNEL_NAME}.xclbin")
     set(INSTS_OUTPUT "${KERNEL_NAME}_insts.bin")
@@ -36,17 +35,18 @@ function(add_aie_iron_kernel TARGET_NAME)
 
     add_custom_command(
         OUTPUT ${MLIR_OUTPUT}
-        COMMAND ${Python_EXECUTABLE} ${KERNEL_SOURCE} ${arg_KERNEL_ARGS} > ${MLIR_OUTPUT}
-        DEPENDS ${KERNEL_SOURCE}
+        COMMAND ${Python_EXECUTABLE} ${arg_SOURCE} ${arg_KERNEL_ARGS} > ${MLIR_OUTPUT}
+        DEPENDS ${arg_SOURCE}
         BYPRODUCTS ${KERNEL_NAME}.mlir.prj
         COMMENT "Generating AIE MLIR file for ${KERNEL_NAME} in ${MLIR_OUTPUT}"
         VERBATIM
     )
 
+    set(MLIR_AIE_DEPS ${MLIR_OUTPUT})
     if (DEFINED arg_OBJECT_FILE)
         set(PEANO_WARNING_FLAGS -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body)
         set(PEANO_FLAGS -O2 -std=c++20 --target=aie2-none-unknown-elf ${PEANO_WARNING_FLAGS} -DNDEBUG -DBIT_WIDTH=8)
-        set(PEANO_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${arg_SOURCE}")
+        set(PEANO_SOURCE "${arg_SOURCE}")
         string(REPLACE ".py" ".cc" PEANO_SOURCE ${PEANO_SOURCE})
         set(PEANO_OUTPUT "${arg_OBJECT_FILE}")
 
@@ -64,25 +64,21 @@ function(add_aie_iron_kernel TARGET_NAME)
             VERBATIM
         )
 
-        add_custom_command(
-            OUTPUT ${PDI_OUTPUT} ${INSTS_OUTPUT}
-            COMMAND aiecc.py --alloc-scheme=basic-sequential --aie-generate-pdi --aie-generate-npu-insts --no-compile-host --no-xchesscc --no-xbridge
-                    --peano=${Peano_ROOT}
-                    --pdi-name=${PDI_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
-            DEPENDS ${PEANO_OUTPUT} ${MLIR_OUTPUT}
-            COMMENT "Generating PDI for ${KERNEL_NAME} in ${PDI_OUTPUT}"
-            VERBATIM
-        )
-    else ()
-        add_custom_command(
-            OUTPUT ${PDI_OUTPUT} ${INSTS_OUTPUT}
-            COMMAND aiecc.py --aie-generate-pdi --aie-generate-npu-insts --no-compile-host --no-xchesscc --no-xbridge
-                    --pdi-name=${PDI_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
-            DEPENDS ${MLIR_OUTPUT}
-            COMMENT "Generating PDI for ${KERNEL_NAME} in ${PDI_OUTPUT}"
-            VERBATIM
-        )
+        list(APPEND MLIR_AIE_DEPS ${PEANO_OUTPUT})
     endif()
+
+    set(MLIR_AIE_FLAGS
+        --alloc-scheme=basic-sequential --aie-generate-pdi --aie-generate-npu-insts
+        --no-compile-host --no-xchesscc --no-xbridge --peano=${Peano_ROOT})
+
+    add_custom_command(
+        OUTPUT ${PDI_OUTPUT} ${INSTS_OUTPUT}
+        COMMAND ${Python_EXECUTABLE} ${MLIR_AIE_COMPILER} ${MLIR_AIE_FLAGS}
+                --pdi-name=${PDI_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
+        DEPENDS ${MLIR_AIE_DEPS}
+        COMMENT "Generating PDI for ${KERNEL_NAME} in ${PDI_OUTPUT}"
+        VERBATIM
+    )
 
     add_custom_target(ggml_hsa_kernel_${KERNEL_NAME} ALL DEPENDS ${PDI_OUTPUT} ${INSTS_OUTPUT})
     add_dependencies(${TARGET_NAME} ggml_hsa_kernel_${KERNEL_NAME})
@@ -104,7 +100,7 @@ add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
         add
     SOURCE
-        add.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/add.py
     DEVICE
         aie2
     KERNEL_SUFFIX
@@ -117,7 +113,7 @@ add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
         add
     SOURCE
-        add.py
+       ${CMAKE_CURRENT_SOURCE_DIR}/add.py
     DEVICE
         aie2
     KERNEL_SUFFIX
@@ -130,7 +126,7 @@ add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
         add
     SOURCE
-        add.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/add.py
     DEVICE
         aie2
     KERNEL_SUFFIX
@@ -143,14 +139,13 @@ add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
         mul_mat
     SOURCE
-        mul_mat.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
     DEVICE
         aie2
     KERNEL_SUFFIX
         "32x32i16-32x32i16-32x32i16"
     KERNEL_ARGS
         -M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 --b-col-maj 0
-
     OBJECT_FILE
         "mm_8x8x8.o"
     COMPILE_ARGS
