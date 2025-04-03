@@ -4,6 +4,7 @@
 #include "ggml.h"
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -134,7 +135,7 @@ struct ggml_hsa_aie_kernel {
     ggml_hsa_insts_buffer insts;
 
     bool is_valid() const {
-        GGML_ASSERT(pdi.is_valid() == insts.is_valid());
+        assert(pdi.is_valid() == insts.is_valid());
         return pdi.is_valid();
     }
 };
@@ -155,7 +156,7 @@ struct ggml_backend_hsa_context {
     hsa_queue_t * queue{};          ///< HSA queue.
     hsa_signal_t dispatch_signal{}; ///< Signal to wait dispatches.
     std::unordered_map<std::string, ggml_hsa_aie_kernel> aie_kernels; ///< AIE agent kernels.
-    std::vector<void *> pending_packets; ///< Packets since last synchronization.
+    std::vector<void *> pending_payloads; ///< Packet payloads since last synchronization.
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
     ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
@@ -180,9 +181,9 @@ struct ggml_backend_hsa_context {
     /**
      * @brief Frees all memory associated with pending packets.
      *
-     * @warning This function assumes that packets have been executed.
+     * @warning This function assumes that packets have been processed.
      */
-    void free_pending_packets();
+    void free_pending_payloads();
 };
 
 /**
