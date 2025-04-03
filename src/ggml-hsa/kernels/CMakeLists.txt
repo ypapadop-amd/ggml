@@ -57,7 +57,7 @@ function(add_aie_iron_kernel TARGET_NAME)
 
         add_custom_command(
             OUTPUT ${PEANO_OUTPUT}
-            COMMAND ${Peano_EXECUTABLE} ${PEANO_FLAGS} ${PEANO_COMPILE_DEFS} -I ${MLIR_AIE_INCLUDE_DIR}
+            COMMAND ${Peano_CXX} ${PEANO_FLAGS} ${PEANO_COMPILE_DEFS} -I ${MLIR_AIE_INCLUDE_DIR}
                     -c ${PEANO_SOURCE} -o ${PEANO_OUTPUT}
             DEPENDS ${PEANO_SOURCE}
             COMMENT "Compiling ${PEANO_SOURCE} for ${KERNEL_NAME} in ${PEANO_OUTPUT}"
@@ -69,7 +69,7 @@ function(add_aie_iron_kernel TARGET_NAME)
 
     set(MLIR_AIE_FLAGS
         --alloc-scheme=basic-sequential --aie-generate-pdi --aie-generate-npu-insts
-        --no-compile-host --no-xchesscc --no-xbridge --peano=${Peano_ROOT})
+        --no-compile-host --no-xchesscc --no-xbridge --peano=${Peano_ROOT_DIR})
 
     add_custom_command(
         OUTPUT ${PDI_OUTPUT} ${INSTS_OUTPUT}
