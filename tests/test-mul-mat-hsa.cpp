@@ -141,7 +141,7 @@ ggml_cgraph * build_graph(test_model& model) {
         /*.no_alloc   =*/ true, // the tensors will be allocated later by ggml_gallocr_alloc_graph()
     };
 
-    // create a temporally context to build the graph
+    // create a context to build the graph
     ggml_context * ctx = ggml_init(params0);
 
     ggml_cgraph * gf = ggml_new_graph(ctx);
@@ -159,7 +159,7 @@ ggml_cgraph * build_graph(test_model& model) {
     // z = (zT)T
     ggml_build_forward_expand(gf, c);
 
-    // delete the temporally context used to build the graph
+    // delete the context used to build the graph
     ggml_free(ctx);
 
     return gf;
