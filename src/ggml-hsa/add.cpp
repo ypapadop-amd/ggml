@@ -15,7 +15,7 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     auto & info = ggml_hsa_info();
     auto & dev_info = info.devices[ctx.device];
 
-    GGML_ASSERT(ggml_hsa_supports_add(dev_info, tensor));
+    assert(ggml_hsa_supports_add(dev_info, tensor));
 
     auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
     const ggml_tensor * src0 = tensor->src[0];

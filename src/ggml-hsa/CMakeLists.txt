@@ -19,13 +19,19 @@ find_package(hsa-runtime64 1.0 REQUIRED)
 
 option(GGML_HSA_CPU_FALLBACK "ggml: use fallback to CPU if HSA kernel not implemented" OFF)
 
+set(GGML_KERNEL_SOURCES_HSA
+    add.cpp
+    mul_mat.cpp
+    )
+if (GGML_HSA_CPU_FALLBACK)
+    set(GGML_KERNEL_SOURCES_HSA cpy.cpp ${GGML_KERNEL_SOURCES_HSA})
+endif ()
+
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
-    add.cpp
-    cpy.cpp
     ggml-hsa.cpp
     kernel_registry.cpp
-    mul_mat.cpp
+    ${GGML_KERNEL_SOURCES_HSA}
     )
 
 ggml_add_backend_library(ggml-hsa
