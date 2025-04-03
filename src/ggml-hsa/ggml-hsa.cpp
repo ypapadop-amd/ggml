@@ -362,7 +362,7 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
 static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
                                                             ggml_tensor * tensor) try {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
-    GGML_ASSERT(tensor->extra == nullptr);
+    assert(tensor->extra == nullptr);
     buf_ctx.tensor_extras.push_back(std::make_unique<ggml_backend_hsa_tensor_extra>());
     tensor->extra = buf_ctx.tensor_extras.back().get();
 

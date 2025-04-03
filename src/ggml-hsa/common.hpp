@@ -4,6 +4,7 @@
 #include "ggml.h"
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -134,7 +135,7 @@ struct ggml_hsa_aie_kernel {
     ggml_hsa_insts_buffer insts;
 
     bool is_valid() const {
-        GGML_ASSERT(pdi.is_valid() == insts.is_valid());
+        assert(pdi.is_valid() == insts.is_valid());
         return pdi.is_valid();
     }
 };
