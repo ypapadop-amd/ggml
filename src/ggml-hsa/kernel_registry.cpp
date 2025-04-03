@@ -72,8 +72,6 @@ void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os) {
 static ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::device_info & dev_info,
                                                const ggml_tensor * tensor,
                                                std::string & kernel_name) {
-    GGML_ASSERT(tensor != nullptr);
-
     if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
         GGML_LOG_ERROR("%s: Tensor operation index out of bounds (%d >= GGML_OP_COUNT)\n", __func__,
                        tensor->op);
@@ -87,7 +85,6 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_hsa_device_info::devic
     oss << '-' << dev_info.name;
     oss << '-';
     ggml_hsa_output_tensor(tensor, oss);
-    GGML_ASSERT(tensor->src[0] != nullptr);
     oss << '-';
     ggml_hsa_output_tensor(tensor->src[0], oss);
     for (int i = 1; i < GGML_MAX_SRC; ++i) {
@@ -149,8 +146,7 @@ ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & p, ggml_hsa_pdi_b
     }
 
     const std::size_t size = is.tellg();
-    GGML_ASSERT(size > 0);
-    if (!is.seekg(0, std::ios::beg)) {
+    if (!is.seekg(0, std::ios::beg) || (size == 0)) {
         GGML_LOG_ERROR("%s: I/O error, could not get file size for %s\n", __func__, p.c_str());
         return GGML_STATUS_FAILED;
     }
@@ -181,8 +177,7 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
     }
 
     const std::size_t size = is.tellg();
-    GGML_ASSERT(size > 0);
-    if (!is.seekg(0, std::ios::beg)) {
+    if (!is.seekg(0, std::ios::beg) || (size == 0)) {
         GGML_LOG_ERROR("%s: I/O error, could not get file size for %s\n", __func__, p.c_str());
         return GGML_STATUS_FAILED;
     }
@@ -207,9 +202,11 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
 
 bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
                             const ggml_tensor * tensor) {
-    const auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
-    if (tensor_extra.kernel.is_valid()) {
-        return true;
+    if (auto tensor_extra = static_cast<const ggml_backend_hsa_tensor_extra *>(tensor->extra);
+        tensor->extra != nullptr) {
+        if (tensor_extra->kernel.is_valid()) {
+            return true;
+        }
     }
 
     std::string kernel_name;

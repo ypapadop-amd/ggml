@@ -281,11 +281,11 @@ void ggml_backend_hsa_context::destroy_aie_kernels() {
     aie_kernels.clear();
 }
 
-void ggml_backend_hsa_context::free_pending_packets() {
-    for (auto ptr : pending_packets) {
+void ggml_backend_hsa_context::free_pending_payloads() {
+    for (auto ptr : pending_payloads) {
         hsa_amd_memory_pool_free(ptr);
     }
-    pending_packets.clear();
+    pending_payloads.clear();
 }
 
 void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
@@ -293,18 +293,20 @@ void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
                               std::size_t payload_size) {
     auto * queue = ctx.queue;
 
+    hsa_amd_aie_ert_packet_t pkt{};
+    pkt.header.header = HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE;
+    pkt.header.AmdFormat = HSA_AMD_PACKET_TYPE_AIE_ERT;
+    pkt.state = HSA_AMD_AIE_ERT_STATE_NEW;
+    pkt.count = payload_size;
+    pkt.opcode = HSA_AMD_AIE_ERT_START_CU;
+    pkt.payload_data = reinterpret_cast<std::uint64_t>(payload);
+    // TODO add pkt->completion_signal = ctx.dispatch_signal
+
     const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
     const std::uint64_t packet_id = wr_idx % queue->size;
-    auto * pkt = static_cast<hsa_amd_aie_ert_packet_t *>(queue->base_address) + packet_id;
-    pkt->state = HSA_AMD_AIE_ERT_STATE_NEW;
-    pkt->count = payload_size;
-    pkt->opcode = HSA_AMD_AIE_ERT_START_CU;
-    pkt->header.AmdFormat = HSA_AMD_PACKET_TYPE_AIE_ERT;
-    pkt->header.header = HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE;
-    pkt->payload_data = reinterpret_cast<std::uint64_t>(payload);
-    // TODO add cmd_pkt->completion_signal = ctx.dispatch_signal
+    *(static_cast<hsa_amd_aie_ert_packet_t *>(queue->base_address) + packet_id) = pkt;
 
-    ctx.pending_packets.push_back(payload);
+    ctx.pending_payloads.push_back(payload);
 
     hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
 }
@@ -360,7 +362,7 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
 static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
                                                             ggml_tensor * tensor) try {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
-    GGML_ASSERT(tensor->extra == nullptr);
+    assert(tensor->extra == nullptr);
     buf_ctx.tensor_extras.push_back(std::make_unique<ggml_backend_hsa_tensor_extra>());
     tensor->extra = buf_ctx.tensor_extras.back().get();
 
@@ -790,7 +792,7 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
         GGML_ABORT("%s: error: unexpected signal value (%ld)\n", __func__, val);
     }
 
-    ctx.free_pending_packets();
+    ctx.free_pending_payloads();
 }
 
 #ifdef GGML_HSA_CPU_FALLBACK
@@ -889,18 +891,22 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 status = ggml_hsa_add(ctx, node);
                 break;
 
+#ifdef GGML_HSA_CPU_FALLBACK
             case GGML_OP_DUP :
                 status = ggml_hsa_cpy(ctx, node);
                 break;
+#endif
 
             case GGML_OP_MUL_MAT :
                 status = ggml_hsa_mul_mat(ctx, node);
                 break;
 
+#ifdef GGML_HSA_CPU_FALLBACK
             case GGML_OP_CPY :
             case GGML_OP_CONT :
                 status = ggml_hsa_cpy(ctx, node);
                 break;
+#endif
 
             case GGML_OP_PERMUTE :
             case GGML_OP_RESHAPE :
@@ -1114,13 +1120,17 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
         case GGML_OP_ADD :
         case GGML_OP_ADD1 :
             return ggml_hsa_supports_add(dev_info, tensor);
+#ifdef GGML_HSA_CPU_FALLBACK
         case GGML_OP_DUP :
             return ggml_hsa_supports_cpy(dev_info, tensor);
+#endif
         case GGML_OP_MUL_MAT :
             return ggml_hsa_supports_mul_mat(dev_info, tensor);
+#ifdef GGML_HSA_CPU_FALLBACK
         case GGML_OP_CPY :
         case GGML_OP_CONT :
             return ggml_hsa_supports_cpy(dev_info, tensor);
+#endif
         case GGML_OP_PERMUTE :
         case GGML_OP_RESHAPE :
         case GGML_OP_TRANSPOSE :
