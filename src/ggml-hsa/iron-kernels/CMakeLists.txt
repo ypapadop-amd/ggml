@@ -10,18 +10,18 @@ find_package(MLIR-AIE REQUIRED)
 #
 # Arguments:
 #     TARGET_NAME (string): target
-#     SOURCE (string): kernel source file
 #     KERNEL_NAME (string): kernel name
+#     SOURCE (string): kernel source file
 #     DEVICE (string): target device
-#     KERNEL_SUFFIX (string): kernel name suffix
 #     KERNEL_ARGS (string): kernel compilation flags
-#     OBJECT_FILE (string): Peano output file
-#     COMPILE_ARGS (string): Peano compilation flags
+#     PEANO_SOURCE (string): Peano source file
+#     PEANO_OUTPUT_FILE (string): Peano output file name
+#     PEANO_COMPILE_ARGS (string): Peano compilation flags
 #
 function(add_aie_iron_kernel TARGET_NAME)
     set(options)
-    set(oneValueArgs SOURCE KERNEL_NAME DEVICE KERNEL_SUFFIX OBJECT_FILE)
-    set(multiValueArgs KERNEL_ARGS COMPILE_ARGS)
+    set(oneValueArgs KERNEL_NAME SOURCE DEVICE PEANO_SOURCE PEANO_OUTPUT_FILE)
+    set(multiValueArgs KERNEL_ARGS PEANO_COMPILE_ARGS)
 
     cmake_parse_arguments(PARSE_ARGV 0 arg
         "${options}" "${oneValueArgs}" "${multiValueArgs}")
@@ -44,26 +44,24 @@ function(add_aie_iron_kernel TARGET_NAME)
     )
 
     set(MLIR_AIE_DEPS ${MLIR_OUTPUT})
-    if (DEFINED arg_OBJECT_FILE)
-        set(PEANO_SOURCE "${arg_SOURCE}")
-        string(REPLACE ".py" ".cc" PEANO_SOURCE ${PEANO_SOURCE})
-        set(PEANO_OUTPUT "${OUTPUT_DIR}/${arg_OBJECT_FILE}")
+    if (DEFINED arg_PEANO_SOURCE)
+        set(PEANO_OUTPUT "${OUTPUT_DIR}/${arg_PEANO_OUTPUT_FILE}")
 
         set(PEANO_WARNING_FLAGS -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body)
         set(PEANO_FLAGS -O2 -std=c++20 --target=aie2-none-unknown-elf ${PEANO_WARNING_FLAGS} -DNDEBUG -DBIT_WIDTH=8)
 
         set(PEANO_COMPILE_DEFS "")
-        foreach(flag ${arg_COMPILE_ARGS})
+        foreach(flag ${arg_PEANO_COMPILE_ARGS})
             list(APPEND PEANO_COMPILE_DEFS "-D${flag}")
         endforeach()
 
         add_custom_command(
             OUTPUT ${PEANO_OUTPUT}
             COMMAND ${Peano_CXX} ${PEANO_FLAGS} ${PEANO_COMPILE_DEFS} -I ${MLIR_AIE_INCLUDE_DIR}
-                    -c ${PEANO_SOURCE} -o ${PEANO_OUTPUT}
-            DEPENDS ${PEANO_SOURCE}
+                    -c ${arg_PEANO_SOURCE} -o ${PEANO_OUTPUT}
+            DEPENDS ${arg_PEANO_SOURCE}
             WORKING_DIRECTORY ${OUTPUT_DIR}
-            COMMENT "Compiling ${PEANO_SOURCE} for ${arg_KERNEL_NAME}"
+            COMMENT "Compiling ${arg_PEANO_SOURCE} for ${arg_KERNEL_NAME}"
             VERBATIM
         )
 
@@ -139,8 +137,10 @@ add_aie_iron_kernel(ggml-hsa
         aie2
     KERNEL_ARGS
         -M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 --b-col-maj 0
-    OBJECT_FILE
+    PEANO_SOURCE
+        ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.cc
+    PEANO_OUTPUT_FILE
         "mm_8x8x8.o"
-    COMPILE_ARGS
+    PEANO_COMPILE_ARGS
         i16_i16_ONLY DIM_M=8 DIM_K=8 DIM_N=8
 )
