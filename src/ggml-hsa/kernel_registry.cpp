@@ -22,7 +22,7 @@ static const fs::path kernel_base_path = [] {
     if (dladdr(reinterpret_cast<void *>(&ggml_hsa_find_aie_kernel), &info) == 0) {
         GGML_ABORT("Could not retrieve kernel base directory\n");
     }
-    auto library_path = fs::path{info.dli_fname}.parent_path() / "kernels";
+    auto library_path = fs::path{info.dli_fname}.parent_path() / "iron-kernels";
     if (!fs::is_directory(library_path)) {
         GGML_ABORT("Directory %s is not a valid path.\n", library_path.c_str());
     }

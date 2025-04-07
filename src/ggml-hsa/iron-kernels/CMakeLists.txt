@@ -30,7 +30,6 @@ function(add_aie_iron_kernel TARGET_NAME)
     set(MLIR_OUTPUT "${KERNEL_NAME}.mlir")
     set(XCLBIN_OUTPUT "${KERNEL_NAME}.xclbin")
     set(INSTS_OUTPUT "${KERNEL_NAME}_insts.bin")
-    set(PARTITION_OUTPUT "${KERNEL_NAME}_partition.json")
     set(PDI_OUTPUT "${KERNEL_NAME}.pdi")
 
     add_custom_command(
@@ -51,8 +50,8 @@ function(add_aie_iron_kernel TARGET_NAME)
         set(PEANO_OUTPUT "${arg_OBJECT_FILE}")
 
         set(PEANO_COMPILE_DEFS "")
-        foreach(device_flag ${arg_COMPILE_ARGS})
-            list(APPEND PEANO_COMPILE_DEFS "-D${device_flag}")
+        foreach(flag ${arg_COMPILE_ARGS})
+            list(APPEND PEANO_COMPILE_DEFS "-D${flag}")
         endforeach()
 
         add_custom_command(
@@ -88,7 +87,7 @@ function(add_aie_iron_kernel TARGET_NAME)
         FILES
             ${CMAKE_CURRENT_BINARY_DIR}/${PDI_OUTPUT}
             ${CMAKE_CURRENT_BINARY_DIR}/${INSTS_OUTPUT}
-        DESTINATION lib/kernels/
+        DESTINATION lib/iron-kernels/
     )
 endfunction()
 
