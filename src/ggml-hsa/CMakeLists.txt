@@ -39,7 +39,7 @@ ggml_add_backend_library(ggml-hsa
                          ${GGML_SOURCES_HSA}
                          )
 
-add_subdirectory(kernels)
+add_subdirectory(iron-kernels)
 
 target_link_libraries(ggml-hsa PRIVATE ggml-base hsa-runtime64::hsa-runtime64 ${GGML_CPU_NAME})
 target_include_directories(ggml-hsa PRIVATE . ..)
