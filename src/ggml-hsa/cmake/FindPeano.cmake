@@ -1,19 +1,29 @@
-include(FindPackageHandleStandardArgs)
+find_program(Peano_CC
+    NAMES
+        clang
+    PATHS
+        $ENV{PEANO_INSTALL_DIR}/bin
+    DOC
+        "Path to Peano C compiler"
+    NO_DEFAULT_PATH
+)
 
-find_program(Peano_EXECUTABLE
+find_program(Peano_CXX
     NAMES
         clang++
     PATHS
         $ENV{PEANO_INSTALL_DIR}/bin
     DOC
-        "Path to Peano"
+        "Path to Peano C++ compiler"
     NO_DEFAULT_PATH
-    REQUIRED
 )
 
-find_package_handle_standard_args(Peano REQUIRED_VARS Peano_EXECUTABLE)
+set(Peano_ROOT_DIR $ENV{PEANO_INSTALL_DIR})
 
-if (Peano_FOUND)
-    mark_as_advanced(Peano_EXECUTABLE)
-    set(Peano_ROOT $ENV{PEANO_INSTALL_DIR})
-endif()
+include(FindPackageHandleStandardArgs)
+find_package_handle_standard_args(Peano
+    REQUIRED_VARS
+        Peano_ROOT_DIR Peano_CC Peano_CXX
+)
+
+mark_as_advanced(Peano_ROOT_DIR Peano_CC Peano_CXX)
