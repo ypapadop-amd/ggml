@@ -2,6 +2,7 @@
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 #include "kernels.hpp"
+#include "kernel_discovery.hpp"
 
 #include "ggml-hsa/common.hpp"
 
