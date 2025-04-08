@@ -30,7 +30,7 @@ endif ()
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
     ggml-hsa.cpp
-    kernel_registry.cpp
+    kernel_discovery.cpp
     ${GGML_KERNEL_SOURCES_HSA}
     )
 
@@ -44,7 +44,10 @@ add_subdirectory(iron-kernels)
 target_link_libraries(ggml-hsa PRIVATE ggml-base hsa-runtime64::hsa-runtime64 ${GGML_CPU_NAME})
 target_include_directories(ggml-hsa PRIVATE . ..)
 
-target_sources(ggml-hsa PRIVATE common.hpp kernels.hpp)
+target_sources(ggml-hsa
+    PRIVATE
+        common.hpp kernel_discovery.hpp kernels.hpp
+    )
 
 set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE CXX)
 
