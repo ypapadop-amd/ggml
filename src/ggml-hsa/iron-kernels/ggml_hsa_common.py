@@ -27,7 +27,7 @@ def create_device(device_name):
     if device_name == "aie2":
         dev = NPU1Col1()
     else:
-        raise ValueError("Device name {} is unknown".format(device_name))
+        raise ValueError(f"Device name {device_name} is unknown")
     return dev
 
 
