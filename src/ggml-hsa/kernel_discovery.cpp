@@ -1,4 +1,4 @@
-#include "kernels.hpp"
+#include "kernel_discovery.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -19,7 +19,7 @@ namespace fs = std::filesystem;
 static const fs::path kernel_base_path = [] {
     // retrieve the kernel directory as a relative path from this shared library
     Dl_info info;
-    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_find_aie_kernel), &info) == 0) {
+    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_aie_kernel_exists), &info) == 0) {
         GGML_ABORT("Could not retrieve kernel base directory\n");
     }
     auto library_path = fs::path{info.dli_fname}.parent_path() / "iron-kernels";
@@ -199,8 +199,8 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
     return GGML_STATUS_SUCCESS;
 }
 
-bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
-                            const ggml_tensor * tensor) {
+bool ggml_hsa_aie_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
+                                const ggml_tensor * tensor) {
     if (auto tensor_extra = static_cast<const ggml_backend_hsa_tensor_extra *>(tensor->extra);
         tensor->extra != nullptr) {
         if (tensor_extra->kernel.is_valid()) {
