@@ -7,8 +7,8 @@
 # (c) Copyright 2024-2025 Advanced Micro Devices, Inc. or its affiliates
 
 import argparse
-import numpy as np
 import sys
+import numpy as np
 
 from ggml_hsa_common import (
     create_device,
