@@ -1,10 +1,11 @@
 #include "kernels.hpp"
 
 #include "ggml-impl.h"
+#include "kernel_discovery.hpp"
 
 bool ggml_hsa_supports_mul_mat(const ggml_hsa_device_info::device_info & dev_info,
                                const ggml_tensor * tensor) {
-    return ggml_hsa_kernel_exists(dev_info, tensor);
+    return ggml_hsa_aie_kernel_exists(dev_info, tensor);
 }
 
 ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {

@@ -1,6 +1,7 @@
 #include "kernels.hpp"
 
 #include "ggml-impl.h"
+#include "kernel_discovery.hpp"
 
 bool ggml_hsa_supports_add(const ggml_hsa_device_info::device_info & dev_info,
                            const ggml_tensor * tensor) {
@@ -8,7 +9,7 @@ bool ggml_hsa_supports_add(const ggml_hsa_device_info::device_info & dev_info,
                 ggml_are_same_shape(tensor->src[0], tensor->src[1]) &&
                 ggml_are_same_shape(tensor->src[0], tensor));
 
-    return ggml_hsa_kernel_exists(dev_info, tensor);
+    return ggml_hsa_aie_kernel_exists(dev_info, tensor);
 }
 
 ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
