@@ -1,8 +1,8 @@
 #include "ggml-hsa.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
-#include "kernels.hpp"
 #include "kernel_discovery.hpp"
+#include "kernels.hpp"
 
 #include "ggml-hsa/common.hpp"
 
@@ -809,7 +809,7 @@ struct fallback_tensor {
             ;
 
         // create context
-        const auto tensor_count = tensor_src_count + 3;
+        const auto tensor_count = tensor_src_count + 1;
         const ggml_init_params params = {
             /*.mem_size   =*/tensor_count * ggml_tensor_overhead() +
                 ggml_graph_overhead_custom(tensor_count, false) + 262144,
@@ -829,11 +829,21 @@ struct fallback_tensor {
             GGML_LOG_ERROR("ggml_dup_tensor(): failed to dup tensor");
             throw std::runtime_error("ggml_dup_tensor(): failed to dup tensor");
         }
+        ggml_set_name(new_tensor, tensor->name);
         new_tensor->op = tensor->op;
         new_tensor->data = tensor->data;
         std::copy_n(tensor->op_params, GGML_MAX_OP_PARAMS / sizeof(int32_t), new_tensor->op_params);
-        std::copy_n(tensor->src, tensor_src_count, new_tensor->src);
-        ggml_set_name(new_tensor, tensor->name);
+
+        for (std::int32_t i = 0; i < tensor_src_count; ++i) {
+            new_tensor->src[i] = ggml_dup_tensor(ctx, tensor->src[i]);
+            if (new_tensor->src[i] == nullptr) {
+                GGML_LOG_ERROR("ggml_dup_tensor(): failed to dup tensor");
+                throw std::runtime_error("ggml_dup_tensor(): failed to dup tensor");
+            }
+            ggml_set_name(new_tensor->src[i], tensor->src[i]->name);
+            ggml_set_input(new_tensor->src[i]);
+            new_tensor->src[i]->data = tensor->src[i]->data;
+        }
 
         // create graph
         graph = ggml_new_graph_custom(ctx, tensor_count, false);
@@ -892,22 +902,9 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 status = ggml_hsa_add(ctx, node);
                 break;
 
-#ifdef GGML_HSA_CPU_FALLBACK
-            case GGML_OP_DUP :
-                status = ggml_hsa_cpy(ctx, node);
-                break;
-#endif
-
             case GGML_OP_MUL_MAT :
                 status = ggml_hsa_mul_mat(ctx, node);
                 break;
-
-#ifdef GGML_HSA_CPU_FALLBACK
-            case GGML_OP_CPY :
-            case GGML_OP_CONT :
-                status = ggml_hsa_cpy(ctx, node);
-                break;
-#endif
 
             case GGML_OP_PERMUTE :
             case GGML_OP_RESHAPE :
@@ -917,18 +914,18 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
 
             default :
-#ifdef GGML_HSA_CPU_FALLBACK
-                {
-                    fallback_tensor emulated_op(node, ctx.fallback_galloc);
-                    status = emulated_op();
-                }
-#else
                 GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name,
                                ggml_op_name(node->op));
                 status = GGML_STATUS_FAILED;
-#endif
                 break;
         }
+
+#ifdef GGML_HSA_CPU_FALLBACK
+        if (status != GGML_STATUS_SUCCESS) {
+            fallback_tensor emulated_op(node, ctx.fallback_galloc);
+            status = emulated_op();
+        }
+#endif
     }
 
     return status;
@@ -1032,6 +1029,16 @@ struct ggml_backend_hsa_device_context {
         description(ggml_hsa_agent_name(agent)) {}
 };
 
+/**
+ * @brief Returns the device info associated with @p dev.
+ */
+static const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(ggml_backend_dev_t dev) {
+    const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
+    const auto & info = ggml_hsa_info();
+    const auto & dev_info = info.devices[dev_ctx.device];
+    return dev_info;
+}
+
 static const char * ggml_backend_hsa_device_get_name(ggml_backend_dev_t dev) {
     const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
     return dev_ctx.name.c_str();
@@ -1047,9 +1054,7 @@ static const char * ggml_backend_hsa_device_get_description(ggml_backend_dev_t d
  */
 static void
 ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
-    const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
-    const auto & info = ggml_hsa_info();
-    const auto & dev_info = info.devices[dev_ctx.device];
+    const auto & dev_info = ggml_hsa_get_device_info(dev);
     *total = dev_info.data_memory.size;
     // HSA does not report free memory, set it to total
     *free = *total;
@@ -1059,9 +1064,7 @@ ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t
  * @brief Returns the device type of @p dev.
  */
 static enum ggml_backend_dev_type ggml_backend_hsa_device_get_type(ggml_backend_dev_t dev) {
-    const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
-    const auto & info = ggml_hsa_info();
-    const auto & dev_info = info.devices[dev_ctx.device];
+    const auto & dev_info = ggml_hsa_get_device_info(dev);
     switch (dev_info.type) {
         case HSA_DEVICE_TYPE_CPU :
             return GGML_BACKEND_DEVICE_TYPE_CPU;
@@ -1111,35 +1114,36 @@ ggml_backend_hsa_device_get_host_buffer_type(ggml_backend_dev_t /*dev*/) {
  */
 static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
                                                 const ggml_tensor * tensor) try {
-    const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
-    const auto & info = ggml_hsa_info();
-    const auto & dev_info = info.devices[dev_ctx.device];
-
+    bool supported = false;
     switch (tensor->op) {
         case GGML_OP_NONE :
-            return true;
+            supported = true;
+            break;
         case GGML_OP_ADD :
         case GGML_OP_ADD1 :
-            return ggml_hsa_supports_add(dev_info, tensor);
-#ifdef GGML_HSA_CPU_FALLBACK
-        case GGML_OP_DUP :
-            return ggml_hsa_supports_cpy(dev_info, tensor);
-#endif
+            supported = ggml_hsa_supports_add(ggml_hsa_get_device_info(dev), tensor);
+            break;
         case GGML_OP_MUL_MAT :
-            return ggml_hsa_supports_mul_mat(dev_info, tensor);
-#ifdef GGML_HSA_CPU_FALLBACK
-        case GGML_OP_CPY :
-        case GGML_OP_CONT :
-            return ggml_hsa_supports_cpy(dev_info, tensor);
-#endif
+            supported = ggml_hsa_supports_mul_mat(ggml_hsa_get_device_info(dev), tensor);
+            break;
         case GGML_OP_PERMUTE :
         case GGML_OP_RESHAPE :
         case GGML_OP_TRANSPOSE :
         case GGML_OP_VIEW :
-            return true;
+            supported = true;
+            break;
         default :
-            return false;
+            supported = false;
+            break;
     }
+
+#ifdef GGML_HSA_CPU_FALLBACK
+    if (!supported) {
+        auto cpu_dev = ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0);
+        supported = ggml_backend_dev_supports_op(cpu_dev, tensor);
+    }
+#endif
+    return supported;
 } catch (const std::exception & ex) {
     GGML_LOG_ERROR("%s: Could not check operation (%s)\n", __func__, ex.what());
     return false;
