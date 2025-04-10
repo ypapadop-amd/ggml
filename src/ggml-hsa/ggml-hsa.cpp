@@ -806,9 +806,12 @@ struct fallback_tensor {
         // create tensor allocator
         std::size_t buffer_size = ggml_nbytes_pad(tensor) + 4096;
         std::int32_t tensor_src_count = 0;
-        for (; (tensor_src_count < GGML_MAX_SRC) && (tensor->src[tensor_src_count] != nullptr);
-             ++tensor_src_count) {
-            buffer_size += ggml_nbytes_pad(tensor->src[tensor_src_count]);
+        for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
+            if (tensor->src[i] == nullptr) {
+                continue;
+            }
+            ++tensor_src_count;
+            buffer_size += ggml_nbytes_pad(tensor->src[i]);
         }
         auto buffer = ggml_backend_alloc_buffer(ctx.fallback_backend, buffer_size);
         auto talloc = ggml_tallocr_new(buffer);
@@ -830,41 +833,30 @@ struct fallback_tensor {
         // create tensor
         const auto tensor_dims = ggml_n_dims(tensor);
         auto new_tensor = ggml_new_tensor(ggml_ctx, tensor->type, tensor_dims, tensor->ne);
-        if (new_tensor == nullptr) {
-            throw std::runtime_error("failed to dup tensor");
-        }
+        GGML_ASSERT(ggml_are_same_shape(tensor, new_tensor));
         new_tensor->op = tensor->op;
+        std::copy_n(tensor->op_params, GGML_MAX_OP_PARAMS / sizeof(int32_t), new_tensor->op_params);
         if (ggml_tallocr_alloc(&talloc, new_tensor) != GGML_STATUS_SUCCESS) {
             throw std::runtime_error("Failed to allocate tensor");
         }
         ggml_set_name(new_tensor, tensor->name);
 
-        GGML_ASSERT(ggml_are_same_shape(tensor, new_tensor));
-
         // create source tensors
-        for (std::int32_t i = 0; i < tensor_src_count; ++i) {
-            const auto * tensor_src = tensor->src[i];
-            const auto tensor_src_dims = ggml_n_dims(tensor_src);
-            auto * new_tensor_src =
-                ggml_new_tensor(ggml_ctx, tensor_src->type, tensor_src_dims, tensor_src->ne);
-            if (new_tensor_src == nullptr) {
-                throw std::runtime_error("failed to dup src tensor");
+        for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
+            auto * src = tensor->src[i];
+            if (src == nullptr) {
+                continue;
             }
-            if (ggml_tallocr_alloc(&talloc, new_tensor_src) != GGML_STATUS_SUCCESS) {
-                throw std::runtime_error("Failed to allocate tensor");
-            }
-            ggml_set_name(new_tensor_src, tensor_src->name);
+            const auto tensor_src_dims = ggml_n_dims(src);
+            auto * new_src = ggml_new_tensor(ggml_ctx, src->type, tensor_src_dims, src->ne);
+            GGML_ASSERT(ggml_are_same_shape(src, new_src));
+            ggml_set_name(new_src, src->name);
 
-            GGML_ASSERT(ggml_are_same_shape(tensor_src, new_tensor_src));
-
-            new_tensor->src[i] = new_tensor_src;
+            new_tensor->src[i] = new_src;
         }
 
         // create graph
         ggml_graph = ggml_new_graph_custom(ggml_ctx, tensor_count, false);
-        if (ggml_graph == nullptr) {
-            throw std::runtime_error("Failed to create graph");
-        }
         ggml_build_forward_expand(ggml_graph, new_tensor);
 
         if (!ggml_gallocr_alloc_graph(ctx.fallback_galloc, ggml_graph)) {
@@ -881,9 +873,13 @@ struct fallback_tensor {
     fallback_tensor & operator=(fallback_tensor &&) = delete;
 
     ggml_status operator()(ggml_tensor * tensor) {
-        // copy input tensors
         auto new_tensor = ggml_graph_node(ggml_graph, 0);
-        for (std::int32_t i = 0; (i < GGML_MAX_SRC) && (tensor->src[i] != nullptr); ++i) {
+
+        // copy input tensors
+        for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
+            if (tensor->src[i] == nullptr) {
+                continue;
+            }
             ggml_backend_tensor_copy(tensor->src[i], new_tensor->src[i]);
         }
 
@@ -939,8 +935,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
 
             default :
-                GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name,
-                               ggml_op_name(node->op));
+                GGML_LOG_ERROR("%s: op %s not supported (%s)\n", __func__, ggml_op_name(node->op),
+                               node->name);
                 status = GGML_STATUS_FAILED;
                 break;
         }
