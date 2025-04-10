@@ -799,82 +799,107 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
 #ifdef GGML_HSA_CPU_FALLBACK
 
 struct fallback_tensor {
-    ggml_context * ctx{};
-    ggml_cgraph * graph{};
+    ggml_context * ggml_ctx{};
+    ggml_cgraph * ggml_graph{};
 
-    fallback_tensor(ggml_tensor * tensor, ggml_gallocr_t galloc) {
+    fallback_tensor(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor) {
+        // create tensor allocator
+        std::size_t buffer_size = ggml_nbytes_pad(tensor) + 4096;
         std::int32_t tensor_src_count = 0;
         for (; (tensor_src_count < GGML_MAX_SRC) && (tensor->src[tensor_src_count] != nullptr);
-             ++tensor_src_count)
-            ;
+             ++tensor_src_count) {
+            buffer_size += ggml_nbytes_pad(tensor->src[tensor_src_count]);
+        }
+        auto buffer = ggml_backend_alloc_buffer(ctx.fallback_backend, buffer_size);
+        auto talloc = ggml_tallocr_new(buffer);
 
         // create context
         const auto tensor_count = tensor_src_count + 1;
         const ggml_init_params params = {
             /*.mem_size   =*/tensor_count * ggml_tensor_overhead() +
-                ggml_graph_overhead_custom(tensor_count, false) + 262144,
+                ggml_graph_overhead_custom(tensor_count, false) + 8 * 4096,
             /*.mem_buffer =*/nullptr,
             /*.no_alloc   =*/true,
         };
 
-        ctx = ggml_init(params);
-        if (ctx == nullptr) {
-            GGML_LOG_ERROR("ggml_init(): failed to initialize context");
-            throw std::runtime_error("ggml_init(): failed to initialize context");
+        ggml_ctx = ggml_init(params);
+        if (ggml_ctx == nullptr) {
+            throw std::runtime_error("Failed to initialize context");
         }
 
         // create tensor
-        auto new_tensor = ggml_dup_tensor(ctx, tensor);
+        const auto tensor_dims = ggml_n_dims(tensor);
+        auto new_tensor = ggml_new_tensor(ggml_ctx, tensor->type, tensor_dims, tensor->ne);
         if (new_tensor == nullptr) {
-            GGML_LOG_ERROR("ggml_dup_tensor(): failed to dup tensor");
-            throw std::runtime_error("ggml_dup_tensor(): failed to dup tensor");
+            throw std::runtime_error("failed to dup tensor");
+        }
+        new_tensor->op = tensor->op;
+        if (ggml_tallocr_alloc(&talloc, new_tensor) != GGML_STATUS_SUCCESS) {
+            throw std::runtime_error("Failed to allocate tensor");
         }
         ggml_set_name(new_tensor, tensor->name);
-        new_tensor->op = tensor->op;
-        new_tensor->data = tensor->data;
-        std::copy_n(tensor->op_params, GGML_MAX_OP_PARAMS / sizeof(int32_t), new_tensor->op_params);
 
+        GGML_ASSERT(ggml_are_same_shape(tensor, new_tensor));
+
+        // create source tensors
         for (std::int32_t i = 0; i < tensor_src_count; ++i) {
-            new_tensor->src[i] = ggml_dup_tensor(ctx, tensor->src[i]);
-            if (new_tensor->src[i] == nullptr) {
-                GGML_LOG_ERROR("ggml_dup_tensor(): failed to dup tensor");
-                throw std::runtime_error("ggml_dup_tensor(): failed to dup tensor");
+            const auto * tensor_src = tensor->src[i];
+            const auto tensor_src_dims = ggml_n_dims(tensor_src);
+            auto * new_tensor_src =
+                ggml_new_tensor(ggml_ctx, tensor_src->type, tensor_src_dims, tensor_src->ne);
+            if (new_tensor_src == nullptr) {
+                throw std::runtime_error("failed to dup src tensor");
             }
-            ggml_set_name(new_tensor->src[i], tensor->src[i]->name);
-            ggml_set_input(new_tensor->src[i]);
-            new_tensor->src[i]->data = tensor->src[i]->data;
+            if (ggml_tallocr_alloc(&talloc, new_tensor_src) != GGML_STATUS_SUCCESS) {
+                throw std::runtime_error("Failed to allocate tensor");
+            }
+            ggml_set_name(new_tensor_src, tensor_src->name);
+
+            GGML_ASSERT(ggml_are_same_shape(tensor_src, new_tensor_src));
+
+            new_tensor->src[i] = new_tensor_src;
         }
 
         // create graph
-        graph = ggml_new_graph_custom(ctx, tensor_count, false);
-        if (graph == nullptr) {
-            GGML_LOG_ERROR("ggml_new_graph(): failed to create graph");
-            throw std::runtime_error("ggml_new_graph(): failed to create graph");
+        ggml_graph = ggml_new_graph_custom(ggml_ctx, tensor_count, false);
+        if (ggml_graph == nullptr) {
+            throw std::runtime_error("Failed to create graph");
         }
-        ggml_build_forward_expand(graph, new_tensor);
+        ggml_build_forward_expand(ggml_graph, new_tensor);
 
-        if (!ggml_gallocr_alloc_graph(galloc, graph)) {
-            GGML_LOG_ERROR("ggml_gallocr_alloc_graph(): failed to allocate graph");
-            throw std::runtime_error("ggml_gallocr_alloc_graph(): failed to allocate graph");
+        if (!ggml_gallocr_alloc_graph(ctx.fallback_galloc, ggml_graph)) {
+            throw std::runtime_error("Failed to allocate graph");
         }
     }
 
     fallback_tensor(const fallback_tensor &) = delete;
     fallback_tensor(fallback_tensor &&) = delete;
 
-    ~fallback_tensor() { ggml_free(ctx); }
+    ~fallback_tensor() { ggml_free(ggml_ctx); }
 
     fallback_tensor & operator=(const fallback_tensor &) = delete;
     fallback_tensor & operator=(fallback_tensor &&) = delete;
 
-    ggml_status operator()() {
+    ggml_status operator()(ggml_tensor * tensor) {
+        // copy input tensors
+        auto new_tensor = ggml_graph_node(ggml_graph, 0);
+        for (std::int32_t i = 0; (i < GGML_MAX_SRC) && (tensor->src[i] != nullptr); ++i) {
+            ggml_backend_tensor_copy(tensor->src[i], new_tensor->src[i]);
+        }
+
+        // execute
         const auto num_threads = 4;
         ggml_status status = GGML_STATUS_SUCCESS;
-        if (status = ggml_graph_compute_with_ctx(ctx, graph, num_threads);
+        if (status = ggml_graph_compute_with_ctx(ggml_ctx, ggml_graph, num_threads);
             status != GGML_STATUS_SUCCESS) {
             GGML_LOG_ERROR("ggml_graph_compute_with_ctx(): failed to compute graph");
+            return status;
         }
-        return status;
+
+        // copy output tensor
+        ggml_backend_tensor_copy(new_tensor, tensor);
+
+        return GGML_STATUS_SUCCESS;
     }
 };
 
@@ -922,8 +947,9 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 
 #ifdef GGML_HSA_CPU_FALLBACK
         if (status != GGML_STATUS_SUCCESS) {
-            fallback_tensor emulated_op(node, ctx.fallback_galloc);
-            status = emulated_op();
+            ggml_backend_hsa_synchronize(backend);
+            fallback_tensor emulated_op(ctx, node);
+            status = emulated_op(node);
         }
 #endif
     }
