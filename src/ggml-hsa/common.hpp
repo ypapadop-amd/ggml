@@ -7,6 +7,9 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#ifdef GGML_HSA_CPU_FALLBACK
+#include <memory>
+#endif
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -140,11 +143,18 @@ struct ggml_hsa_aie_kernel {
     }
 };
 
+#ifdef GGML_HSA_CPU_FALLBACK
+struct ggml_backend_hsa_emulated_tensor;
+#endif
+
 /**
  * @brief Tensor extra information.
  */
 struct ggml_backend_hsa_tensor_extra {
     ggml_hsa_aie_kernel kernel; ///< Kernel associated with this tensor.
+#ifdef GGML_HSA_CPU_FALLBACK
+    std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
+#endif
 };
 
 /**
