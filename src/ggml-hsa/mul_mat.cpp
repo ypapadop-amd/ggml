@@ -12,8 +12,6 @@ ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, ggml_tensor * tenso
     auto & info = ggml_hsa_info();
     auto & dev_info = info.devices[ctx.device];
 
-    assert(ggml_hsa_supports_mul_mat(dev_info, tensor));
-
     auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
     const ggml_tensor * src0 = tensor->src[0];
     const ggml_tensor * src1 = tensor->src[1];
