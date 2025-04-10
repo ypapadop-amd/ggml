@@ -819,8 +819,8 @@ struct fallback_tensor {
         // create context
         const auto tensor_count = tensor_src_count + 1;
         const ggml_init_params params = {
-            /*.mem_size   =*/tensor_count * ggml_tensor_overhead() +
-                ggml_graph_overhead_custom(tensor_count, false) + 8 * 4096,
+            /*.mem_size   =*/(tensor_count * ggml_tensor_overhead() +
+                              ggml_graph_overhead_custom(tensor_count, false) + 8 * 4096),
             /*.mem_buffer =*/nullptr,
             /*.no_alloc   =*/true,
         };
@@ -935,14 +935,18 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
 
             default :
-                GGML_LOG_ERROR("%s: op %s not supported (%s)\n", __func__, ggml_op_name(node->op),
-                               node->name);
+#ifndef GGML_HSA_CPU_FALLBACK
+                GGML_LOG_ERROR("%s: op %s not supported for \"%s\"\n", __func__,
+                               ggml_op_name(node->op), node->name);
+#endif
                 status = GGML_STATUS_FAILED;
                 break;
         }
 
 #ifdef GGML_HSA_CPU_FALLBACK
         if (status != GGML_STATUS_SUCCESS) {
+            GGML_LOG_WARN("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_name(node->op),
+                          node->name);
             ggml_backend_hsa_synchronize(backend);
             fallback_tensor emulated_op(ctx, node);
             status = emulated_op(node);
