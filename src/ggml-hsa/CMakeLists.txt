@@ -23,9 +23,6 @@ set(GGML_KERNEL_SOURCES_HSA
     add.cpp
     mul_mat.cpp
     )
-if (GGML_HSA_CPU_FALLBACK)
-    set(GGML_KERNEL_SOURCES_HSA cpy.cpp ${GGML_KERNEL_SOURCES_HSA})
-endif ()
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
