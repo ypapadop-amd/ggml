@@ -798,11 +798,11 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
 
 #ifdef GGML_HSA_CPU_FALLBACK
 
-struct fallback_tensor {
+struct ggml_backend_hsa_emulated_tensor {
     ggml_context * ggml_ctx{};
     ggml_cgraph * ggml_graph{};
 
-    fallback_tensor(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor) {
+    ggml_backend_hsa_emulated_tensor(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor) {
         // create tensor allocator
         std::size_t buffer_size = ggml_nbytes_pad(tensor) + 4096;
         std::int32_t tensor_src_count = 0;
@@ -864,13 +864,13 @@ struct fallback_tensor {
         }
     }
 
-    fallback_tensor(const fallback_tensor &) = delete;
-    fallback_tensor(fallback_tensor &&) = delete;
+    ggml_backend_hsa_emulated_tensor(const ggml_backend_hsa_emulated_tensor &) = delete;
+    ggml_backend_hsa_emulated_tensor(ggml_backend_hsa_emulated_tensor &&) = delete;
 
-    ~fallback_tensor() { ggml_free(ggml_ctx); }
+    ~ggml_backend_hsa_emulated_tensor() { ggml_free(ggml_ctx); }
 
-    fallback_tensor & operator=(const fallback_tensor &) = delete;
-    fallback_tensor & operator=(fallback_tensor &&) = delete;
+    ggml_backend_hsa_emulated_tensor & operator=(const ggml_backend_hsa_emulated_tensor &) = delete;
+    ggml_backend_hsa_emulated_tensor & operator=(ggml_backend_hsa_emulated_tensor &&) = delete;
 
     ggml_status operator()(ggml_tensor * tensor) {
         auto new_tensor = ggml_graph_node(ggml_graph, 0);
@@ -945,11 +945,15 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 
 #ifdef GGML_HSA_CPU_FALLBACK
         if (status != GGML_STATUS_SUCCESS) {
-            GGML_LOG_WARN("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_name(node->op),
-                          node->name);
+            auto tensor_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+            if (!tensor_extra->emulated_tensor) {
+                GGML_LOG_WARN("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_name(node->op),
+                              node->name);
+                tensor_extra->emulated_tensor =
+                    std::make_unique<ggml_backend_hsa_emulated_tensor>(ctx, node);
+            }
             ggml_backend_hsa_synchronize(backend);
-            fallback_tensor emulated_op(ctx, node);
-            status = emulated_op(node);
+            status = (*tensor_extra->emulated_tensor)(node);
         }
 #endif
     }
