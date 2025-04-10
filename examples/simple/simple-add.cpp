@@ -34,9 +34,11 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& v) {
 
 int main(void) {
     // create data
+    using value_type = std::int32_t;
+    constexpr auto ggml_type = GGML_TYPE_I32;
     const std::size_t N = 256;
-    const std::vector<std::int32_t> A = create_data<std::int32_t>(N, 0);
-    const std::vector<std::int32_t> B = create_data<std::int32_t>(N, 1);
+    const std::vector<value_type> A = create_data<value_type>(N, 0);
+    const std::vector<value_type> B = create_data<value_type>(N, 1);
 
     // initialize GGML backend and allocators
     ggml_backend_t backend = {};
@@ -59,7 +61,7 @@ int main(void) {
     }
     const std::size_t alignment = ggml_backend_get_alignment(backend);
     const std::size_t tensor_count = 3;
-    const std::size_t buffer_size = tensor_count * GGML_PAD((N * sizeof(std::int32_t)), alignment);
+    const std::size_t buffer_size = tensor_count * GGML_PAD((N * sizeof(value_type)), alignment);
     ggml_backend_buffer_t buffer = ggml_backend_alloc_buffer(backend, buffer_size);
     ggml_tallocr alloc = ggml_tallocr_new(buffer);
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
@@ -72,8 +74,8 @@ int main(void) {
         /*.mem_buffer =*/ nullptr,
         /*.no_alloc   =*/ true };
     ggml_context * ctx = ggml_init(params);
-    ggml_tensor * tensor_a = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, N);
-    ggml_tensor * tensor_b = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, N);
+    ggml_tensor * tensor_a = ggml_new_tensor_1d(ctx, ggml_type, N);
+    ggml_tensor * tensor_b = ggml_new_tensor_1d(ctx, ggml_type, N);
     if ((ggml_tallocr_alloc(&alloc, tensor_a) != GGML_STATUS_SUCCESS) ||
         (ggml_tallocr_alloc(&alloc, tensor_b) != GGML_STATUS_SUCCESS)) {
         std::cerr << "Could not allocate tensor\n";
@@ -90,7 +92,10 @@ int main(void) {
         return EXIT_FAILURE;
     }
     ggml_build_forward_expand(gf, tensor_result);
-    ggml_gallocr_alloc_graph(galloc, gf);
+    if (!ggml_gallocr_alloc_graph(galloc, gf)) {
+        std::cerr << "Could not allocate graph\n";
+        return EXIT_FAILURE;
+    }
 
     // copy data in (can be avoided if data created directly in tensors)
     ggml_backend_tensor_set(tensor_a, std::data(A), 0, ggml_nbytes(tensor_a));
@@ -103,7 +108,7 @@ int main(void) {
     }
 
     // copy data out and print
-    std::vector<std::int32_t> result(N);
+    std::vector<value_type> result(N);
     ggml_backend_tensor_get(tensor_result, std::data(result), 0, ggml_nbytes(tensor_result));
     std::cout << "A =     " << A << '\n';
     std::cout << "B =     " << B << '\n';
