@@ -1150,13 +1150,6 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
         case GGML_OP_NONE :
             supported = true;
             break;
-        case GGML_OP_ADD :
-        case GGML_OP_ADD1 :
-            supported = ggml_hsa_supports_add(ggml_hsa_get_device_info(dev), tensor);
-            break;
-        case GGML_OP_MUL_MAT :
-            supported = ggml_hsa_supports_mul_mat(ggml_hsa_get_device_info(dev), tensor);
-            break;
         case GGML_OP_PERMUTE :
         case GGML_OP_RESHAPE :
         case GGML_OP_TRANSPOSE :
@@ -1164,7 +1157,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             supported = true;
             break;
         default :
-            supported = false;
+            supported = ggml_hsa_aie_kernel_exists(ggml_hsa_get_device_info(dev), tensor);
             break;
     }
 
