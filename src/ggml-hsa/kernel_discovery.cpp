@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -16,7 +17,14 @@
 
 namespace fs = std::filesystem;
 
-static const fs::path kernel_base_path = [] {
+// PDI file suffix.
+static const std::string_view pdi_file_suffix = ".pdi";
+
+// Binary instructions file suffix.
+static const std::string_view inst_file_suffix = "_insts.bin";
+
+// System (i.e., precompiled and installed) kernel base path.
+static const fs::path system_kernel_base_path = [] {
     // retrieve the kernel directory as a relative path from this shared library
     Dl_info info;
     if (dladdr(reinterpret_cast<void *>(&ggml_hsa_kernel_exists), &info) == 0) {
@@ -28,8 +36,23 @@ static const fs::path kernel_base_path = [] {
     }
     return library_path;
 }();
-static const std::string_view pdi_file_suffix = ".pdi";
-static const std::string_view inst_file_suffix = "_insts.bin";
+
+// User (i.e., out-of-tree and JIT compiled) kernel base path.
+static const fs::path user_kernel_base_path = [] {
+    // user compiled and JIT kernels are stored in XDG_CACHE_HOME if defined or $HOME/.cache if not
+    fs::path dir;
+    if (const char * cache_dir = std::getenv("XDG_CACHE_HOME"); cache_dir != nullptr) {
+        dir = fs::path(cache_dir) / "ggml";
+    } else {
+        const char * home_dir = std::getenv("HOME");
+        if (home_dir == nullptr) {
+            home_dir = "/tmp";
+        }
+        dir = fs::path(home_dir) / ".cache/ggml";
+    }
+    GGML_LOG_INFO("ggml_hsa_backend: User kernels in %s\n", dir.c_str());
+    return dir;
+}();
 
 /**
  * @brief Creates a kernel name for the operation in tensor @p tensor.
@@ -70,13 +93,13 @@ static bool ggml_hsa_is_file(const fs::path & p) {
 }
 
 /**
- * @brief Returns the paths for PDI and insts for the kernel of @p tensor.
+ * @brief Returns the paths for PDI and instructions files for the kernel of @p tensor.
  */
 static ggml_status ggml_hsa_create_kernel_paths(const ggml_hsa_device_info::device_info & dev_info,
                                                 const std::string & kernel_name,
                                                 fs::path & pdi_path,
                                                 fs::path & insts_path) {
-    const auto partial_path = kernel_base_path / dev_info.name / kernel_name;
+    const auto partial_path = system_kernel_base_path / dev_info.name / kernel_name;
 
     pdi_path = partial_path;
     pdi_path += pdi_file_suffix;
@@ -98,8 +121,7 @@ static ggml_status ggml_hsa_create_kernel_paths(const ggml_hsa_device_info::devi
 }
 
 /**
- * @brief Reads a PDI file from @p p and returns its contents and size in bytes in @p buffer and @p
- * buffer_size respectively.
+ * @brief Reads a PDI file from @p p and returns its contents and size in bytes in @p buffer.
  */
 static ggml_status
 ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & p, ggml_hsa_pdi_buffer & buffer) {
