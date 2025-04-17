@@ -799,10 +799,11 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
 #ifdef GGML_HSA_CPU_FALLBACK
 
 struct ggml_backend_hsa_emulated_tensor {
+    ggml_tensor * tensor{};
     ggml_context * ggml_ctx{};
     ggml_cgraph * ggml_graph{};
 
-    ggml_backend_hsa_emulated_tensor(ggml_backend_hsa_context & ctx, const ggml_tensor * tensor) {
+    ggml_backend_hsa_emulated_tensor(ggml_backend_hsa_context & ctx, ggml_tensor * t) : tensor{t} {
         // create tensor allocator
         std::size_t buffer_size = ggml_nbytes_pad(tensor) + 4096;
         std::int32_t tensor_src_count = 0;
@@ -831,9 +832,9 @@ struct ggml_backend_hsa_emulated_tensor {
         }
 
         // create tensor
-        const auto tensor_dims = ggml_n_dims(tensor);
-        auto new_tensor = ggml_new_tensor(ggml_ctx, tensor->type, tensor_dims, tensor->ne);
+        auto new_tensor = ggml_dup_tensor(ggml_ctx, tensor);
         GGML_ASSERT(ggml_are_same_shape(tensor, new_tensor));
+        GGML_ASSERT(ggml_are_same_stride(tensor, new_tensor));
         new_tensor->op = tensor->op;
         std::copy_n(tensor->op_params, GGML_MAX_OP_PARAMS / sizeof(int32_t), new_tensor->op_params);
         if (ggml_tallocr_alloc(&talloc, new_tensor) != GGML_STATUS_SUCCESS) {
@@ -872,7 +873,7 @@ struct ggml_backend_hsa_emulated_tensor {
     ggml_backend_hsa_emulated_tensor & operator=(const ggml_backend_hsa_emulated_tensor &) = delete;
     ggml_backend_hsa_emulated_tensor & operator=(ggml_backend_hsa_emulated_tensor &&) = delete;
 
-    ggml_status operator()(ggml_tensor * tensor) {
+    ggml_status operator()() {
         auto new_tensor = ggml_graph_node(ggml_graph, 0);
 
         // copy input tensors
@@ -953,7 +954,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     std::make_unique<ggml_backend_hsa_emulated_tensor>(ctx, node);
             }
             ggml_backend_hsa_synchronize(backend);
-            status = (*tensor_extra->emulated_tensor)(node);
+            status = (*tensor_extra->emulated_tensor)();
         }
 #endif
     }
@@ -1149,13 +1150,6 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
         case GGML_OP_NONE :
             supported = true;
             break;
-        case GGML_OP_ADD :
-        case GGML_OP_ADD1 :
-            supported = ggml_hsa_supports_add(ggml_hsa_get_device_info(dev), tensor);
-            break;
-        case GGML_OP_MUL_MAT :
-            supported = ggml_hsa_supports_mul_mat(ggml_hsa_get_device_info(dev), tensor);
-            break;
         case GGML_OP_PERMUTE :
         case GGML_OP_RESHAPE :
         case GGML_OP_TRANSPOSE :
@@ -1163,7 +1157,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             supported = true;
             break;
         default :
-            supported = false;
+            supported = ggml_hsa_aie_kernel_exists(ggml_hsa_get_device_info(dev), tensor);
             break;
     }
 
