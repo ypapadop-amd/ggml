@@ -266,7 +266,7 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
 }
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
-    destroy_aie_kernels();
+    destroy_kernels();
     HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
     HSA_CHECK_ABORT(hsa_queue_destroy(queue));
 #ifdef GGML_HSA_CPU_FALLBACK
@@ -275,7 +275,7 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
 #endif
 }
 
-void ggml_backend_hsa_context::destroy_aie_kernels() {
+void ggml_backend_hsa_context::destroy_kernels() {
     for (auto & t : aie_kernels) {
         ggml_hsa_destroy_aie_kernel(*this, t.second);
     }
@@ -1157,7 +1157,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             supported = true;
             break;
         default :
-            supported = ggml_hsa_aie_kernel_exists(ggml_hsa_get_device_info(dev), tensor);
+            supported = ggml_hsa_kernel_exists(ggml_hsa_get_device_info(dev), tensor);
             break;
     }
 
