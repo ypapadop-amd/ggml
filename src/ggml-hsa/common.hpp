@@ -208,3 +208,48 @@ struct ggml_backend_hsa_context {
 void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
                               hsa_amd_aie_ert_start_kernel_data_t * payload,
                               std::size_t payload_size);
+
+/**
+ * @brief Creates a string representation of the tensor shape.
+ *
+ * The representation is of the form `3x3x4` for a 3D tensor with dimensions `[3,3,4]`.
+ */
+template <typename OutputStream>
+void ggml_hsa_output_tensor_shape(const ggml_tensor * tensor, OutputStream & os) {
+    // find max dimensions
+    int max_dim = GGML_MAX_DIMS - 1;
+    for (; max_dim > 0; --max_dim) {
+        if (tensor->ne[max_dim] > 1) {
+            break;
+        }
+    }
+
+    os << tensor->ne[0];
+    for (int i = 1; i <= max_dim; ++i) {
+        os << 'x' << tensor->ne[i];
+    }
+}
+
+/**
+ * @brief Creates a string representation of the tensor.
+ *
+ * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32npt` for a 3D tensor
+ * with dimensions `[3,3,4]` that is non-contiguous, is permuted, and transposed.
+ */
+template <typename OutputStream>
+void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os) {
+    ggml_hsa_output_tensor_shape(tensor, os);
+
+    os << ggml_type_name(tensor->type);
+
+    // modifiers
+    if (!ggml_is_contiguous(tensor)) {
+        os << 'n';
+    }
+    if (ggml_is_permuted(tensor)) {
+        os << 'p';
+    }
+    if (ggml_is_transposed(tensor)) {
+        os << 't';
+    }
+}
