@@ -32,41 +32,6 @@ static const std::string_view pdi_file_suffix = ".pdi";
 static const std::string_view inst_file_suffix = "_insts.bin";
 
 /**
- * @brief Creates a string representation of the tensor.
- *
- * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32npt` for a 3D tensor
- * with dimensions `[3,3,4]` that is non-contiguous, is permuted and transposed.
- */
-template <typename OutputStream>
-void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os) {
-    // dimensions
-    int max_dim = GGML_MAX_DIMS - 1;
-    for (; max_dim > 0; --max_dim) {
-        if (tensor->ne[max_dim] > 1) {
-            break;
-        }
-    }
-    os << tensor->ne[0];
-    for (int i = 1; i <= max_dim; ++i) {
-        os << 'x' << tensor->ne[i];
-    }
-
-    // output datatype
-    os << ggml_type_name(tensor->type);
-
-    // modifiers
-    if (!ggml_is_contiguous(tensor)) {
-        os << 'n';
-    }
-    if (ggml_is_permuted(tensor)) {
-        os << 'p';
-    }
-    if (ggml_is_transposed(tensor)) {
-        os << 't';
-    }
-}
-
-/**
  * @brief Creates a kernel name for the operation in tensor @p tensor.
  */
 static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
