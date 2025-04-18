@@ -93,49 +93,33 @@ static bool ggml_hsa_is_file(const fs::path & p) {
 }
 
 /**
- * @brief Returns the paths for PDI and instructions files for the kernel of @p tensor.
- */
-static ggml_status ggml_hsa_create_kernel_paths(const fs::path & kernel_dir,
-                                                const std::string & device_name,
-                                                const std::string & kernel_name,
-                                                fs::path & pdi_path,
-                                                fs::path & insts_path) {
-    const auto partial_path = kernel_dir / device_name / kernel_name;
-
-    pdi_path = partial_path;
-    pdi_path += pdi_file_suffix;
-    if (!ggml_hsa_is_file(pdi_path)) {
-        GGML_LOG_WARN("%s: No PDI file found for kernel %s in %s\n", __func__, kernel_name.c_str(),
-                      pdi_path.c_str());
-        return GGML_STATUS_FAILED;
-    }
-
-    insts_path = partial_path;
-    insts_path += inst_file_suffix;
-    if (!ggml_hsa_is_file(insts_path)) {
-        GGML_LOG_WARN("%s: No insts file found for kernel %s in %s\n", __func__,
-                      kernel_name.c_str(), insts_path.c_str());
-        return GGML_STATUS_FAILED;
-    }
-
-    return GGML_STATUS_SUCCESS;
-}
-
-/**
  * @brief Searches all directories for the kernel.
  */
-static ggml_status ggml_hsa_find_kernel(const std::string & device_name,
-                                        const std::string & kernel_name,
-                                        fs::path & pdi_path,
-                                        fs::path & insts_path) {
-    auto status = ggml_hsa_create_kernel_paths(system_kernel_dir, device_name, kernel_name,
-                                               pdi_path, insts_path);
-    if (status == GGML_STATUS_SUCCESS) {
-        return status;
+static bool ggml_hsa_find_kernel(const std::string & device_name,
+                                 const std::string & kernel_name,
+                                 fs::path & pdi_path,
+                                 fs::path & insts_path) {
+    const auto partial_path = fs::path(device_name).append(kernel_name);
+    const auto partial_pdi_path = fs::path(partial_path).concat(pdi_file_suffix);
+    const auto partial_insts_path = fs::path(partial_path).concat(inst_file_suffix);
+
+    auto tmp_pdi_path = system_kernel_dir / partial_pdi_path;
+    auto tmp_insts_path = system_kernel_dir / partial_insts_path;
+    if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
+        pdi_path = std::move(tmp_pdi_path);
+        insts_path = std::move(tmp_insts_path);
+        return true;
     }
 
-    return ggml_hsa_create_kernel_paths(user_kernel_dir, device_name, kernel_name, pdi_path,
-                                        insts_path);
+    tmp_pdi_path = user_kernel_dir / partial_pdi_path;
+    tmp_insts_path = user_kernel_dir / partial_insts_path;
+    if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
+        pdi_path = std::move(tmp_pdi_path);
+        insts_path = std::move(tmp_insts_path);
+        return true;
+    }
+
+    return false;
 }
 
 /**
@@ -143,7 +127,7 @@ static ggml_status ggml_hsa_find_kernel(const std::string & device_name,
  */
 static ggml_status
 ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & path, ggml_hsa_pdi_buffer & buffer) {
-    std::ifstream is(path.string(), std::ios::binary | std::ios::ate | std::ios::in);
+    std::ifstream is(path, std::ios::binary | std::ios::ate | std::ios::in);
     if (is.fail()) {
         GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, path.c_str());
         return GGML_STATUS_FAILED;
@@ -174,7 +158,7 @@ ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & path, ggml_hsa_pd
 static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
                                        const fs::path & path,
                                        ggml_hsa_insts_buffer & buffer) {
-    std::ifstream is(path.string(), std::ios::binary | std::ios::ate | std::ios::in);
+    std::ifstream is(path, std::ios::binary | std::ios::ate | std::ios::in);
     if (is.fail()) {
         GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, path.c_str());
         return GGML_STATUS_FAILED;
@@ -215,8 +199,7 @@ bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
     // check if the kernel exists as a file
     fs::path pdi_path;
     fs::path insts_path;
-    return ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path) ==
-           GGML_STATUS_SUCCESS;
+    return ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path);
 }
 
 ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx,
@@ -242,9 +225,8 @@ ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx,
     // kernel not found, search the kernel directories
     fs::path pdi_path;
     fs::path insts_path;
-    if (auto status = ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path);
-        status != GGML_STATUS_SUCCESS) {
-        return status;
+    if (!ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        return GGML_STATUS_FAILED;
     }
 
     // load PDI and instructions

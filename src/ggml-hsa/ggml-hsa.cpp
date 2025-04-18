@@ -948,7 +948,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         if (status != GGML_STATUS_SUCCESS) {
             auto tensor_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
             if (!tensor_extra->emulated_tensor) {
-                GGML_LOG_WARN("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_name(node->op),
+                GGML_LOG_INFO("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_name(node->op),
                               node->name);
                 tensor_extra->emulated_tensor =
                     std::make_unique<ggml_backend_hsa_emulated_tensor>(ctx, node);
