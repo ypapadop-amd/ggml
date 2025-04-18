@@ -184,9 +184,9 @@ struct ggml_backend_hsa_context {
     ggml_backend_hsa_context & operator=(ggml_backend_hsa_context &&) = delete;
 
     /**
-     * @brief Destroys all loaded AIE kernels and frees the used memory.
+     * @brief Destroys all loaded kernels and frees the used memory.
      */
-    void destroy_aie_kernels();
+    void destroy_kernels();
 
     /**
      * @brief Frees all memory associated with pending packets.
