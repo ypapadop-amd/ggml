@@ -1157,7 +1157,15 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             supported = true;
             break;
         default :
-            supported = ggml_hsa_kernel_exists(ggml_hsa_get_device_info(dev), tensor);
+            // check if the kernel is cached at the tensor level and if not, check if the kernel
+            // files exist
+            if (auto tensor_extra =
+                    static_cast<const ggml_backend_hsa_tensor_extra *>(tensor->extra);
+                (tensor->extra != nullptr) && tensor_extra->kernel.is_valid()) {
+                supported = true;
+            } else {
+                supported = ggml_hsa_kernel_exists(ggml_hsa_get_device_info(dev), tensor);
+            }
             break;
     }
 
@@ -1167,6 +1175,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
         supported = ggml_backend_dev_supports_op(cpu_dev, tensor);
     }
 #endif
+
     return supported;
 } catch (const std::exception & ex) {
     GGML_LOG_ERROR("%s: Could not check operation (%s)\n", __func__, ex.what());

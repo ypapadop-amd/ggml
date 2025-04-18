@@ -206,14 +206,6 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
 
 bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
                             const ggml_tensor * tensor) {
-    // check if the kernel is cached at the tensor level
-    if (auto tensor_extra = static_cast<const ggml_backend_hsa_tensor_extra *>(tensor->extra);
-        tensor->extra != nullptr) {
-        if (tensor_extra->kernel.is_valid()) {
-            return true;
-        }
-    }
-
     // generate kernel name
     std::string kernel_name;
     if (ggml_hsa_create_kernel_name(tensor, kernel_name) != GGML_STATUS_SUCCESS) {
