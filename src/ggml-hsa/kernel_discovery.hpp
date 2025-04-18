@@ -4,18 +4,19 @@
 #include "ggml.h"
 
 /**
- * @brief Returns if the kernel exists.
+ * @brief Returns if the kernel exists for the device and tensor.
  *
+ * @param dev_info device to load a kernel for
  * @param tensor tensor to load a kernel for
  */
-bool ggml_hsa_aie_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
-                                const ggml_tensor * tensor);
+bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
+                            const ggml_tensor * tensor);
 
 /**
- * @brief Finds the AIE agent kernel for the tensor's operation.
+ * @brief Finds the AIE kernel for the tensor's operation.
  *
- * This function will attempt to load the kernel if not found in @ref
- * ggml_backend_hsa_context::aie_kernels. The kernel is cached in a
+ * This function will attempt to load the kernel if not found in
+ * @ref ggml_backend_hsa_context::aie_kernels. The kernel is cached in a
  * data structure in the `extra` member of @ref ggml_tensor.
  *
  * @param ctx backend context
