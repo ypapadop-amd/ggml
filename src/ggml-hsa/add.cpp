@@ -26,8 +26,7 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0,
                                                    reinterpret_cast<void **>(&cmd_payload));
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: Could not allocate hsa_amd_aie_ert_start_kernel_data_t (%d)\n",
-                       __func__, status);
+        GGML_LOG_ERROR("%s: Could not allocate space for the packet (%d)\n", __func__, status);
         return GGML_STATUS_FAILED;
     }
     cmd_payload->pdi_addr = kernel.pdi.data; // PDI to use with this command
