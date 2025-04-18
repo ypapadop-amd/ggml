@@ -266,7 +266,7 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
 }
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
-    destroy_aie_kernels();
+    destroy_kernels();
     HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
     HSA_CHECK_ABORT(hsa_queue_destroy(queue));
 #ifdef GGML_HSA_CPU_FALLBACK
@@ -275,7 +275,7 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
 #endif
 }
 
-void ggml_backend_hsa_context::destroy_aie_kernels() {
+void ggml_backend_hsa_context::destroy_kernels() {
     for (auto & t : aie_kernels) {
         ggml_hsa_destroy_aie_kernel(*this, t.second);
     }
@@ -948,7 +948,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         if (status != GGML_STATUS_SUCCESS) {
             auto tensor_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
             if (!tensor_extra->emulated_tensor) {
-                GGML_LOG_WARN("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_name(node->op),
+                GGML_LOG_INFO("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_name(node->op),
                               node->name);
                 tensor_extra->emulated_tensor =
                     std::make_unique<ggml_backend_hsa_emulated_tensor>(ctx, node);
@@ -1157,7 +1157,15 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             supported = true;
             break;
         default :
-            supported = ggml_hsa_aie_kernel_exists(ggml_hsa_get_device_info(dev), tensor);
+            // check if the kernel is cached at the tensor level and if not, check if the kernel
+            // files exist
+            if (auto tensor_extra =
+                    static_cast<const ggml_backend_hsa_tensor_extra *>(tensor->extra);
+                (tensor->extra != nullptr) && tensor_extra->kernel.is_valid()) {
+                supported = true;
+            } else {
+                supported = ggml_hsa_kernel_exists(ggml_hsa_get_device_info(dev), tensor);
+            }
             break;
     }
 
@@ -1167,6 +1175,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
         supported = ggml_backend_dev_supports_op(cpu_dev, tensor);
     }
 #endif
+
     return supported;
 } catch (const std::exception & ex) {
     GGML_LOG_ERROR("%s: Could not check operation (%s)\n", __func__, ex.what());
