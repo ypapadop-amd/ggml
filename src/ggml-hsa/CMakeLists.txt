@@ -27,6 +27,7 @@ set(GGML_KERNEL_SOURCES_HSA
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
     ggml-hsa.cpp
+    kernel_compiler.cpp
     kernel_discovery.cpp
     ${GGML_KERNEL_SOURCES_HSA}
     )
@@ -43,7 +44,7 @@ target_include_directories(ggml-hsa PRIVATE . ..)
 
 target_sources(ggml-hsa
     PRIVATE
-        common.hpp kernel_discovery.hpp kernels.hpp
+        common.hpp kernel_compiler.hpp kernel_discovery.hpp kernels.hpp
     )
 
 set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE CXX)
