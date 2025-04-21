@@ -7,9 +7,8 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#ifdef GGML_HSA_CPU_FALLBACK
+#include <filesystem>
 #include <memory>
-#endif
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -68,6 +67,11 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * add
     return {reinterpret_cast<uint64_t>(address) >> 32,
             reinterpret_cast<uint64_t>(address) & 0xFFFFFFFF};
 }
+
+/**
+ * @brief Returns the full path to this library.
+ */
+const std::filesystem::path & ggml_hsa_library_path();
 
 /**
  * @brief Device information.

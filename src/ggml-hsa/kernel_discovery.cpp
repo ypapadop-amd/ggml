@@ -8,11 +8,6 @@
 #include <sstream>
 #include <string_view>
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#include <dlfcn.h>
-
 #include "ggml-impl.h"
 #include "kernel_compiler.hpp"
 
@@ -26,16 +21,12 @@ static const std::string_view inst_file_suffix = "_insts.bin";
 
 // System (i.e., precompiled and installed) kernel directory.
 static const fs::path system_kernel_dir = [] {
-    // retrieve the kernel directory as a relative path from this shared library
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_kernel_exists), &info) == 0) {
-        GGML_ABORT("Could not retrieve kernel base directory\n");
+    // create the kernel directory as a relative path from this shared library
+    auto dir = ggml_hsa_library_path() / "iron-kernels";
+    if (!fs::is_directory(dir)) {
+        GGML_ABORT("Directory %s is not a valid path.\n", dir.c_str());
     }
-    auto library_path = fs::path{info.dli_fname}.parent_path() / "iron-kernels";
-    if (!fs::is_directory(library_path)) {
-        GGML_ABORT("Directory %s is not a valid path.\n", library_path.c_str());
-    }
-    return library_path;
+    return dir;
 }();
 
 // User (i.e., out-of-tree and JIT compiled) kernel base path.
