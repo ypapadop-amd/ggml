@@ -202,9 +202,9 @@ bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
     return ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path);
 }
 
-ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx,
-                                     const ggml_tensor * tensor,
-                                     ggml_hsa_aie_kernel & kernel) {
+ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
+                                       const ggml_tensor * tensor,
+                                       ggml_hsa_aie_kernel & kernel) {
     const auto & info = ggml_hsa_info();
     const auto & dev_info = info.devices[ctx.device];
 
