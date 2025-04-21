@@ -215,9 +215,15 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
         return status;
     }
 
+    // check if kernel is blocked
+    if (ctx.blocked_aie_kernels.find(kernel_name) != ctx.blocked_aie_kernels.end()) {
+        // kernel is blocked from being loaded
+        GGML_LOG_WARN("%s: kernel \"%s\" is blocked\n", __func__, kernel_name.c_str());
+        return GGML_STATUS_ABORTED;
+    }
+
     // find kernel in already loaded kernels
-    auto it = ctx.aie_kernels.find(kernel_name);
-    if (it != ctx.aie_kernels.end()) {
+    if (auto it = ctx.aie_kernels.find(kernel_name); it != ctx.aie_kernels.end()) {
         kernel = it->second;
         return GGML_STATUS_SUCCESS;
     }
@@ -226,6 +232,7 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
     fs::path pdi_path;
     fs::path insts_path;
     if (!ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        ctx.blocked_aie_kernels.insert(kernel_name);
         return GGML_STATUS_FAILED;
     }
 
@@ -233,12 +240,14 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
     ggml_hsa_aie_kernel tmp_kernel;
     if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, tmp_kernel.pdi);
         status != GGML_STATUS_SUCCESS) {
+        ctx.blocked_aie_kernels.insert(kernel_name);
         return status;
     }
 
     if (auto status =
             ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, insts_path, tmp_kernel.insts);
         status != GGML_STATUS_SUCCESS) {
+        ctx.blocked_aie_kernels.insert(kernel_name);
         return status;
     }
 

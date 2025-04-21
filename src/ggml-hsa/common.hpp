@@ -14,6 +14,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <hsa/hsa.h>
@@ -166,6 +167,7 @@ struct ggml_backend_hsa_context {
     hsa_queue_t * queue{};          ///< HSA queue.
     hsa_signal_t dispatch_signal{}; ///< Signal to wait dispatches.
     std::unordered_map<std::string, ggml_hsa_aie_kernel> aie_kernels; ///< AIE agent kernels.
+    std::unordered_set<std::string> blocked_aie_kernels; ///< Blocked AIE agent kernels.
     std::vector<void *> pending_payloads; ///< Packet payloads since last synchronization.
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
