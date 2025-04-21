@@ -142,7 +142,7 @@ ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & path, ggml_hsa_pd
             hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer.data));
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: Could not allocate %zu bytes\n", __func__, size);
-        return GGML_STATUS_FAILED;
+        return GGML_STATUS_ALLOC_FAILED;
     }
 
     is.read(reinterpret_cast<char *>(buffer.data), size);
@@ -173,7 +173,7 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
             hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer.data));
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: Could not allocate %zu bytes\n", __func__, size);
-        return GGML_STATUS_FAILED;
+        return GGML_STATUS_ALLOC_FAILED;
     }
 
     if (size % sizeof(std::uint32_t) != 0) {
