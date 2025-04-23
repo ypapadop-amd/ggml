@@ -35,9 +35,9 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     std::tie(cmd_payload->data[6], cmd_payload->data[5]) = ggml_hsa_addr_to_hilo(src0->data);
     std::tie(cmd_payload->data[8], cmd_payload->data[7]) = ggml_hsa_addr_to_hilo(src1->data);
     std::tie(cmd_payload->data[10], cmd_payload->data[9]) = ggml_hsa_addr_to_hilo(dst->data);
-    cmd_payload->data[11] = element_count * sizeof(std::uint32_t);
-    cmd_payload->data[12] = element_count * sizeof(std::uint32_t);
-    cmd_payload->data[13] = element_count * sizeof(std::uint32_t);
+    cmd_payload->data[11] = element_count * ggml_type_size(src0->type);
+    cmd_payload->data[12] = element_count * ggml_type_size(src1->type);
+    cmd_payload->data[13] = element_count * ggml_type_size(dst->type);
 
     ggml_hsa_dispatch_packet(ctx, cmd_payload, packet_dwords);
 
