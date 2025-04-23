@@ -59,8 +59,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         return GGML_STATUS_FAILED;
     }
 
-    //const auto & library_dir = ggml_hsa_library_path();
-    fs::path library_dir = "/home/ypapadop/workspace-raiders/ggml/src/ggml-hsa/";
+    const auto & library_dir = ggml_hsa_library_path();
     std::ostringstream oss;
     oss << "python3 " << (library_dir / "iron-kernels/compile.py");
     oss << " --output_directory=" << (output_path / dev_info.name);
