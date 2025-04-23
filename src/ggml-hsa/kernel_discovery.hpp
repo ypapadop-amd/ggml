@@ -6,8 +6,8 @@
 /**
  * @brief Returns if the kernel exists for the device and tensor.
  *
- * @param dev_info device information
- * @param tensor tensor to load a kernel for
+ * @param dev_info[in] device information
+ * @param tensor[in] tensor to load a kernel for
  */
 bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
                             const ggml_tensor * tensor);
@@ -23,9 +23,9 @@ bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
  *   -# JIT compile the kernel and store it to the user kernel directory.
  * If nothing works, an error message will be returned.
  *
- * @param ctx backend context
- * @param tensor tensor to find the kernel for
- * @param kernel kernel for the operation of @p tensor
+ * @param[in] ctx backend context
+ * @param[in] tensor tensor to find the kernel for
+ * @param[out] kernel kernel for the operation of @p tensor
  */
 ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
                                        const ggml_tensor * tensor,
@@ -34,7 +34,7 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
 /**
  * @brief Destroys the kernel.
  *
- * @param ctx backend context
- * @param kernel kernel to destroy
+ * @param[in] ctx backend context
+ * @param[in] kernel kernel to destroy
  */
 void ggml_hsa_destroy_aie_kernel(ggml_backend_hsa_context & ctx, ggml_hsa_aie_kernel & kernel);
