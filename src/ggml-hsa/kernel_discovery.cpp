@@ -184,11 +184,11 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
  * @brief Finds and if not found, compiles the kernel.
  */
 static ggml_status
-ggml_hsa_find_or_compiler_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                 const ggml_tensor * tensor,
-                                 const std::string & kernel_name,
-                                 fs::path & pdi_path,
-                                 fs::path & insts_path) {
+ggml_hsa_find_or_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                const ggml_tensor * tensor,
+                                const std::string & kernel_name,
+                                fs::path & pdi_path,
+                                fs::path & insts_path) {
     // find kernel files
     if (!ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
         // kernel files not found, compile kernel
@@ -217,7 +217,7 @@ bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
     // check if the kernel exists as a file; it will generate the kernel if it can JIT compiled
     fs::path pdi_path;
     fs::path insts_path;
-    return ggml_hsa_find_or_compiler_kernel(dev_info, tensor, kernel_name, pdi_path, insts_path) ==
+    return ggml_hsa_find_or_compile_kernel(dev_info, tensor, kernel_name, pdi_path, insts_path) ==
            GGML_STATUS_SUCCESS;
 }
 
@@ -251,7 +251,7 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
     fs::path pdi_path;
     fs::path insts_path;
     if (auto status =
-            ggml_hsa_find_or_compiler_kernel(dev_info, tensor, kernel_name, pdi_path, insts_path);
+            ggml_hsa_find_or_compile_kernel(dev_info, tensor, kernel_name, pdi_path, insts_path);
         status != GGML_STATUS_SUCCESS) {
         // kernel files not found and could not be compiler; block the kernel from further attempts
         ctx.blocked_aie_kernels.insert(kernel_name);
