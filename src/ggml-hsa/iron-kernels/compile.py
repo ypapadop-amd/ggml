@@ -23,8 +23,8 @@ def compile_mlir(
                 stdout=output_file,
                 stderr=sys.stderr,
             )
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"MLIR Compilation failed:\n{e}")
+        except subprocess.CalledProcessError as ex:
+            raise RuntimeError("MLIR Compilation failed") from ex
 
 
 def compile_pdi(
@@ -62,8 +62,8 @@ def compile_pdi(
             stdout=subprocess.DEVNULL,
             stderr=sys.stderr,
         )
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"aiecc Compilation failed:\n{e}")
+    except subprocess.CalledProcessError as ex:
+        raise RuntimeError("aiecc Compilation failed") from ex
 
 
 def file_path(string: str):
