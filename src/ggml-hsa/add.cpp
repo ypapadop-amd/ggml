@@ -19,7 +19,6 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     const ggml_tensor * src1 = tensor->src[1];
     ggml_tensor * dst = tensor;
     const std::size_t packet_dwords = 12;
-    const std::int64_t element_count = ggml_nelements(src0);
     hsa_amd_aie_ert_start_kernel_data_t * cmd_payload = nullptr;
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0,
                                                    reinterpret_cast<void **>(&cmd_payload));
@@ -35,9 +34,9 @@ ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     std::tie(cmd_payload->data[6], cmd_payload->data[5]) = ggml_hsa_addr_to_hilo(src0->data);
     std::tie(cmd_payload->data[8], cmd_payload->data[7]) = ggml_hsa_addr_to_hilo(src1->data);
     std::tie(cmd_payload->data[10], cmd_payload->data[9]) = ggml_hsa_addr_to_hilo(dst->data);
-    cmd_payload->data[11] = element_count * ggml_type_size(src0->type);
-    cmd_payload->data[12] = element_count * ggml_type_size(src1->type);
-    cmd_payload->data[13] = element_count * ggml_type_size(dst->type);
+    cmd_payload->data[11] = ggml_nbytes(src0);
+    cmd_payload->data[12] = ggml_nbytes(src1);
+    cmd_payload->data[13] = ggml_nbytes(dst);
 
     ggml_hsa_dispatch_packet(ctx, cmd_payload, packet_dwords);
 
