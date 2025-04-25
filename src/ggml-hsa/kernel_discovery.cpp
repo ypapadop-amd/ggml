@@ -95,22 +95,29 @@ static bool ggml_hsa_find_kernel(const std::string & device_name,
     const auto partial_pdi_path = fs::path(partial_path).concat(pdi_file_suffix);
     const auto partial_insts_path = fs::path(partial_path).concat(inst_file_suffix);
 
-    auto tmp_pdi_path = system_kernel_dir / partial_pdi_path;
-    auto tmp_insts_path = system_kernel_dir / partial_insts_path;
-    if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
-        pdi_path = std::move(tmp_pdi_path);
-        insts_path = std::move(tmp_insts_path);
-        return true;
+    {
+        // search in user kernel dir
+        auto tmp_pdi_path = user_kernel_dir / partial_pdi_path;
+        auto tmp_insts_path = user_kernel_dir / partial_insts_path;
+        if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
+            pdi_path = std::move(tmp_pdi_path);
+            insts_path = std::move(tmp_insts_path);
+            return true;
+        }
     }
 
-    tmp_pdi_path = user_kernel_dir / partial_pdi_path;
-    tmp_insts_path = user_kernel_dir / partial_insts_path;
-    if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
-        pdi_path = std::move(tmp_pdi_path);
-        insts_path = std::move(tmp_insts_path);
-        return true;
+    {
+        // search in system kernel dir
+        auto tmp_pdi_path = system_kernel_dir / partial_pdi_path;
+        auto tmp_insts_path = system_kernel_dir / partial_insts_path;
+        if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
+            pdi_path = std::move(tmp_pdi_path);
+            insts_path = std::move(tmp_insts_path);
+            return true;
+        }
     }
 
+    // kernel not found
     return false;
 }
 
@@ -189,21 +196,27 @@ ggml_hsa_find_or_compile_kernel(const ggml_hsa_device_info::device_info & dev_in
                                 const std::string & kernel_name,
                                 fs::path & pdi_path,
                                 fs::path & insts_path) {
-    // find kernel files
-    if (!ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
-        // kernel files not found, compile kernel
-        if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, user_kernel_dir);
-            status != GGML_STATUS_SUCCESS) {
-            return GGML_STATUS_FAILED;
-        }
-
-        // find kernel files again
-        if (!ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
-            return GGML_STATUS_FAILED;
-        }
+    // search for kernel files
+    if (ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        return GGML_STATUS_SUCCESS;
     }
 
-    return GGML_STATUS_SUCCESS;
+    // kernel files not found, compile kernel
+    if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, user_kernel_dir);
+        status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
+
+    // search for kernel files after compilation
+    if (ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        return GGML_STATUS_SUCCESS;
+    }
+
+    if (ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        return GGML_STATUS_SUCCESS;
+    }
+
+    return GGML_STATUS_ABORTED;
 }
 
 bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
