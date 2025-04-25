@@ -127,30 +127,31 @@ function(add_aie_iron_kernel TARGET_NAME)
         )
 endfunction()
 
-# copy kernel sources and helper function to build and install directories
-set(IRON_KERNEL_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/add.py
-    ${CMAKE_CURRENT_SOURCE_DIR}/compile.py
-    ${CMAKE_CURRENT_SOURCE_DIR}/ggml_hsa_common.py
-    ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
-    ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
-    )
+if (GGML_HSA_JIT_COMPILE)
+    # copy kernel sources and helper function to build and install directories
+    set(IRON_KERNEL_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/add.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/compile.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/ggml_hsa_common.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
+        )
 
-copy_files_to_build(ggml-hsa
-    FILES
-        ${IRON_KERNEL_FILES}
-    DESTINATION
-        ${CMAKE_CURRENT_BINARY_DIR}
-    )
+    copy_files_to_build(ggml-hsa
+        FILES
+            ${IRON_KERNEL_FILES}
+        DESTINATION
+            ${CMAKE_CURRENT_BINARY_DIR}
+        )
 
-install(
-    FILES
-        ${IRON_KERNEL_FILES}
-    DESTINATION
-        lib/iron-kernels
-    )
-
+    install(
+        FILES
+            ${IRON_KERNEL_FILES}
+        DESTINATION
+            lib/iron-kernels
+        )
+endif ()
 
 #
 # Pregenerated kernels

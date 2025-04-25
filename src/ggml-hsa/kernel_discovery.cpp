@@ -9,7 +9,9 @@
 #include <string_view>
 
 #include "ggml-impl.h"
+#ifdef GGML_HSA_JIT_COMPILE
 #include "kernel_compiler.hpp"
+#endif
 
 namespace fs = std::filesystem;
 
@@ -201,6 +203,7 @@ ggml_hsa_find_or_compile_kernel(const ggml_hsa_device_info::device_info & dev_in
         return GGML_STATUS_SUCCESS;
     }
 
+#ifdef GGML_HSA_JIT_COMPILE
     // kernel files not found, compile kernel
     if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, user_kernel_dir);
         status != GGML_STATUS_SUCCESS) {
@@ -211,10 +214,9 @@ ggml_hsa_find_or_compile_kernel(const ggml_hsa_device_info::device_info & dev_in
     if (ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
         return GGML_STATUS_SUCCESS;
     }
-
-    if (ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
-        return GGML_STATUS_SUCCESS;
-    }
+#else
+    GGML_UNUSED(tensor);
+#endif
 
     return GGML_STATUS_ABORTED;
 }

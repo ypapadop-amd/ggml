@@ -17,6 +17,7 @@ endif()
 
 find_package(hsa-runtime64 1.0 REQUIRED)
 
+option(GGML_HSA_JIT_COMPILE "ggml: allow JIT compilation of kernels" ON)
 option(GGML_HSA_CPU_FALLBACK "ggml: use fallback to CPU if HSA kernel not implemented" OFF)
 
 set(GGML_KERNEL_SOURCES_HSA
@@ -27,10 +28,13 @@ set(GGML_KERNEL_SOURCES_HSA
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
     ggml-hsa.cpp
-    kernel_compiler.cpp
     kernel_discovery.cpp
     ${GGML_KERNEL_SOURCES_HSA}
     )
+
+if (GGML_HSA_JIT_COMPILE)
+    set(GGML_SOURCES_HSA kernel_compiler.cpp ${GGML_SOURCES_HSA})
+endif ()
 
 ggml_add_backend_library(ggml-hsa
                          ${GGML_HEADERS_HSA}
@@ -44,10 +48,17 @@ target_include_directories(ggml-hsa PRIVATE . ..)
 
 target_sources(ggml-hsa
     PRIVATE
-        common.hpp kernel_compiler.hpp kernel_discovery.hpp kernels.hpp
+        common.hpp kernel_discovery.hpp kernels.hpp
     )
 
-set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE CXX)
+if (GGML_HSA_JIT_COMPILE)
+    target_sources(ggml-hsa
+        PRIVATE
+            kernel_compiler.hpp
+        )
+    target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_JIT_COMPILE)
+endif ()
+
 
 if (GGML_HSA_CPU_FALLBACK)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_CPU_FALLBACK)
