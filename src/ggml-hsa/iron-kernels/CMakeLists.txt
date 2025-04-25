@@ -4,6 +4,39 @@ find_package(Python REQUIRED COMPONENTS Interpreter)
 find_package(Peano REQUIRED)
 find_package(MLIR-AIE REQUIRED)
 
+# Copies files to build directory
+#
+# Arguments:
+#     TARGET_NAME (string): target
+#     DESTINATION (string): destination directory
+#     FILES (string): files to copy
+#
+function(copy_files_to_build TARGET_NAME)
+    set(oneValueArgs DESTINATION)
+    set(multiValueArgs FILES)
+
+    cmake_parse_arguments(PARSE_ARGV 0 arg
+        "" "${oneValueArgs}" "${multiValueArgs}")
+
+    foreach(FILE IN LISTS arg_FILES)
+        get_filename_component(FILE_NAME "${FILE}" NAME)
+        set(DESTINATION_FILE "${arg_DESTINATION}/${FILE_NAME}")
+
+        add_custom_command(
+            OUTPUT ${DESTINATION_FILE}
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FILE} ${DESTINATION_FILE}
+            DEPENDS ${FILE}
+            COMMENT "Copying ${FILE} to build directory ${arg_DESTINATION}"
+            )
+
+        list(APPEND COPIED_FILES "${DESTINATION_FILE}")
+    endforeach()
+
+    add_custom_target(copy-files ALL DEPENDS ${COPIED_FILES})
+    add_dependencies(${TARGET_NAME} copy-files)
+endfunction()
+
+
 # Compile an AIE kernel using IRON.
 #
 # This function generates PDI and insts files that are set as dependencies to `TARGET`.
@@ -19,12 +52,11 @@ find_package(MLIR-AIE REQUIRED)
 #     PEANO_COMPILE_ARGS (string): Peano compilation flags
 #
 function(add_aie_iron_kernel TARGET_NAME)
-    set(options)
     set(oneValueArgs KERNEL_NAME SOURCE DEVICE PEANO_SOURCE PEANO_OUTPUT_FILE)
     set(multiValueArgs KERNEL_ARGS PEANO_COMPILE_ARGS)
 
     cmake_parse_arguments(PARSE_ARGV 0 arg
-        "${options}" "${oneValueArgs}" "${multiValueArgs}")
+        "" "${oneValueArgs}" "${multiValueArgs}")
 
     set(OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/${arg_DEVICE}")
     set(MLIR_OUTPUT "${OUTPUT_DIR}/${arg_KERNEL_NAME}.mlir")
@@ -41,7 +73,7 @@ function(add_aie_iron_kernel TARGET_NAME)
         WORKING_DIRECTORY ${OUTPUT_DIR}
         COMMENT "Generating AIE MLIR file for ${arg_KERNEL_NAME}"
         VERBATIM
-    )
+        )
 
     set(MLIR_AIE_DEPS ${MLIR_OUTPUT})
     if (DEFINED arg_PEANO_SOURCE)
@@ -63,7 +95,7 @@ function(add_aie_iron_kernel TARGET_NAME)
             WORKING_DIRECTORY ${OUTPUT_DIR}
             COMMENT "Compiling ${arg_PEANO_SOURCE} for ${arg_KERNEL_NAME}"
             VERBATIM
-        )
+            )
 
         list(APPEND MLIR_AIE_DEPS ${PEANO_OUTPUT})
     endif()
@@ -80,7 +112,7 @@ function(add_aie_iron_kernel TARGET_NAME)
         WORKING_DIRECTORY ${OUTPUT_DIR}
         COMMENT "Generating PDI for ${arg_KERNEL_NAME}"
         VERBATIM
-    )
+        )
 
     add_custom_target(ggml_hsa_kernel_${arg_KERNEL_NAME} ALL DEPENDS ${PDI_OUTPUT} ${INSTS_OUTPUT})
     add_dependencies(${TARGET_NAME} ggml_hsa_kernel_${arg_KERNEL_NAME})
@@ -92,8 +124,37 @@ function(add_aie_iron_kernel TARGET_NAME)
             ${INSTS_OUTPUT}
         DESTINATION
             lib/iron-kernels/${arg_DEVICE}
-    )
+        )
 endfunction()
+
+if (GGML_HSA_JIT_COMPILE)
+    # copy kernel sources and helper function to build and install directories
+    set(IRON_KERNEL_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/add.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/compile.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/ggml_hsa_common.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
+        )
+
+    copy_files_to_build(ggml-hsa
+        FILES
+            ${IRON_KERNEL_FILES}
+        DESTINATION
+            ${CMAKE_CURRENT_BINARY_DIR}
+        )
+
+    install(
+        FILES
+            ${IRON_KERNEL_FILES}
+        DESTINATION
+            lib/iron-kernels
+        )
+endif ()
+
+#
+# Pregenerated kernels
 
 add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
@@ -104,7 +165,7 @@ add_aie_iron_kernel(ggml-hsa
         aie2
     KERNEL_ARGS
         --dev aie2 --dtype i32 --dims 256
-)
+    )
 
 add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
@@ -115,7 +176,7 @@ add_aie_iron_kernel(ggml-hsa
         aie2
     KERNEL_ARGS
         --dev aie2 --dtype f32 --dims 256
-)
+    )
 
 add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
@@ -126,7 +187,7 @@ add_aie_iron_kernel(ggml-hsa
         aie2
     KERNEL_ARGS
         --dev aie2 --dtype f32 --dims 768
-)
+    )
 
 add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
@@ -143,4 +204,4 @@ add_aie_iron_kernel(ggml-hsa
         "mm_8x8x8.o"
     PEANO_COMPILE_ARGS
         i16_i16_ONLY DIM_M=8 DIM_K=8 DIM_N=8
-)
+    )
