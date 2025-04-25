@@ -51,7 +51,7 @@ set_source_files_properties(${GGML_SOURCES_ROCM} PROPERTIES LANGUAGE CXX)
 
 if (GGML_HSA_CPU_FALLBACK)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_CPU_FALLBACK)
-    target_link_libraries(ggml-hsa PRIVATE ggml-base ${GGML_CPU_NAME})
+    target_link_libraries(ggml-hsa PRIVATE ${GGML_CPU_NAME})
 endif ()
 
 add_compile_definitions(GGML_USE_HSA)
