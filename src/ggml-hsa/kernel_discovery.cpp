@@ -8,12 +8,10 @@
 #include <sstream>
 #include <string_view>
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#include <dlfcn.h>
-
 #include "ggml-impl.h"
+#ifdef GGML_HSA_JIT_COMPILE
+#include "kernel_compiler.hpp"
+#endif
 
 namespace fs = std::filesystem;
 
@@ -25,16 +23,12 @@ static const std::string_view inst_file_suffix = "_insts.bin";
 
 // System (i.e., precompiled and installed) kernel directory.
 static const fs::path system_kernel_dir = [] {
-    // retrieve the kernel directory as a relative path from this shared library
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_kernel_exists), &info) == 0) {
-        GGML_ABORT("Could not retrieve kernel base directory\n");
+    // create the kernel directory as a relative path from this shared library
+    auto dir = ggml_hsa_library_path() / "iron-kernels";
+    if (!fs::is_directory(dir)) {
+        GGML_ABORT("Directory %s is not a valid path.\n", dir.c_str());
     }
-    auto library_path = fs::path{info.dli_fname}.parent_path() / "iron-kernels";
-    if (!fs::is_directory(library_path)) {
-        GGML_ABORT("Directory %s is not a valid path.\n", library_path.c_str());
-    }
-    return library_path;
+    return dir;
 }();
 
 // User (i.e., out-of-tree and JIT compiled) kernel base path.
@@ -103,22 +97,29 @@ static bool ggml_hsa_find_kernel(const std::string & device_name,
     const auto partial_pdi_path = fs::path(partial_path).concat(pdi_file_suffix);
     const auto partial_insts_path = fs::path(partial_path).concat(inst_file_suffix);
 
-    auto tmp_pdi_path = system_kernel_dir / partial_pdi_path;
-    auto tmp_insts_path = system_kernel_dir / partial_insts_path;
-    if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
-        pdi_path = std::move(tmp_pdi_path);
-        insts_path = std::move(tmp_insts_path);
-        return true;
+    {
+        // search in user kernel dir
+        auto tmp_pdi_path = user_kernel_dir / partial_pdi_path;
+        auto tmp_insts_path = user_kernel_dir / partial_insts_path;
+        if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
+            pdi_path = std::move(tmp_pdi_path);
+            insts_path = std::move(tmp_insts_path);
+            return true;
+        }
     }
 
-    tmp_pdi_path = user_kernel_dir / partial_pdi_path;
-    tmp_insts_path = user_kernel_dir / partial_insts_path;
-    if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
-        pdi_path = std::move(tmp_pdi_path);
-        insts_path = std::move(tmp_insts_path);
-        return true;
+    {
+        // search in system kernel dir
+        auto tmp_pdi_path = system_kernel_dir / partial_pdi_path;
+        auto tmp_insts_path = system_kernel_dir / partial_insts_path;
+        if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
+            pdi_path = std::move(tmp_pdi_path);
+            insts_path = std::move(tmp_insts_path);
+            return true;
+        }
     }
 
+    // kernel not found
     return false;
 }
 
@@ -188,6 +189,38 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
     return GGML_STATUS_SUCCESS;
 }
 
+/**
+ * @brief Finds and if not found, compiles the kernel.
+ */
+static ggml_status
+ggml_hsa_find_or_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                const ggml_tensor * tensor,
+                                const std::string & kernel_name,
+                                fs::path & pdi_path,
+                                fs::path & insts_path) {
+    // search for kernel files
+    if (ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        return GGML_STATUS_SUCCESS;
+    }
+
+#ifdef GGML_HSA_JIT_COMPILE
+    // kernel files not found, compile kernel
+    if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, user_kernel_dir);
+        status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
+
+    // search for kernel files after compilation
+    if (ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        return GGML_STATUS_SUCCESS;
+    }
+#else
+    GGML_UNUSED(tensor);
+#endif
+
+    return GGML_STATUS_ABORTED;
+}
+
 bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
                             const ggml_tensor * tensor) {
     // generate kernel name
@@ -196,18 +229,16 @@ bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
         return false;
     }
 
-    // check if the kernel exists as a file
+    // check if the kernel exists as a file; it will generate the kernel if it can JIT compiled
     fs::path pdi_path;
     fs::path insts_path;
-    return ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path);
+    return ggml_hsa_find_or_compile_kernel(dev_info, tensor, kernel_name, pdi_path, insts_path) ==
+           GGML_STATUS_SUCCESS;
 }
 
-ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx,
-                                     const ggml_tensor * tensor,
-                                     ggml_hsa_aie_kernel & kernel) {
-    const auto & info = ggml_hsa_info();
-    const auto & dev_info = info.devices[ctx.device];
-
+ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
+                                       const ggml_tensor * tensor,
+                                       ggml_hsa_aie_kernel & kernel) {
     // generate kernel name
     std::string kernel_name;
     if (auto status = ggml_hsa_create_kernel_name(tensor, kernel_name);
@@ -215,30 +246,45 @@ ggml_status ggml_hsa_find_aie_kernel(ggml_backend_hsa_context & ctx,
         return status;
     }
 
+    // check if kernel is blocked
+    if (ctx.blocked_aie_kernels.find(kernel_name) != ctx.blocked_aie_kernels.end()) {
+        // kernel is blocked from being loaded
+        GGML_LOG_WARN("%s: kernel \"%s\" is blocked\n", __func__, kernel_name.c_str());
+        return GGML_STATUS_ABORTED;
+    }
+
     // find kernel in already loaded kernels
-    auto it = ctx.aie_kernels.find(kernel_name);
-    if (it != ctx.aie_kernels.end()) {
+    if (auto it = ctx.aie_kernels.find(kernel_name); it != ctx.aie_kernels.end()) {
         kernel = it->second;
         return GGML_STATUS_SUCCESS;
     }
 
+    const auto & info = ggml_hsa_info();
+    const auto & dev_info = info.devices[ctx.device];
+
     // kernel not found, search the kernel directories
     fs::path pdi_path;
     fs::path insts_path;
-    if (!ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
-        return GGML_STATUS_FAILED;
+    if (auto status =
+            ggml_hsa_find_or_compile_kernel(dev_info, tensor, kernel_name, pdi_path, insts_path);
+        status != GGML_STATUS_SUCCESS) {
+        // kernel files not found and could not be compiler; block the kernel from further attempts
+        ctx.blocked_aie_kernels.insert(kernel_name);
+        return status;
     }
 
     // load PDI and instructions
     ggml_hsa_aie_kernel tmp_kernel;
     if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, tmp_kernel.pdi);
         status != GGML_STATUS_SUCCESS) {
+        ctx.blocked_aie_kernels.insert(kernel_name);
         return status;
     }
 
     if (auto status =
             ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, insts_path, tmp_kernel.insts);
         status != GGML_STATUS_SUCCESS) {
+        ctx.blocked_aie_kernels.insert(kernel_name);
         return status;
     }
 

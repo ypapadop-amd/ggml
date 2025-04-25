@@ -6,7 +6,7 @@
 ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
     if (!tensor_extra.kernel.is_valid()) {
-        if (auto status = ggml_hsa_find_aie_kernel(ctx, tensor, tensor_extra.kernel);
+        if (auto status = ggml_hsa_create_aie_kernel(ctx, tensor, tensor_extra.kernel);
             status != GGML_STATUS_SUCCESS) {
             return status;
         }

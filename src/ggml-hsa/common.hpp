@@ -7,13 +7,13 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#ifdef GGML_HSA_CPU_FALLBACK
+#include <filesystem>
 #include <memory>
-#endif
 #include <stdexcept>
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <hsa/hsa.h>
@@ -67,6 +67,11 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * add
     return {reinterpret_cast<uint64_t>(address) >> 32,
             reinterpret_cast<uint64_t>(address) & 0xFFFFFFFF};
 }
+
+/**
+ * @brief Returns the full path to this library.
+ */
+const std::filesystem::path & ggml_hsa_library_path();
 
 /**
  * @brief Device information.
@@ -166,6 +171,7 @@ struct ggml_backend_hsa_context {
     hsa_queue_t * queue{};          ///< HSA queue.
     hsa_signal_t dispatch_signal{}; ///< Signal to wait dispatches.
     std::unordered_map<std::string, ggml_hsa_aie_kernel> aie_kernels; ///< AIE agent kernels.
+    std::unordered_set<std::string> blocked_aie_kernels; ///< Blocked AIE agent kernels.
     std::vector<void *> pending_payloads; ///< Packet payloads since last synchronization.
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
