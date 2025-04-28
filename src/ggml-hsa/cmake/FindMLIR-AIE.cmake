@@ -1,3 +1,5 @@
+#  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+
 find_path(MLIR_AIE_INCLUDE_DIR
     NAMES
         version.h
