@@ -1,3 +1,5 @@
+#  Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+
 if (NOT EXISTS $ENV{ROCM_PATH})
     if (NOT EXISTS /opt/rocm)
         set(ROCM_PATH "/usr")
