@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+
 #include "ggml-hsa.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
