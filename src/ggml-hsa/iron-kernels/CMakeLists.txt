@@ -131,7 +131,7 @@ if (GGML_HSA_JIT_COMPILE)
     # copy kernel sources and helper function to build and install directories
     set(IRON_KERNEL_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/add.py
-        ${CMAKE_CURRENT_SOURCE_DIR}/compile.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/compiler.py
         ${CMAKE_CURRENT_SOURCE_DIR}/ggml_hsa_common.py
         ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
