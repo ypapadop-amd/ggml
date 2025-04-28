@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+
 #include "kernel_discovery.hpp"
 
 #include <algorithm>
