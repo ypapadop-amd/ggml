@@ -2,9 +2,9 @@
 
 find_path(MLIR_AIE_INCLUDE_DIR
     NAMES
-        version.h
+        aie/version.h
     PATHS
-        $ENV{MLIR_AIE_INSTALL_DIR}/include/aie
+        $ENV{MLIR_AIE_INSTALL_DIR}/include
     DOC
         "Path to MLIR-AIE headers"
     NO_DEFAULT_PATH
