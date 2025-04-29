@@ -82,7 +82,7 @@ function(add_aie_iron_kernel TARGET_NAME)
         set(PEANO_OUTPUT "${OUTPUT_DIR}/${arg_PEANO_OUTPUT_FILE}")
 
         set(PEANO_WARNING_FLAGS -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body)
-        set(PEANO_FLAGS -O2 -std=c++20 --target=aie2-none-unknown-elf ${PEANO_WARNING_FLAGS} -DNDEBUG -DBIT_WIDTH=8)
+        set(PEANO_FLAGS -O2 -std=c++20 --target=aie2-none-unknown-elf ${PEANO_WARNING_FLAGS} -DNDEBUG)
 
         set(PEANO_COMPILE_DEFS "")
         foreach(flag ${arg_PEANO_COMPILE_ARGS})
