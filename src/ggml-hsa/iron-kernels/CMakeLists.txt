@@ -2,9 +2,18 @@
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/../cmake)
 
+if (NOT EXISTS $ENV{MLIR_AIE_INSTALL_DIR})
+    message(FATAL_ERROR "MLIR_AIE_INSTALL_DIR is not set")
+else()
+    set(MLIR_AIE_DIR $ENV{MLIR_AIE_INSTALL_DIR})
+endif()
+list(APPEND CMAKE_MODULE_PATH ${MLIR_AIE_DIR}/usr/lib/cmake/aie)
+
 find_package(Python REQUIRED COMPONENTS Interpreter)
 find_package(Peano REQUIRED)
-find_package(MLIR-AIE REQUIRED)
+find_package(AIE REQUIRED)
+
+set(AIE_AIECC "${AIE_TOOLS_BINARY_DIR}/aiecc.py")
 
 # Copies files to build directory
 #
@@ -77,7 +86,7 @@ function(add_aie_iron_kernel TARGET_NAME)
         VERBATIM
         )
 
-    set(MLIR_AIE_DEPS ${MLIR_OUTPUT})
+    set(AIECC_DEPS ${MLIR_OUTPUT})
     if (DEFINED arg_PEANO_SOURCE)
         set(PEANO_OUTPUT "${OUTPUT_DIR}/${arg_PEANO_OUTPUT_FILE}")
 
@@ -91,7 +100,7 @@ function(add_aie_iron_kernel TARGET_NAME)
 
         add_custom_command(
             OUTPUT ${PEANO_OUTPUT}
-            COMMAND ${Peano_CXX} ${PEANO_FLAGS} ${PEANO_COMPILE_DEFS} -I ${MLIR_AIE_INCLUDE_DIR}
+            COMMAND ${Peano_CXX} ${PEANO_FLAGS} ${PEANO_COMPILE_DEFS} -I${AIE_INCLUDE_DIRS}
                     -c ${arg_PEANO_SOURCE} -o ${PEANO_OUTPUT}
             DEPENDS ${arg_PEANO_SOURCE}
             WORKING_DIRECTORY ${OUTPUT_DIR}
@@ -99,18 +108,18 @@ function(add_aie_iron_kernel TARGET_NAME)
             VERBATIM
             )
 
-        list(APPEND MLIR_AIE_DEPS ${PEANO_OUTPUT})
+        list(APPEND AIECC_DEPS ${PEANO_OUTPUT})
     endif()
 
-    set(MLIR_AIE_FLAGS
+    set(AIECC_FLAGS
         --alloc-scheme=basic-sequential --aie-generate-pdi --aie-generate-npu-insts
         --no-compile-host --no-xchesscc --no-xbridge --peano=${Peano_ROOT_DIR})
 
     add_custom_command(
         OUTPUT ${PDI_OUTPUT} ${INSTS_OUTPUT}
-        COMMAND ${Python_EXECUTABLE} ${MLIR_AIE_COMPILER} ${MLIR_AIE_FLAGS}
+        COMMAND ${Python_EXECUTABLE} ${AIE_AIECC} ${AIECC_FLAGS}
                 --pdi-name=${PDI_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
-        DEPENDS ${MLIR_AIE_DEPS}
+        DEPENDS ${AIECC_DEPS}
         WORKING_DIRECTORY ${OUTPUT_DIR}
         COMMENT "Generating PDI for ${arg_KERNEL_NAME}"
         VERBATIM
