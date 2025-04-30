@@ -6,6 +6,14 @@ import subprocess
 import os
 import sys
 
+peano_install_dir = os.getenv("PEANO_INSTALL_DIR")
+if not peano_install_dir:
+    raise RuntimeError("PEANO_INSTALL_DIR is not defined")
+
+peano_cxx = os.path.join(peano_install_dir, "bin/clang++")
+if not os.path.isfile(peano_cxx):
+    raise RuntimeError(f"Peano compile not found in {peano_install_dir}")
+
 
 def compile_mlir(
     source: str,
@@ -47,17 +55,10 @@ def compile_cc(
     """
     Compile a C++ file using Peano.
     """
-    peano_install_dir = os.getenv("PEANO_INSTALL_DIR")
-    if not peano_install_dir:
-        raise RuntimeError("PEANO_INSTALL_DIR is not defined")
-
-    peano_cxx = os.path.join(peano_install_dir, "bin/clang++")
-    if not os.path.isfile(peano_cxx):
-        raise RuntimeError(f"Peano compile not found in {peano_install_dir}")
-
     output_path = os.path.join(output_directory, object_filename)
     cmd = [
         sys.executable,
+        peano_cxx,
         source,
         "-std=c++20",
         "-Wno-parentheses",
@@ -105,6 +106,7 @@ def compile_pdi(
         "--no-compile-host",
         "--no-xchesscc",
         "--no-xbridge",
+        f"--peano={peano_install_dir}",
         f"--pdi-name={pdi_output_path}",
         f"--npu-insts-name={insts_output_path}",
         f"{mlir_path}",
