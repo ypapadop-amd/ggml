@@ -8,8 +8,8 @@ import sys
 
 
 def compile_mlir(
-    kernel_source: str,
-    kernel_compile_args: str,
+    source: str,
+    compile_args: str,
     mlir_filename: str,
     output_directory: str,
 ):
@@ -17,13 +17,13 @@ def compile_mlir(
     Compiles the IRON kernel source to MLIR.
 
     Parameters:
-        kernel_source (str): Kernel source file.
-        kernel_compile_args (str): Compile arguments.
+        source (str): Kernel source file.
+        compile_args (str): Kernel compilation arguments.
         mlir_filename (str): MLIR output file.
         output_directory (str): Output and working directory.
     """
     output_path = os.path.join(output_directory, mlir_filename)
-    cmd = [sys.executable, kernel_source] + list(kernel_compile_args.split())
+    cmd = [sys.executable, source] + list(compile_args.split())
     with open(output_path, "w", encoding="utf-8") as output_file:
         try:
             subprocess.run(
@@ -35,6 +35,50 @@ def compile_mlir(
             )
         except subprocess.CalledProcessError as ex:
             raise RuntimeError("MLIR Compilation failed") from ex
+
+
+def compile_cc(
+    source: str,
+    compile_args: str,
+    device: str,
+    object_filename: str,
+    output_directory: str,
+):
+    """
+    Compile a C++ file using Peano.
+    """
+    peano_install_dir = os.getenv("PEANO_INSTALL_DIR")
+    if not peano_install_dir:
+        raise RuntimeError("PEANO_INSTALL_DIR is not defined")
+
+    peano_cxx = os.path.join(peano_install_dir, "bin/clang++")
+    if not os.path.isfile(peano_cxx):
+        raise RuntimeError(f"Peano compile not found in {peano_install_dir}")
+
+    output_path = os.path.join(output_directory, object_filename)
+    cmd = [
+        sys.executable,
+        source,
+        "-std=c++20",
+        "-Wno-parentheses",
+        "-Wno-attributes",
+        "-Wno-macro-redefined",
+        "-Wno-empty-body",
+        "-O2",
+        "-DNDEBUG",
+        f"--target={device}-none-unknown-elf",
+    ] + list(compile_args.split())
+    with open(output_path, "w", encoding="utf-8") as output_file:
+        try:
+            subprocess.run(
+                cmd,
+                cwd=output_directory,
+                check=True,
+                stdout=output_file,
+                stderr=sys.stderr,
+            )
+        except subprocess.CalledProcessError as ex:
+            raise RuntimeError("Peano Compilation failed") from ex
 
 
 def compile_pdi(
@@ -102,8 +146,8 @@ def compile_kernel(
     os.makedirs(output_directory, exist_ok=True)
 
     compile_mlir(
-        kernel_source=kernel_source,
-        kernel_compile_args=kernel_compile_args,
+        source=kernel_source,
+        compile_args=kernel_compile_args,
         mlir_filename=mlir_filename,
         output_directory=output_directory,
     )
