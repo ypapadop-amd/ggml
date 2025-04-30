@@ -69,7 +69,7 @@ function(add_aie_iron_kernel TARGET_NAME)
     cmake_parse_arguments(PARSE_ARGV 0 arg
         "" "${oneValueArgs}" "${multiValueArgs}")
 
-    set(OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/${arg_DEVICE}")
+    set(OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/../kernels/${arg_DEVICE}")
     set(MLIR_OUTPUT "${OUTPUT_DIR}/${arg_KERNEL_NAME}.mlir")
     set(INSTS_OUTPUT "${OUTPUT_DIR}/${arg_KERNEL_NAME}_insts.bin")
     set(PDI_OUTPUT "${OUTPUT_DIR}/${arg_KERNEL_NAME}.pdi")
@@ -134,7 +134,7 @@ function(add_aie_iron_kernel TARGET_NAME)
             ${PDI_OUTPUT}
             ${INSTS_OUTPUT}
         DESTINATION
-            lib/iron_kernels/${arg_DEVICE}
+            lib/kernels/${arg_DEVICE}
         )
 endfunction()
 
