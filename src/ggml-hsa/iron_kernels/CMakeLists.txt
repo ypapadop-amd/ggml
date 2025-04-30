@@ -12,8 +12,6 @@ find_package(AIE REQUIRED)
 
 set(AIE_AIECC "${AIE_TOOLS_BINARY_DIR}/aiecc.py")
 
-include(ggml_hsa_utils)
-
 # Compile an AIE kernel using IRON.
 #
 # This function generates PDI and insts files that are set as dependencies to `TARGET`.
@@ -116,14 +114,14 @@ if (GGML_HSA_JIT_COMPILE)
         ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
         )
 
-    ggml_hsa_copy_files(ggml-hsa-copy-iron-kernel-files
+    ggml_hsa_copy_files(ggml_hsa_copy_iron_files
         FILES
             ${IRON_KERNEL_FILES}
         DESTINATION
             ${CMAKE_CURRENT_BINARY_DIR}
         )
 
-    add_dependencies(ggml-hsa ggml-hsa-copy-iron-kernel-files)
+    add_dependencies(ggml-hsa ggml_hsa_copy_iron_files)
 
     install(
         FILES
