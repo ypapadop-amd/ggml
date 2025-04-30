@@ -9,7 +9,6 @@ else()
 endif()
 list(APPEND CMAKE_MODULE_PATH ${MLIR_AIE_DIR}/usr/lib/cmake/aie)
 
-find_package(Python REQUIRED COMPONENTS Interpreter)
 find_package(Peano REQUIRED)
 find_package(AIE REQUIRED)
 
