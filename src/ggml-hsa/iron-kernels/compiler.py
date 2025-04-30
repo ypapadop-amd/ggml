@@ -45,10 +45,10 @@ def compile_mlir(
             raise RuntimeError("MLIR Compilation failed") from ex
 
 
-def compile_cc(
+def compile_single_core(
     source: str,
-    compile_args: str,
     device: str,
+    compile_args: str,
     object_filename: str,
     output_directory: str,
 ):
@@ -135,9 +135,11 @@ def file_path(string: str):
 
 def compile_kernel(
     name: str,
+    device: str,
     kernel_source: str,
     kernel_compile_args: str,
     output_directory: str,
+    single_core_source: str = None,
 ):
     """
     Compiles the kernel code to PDI and instruction files.
@@ -153,6 +155,15 @@ def compile_kernel(
         mlir_filename=mlir_filename,
         output_directory=output_directory,
     )
+
+    if single_core_source:
+        compile_single_core(
+            source=single_core_source,
+            device=device,
+            compile_args=None,
+            object_filename=None,
+            output_directory=output_directory,
+        )
 
     compile_pdi(
         mlir_filename=mlir_filename,
@@ -178,6 +189,12 @@ def main():
         help="Kernel name",
     )
     parser.add_argument(
+        "--device",
+        type=str,
+        required=True,
+        help="Device",
+    )
+    parser.add_argument(
         "--kernel_source",
         type=file_path,
         required=True,
@@ -200,6 +217,7 @@ def main():
 
     compile_kernel(
         name=args.name,
+        device=args.device,
         kernel_source=args.kernel_source,
         kernel_compile_args=args.kernel_compile_args,
         output_directory=args.output_directory,

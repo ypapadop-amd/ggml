@@ -88,7 +88,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     auto sys = py::module_::import("sys");
     sys.attr("path").attr("append")(library_dir.string());
     auto compiler = py::module_::import("iron-kernels.compiler");
-    compiler.attr("compile_kernel")("name"_a = kernel_name,
+    compiler.attr("compile_kernel")("name"_a = kernel_name, "device"_a = dev_info.name,
                                     "kernel_source"_a = kernel_source_path.string(),
                                     "kernel_compile_args"_a = kernel_compile_args,
                                     "output_directory"_a = output_directory.string());
