@@ -1,5 +1,10 @@
 #  Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
+list(APPEND CMAKE_MODULE_PATH
+    ${CMAKE_CURRENT_LIST_DIR}/cmake
+    ${CMAKE_CURRENT_LIST_DIR}/cmake/Modules
+    )
+
 if (NOT EXISTS $ENV{ROCM_PATH})
     if (NOT EXISTS /opt/rocm)
         set(ROCM_PATH "/usr")

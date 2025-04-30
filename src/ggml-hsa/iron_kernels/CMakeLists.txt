@@ -1,7 +1,5 @@
 #  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/../cmake ${CMAKE_CURRENT_LIST_DIR}/../cmake/Modules)
-
 if (NOT EXISTS $ENV{MLIR_AIE_INSTALL_DIR})
     message(FATAL_ERROR "MLIR_AIE_INSTALL_DIR is not set")
 else()
