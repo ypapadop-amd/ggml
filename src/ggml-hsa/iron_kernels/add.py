@@ -7,16 +7,16 @@
 # (c) Copyright 2024-2025 Advanced Micro Devices, Inc. or its affiliates
 
 import argparse
-import sys
 import numpy as np
 
-from ggml_hsa_common import (
+from utils import (
     create_device,
     create_dtype,
     create_dims,
     supported_devices,
     supported_dtypes,
 )
+
 from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
@@ -99,6 +99,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-else:
-    print("Not meant to be imported")
-    sys.exit(1)
