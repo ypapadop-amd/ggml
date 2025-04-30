@@ -134,7 +134,7 @@ function(add_aie_iron_kernel TARGET_NAME)
             ${PDI_OUTPUT}
             ${INSTS_OUTPUT}
         DESTINATION
-            lib/iron-kernels/${arg_DEVICE}
+            lib/iron_kernels/${arg_DEVICE}
         )
 endfunction()
 
@@ -160,7 +160,7 @@ if (GGML_HSA_JIT_COMPILE)
         FILES
             ${IRON_KERNEL_FILES}
         DESTINATION
-            lib/iron-kernels
+            lib/iron_kernels
         )
 endif ()
 
