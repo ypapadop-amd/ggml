@@ -1,6 +1,6 @@
 #  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/../cmake)
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/../cmake ${CMAKE_CURRENT_LIST_DIR}/../cmake/Modules)
 
 if (NOT EXISTS $ENV{MLIR_AIE_INSTALL_DIR})
     message(FATAL_ERROR "MLIR_AIE_INSTALL_DIR is not set")
@@ -14,38 +14,7 @@ find_package(AIE REQUIRED)
 
 set(AIE_AIECC "${AIE_TOOLS_BINARY_DIR}/aiecc.py")
 
-# Copies files to build directory
-#
-# Arguments:
-#     TARGET_NAME (string): target
-#     DESTINATION (string): destination directory
-#     FILES (string): files to copy
-#
-function(copy_files_to_build TARGET_NAME)
-    set(oneValueArgs DESTINATION)
-    set(multiValueArgs FILES)
-
-    cmake_parse_arguments(PARSE_ARGV 0 arg
-        "" "${oneValueArgs}" "${multiValueArgs}")
-
-    foreach(FILE IN LISTS arg_FILES)
-        get_filename_component(FILE_NAME "${FILE}" NAME)
-        set(DESTINATION_FILE "${arg_DESTINATION}/${FILE_NAME}")
-
-        add_custom_command(
-            OUTPUT ${DESTINATION_FILE}
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FILE} ${DESTINATION_FILE}
-            DEPENDS ${FILE}
-            COMMENT "Copying ${FILE} to build directory ${arg_DESTINATION}"
-            )
-
-        list(APPEND COPIED_FILES "${DESTINATION_FILE}")
-    endforeach()
-
-    add_custom_target(copy-files ALL DEPENDS ${COPIED_FILES})
-    add_dependencies(${TARGET_NAME} copy-files)
-endfunction()
-
+include(ggml_hsa_utils)
 
 # Compile an AIE kernel using IRON.
 #
@@ -149,12 +118,14 @@ if (GGML_HSA_JIT_COMPILE)
         ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
         )
 
-    copy_files_to_build(ggml-hsa
+    ggml_hsa_copy_files(ggml-hsa-copy-iron-kernel-files
         FILES
             ${IRON_KERNEL_FILES}
         DESTINATION
             ${CMAKE_CURRENT_BINARY_DIR}
         )
+
+    add_dependencies(ggml-hsa ggml-hsa-copy-iron-kernel-files)
 
     install(
         FILES
