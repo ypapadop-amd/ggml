@@ -87,11 +87,9 @@ static auto ggml_backend_hsa_kernel_jit_info = []() {
         "iron_kernels/mul_mat.py",
         [](const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor,
            std::ostream & os) {
-            os << "-M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 "
+            os << "--dev " << dev_info.name
+               << " -M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 "
                   "--b-col-maj 0";
-
-            os << "--dev " << dev_info.name << " --dtype " << ggml_type_name(tensor->type)
-               << " --dims " << ggml_nelements(tensor);
         },
         "iron_kernels/mm.cc",
         [](const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor,

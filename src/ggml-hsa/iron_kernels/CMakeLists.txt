@@ -179,7 +179,7 @@ add_aie_iron_kernel(ggml-hsa
     DEVICE
         aie2
     KERNEL_ARGS
-        "-M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 --b-col-maj 0"
+        "--dev aie2 -M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 --b-col-maj 0"
     PEANO_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
     PEANO_OUTPUT_FILE
