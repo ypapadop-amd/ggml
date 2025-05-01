@@ -11,7 +11,9 @@ import numpy as np
 from aie.iron.device import NPU1Col1
 from ml_dtypes import bfloat16
 
-supported_devices = ["aie2"]
+supported_devices = {
+    "aie2": NPU1Col1(),
+}
 
 supported_dtypes = {
     "bf16": bfloat16,
@@ -22,22 +24,58 @@ supported_dtypes = {
 }
 
 
-def create_device(device_name):
-    """Return the device from the given device name."""
-    if device_name == "aie2":
-        dev = NPU1Col1()
-    else:
-        raise ValueError(f"Device name {device_name} is unknown")
-    return dev
+def to_device(device: str):
+    """
+    Returns the supported device from the string.
+    """
+    return supported_devices[device]
 
 
-def create_dtype(dtype_name):
-    """Return the numpy datatype from the datatype name."""
-    return np.dtype[supported_dtypes[dtype_name]]
+def to_dtype(dtype: str):
+    """
+    Returns the supported datatype from the string.
+    """
+    return supported_dtypes[dtype]
 
 
-def create_dims(dims_str):
-    """Return a tuple of dimensions from the string."""
-    dims_str = dims_str.replace("(", "").replace(")", "")
-    dims_ints = map(int, dims_str.split(","))
-    return tuple(dims_ints)
+class TensorDesc:
+    """
+    Tensor description.
+
+    This class provides the tensor information, such as shape and datatype.
+    """
+
+    def __init__(self, shape: tuple, dtype):
+        self.shape = shape
+        self.dtype = dtype
+
+    def __str__(self):
+        return f"{str(self.shape)}/{str(self.dtype)}"
+
+    def numel(self):
+        """
+        Calculates the number of elements in the tensor.
+
+        Returns:
+            int: The total number of elements in the tensor.
+        """
+        return int(np.prod(self.shape))
+
+
+def to_tuple_of_ints(string: str):
+    """
+    Converts a string of the form (x,...) to a tuple of ints.
+    """
+    string = string.replace("(", "").replace(")", "").strip(",")
+    ints = map(int, string.split(","))
+    return tuple(ints)
+
+
+def to_tensor_desc(string: str) -> TensorDesc:
+    """
+    Converts a string of the form (x,...)/dtype to a TensorDesc object.
+    """
+    shape, dtype = string.split("/")
+    shape = to_tuple_of_ints(shape)
+    dtype = to_dtype(dtype)
+    return TensorDesc(shape=shape, dtype=dtype)

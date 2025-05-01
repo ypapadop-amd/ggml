@@ -1,19 +1,6 @@
 #  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-__all__ = [
-    "compile_kernel",
-    "create_device",
-    "create_dims",
-    "create_dtype",
-    "supported_devices",
-    "supported_dtypes",
-]
+__all__ = ["compile_kernel", "TensorDesc", "to_device", "to_dtype", "to_tensor_desc"]
 
 from .compiler import compile_kernel
-from .utils import (
-    create_device,
-    create_dims,
-    create_dtype,
-    supported_devices,
-    supported_dtypes,
-)
+from .utils import TensorDesc, to_device, to_dtype, to_tensor_desc

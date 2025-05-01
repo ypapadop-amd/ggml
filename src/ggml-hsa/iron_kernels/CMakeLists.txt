@@ -27,22 +27,24 @@ set(AIE_AIECC "${AIE_TOOLS_BINARY_DIR}/aiecc.py")
 #     PEANO_COMPILE_ARGS (string): Peano compilation flags
 #
 function(add_aie_iron_kernel TARGET_NAME)
-    set(oneValueArgs KERNEL_NAME SOURCE DEVICE PEANO_SOURCE PEANO_OUTPUT_FILE)
-    set(multiValueArgs KERNEL_ARGS PEANO_COMPILE_ARGS)
-
     cmake_parse_arguments(PARSE_ARGV 0 arg
-        "" "${oneValueArgs}" "${multiValueArgs}")
+        ""
+        "KERNEL_NAME;KERNEL_ARGS;SOURCE;DEVICE;PEANO_SOURCE;PEANO_OUTPUT_FILE"
+        "PEANO_COMPILE_ARGS"
+        )
 
     set(OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/../kernels/${arg_DEVICE}")
     set(MLIR_OUTPUT "${OUTPUT_DIR}/${arg_KERNEL_NAME}.mlir")
     set(INSTS_OUTPUT "${OUTPUT_DIR}/${arg_KERNEL_NAME}_insts.bin")
     set(PDI_OUTPUT "${OUTPUT_DIR}/${arg_KERNEL_NAME}.pdi")
+    string(REPLACE " " ";" KERNEL_ARGS ${arg_KERNEL_ARGS})
 
     file(MAKE_DIRECTORY ${OUTPUT_DIR})
 
+    # compile to MLIR
     add_custom_command(
         OUTPUT ${MLIR_OUTPUT}
-        COMMAND ${Python_EXECUTABLE} ${arg_SOURCE} ${arg_KERNEL_ARGS} > ${MLIR_OUTPUT}
+        COMMAND ${Python_EXECUTABLE} ${arg_SOURCE} ${KERNEL_ARGS} > ${MLIR_OUTPUT}
         DEPENDS ${arg_SOURCE}
         BYPRODUCTS ${OUTPUT_DIR}/${arg_KERNEL_NAME}.mlir.prj
         WORKING_DIRECTORY ${OUTPUT_DIR}
@@ -52,6 +54,7 @@ function(add_aie_iron_kernel TARGET_NAME)
 
     set(AIECC_DEPS ${MLIR_OUTPUT})
     if (DEFINED arg_PEANO_SOURCE)
+        # compile single-core solution
         set(PEANO_OUTPUT "${OUTPUT_DIR}/${arg_PEANO_OUTPUT_FILE}")
 
         set(PEANO_WARNING_FLAGS -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body)
@@ -75,10 +78,10 @@ function(add_aie_iron_kernel TARGET_NAME)
         list(APPEND AIECC_DEPS ${PEANO_OUTPUT})
     endif()
 
+    # compile full solution
     set(AIECC_FLAGS
         --alloc-scheme=basic-sequential --aie-generate-pdi --aie-generate-npu-insts
         --no-compile-host --no-xchesscc --no-xbridge --peano=${Peano_ROOT_DIR})
-
     add_custom_command(
         OUTPUT ${PDI_OUTPUT} ${INSTS_OUTPUT}
         COMMAND ${Python_EXECUTABLE} ${AIE_AIECC} ${AIECC_FLAGS}
@@ -104,6 +107,7 @@ endfunction()
 
 if (GGML_HSA_JIT_COMPILE)
     # copy kernel sources and helper function to build and install directories
+
     set(IRON_KERNEL_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
         ${CMAKE_CURRENT_SOURCE_DIR}/add.py
@@ -142,7 +146,7 @@ add_aie_iron_kernel(ggml-hsa
     DEVICE
         aie2
     KERNEL_ARGS
-        --dev aie2 --dtype i32 --dims 256
+        "--dev aie2 --tensors (256)/i32 (256)/i32 (256)/i32"
     )
 
 add_aie_iron_kernel(ggml-hsa
@@ -153,7 +157,7 @@ add_aie_iron_kernel(ggml-hsa
     DEVICE
         aie2
     KERNEL_ARGS
-        --dev aie2 --dtype f32 --dims 256
+        "--dev aie2 --tensors (256)/f32 (256)/f32 (256)/f32"
     )
 
 add_aie_iron_kernel(ggml-hsa
@@ -164,7 +168,7 @@ add_aie_iron_kernel(ggml-hsa
     DEVICE
         aie2
     KERNEL_ARGS
-        --dev aie2 --dtype f32 --dims 768
+        "--dev aie2 --tensors (768)/f32 (768)/f32 (768)/f32"
     )
 
 add_aie_iron_kernel(ggml-hsa
@@ -175,7 +179,7 @@ add_aie_iron_kernel(ggml-hsa
     DEVICE
         aie2
     KERNEL_ARGS
-        -M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 --b-col-maj 0
+        "-M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 --b-col-maj 0"
     PEANO_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
     PEANO_OUTPUT_FILE

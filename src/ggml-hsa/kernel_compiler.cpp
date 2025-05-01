@@ -51,6 +51,25 @@ struct ggml_hsa_aie_jit_kernel_info {
 };
 
 /**
+ * @brief Outputs the tensor description for use in IRON python kernel scripts.
+ */
+static void ggml_hsa_output_tensors(const ggml_tensor * tensor, std::ostream & os) {
+    for (int i = 0; i < GGML_MAX_SRC; ++i) {
+        const auto * src_tensor = tensor->src[i];
+        if (src_tensor == nullptr) {
+            break;
+        }
+        os << '(';
+        ggml_hsa_output_tensor_shape(src_tensor, os, ',');
+        os << ")/" << ggml_type_name(src_tensor->type) << ' ';
+    }
+
+    os << '(';
+    ggml_hsa_output_tensor_shape(tensor, os, ',');
+    os << ")/" << ggml_type_name(tensor->type) << ' ';
+}
+
+/**
  * @brief JIT compilation information for all operations.
  *
  * Operations that cannot be JIT compiled yet will have default constructed
@@ -58,23 +77,26 @@ struct ggml_hsa_aie_jit_kernel_info {
  */
 static auto ggml_backend_hsa_kernel_jit_info = []() {
     std::array<ggml_hsa_aie_jit_kernel_info, GGML_OP_COUNT> kernels = {};
-    kernels[GGML_OP_ADD] = {
-        "iron_kernels/add.py", [](const ggml_hsa_device_info::device_info & dev_info,
-                                  const ggml_tensor * tensor, std::ostream & os) {
+    kernels[GGML_OP_ADD] = {"iron_kernels/add.py",
+                            [](const ggml_hsa_device_info::device_info & dev_info,
+                               const ggml_tensor * tensor, std::ostream & os) {
+                                os << "--dev " << dev_info.name << " --tensors ";
+                                ggml_hsa_output_tensors(tensor, os);
+                            }};
+    kernels[GGML_OP_MUL_MAT] = {
+        "iron_kernels/mul_mat.py",
+        [](const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor,
+           std::ostream & os) {
+            os << "-M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 "
+                  "--b-col-maj 0";
+
             os << "--dev " << dev_info.name << " --dtype " << ggml_type_name(tensor->type)
                << " --dims " << ggml_nelements(tensor);
-        }};
-    kernels[GGML_OP_MUL_MAT] = {"iron_kernels/mul_mat.py",
-                                [](const ggml_hsa_device_info::device_info & dev_info,
-                                   const ggml_tensor * tensor, std::ostream & os) {
-                                    os << "--dev " << dev_info.name << " --dtype "
-                                       << ggml_type_name(tensor->type) << " --dims "
-                                       << ggml_nelements(tensor);
-                                },
-                                "iron_kernels/mm.cc",
-                                [](const ggml_hsa_device_info::device_info & dev_info,
-                                   const ggml_tensor * tensor, std::ostream & os) {},
-                                "mm_8x8x8.o"};
+        },
+        "iron_kernels/mm.cc",
+        [](const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor,
+           std::ostream & os) { os << "i16_i16_ONLY DIM_M=8 DIM_K=8 DIM_N=8"; },
+        "mm_8x8x8.o"};
     return kernels;
 }();
 
