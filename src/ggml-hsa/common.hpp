@@ -31,11 +31,11 @@ const char * ggml_hsa_get_status_string(hsa_status_t status);
 /**
  * @brief Prints an error message based on the status and aborts.
  *
- * @param stmt statement that caused the error
- * @param func function in which the error occurred
- * @param file file in which the error occurred
- * @param line line number where the error occurred
- * @param status error code
+ * @param[in] stmt statement that caused the error
+ * @param[in] func function in which the error occurred
+ * @param[in] file file in which the error occurred
+ * @param[in] line line number where the error occurred
+ * @param[in] status error code
  */
 [[noreturn]]
 void ggml_hsa_error(
@@ -69,6 +69,13 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * add
     return {reinterpret_cast<uint64_t>(address) >> 32,
             reinterpret_cast<uint64_t>(address) & 0xFFFFFFFF};
 }
+
+/**
+ * @brief Returns the number of dimensions of the tensor.
+ *
+ * @param[in] tensor tensor to find dimensions for
+ */
+int64_t ggml_hsa_ndims(const ggml_tensor * tensor);
 
 /**
  * @brief Returns the full path to this library.
@@ -209,9 +216,9 @@ struct ggml_backend_hsa_context {
  *
  * @note This function assumes ownership of @p payload.
  *
- * @param ctx backend context
- * @param payload packet payload
- * @param payload_size payload size in dwords
+ * @param[in] ctx backend context
+ * @param[in] payload packet payload
+ * @param[in] payload_size payload size in dwords
  */
 void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
                               hsa_amd_aie_ert_start_kernel_data_t * payload,
@@ -221,20 +228,17 @@ void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
  * @brief Creates a string representation of the tensor shape.
  *
  * The representation is of the form `3x3x4` for a 3D tensor with dimensions `[3,3,4]`.
+ *
+ * @param[in] tensor tensor to output shape for
+ * @param[out] os output stream
+ * @param[in] delim delimiter
  */
 template <typename OutputStream>
-void ggml_hsa_output_tensor_shape(const ggml_tensor * tensor, OutputStream & os) {
-    // find max dimensions
-    int max_dim = GGML_MAX_DIMS - 1;
-    for (; max_dim > 0; --max_dim) {
-        if (tensor->ne[max_dim] > 1) {
-            break;
-        }
-    }
-
+void ggml_hsa_output_tensor_shape(const ggml_tensor * tensor, OutputStream & os, char delim = 'x') {
+    const auto max_dim = ggml_hsa_ndims(tensor);
     os << tensor->ne[0];
     for (int i = 1; i <= max_dim; ++i) {
-        os << 'x' << tensor->ne[i];
+        os << delim << tensor->ne[i];
     }
 }
 
@@ -243,6 +247,9 @@ void ggml_hsa_output_tensor_shape(const ggml_tensor * tensor, OutputStream & os)
  *
  * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32npt` for a 3D tensor
  * with dimensions `[3,3,4]` that is non-contiguous, is permuted, and transposed.
+ *
+ * @param[in] tensor tensor to output
+ * @param[out] os output stream
  */
 template <typename OutputStream>
 void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os) {
