@@ -63,6 +63,18 @@ void ggml_hsa_error(
     GGML_ABORT("HSA error");
 }
 
+int64_t ggml_hsa_ndims(const ggml_tensor * tensor) {
+    // find max dimensions
+    int64_t max_dim = GGML_MAX_DIMS - 1;
+    for (; max_dim > 0; --max_dim) {
+        if (tensor->ne[max_dim] > 1) {
+            break;
+        }
+    }
+
+    return max_dim;
+}
+
 static const std::filesystem::path library_dir = [] {
     // retrieve the shared library path
     Dl_info info;
