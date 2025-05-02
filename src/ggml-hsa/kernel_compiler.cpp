@@ -77,21 +77,20 @@ static void ggml_hsa_output_tensors(const ggml_tensor * tensor, std::ostream & o
  */
 static auto ggml_backend_hsa_kernel_jit_info = []() {
     std::array<ggml_hsa_aie_jit_kernel_info, GGML_OP_COUNT> kernels = {};
-    kernels[GGML_OP_ADD] = {"iron_kernels/add.py",
-                            [](const ggml_hsa_device_info::device_info & dev_info,
-                               const ggml_tensor * tensor, std::ostream & os) {
+    kernels[GGML_OP_ADD] = {"add.py", [](const ggml_hsa_device_info::device_info & dev_info,
+                                         const ggml_tensor * tensor, std::ostream & os) {
                                 os << "--dev " << dev_info.name << " --tensors ";
                                 ggml_hsa_output_tensors(tensor, os);
                             }};
     kernels[GGML_OP_MUL_MAT] = {
-        "iron_kernels/mul_mat.py",
+        "mul_mat.py",
         [](const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor,
            std::ostream & os) {
             os << "--dev " << dev_info.name
                << " -M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 "
                   "--b-col-maj 0";
         },
-        "iron_kernels/mm.cc",
+        "mm.cc",
         [](const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor,
            std::ostream & os) { os << "i16_i16_ONLY DIM_M=8 DIM_K=8 DIM_N=8"; },
         "mm_8x8x8.o"};
@@ -129,7 +128,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     }
 
     const auto & library_dir = ggml_hsa_library_path();
-    const auto kernel_source_path = library_dir / kernel_jit_info.kernel_source;
+    const auto module_path = library_dir / "iron_kernels";
+    const auto kernel_source_path = module_path / kernel_jit_info.kernel_source;
     const auto kernel_compile_args =
         ggml_hsa_create_compile_args(dev_info, tensor, kernel_jit_info.kernel_args);
     const auto output_directory = output_path / dev_info.name;
@@ -137,8 +137,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     py::scoped_interpreter guard{};
     try {
         auto sys = py::module_::import("sys");
-        sys.attr("path").attr("append")(library_dir.string());
-        auto iron_kernels = py::module_::import("iron_kernels.compiler");
+        sys.attr("path").attr("append")(module_path.string());
+        auto iron_kernels = py::module_::import("compiler");
         auto compile_kernel = iron_kernels.attr("compile_kernel");
         if (!kernel_jit_info.has_single_core_source()) {
             compile_kernel("name"_a = kernel_name, "device"_a = dev_info.name,

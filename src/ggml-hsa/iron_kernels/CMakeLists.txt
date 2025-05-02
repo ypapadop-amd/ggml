@@ -1,5 +1,7 @@
 #  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
+include(ggml_hsa_utils)
+
 if (NOT EXISTS $ENV{MLIR_AIE_INSTALL_DIR})
     message(FATAL_ERROR "MLIR_AIE_INSTALL_DIR is not set")
 else()
