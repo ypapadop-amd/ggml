@@ -71,13 +71,6 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * add
 }
 
 /**
- * @brief Returns the number of dimensions of the tensor.
- *
- * @param[in] tensor tensor to find dimensions for
- */
-int64_t ggml_hsa_ndims(const ggml_tensor * tensor);
-
-/**
  * @brief Returns the full path to this library.
  */
 const std::filesystem::path & ggml_hsa_library_path();
@@ -235,9 +228,9 @@ void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
  */
 template <typename OutputStream>
 void ggml_hsa_output_tensor_shape(const ggml_tensor * tensor, OutputStream & os, char delim = 'x') {
-    const auto max_dim = ggml_hsa_ndims(tensor);
+    const auto ndims = ggml_n_dims(tensor);
     os << tensor->ne[0];
-    for (int i = 1; i <= max_dim; ++i) {
+    for (int i = 1; i < ndims; ++i) {
         os << delim << tensor->ne[i];
     }
 }
