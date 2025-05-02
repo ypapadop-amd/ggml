@@ -138,7 +138,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     try {
         auto sys = py::module_::import("sys");
         sys.attr("path").attr("append")(library_dir.string());
-        auto iron_kernels = py::module_::import("iron_kernels");
+        auto iron_kernels = py::module_::import("iron_kernels.compiler");
         auto compile_kernel = iron_kernels.attr("compile_kernel");
         if (!kernel_jit_info.has_single_core_source()) {
             compile_kernel("name"_a = kernel_name, "device"_a = dev_info.name,

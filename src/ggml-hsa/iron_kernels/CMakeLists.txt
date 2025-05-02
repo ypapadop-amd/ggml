@@ -106,15 +106,14 @@ function(add_aie_iron_kernel TARGET_NAME)
 endfunction()
 
 if (GGML_HSA_JIT_COMPILE)
+    add_subdirectory(compiler)
+
     # copy kernel sources and helper function to build and install directories
 
     set(IRON_KERNEL_FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
         ${CMAKE_CURRENT_SOURCE_DIR}/add.py
-        ${CMAKE_CURRENT_SOURCE_DIR}/compiler.py
         ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
-        ${CMAKE_CURRENT_SOURCE_DIR}/utils.py
         ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
         )
 

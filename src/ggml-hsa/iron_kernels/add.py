@@ -10,7 +10,7 @@ import argparse
 import numpy as np
 import aie.iron as iron
 
-from utils import TensorDesc, to_device, to_tensor_desc
+from compiler.utils import TensorDesc, to_device, to_tensor_desc
 
 from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer

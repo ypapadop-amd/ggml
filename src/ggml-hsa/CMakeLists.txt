@@ -62,8 +62,6 @@ ggml_add_backend_library(ggml-hsa
                          ${GGML_SOURCES_HSA}
                          )
 
-add_subdirectory(iron_kernels)
-
 target_link_libraries(ggml-hsa PRIVATE ggml-base hsa-runtime64::hsa-runtime64)
 target_include_directories(ggml-hsa PRIVATE . ..)
 
@@ -73,6 +71,8 @@ target_sources(ggml-hsa
     )
 
 if (GGML_HSA_JIT_COMPILE)
+    add_subdirectory(iron_kernels)
+
     target_sources(ggml-hsa
         PRIVATE
             kernel_compiler.hpp
