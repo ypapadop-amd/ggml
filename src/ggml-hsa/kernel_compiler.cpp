@@ -19,35 +19,14 @@ namespace py = pybind11;
  * @brief Information to drive JIT compilation for a kernel.
  */
 struct ggml_hsa_aie_jit_kernel_info {
-    using gen_t = void (*)(const ggml_hsa_device_info::device_info &,
-                           const ggml_tensor *,
-                           std::ostream &);
-
-    fs::path kernel_source;          ///< Kernel relative path.
-    gen_t kernel_args{};             ///< Kernel compile arguments generator.
-    fs::path single_core_source;     ///< Single-core source relative path.
-    gen_t single_core_source_args{}; ///< Single-core source compile arguments generator.
-    fs::path single_core_object;     ///< Single-core object filename.
+    fs::path kernel_source; ///< Kernel relative path.
 
     ggml_hsa_aie_jit_kernel_info() = default;
 
-    ggml_hsa_aie_jit_kernel_info(fs::path kernel_source, gen_t kernel_args) :
-        kernel_source{std::move(kernel_source)}, kernel_args{kernel_args} {}
-
-    ggml_hsa_aie_jit_kernel_info(fs::path kernel_source,
-                                 gen_t kernel_args,
-                                 fs::path single_core_source,
-                                 gen_t single_core_source_args,
-                                 fs::path single_core_object) :
-        kernel_source{std::move(kernel_source)},
-        kernel_args{kernel_args},
-        single_core_source{std::move(single_core_source)},
-        single_core_source_args{single_core_source_args},
-        single_core_object{std::move(single_core_object)} {}
+    ggml_hsa_aie_jit_kernel_info(fs::path kernel_source) :
+        kernel_source{std::move(kernel_source)} {}
 
     bool is_valid() const { return !kernel_source.empty(); }
-
-    bool has_single_core_source() const { return !single_core_source.empty(); }
 };
 
 /**
@@ -77,37 +56,10 @@ static void ggml_hsa_output_tensors(const ggml_tensor * tensor, std::ostream & o
  */
 static auto ggml_backend_hsa_kernel_jit_info = []() {
     std::array<ggml_hsa_aie_jit_kernel_info, GGML_OP_COUNT> kernels = {};
-    kernels[GGML_OP_ADD] = {"add.py", [](const ggml_hsa_device_info::device_info & dev_info,
-                                         const ggml_tensor * tensor, std::ostream & os) {
-                                os << "--dev " << dev_info.name << " --tensors ";
-                                ggml_hsa_output_tensors(tensor, os);
-                            }};
-    kernels[GGML_OP_MUL_MAT] = {
-        "mul_mat.py",
-        [](const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor,
-           std::ostream & os) {
-            os << "--dev " << dev_info.name
-               << " -M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 "
-                  "--b-col-maj 0";
-        },
-        "mm.cc",
-        [](const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor,
-           std::ostream & os) { os << "i16_i16_ONLY DIM_M=8 DIM_K=8 DIM_N=8"; },
-        "mm_8x8x8.o"};
+    kernels[GGML_OP_ADD] = {"add.py"};
+    kernels[GGML_OP_MUL_MAT] = {"mul_mat.py"};
     return kernels;
 }();
-
-/**
- * @brief Creates compile arguments as a string.
- */
-template <typename F>
-std::string ggml_hsa_create_compile_args(const ggml_hsa_device_info::device_info & dev_info,
-                                         const ggml_tensor * tensor,
-                                         F && f) {
-    std::ostringstream oss;
-    std::forward<F>(f)(dev_info, tensor, oss);
-    return oss.str();
-}
 
 /**
  * @brief Creates a py::tuple from the tensors dimensions.
@@ -163,6 +115,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
             tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor),
                              "dtype"_a = ggml_type_name(tensor->type));
 
+        // compile the kernel
         auto compile_kernel = iron_compiler.attr("compile_kernel");
         compile_kernel("name"_a = kernel_name, "device"_a = dev_info.name,
                        "kernel_source"_a = kernel_source_path.string(),
