@@ -2,5 +2,4 @@
 
 __all__ = ["compile_kernel", "TensorDesc", "to_device", "to_dtype", "to_tensor_desc"]
 
-from .compiler import compile_kernel
-from .utils import TensorDesc, to_device, to_dtype, to_tensor_desc
+from .compiler import TensorDesc, to_device, to_dtype, to_tensor_desc, compile_kernel

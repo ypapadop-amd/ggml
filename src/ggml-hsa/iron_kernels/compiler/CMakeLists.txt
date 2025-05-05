@@ -7,7 +7,6 @@ include(ggml_hsa_utils)
 set(COMPILER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
     ${CMAKE_CURRENT_SOURCE_DIR}/compiler.py
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils.py
     )
 
 ggml_hsa_copy_files(ggml_hsa_copy_compiler_files

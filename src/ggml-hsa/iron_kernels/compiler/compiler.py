@@ -1,10 +1,38 @@
 # compiler.py -*- Python -*-
 #  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-import argparse
 import subprocess
 import os
 import sys
+import numpy as np
+from aie.iron.device import NPU1Col1
+from aie.iron.compile import compile_mlir_module_to_pdi
+from ml_dtypes import bfloat16
+
+
+class TensorDesc:
+    """
+    Tensor description.
+
+    This class provides the tensor information, such as shape and datatype.
+    """
+
+    def __init__(self, shape: tuple, dtype):
+        self.shape = shape
+        self.dtype = dtype
+
+    def __str__(self):
+        return f"{str(self.shape)}/{str(self.dtype)}"
+
+    def numel(self):
+        """
+        Calculates the number of elements in the tensor.
+
+        Returns:
+            int: The total number of elements in the tensor.
+        """
+        return int(np.prod(self.shape))
+
 
 peano_install_dir = os.getenv("PEANO_INSTALL_DIR")
 if not peano_install_dir:
@@ -14,8 +42,60 @@ peano_cxx = os.path.join(peano_install_dir, "bin/clang++")
 if not os.path.isfile(peano_cxx):
     raise RuntimeError(f"Peano compile not found in {peano_install_dir}")
 
+supported_devices = {
+    "aie2": NPU1Col1(),
+}
 
-def compile_mlir(
+supported_dtypes = {
+    "bf16": bfloat16,
+    "i8": np.int8,
+    "i16": np.int16,
+    "i32": np.int32,
+    "f32": np.float32,
+}
+
+
+def to_device(device: str):
+    """
+    Returns the supported device from the string.
+    """
+    return supported_devices[device]
+
+
+def to_dtype(dtype: str):
+    """
+    Returns the supported datatype from the string.
+    """
+    return supported_dtypes[dtype]
+
+
+def to_tuple_of_ints(string: str):
+    """
+    Converts a string of the form (x,...) to a tuple of ints.
+    """
+    string = string.replace("(", "").replace(")", "").strip(",")
+    ints = map(int, string.split(","))
+    return tuple(ints)
+
+
+def to_tensor_desc(string: str) -> TensorDesc:
+    """
+    Converts a string of the form (x,...)/dtype to a TensorDesc object.
+    """
+    shape, dtype = string.split("/")
+    shape = to_tuple_of_ints(shape)
+    dtype = to_dtype(dtype)
+    return TensorDesc(shape=shape, dtype=dtype)
+
+
+def has_single_core_solution(pkg):
+    """
+    Returns if a single-core solution exists for the package.
+    """
+    return "single_core_solution" in dir(pkg)
+
+
+def compile_mlir_cli(
     source: str,
     compile_args: str,
     mlir_filename: str,
@@ -23,6 +103,9 @@ def compile_mlir(
 ):
     """
     Compiles the IRON kernel source to MLIR.
+
+    This function should be called when the compilation is initiated from the command line
+    (e.g., AOT).
 
     Parameters:
         source (str): Kernel source file.
@@ -82,45 +165,64 @@ def compile_single_core(
             raise RuntimeError("Peano Compilation failed") from ex
 
 
-def compile_pdi(
-    mlir_filename: str, pdi_filename: str, insts_filename: str, output_directory: str
+def compile_kernel(
+    name: str,
+    device: str,
+    kernel_source: str,
+    tensors: list[TensorDesc],
+    output_directory: str,
 ):
     """
-    Compile an MLIR file to PDI and instruction using aiecc.
+    Compiles the kernel code to PDI and instruction files.
 
-    Parameters:
-        mlir_filename (str): MLIR input file.
-        pdi_filename (str): PDI output file.
-        insts_filename (str): Instructions output file.
-        output_directory (str): Output and working directory.
+    This function should be called when the compilation is initiated from another function (e.g., during JIT).
     """
 
-    mlir_path = os.path.join(output_directory, mlir_filename)
-    pdi_output_path = os.path.join(output_directory, pdi_filename)
-    insts_output_path = os.path.join(output_directory, insts_filename)
+    from aie.iron import set_current_device
+
+    set_current_device(to_device(device))
+
+    os.makedirs(output_directory, exist_ok=True)
+
+    # generate MLIR and write to file for debugging
     cmd = [
-        "aiecc.py",
-        "--alloc-scheme=basic-sequential",
-        "--aie-generate-pdi",
-        "--aie-generate-npu-insts",
-        "--no-compile-host",
-        "--no-xchesscc",
-        "--no-xbridge",
-        f"--peano={peano_install_dir}",
-        f"--pdi-name={pdi_output_path}",
-        f"--npu-insts-name={insts_output_path}",
-        f"{mlir_path}",
-    ]
+        sys.executable,
+        kernel_source,
+        f"--dev={device}",
+        "--tensors",
+    ] + list(map(str, tensors))
     try:
-        subprocess.run(
+        p = subprocess.run(
             cmd,
             cwd=output_directory,
             check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=sys.stderr,
+            capture_output=True,
+            text=True,
         )
+        print(p.stderr)
+        p.check_returncode()
     except subprocess.CalledProcessError as ex:
-        raise RuntimeError("aiecc Compilation failed") from ex
+        raise RuntimeError("MLIR Compilation failed") from ex
+    mlir_module = p.stdout
+    mlir_path = os.path.join(output_directory, f"{name}.mlir")
+    with open(mlir_path, "wt", encoding="utf-8") as file:
+        file.write(mlir_module)
+
+    # generate PDI and insts files
+    pdi_path = os.path.join(output_directory, f"{name}.pdi")
+    insts_path = os.path.join(output_directory, f"{name}_insts.bin")
+    compile_mlir_module_to_pdi(
+        mlir_module=mlir_module,
+        insts_path=insts_path,
+        pdi_path=pdi_path,
+        options=[
+            "--alloc-scheme=basic-sequential",
+            "--no-compile-host",
+            "--no-xchesscc",
+            "--no-xbridge",
+            f"--peano={peano_install_dir}",
+        ],
+    )
 
 
 def file_path(string: str):
@@ -133,52 +235,14 @@ def file_path(string: str):
     return string
 
 
-def compile_kernel(
-    name: str,
-    device: str,
-    kernel_source: str,
-    kernel_compile_args: str,
-    output_directory: str,
-    single_core_source: str = None,
-):
-    """
-    Compiles the kernel code to PDI and instruction files.
-    """
-
-    mlir_filename = f"{name}.mlir"
-
-    os.makedirs(output_directory, exist_ok=True)
-
-    compile_mlir(
-        source=kernel_source,
-        compile_args=kernel_compile_args,
-        mlir_filename=mlir_filename,
-        output_directory=output_directory,
-    )
-
-    if single_core_source:
-        compile_single_core(
-            source=single_core_source,
-            device=device,
-            compile_args=None,
-            object_filename=None,
-            output_directory=output_directory,
-        )
-
-    compile_pdi(
-        mlir_filename=mlir_filename,
-        pdi_filename=f"{name}.pdi",
-        insts_filename=f"{name}_insts.bin",
-        output_directory=output_directory,
-    )
-
-
 def main():
     """
     Main function for use during AOT compilation.
     """
 
-    parser = argparse.ArgumentParser(
+    from argparse import ArgumentParser  # pylint: disable=import-outside-toplevel
+
+    parser = ArgumentParser(
         prog="compiler.py",
         description="Compiles IRON kernels",
     )
@@ -187,12 +251,6 @@ def main():
         type=str,
         required=True,
         help="Kernel name",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        required=True,
-        help="Device",
     )
     parser.add_argument(
         "--kernel_source",
@@ -215,12 +273,34 @@ def main():
 
     args = parser.parse_args()
 
-    compile_kernel(
-        name=args.name,
-        device=args.device,
-        kernel_source=args.kernel_source,
-        kernel_compile_args=args.kernel_compile_args,
+    os.makedirs(args.output_directory, exist_ok=True)
+
+    # generate MLIR
+    mlir_filename = f"{args.name}.mlir"
+    compile_mlir_cli(
+        source=args.kernel_source,
+        compile_args=args.kernel_compile_args,
+        mlir_filename=mlir_filename,
         output_directory=args.output_directory,
+    )
+    mlir_path = os.path.join(args.output_directory, mlir_filename)
+    with open(mlir_path, "rt", encoding="utf-8") as file:
+        mlir_module = file.read()
+
+    # generate PDI and insts files
+    pdi_path = os.path.join(args.output_directory, f"{args.name}.pdi")
+    insts_path = os.path.join(args.output_directory, f"{args.name}_insts.bin")
+    compile_mlir_module_to_pdi(
+        mlir_module=mlir_module,
+        insts_path=insts_path,
+        pdi_path=pdi_path,
+        options=[
+            "--alloc-scheme=basic-sequential",
+            "--no-compile-host",
+            "--no-xchesscc",
+            "--no-xbridge",
+            f"--peano={peano_install_dir}",
+        ],
     )
 
 
