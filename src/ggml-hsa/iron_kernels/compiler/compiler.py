@@ -20,7 +20,7 @@ class TensorDesc:
 
     def __init__(self, shape: tuple, dtype):
         self.shape = shape
-        if (isinstance(dtype, str)):
+        if isinstance(dtype, str):
             self.dtype = to_dtype(dtype)
         else:
             self.dtype = dtype
@@ -97,39 +97,6 @@ def has_single_core_solution(pkg):
     Returns if a single-core solution exists for the package.
     """
     return "single_core_solution" in dir(pkg)
-
-
-def compile_mlir_cli(
-    source: str,
-    compile_args: str,
-    mlir_filename: str,
-    output_directory: str,
-):
-    """
-    Compiles the IRON kernel source to MLIR.
-
-    This function should be called when the compilation is initiated from the command line
-    (e.g., AOT).
-
-    Parameters:
-        source (str): Kernel source file.
-        compile_args (str): Kernel compilation arguments.
-        mlir_filename (str): MLIR output file.
-        output_directory (str): Output and working directory.
-    """
-    output_path = os.path.join(output_directory, mlir_filename)
-    cmd = [sys.executable, source] + list(compile_args.split())
-    with open(output_path, "w", encoding="utf-8") as output_file:
-        try:
-            subprocess.run(
-                cmd,
-                cwd=output_directory,
-                check=True,
-                stdout=output_file,
-                stderr=sys.stderr,
-            )
-        except subprocess.CalledProcessError as ex:
-            raise RuntimeError("MLIR Compilation failed") from ex
 
 
 def compile_single_core(
@@ -227,7 +194,6 @@ def file_path(string: str):
     """
     Checks if a string is an existing file.
     """
-
     if not os.path.isfile(string):
         raise FileNotFoundError(string)
     return string
@@ -245,16 +211,28 @@ def main():
         description="Compiles IRON kernels",
     )
     parser.add_argument(
+        "--kernel_name",
+        type=file_path,
+        required=True,
+        help="Kernel name",
+    )
+    parser.add_argument(
         "--kernel_source",
         type=file_path,
         required=True,
-        help="Kernel source",
+        help="Kernel source file",
     )
     parser.add_argument(
-        "--kernel_compile_args",
+        "--device",
+        type=to_device,
+        required=True,
+        help="Target device",
+    )
+    parser.add_argument(
+        "--tensors",
         type=str,
         required=True,
-        help="Kernel source arguments",
+        help="Kernel input and output tensors",
     )
     parser.add_argument(
         "--exported_name",
@@ -268,37 +246,15 @@ def main():
         required=True,
         help="Output directory",
     )
-
     args = parser.parse_args()
 
-    os.makedirs(args.output_directory, exist_ok=True)
-
-    # generate MLIR
-    mlir_filename = f"{args.exported_name}.mlir"
-    compile_mlir_cli(
-        source=args.kernel_source,
-        compile_args=args.kernel_compile_args,
-        mlir_filename=mlir_filename,
+    compile_kernel(
+        kernel_name=args.kernel_name,
+        kernel_source=args.kernel_source,
+        device=args.device,
+        tensors=args.tensors,
+        exported_name=args.exported_name,
         output_directory=args.output_directory,
-    )
-    mlir_path = os.path.join(args.output_directory, mlir_filename)
-    with open(mlir_path, "rt", encoding="utf-8") as file:
-        mlir_module = file.read()
-
-    # generate PDI and insts files
-    pdi_path = os.path.join(args.output_directory, f"{args.exported_name}.pdi")
-    insts_path = os.path.join(args.output_directory, f"{args.exported_name}_insts.bin")
-    compile_mlir_module_to_pdi(
-        mlir_module=mlir_module,
-        insts_path=insts_path,
-        pdi_path=pdi_path,
-        options=[
-            "--alloc-scheme=basic-sequential",
-            "--no-compile-host",
-            "--no-xchesscc",
-            "--no-xbridge",
-            f"--peano={peano_install_dir}",
-        ],
     )
 
 
