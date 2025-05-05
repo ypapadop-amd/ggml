@@ -106,17 +106,16 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
 
         // convert a tensor to a list of iron_kernels.compiler.TensorDesc objects
         auto tensor_desc_ctor = iron_compiler.attr("TensorDesc");
-        auto to_dtype = iron_compiler.attr("to_dtype");
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto tensors = py::list(src_tensor_count + 1);
         for (auto i = 0; i < src_tensor_count; ++i) {
             tensors[i] =
                 tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor->src[i]),
-                                 "dtype"_a = to_dtype(ggml_type_name(tensor->src[i]->type)));
+                                 "dtype"_a = ggml_type_name(tensor->src[i]->type));
         }
         tensors[src_tensor_count] =
             tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor),
-                             "dtype"_a = to_dtype(ggml_type_name(tensor->type)));
+                             "dtype"_a = ggml_type_name(tensor->type));
 
         // compile the kernel
         auto compile_kernel = iron_compiler.attr("compile_kernel");

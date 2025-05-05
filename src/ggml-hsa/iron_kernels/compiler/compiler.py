@@ -20,7 +20,10 @@ class TensorDesc:
 
     def __init__(self, shape: tuple, dtype):
         self.shape = shape
-        self.dtype = dtype
+        if (isinstance(dtype, str)):
+            self.dtype = to_dtype(dtype)
+        else:
+            self.dtype = dtype
 
     def __str__(self):
         return f"{str(self.shape)}/{str(self.dtype)}"
