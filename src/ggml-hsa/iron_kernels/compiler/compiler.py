@@ -2,6 +2,7 @@
 #  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
 import subprocess
+import importlib.util
 import os
 import sys
 import numpy as np
@@ -165,11 +166,23 @@ def compile_single_core(
             raise RuntimeError("Peano Compilation failed") from ex
 
 
+def import_from_path(module_name, path):
+    """
+    Imports module_name from path.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def compile_kernel(
-    name: str,
-    device: str,
+    kernel_name: str,
     kernel_source: str,
+    device: str,
     tensors: list[TensorDesc],
+    exported_name: str,
     output_directory: str,
 ):
     """
@@ -177,40 +190,22 @@ def compile_kernel(
 
     This function should be called when the compilation is initiated from another function (e.g., during JIT).
     """
-
     from aie.iron import set_current_device
-
-    set_current_device(to_device(device))
 
     os.makedirs(output_directory, exist_ok=True)
 
     # generate MLIR and write to file for debugging
-    cmd = [
-        sys.executable,
-        kernel_source,
-        f"--dev={device}",
-        "--tensors",
-    ] + list(map(str, tensors))
-    try:
-        p = subprocess.run(
-            cmd,
-            cwd=output_directory,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        print(p.stderr)
-        p.check_returncode()
-    except subprocess.CalledProcessError as ex:
-        raise RuntimeError("MLIR Compilation failed") from ex
-    mlir_module = p.stdout
-    mlir_path = os.path.join(output_directory, f"{name}.mlir")
+    module = import_from_path(kernel_name, kernel_source)
+    kernel_mlir = getattr(module, kernel_name)
+    set_current_device(to_device(device))
+    mlir_module = kernel_mlir(*tensors)
+    mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
     with open(mlir_path, "wt", encoding="utf-8") as file:
-        file.write(mlir_module)
+        file.write(str(mlir_module.body))
 
     # generate PDI and insts files
-    pdi_path = os.path.join(output_directory, f"{name}.pdi")
-    insts_path = os.path.join(output_directory, f"{name}_insts.bin")
+    pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
+    insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
     compile_mlir_module_to_pdi(
         mlir_module=mlir_module,
         insts_path=insts_path,
@@ -247,12 +242,6 @@ def main():
         description="Compiles IRON kernels",
     )
     parser.add_argument(
-        "--name",
-        type=str,
-        required=True,
-        help="Kernel name",
-    )
-    parser.add_argument(
         "--kernel_source",
         type=file_path,
         required=True,
@@ -263,6 +252,12 @@ def main():
         type=str,
         required=True,
         help="Kernel source arguments",
+    )
+    parser.add_argument(
+        "--exported_name",
+        type=str,
+        required=True,
+        help="Kernel exported name",
     )
     parser.add_argument(
         "--output_directory",
@@ -276,7 +271,7 @@ def main():
     os.makedirs(args.output_directory, exist_ok=True)
 
     # generate MLIR
-    mlir_filename = f"{args.name}.mlir"
+    mlir_filename = f"{args.exported_name}.mlir"
     compile_mlir_cli(
         source=args.kernel_source,
         compile_args=args.kernel_compile_args,
@@ -288,8 +283,8 @@ def main():
         mlir_module = file.read()
 
     # generate PDI and insts files
-    pdi_path = os.path.join(args.output_directory, f"{args.name}.pdi")
-    insts_path = os.path.join(args.output_directory, f"{args.name}_insts.bin")
+    pdi_path = os.path.join(args.output_directory, f"{args.exported_name}.pdi")
+    insts_path = os.path.join(args.output_directory, f"{args.exported_name}_insts.bin")
     compile_mlir_module_to_pdi(
         mlir_module=mlir_module,
         insts_path=insts_path,

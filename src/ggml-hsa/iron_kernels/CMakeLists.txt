@@ -20,25 +20,25 @@ set(AIE_AIECC "${AIE_TOOLS_BINARY_DIR}/aiecc.py")
 #
 # Arguments:
 #     TARGET_NAME (string): target
-#     KERNEL_NAME (string): kernel name
 #     SOURCE (string): kernel source file
 #     DEVICE (string): target device
 #     KERNEL_ARGS (string): kernel compilation flags
 #     PEANO_SOURCE (string): Peano source file
 #     PEANO_OUTPUT_FILE (string): Peano output file name
 #     PEANO_COMPILE_ARGS (string): Peano compilation flags
+#     EXPORTED_NAME (string): kernel exported name
 #
 function(add_aie_iron_kernel TARGET_NAME)
     cmake_parse_arguments(PARSE_ARGV 0 arg
         ""
-        "KERNEL_NAME;KERNEL_ARGS;SOURCE;DEVICE;PEANO_SOURCE;PEANO_OUTPUT_FILE"
+        "KERNEL_ARGS;SOURCE;DEVICE;PEANO_SOURCE;PEANO_OUTPUT_FILE;EXPORTED_NAME"
         "PEANO_COMPILE_ARGS"
         )
 
     set(OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/../kernels/${arg_DEVICE}")
-    set(MLIR_OUTPUT "${OUTPUT_DIR}/${arg_KERNEL_NAME}.mlir")
-    set(INSTS_OUTPUT "${OUTPUT_DIR}/${arg_KERNEL_NAME}_insts.bin")
-    set(PDI_OUTPUT "${OUTPUT_DIR}/${arg_KERNEL_NAME}.pdi")
+    set(MLIR_OUTPUT "${OUTPUT_DIR}/${arg_EXPORTED_NAME}.mlir")
+    set(INSTS_OUTPUT "${OUTPUT_DIR}/${arg_EXPORTED_NAME}_insts.bin")
+    set(PDI_OUTPUT "${OUTPUT_DIR}/${arg_EXPORTED_NAME}.pdi")
     string(REPLACE " " ";" KERNEL_ARGS ${arg_KERNEL_ARGS})
 
     file(MAKE_DIRECTORY ${OUTPUT_DIR})
@@ -46,7 +46,7 @@ function(add_aie_iron_kernel TARGET_NAME)
     # compile to MLIR
     add_custom_command(
         OUTPUT ${MLIR_OUTPUT}
-        COMMAND ${Python_EXECUTABLE} ${arg_SOURCE} ${KERNEL_ARGS} > ${MLIR_OUTPUT}
+        COMMAND ${Python_EXECUTABLE} ${arg_SOURCE} "--dev=${arg_DEVICE}" ${KERNEL_ARGS} > ${MLIR_OUTPUT}
         DEPENDS ${arg_SOURCE}
         BYPRODUCTS ${OUTPUT_DIR}/${arg_KERNEL_NAME}.mlir.prj
         WORKING_DIRECTORY ${OUTPUT_DIR}
@@ -90,12 +90,12 @@ function(add_aie_iron_kernel TARGET_NAME)
                 --pdi-name=${PDI_OUTPUT} --npu-insts-name=${INSTS_OUTPUT} ${MLIR_OUTPUT}
         DEPENDS ${AIECC_DEPS}
         WORKING_DIRECTORY ${OUTPUT_DIR}
-        COMMENT "Generating PDI for ${arg_KERNEL_NAME}"
+        COMMENT "Generating PDI for ${arg_EXPORTED_NAME}"
         VERBATIM
         )
 
-    add_custom_target(ggml_hsa_kernel_${arg_KERNEL_NAME} ALL DEPENDS ${PDI_OUTPUT} ${INSTS_OUTPUT})
-    add_dependencies(${TARGET_NAME} ggml_hsa_kernel_${arg_KERNEL_NAME})
+    add_custom_target(ggml_hsa_kernel_${arg_EXPORTED_NAME} ALL DEPENDS ${PDI_OUTPUT} ${INSTS_OUTPUT})
+    add_dependencies(${TARGET_NAME} ggml_hsa_kernel_${arg_EXPORTED_NAME})
 
     # copy kernel to install directory
     install(
@@ -140,51 +140,51 @@ endif ()
 # Pregenerated kernels
 
 add_aie_iron_kernel(ggml-hsa
-    KERNEL_NAME
-        "add-256i32-256i32-256i32"
     SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/add.py
     DEVICE
         aie2
     KERNEL_ARGS
-        "--dev aie2 --tensors (256)/i32 (256)/i32 (256)/i32"
+        "--tensors (256)/i32 (256)/i32 (256)/i32"
+    EXPORTED_NAME
+        "add-256i32-256i32-256i32"
     )
 
 add_aie_iron_kernel(ggml-hsa
-    KERNEL_NAME
-        "add-256f32-256f32-256f32"
     SOURCE
        ${CMAKE_CURRENT_SOURCE_DIR}/add.py
     DEVICE
         aie2
     KERNEL_ARGS
-        "--dev aie2 --tensors (256)/f32 (256)/f32 (256)/f32"
+        "--tensors (256)/f32 (256)/f32 (256)/f32"
+    EXPORTED_NAME
+        "add-256f32-256f32-256f32"
     )
 
 add_aie_iron_kernel(ggml-hsa
-    KERNEL_NAME
-        "add-768f32-768f32-768f32"
     SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/add.py
     DEVICE
         aie2
     KERNEL_ARGS
-        "--dev aie2 --tensors (768)/f32 (768)/f32 (768)/f32"
+        "--tensors (768)/f32 (768)/f32 (768)/f32"
+    EXPORTED_NAME
+        "add-768f32-768f32-768f32"
     )
 
 add_aie_iron_kernel(ggml-hsa
-    KERNEL_NAME
-        "mul_mat-32x32i16-32x32i16-32x32i16"
     SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
     DEVICE
         aie2
     KERNEL_ARGS
-        "--dev aie2 -M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 --b-col-maj 0"
+        "-M 32 -K 32 -N 32 -m 8 -k 8 -n 8 --dtype_in i16 --dtype_out i16 --n-aie-cols 4 --b-col-maj 0"
     PEANO_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
     PEANO_OUTPUT_FILE
         "mm_8x8x8.o"
     PEANO_COMPILE_ARGS
         i16_i16_ONLY DIM_M=8 DIM_K=8 DIM_N=8
+    EXPORTED_NAME
+        "mul_mat-32x32i16-32x32i16-32x32i16"
     )

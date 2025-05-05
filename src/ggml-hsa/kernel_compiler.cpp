@@ -19,14 +19,15 @@ namespace py = pybind11;
  * @brief Information to drive JIT compilation for a kernel.
  */
 struct ggml_hsa_aie_jit_kernel_info {
-    fs::path kernel_source; ///< Kernel relative path.
+    std::string_view name; ///< Kernel name.
+    fs::path source;       ///< Kernel relative path.
 
     ggml_hsa_aie_jit_kernel_info() = default;
 
-    ggml_hsa_aie_jit_kernel_info(fs::path kernel_source) :
-        kernel_source{std::move(kernel_source)} {}
+    ggml_hsa_aie_jit_kernel_info(std::string_view name, fs::path source) :
+        name{name}, source{std::move(source)} {}
 
-    bool is_valid() const { return !kernel_source.empty(); }
+    bool is_valid() const { return !source.empty(); }
 };
 
 /**
@@ -56,8 +57,8 @@ static void ggml_hsa_output_tensors(const ggml_tensor * tensor, std::ostream & o
  */
 static auto ggml_backend_hsa_kernel_jit_info = []() {
     std::array<ggml_hsa_aie_jit_kernel_info, GGML_OP_COUNT> kernels = {};
-    kernels[GGML_OP_ADD] = {"add.py"};
-    kernels[GGML_OP_MUL_MAT] = {"mul_mat.py"};
+    kernels[GGML_OP_ADD] = {"vector_vector_add", "add.py"};
+    kernels[GGML_OP_MUL_MAT] = {"mul_mat", "mul_mat.py"};
     return kernels;
 }();
 
@@ -75,7 +76,7 @@ static py::tuple ggml_hsa_tensor_dims_as_tuple(const ggml_tensor * tensor) {
 
 ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                     const ggml_tensor * tensor,
-                                    const std::string & kernel_name,
+                                    const std::string & exported_name,
                                     const std::filesystem::path & output_path) {
     using namespace pybind11::literals;
 
@@ -93,7 +94,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
 
     const auto & library_dir = ggml_hsa_library_path();
     const auto module_path = library_dir / "iron_kernels";
-    const auto kernel_source_path = module_path / kernel_jit_info.kernel_source;
+    const auto kernel_source_path = module_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
 
     py::scoped_interpreter guard{};
@@ -105,21 +106,23 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
 
         // convert a tensor to a list of iron_kernels.compiler.TensorDesc objects
         auto tensor_desc_ctor = iron_compiler.attr("TensorDesc");
+        auto to_dtype = iron_compiler.attr("to_dtype");
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto tensors = py::list(src_tensor_count + 1);
         for (auto i = 0; i < src_tensor_count; ++i) {
-            tensors[i] = tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor->src[i]),
-                                          "dtype"_a = ggml_type_name(tensor->src[i]->type));
+            tensors[i] =
+                tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor->src[i]),
+                                 "dtype"_a = to_dtype(ggml_type_name(tensor->src[i]->type)));
         }
         tensors[src_tensor_count] =
             tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor),
-                             "dtype"_a = ggml_type_name(tensor->type));
+                             "dtype"_a = to_dtype(ggml_type_name(tensor->type)));
 
         // compile the kernel
         auto compile_kernel = iron_compiler.attr("compile_kernel");
-        compile_kernel("name"_a = kernel_name, "device"_a = dev_info.name,
-                       "kernel_source"_a = kernel_source_path.string(),
-                       "tensors"_a = std::move(tensors),
+        compile_kernel("kernel_name"_a = kernel_jit_info.name,
+                       "kernel_source"_a = kernel_source_path.string(), "device"_a = dev_info.name,
+                       "tensors"_a = std::move(tensors), "exported_name"_a = exported_name,
                        "output_directory"_a = output_directory.string());
 
     } catch (const pybind11::error_already_set & ex) {
