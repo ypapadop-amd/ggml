@@ -20,10 +20,7 @@ class TensorDesc:
 
     def __init__(self, shape: tuple, dtype):
         self.shape = shape
-        if isinstance(dtype, str):
-            self.dtype = to_dtype(dtype)
-        else:
-            self.dtype = dtype
+        self.dtype = to_dtype(dtype)
 
     def __str__(self):
         return f"{str(self.shape)}/{str(self.dtype)}"
@@ -59,18 +56,22 @@ supported_dtypes = {
 }
 
 
-def to_device(device: str):
+def to_device(device):
     """
     Returns the supported device from the string.
     """
-    return supported_devices[device]
+    if isinstance(device, str):
+        return supported_devices[device]
+    return device
 
 
-def to_dtype(dtype: str):
+def to_dtype(dtype):
     """
     Returns the supported datatype from the string.
     """
-    return supported_dtypes[dtype]
+    if isinstance(dtype, str):
+        return supported_dtypes[dtype]
+    return dtype
 
 
 def to_tuple_of_ints(string: str):
