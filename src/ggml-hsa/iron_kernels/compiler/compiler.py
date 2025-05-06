@@ -164,10 +164,12 @@ def compile_kernel(
 
     os.makedirs(output_directory, exist_ok=True)
 
+    device = to_device(device)
+
     # generate MLIR and write to file for debugging
     module = import_from_path(kernel_name, kernel_source)
     kernel_mlir = getattr(module, kernel_name)
-    set_current_device(to_device(device))
+    set_current_device(device)
     mlir_module = kernel_mlir(*tensors)
     mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
     with open(mlir_path, "wt", encoding="utf-8") as file:
@@ -212,7 +214,7 @@ def main():
     )
     parser.add_argument(
         "--kernel_name",
-        type=file_path,
+        type=str,
         required=True,
         help="Kernel name",
     )
@@ -224,15 +226,16 @@ def main():
     )
     parser.add_argument(
         "--device",
-        type=to_device,
+        type=str,
         required=True,
         help="Target device",
     )
     parser.add_argument(
         "--tensors",
-        type=str,
+        type=to_tensor_desc,
+        nargs="+",
         required=True,
-        help="Kernel input and output tensors",
+        help="Kernel tensor shapes and datatypes",
     )
     parser.add_argument(
         "--exported_name",
