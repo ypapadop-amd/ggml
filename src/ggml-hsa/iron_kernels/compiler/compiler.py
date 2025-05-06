@@ -174,7 +174,7 @@ def compile_kernel(
     mlir_module = kernel_mlir(*tensors)
     mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
     with open(mlir_path, "wt", encoding="utf-8") as file:
-        file.write(str(mlir_module.body))
+        file.write(str(mlir_module))
 
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
