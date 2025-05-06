@@ -5,9 +5,11 @@
 #
 # (c) Copyright 2025 AMD Inc.
 import argparse
+import os
 from ml_dtypes import bfloat16
 import numpy as np
-import sys
+
+from compiler import dtype_to_str, SingleCoreSpec
 
 from aie.extras.context import mlir_mod_ctx
 
@@ -599,6 +601,52 @@ def my_matmul(
             TensorAccessSequence.from_taps(B_taps),
             TensorAccessSequence.from_taps(C_taps),
         )
+
+
+def single_core_spec(device, A, B, C):
+    m = 8
+    k = 8
+    n = 8
+    current_dir = os.path.dirname(os.path.realpath(__file__))
+    return SingleCoreSpec(
+        source_path=os.path.join(current_dir, "mm.cc"),
+        compile_args=[
+            f"-DDIM_M={m}",
+            f"-DDIM_K={k}",
+            f"-DDIM_N={n}",
+            f"-Di16_i16_ONLY",
+        ],
+        output_filename=f"mm_{m}x{k}x{n}.o",
+    )
+
+
+def mul_mat(A, B, C):
+    from aie.iron import get_current_device
+
+    # TODO
+    dev = "npu"
+
+    assert A.dtype == B.dtype
+    assert A.shape[1] == B.shape[0]
+    assert A.shape[0] == C.shape[0]
+    assert B.shape[1] == C.shape[1]
+
+    with mlir_mod_ctx() as ctx:
+        my_matmul(
+            dev=dev,
+            M=A.shape[0],
+            K=A.shape[1],
+            N=B.shape[1],
+            m=8,
+            k=8,
+            n=8,
+            n_aie_cols=4,
+            dtype_in_str=dtype_to_str(A.dtype),
+            dtype_out_str=dtype_to_str(C.dtype),
+            b_col_maj=0,
+            trace_size=0,
+        )
+        return ctx.module
 
 
 if __name__ == "__main__":

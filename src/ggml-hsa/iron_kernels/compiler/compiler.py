@@ -10,6 +10,18 @@ from aie.iron.device import NPU1Col1
 from aie.iron.compile import compile_mlir_module_to_pdi
 from ml_dtypes import bfloat16
 
+peano_install_dir = os.getenv("PEANO_INSTALL_DIR")
+if not os.path.isdir(peano_install_dir):
+    raise RuntimeError("PEANO_INSTALL_DIR is not defined or does not exist")
+
+peano_cxx = os.path.join(peano_install_dir, "bin/clang++")
+if not os.path.isfile(peano_cxx):
+    raise RuntimeError(f"Peano compiler not found in {peano_install_dir}")
+
+mlir_aie_include_dir = os.path.join(os.getenv("MLIR_AIE_INSTALL_DIR"), "include")
+if not os.path.isdir(mlir_aie_include_dir):
+    raise RuntimeError(f"MLIR-AIE headers not found in {mlir_aie_include_dir}")
+
 
 class TensorDesc:
     """
@@ -20,7 +32,7 @@ class TensorDesc:
 
     def __init__(self, shape: tuple, dtype):
         self.shape = shape
-        self.dtype = to_dtype(dtype)
+        self.dtype = str_to_dtype(dtype)
 
     def __str__(self):
         return f"{str(self.shape)}/{str(self.dtype)}"
@@ -35,13 +47,18 @@ class TensorDesc:
         return int(np.prod(self.shape))
 
 
-peano_install_dir = os.getenv("PEANO_INSTALL_DIR")
-if not peano_install_dir:
-    raise RuntimeError("PEANO_INSTALL_DIR is not defined")
+class SingleCoreSpec:
+    """
+    Single core specification.
 
-peano_cxx = os.path.join(peano_install_dir, "bin/clang++")
-if not os.path.isfile(peano_cxx):
-    raise RuntimeError(f"Peano compile not found in {peano_install_dir}")
+    This class provides information necessary to compile a single-core kernel via Peano.
+    """
+
+    def __init__(self, source_path: str, compile_args: list[str], output_filename: str):
+        self.source_path = source_path
+        self.compile_args = compile_args
+        self.output_filename = output_filename
+
 
 supported_devices = {
     "aie2": NPU1Col1(),
@@ -65,13 +82,25 @@ def to_device(device):
     return device
 
 
-def to_dtype(dtype):
+def str_to_dtype(dtype):
     """
     Returns the supported datatype from the string.
     """
     if isinstance(dtype, str):
         return supported_dtypes[dtype]
     return dtype
+
+
+def dtype_to_str(dtype):
+    """
+    Returns the datatype as a string.
+    """
+    if isinstance(dtype, str):
+        return dtype
+    for key, value in supported_dtypes.items():
+        if value == dtype:
+            return key
+    return None
 
 
 def to_tuple_of_ints(string: str):
@@ -89,52 +118,8 @@ def to_tensor_desc(string: str) -> TensorDesc:
     """
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
-    dtype = to_dtype(dtype)
+    dtype = str_to_dtype(dtype)
     return TensorDesc(shape=shape, dtype=dtype)
-
-
-def has_single_core_solution(pkg):
-    """
-    Returns if a single-core solution exists for the package.
-    """
-    return "single_core_solution" in dir(pkg)
-
-
-def compile_single_core(
-    source: str,
-    device: str,
-    compile_args: str,
-    object_filename: str,
-    output_directory: str,
-):
-    """
-    Compile a C++ file using Peano.
-    """
-    output_path = os.path.join(output_directory, object_filename)
-    cmd = [
-        sys.executable,
-        peano_cxx,
-        source,
-        "-std=c++20",
-        "-Wno-parentheses",
-        "-Wno-attributes",
-        "-Wno-macro-redefined",
-        "-Wno-empty-body",
-        "-O2",
-        "-DNDEBUG",
-        f"--target={device}-none-unknown-elf",
-    ] + list(compile_args.split())
-    with open(output_path, "w", encoding="utf-8") as output_file:
-        try:
-            subprocess.run(
-                cmd,
-                cwd=output_directory,
-                check=True,
-                stdout=output_file,
-                stderr=sys.stderr,
-            )
-        except subprocess.CalledProcessError as ex:
-            raise RuntimeError("Peano Compilation failed") from ex
 
 
 def import_from_path(module_name, path):
@@ -165,24 +150,54 @@ def compile_kernel(
 
     os.makedirs(output_directory, exist_ok=True)
 
-    device = to_device(device)
+    dev = to_device(device)
 
     # generate MLIR and write to file for debugging
     module = import_from_path(kernel_name, kernel_source)
     kernel_mlir = getattr(module, kernel_name)
-    set_current_device(device)
+    set_current_device(dev)
     mlir_module = kernel_mlir(*tensors)
     mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
+
+    # if there is a single-core spec, compile it with Peano
+    if hasattr(module, "single_core_spec"):
+        single_core_spec = getattr(module, "single_core_spec")
+        spec = single_core_spec(dev, *tensors)
+        output_path = os.path.join(output_directory, spec.output_filename)
+        cmd = [
+            peano_cxx,
+            spec.source_path,
+            "-c",
+            "-o",
+            f"{output_path}",
+            f"-I{mlir_aie_include_dir}",
+            "-std=c++20",
+            "-Wno-parentheses",
+            "-Wno-attributes",
+            "-Wno-macro-redefined",
+            "-Wno-empty-body",
+            "-O2",
+            "-DNDEBUG",
+            f"--target={device}-none-unknown-elf",
+        ] + spec.compile_args
+        try:
+            subprocess.run(
+                cmd,
+                cwd=output_directory,
+                check=True,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
+        except subprocess.CalledProcessError as ex:
+            raise RuntimeError("Peano compilation failed") from ex
 
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
     compile_mlir_module_to_pdi(
         mlir_module=mlir_module,
-        insts_path=insts_path,
-        pdi_path=pdi_path,
         options=[
             "--alloc-scheme=basic-sequential",
             "--no-compile-host",
@@ -190,6 +205,9 @@ def compile_kernel(
             "--no-xbridge",
             f"--peano={peano_install_dir}",
         ],
+        cwd=output_directory,
+        insts_path=insts_path,
+        pdi_path=pdi_path,
     )
 
 
