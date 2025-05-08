@@ -109,9 +109,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto tensors = py::list(src_tensor_count + 1);
         for (auto i = 0; i < src_tensor_count; ++i) {
-            tensors[i] =
-                tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor->src[i]),
-                                 "dtype"_a = ggml_type_name(tensor->src[i]->type));
+            tensors[i] = tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor->src[i]),
+                                          "dtype"_a = ggml_type_name(tensor->src[i]->type));
         }
         tensors[src_tensor_count] =
             tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor),
@@ -123,7 +122,6 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                        "kernel_source"_a = kernel_source_path.string(), "device"_a = dev_info.name,
                        "tensors"_a = std::move(tensors), "exported_name"_a = exported_name,
                        "output_directory"_a = output_directory.string());
-
     } catch (const pybind11::error_already_set & ex) {
         GGML_LOG_ERROR("%s: JIT compilation failed: %s\n", __func__, ex.what());
         return GGML_STATUS_FAILED;
