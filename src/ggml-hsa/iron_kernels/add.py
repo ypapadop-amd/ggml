@@ -83,6 +83,10 @@ def vector_vector_add(input0, input1, output):
     return Program(iron.get_current_device(), rt).resolve_program(SequentialPlacer())
 
 
+def vector_vector_add_ggml(input_tensors: list, output_tensor):
+    return vector_vector_add(*input_tensors, output_tensor)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="add.py",
@@ -95,17 +99,23 @@ def main():
         help="Target device",
     )
     parser.add_argument(
-        "--tensors",
+        "--input_tensors",
         type=to_tensor_desc,
         nargs="+",
         required=True,
-        help="Tensor shapes and datatypes",
+        help="Input tensor shapes and datatypes",
+    )
+    parser.add_argument(
+        "--output_tensor",
+        type=to_tensor_desc,
+        required=True,
+        help="Output tensor shape and datatype",
     )
     args = parser.parse_args()
 
     iron.set_current_device(args.dev)
 
-    module = vector_vector_add(*args.tensors)
+    module = vector_vector_add(*args.input_tensors, args.output_tensor)
     print(module)
 
 
