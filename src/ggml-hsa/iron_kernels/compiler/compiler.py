@@ -6,7 +6,7 @@ import importlib.util
 import os
 import sys
 import numpy as np
-from aie.iron.device import NPU1Col1
+from aie.iron.device import NPU1Col4, NPU2
 from aie.iron.compile import compile_mlir_module_to_pdi
 from ml_dtypes import bfloat16
 
@@ -23,7 +23,8 @@ if not os.path.isdir(mlir_aie_include_dir):
     raise RuntimeError(f"MLIR-AIE headers not found in {mlir_aie_include_dir}")
 
 supported_devices = {
-    "aie2": NPU1Col1(),
+    "aie2": NPU1Col4(),
+    "aie2p": NPU2(),
 }
 
 supported_dtypes = {
