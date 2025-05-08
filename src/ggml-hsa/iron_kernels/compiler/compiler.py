@@ -6,7 +6,7 @@ import importlib.util
 import os
 import sys
 import numpy as np
-from aie.iron.device import NPU1Col1
+from aie.iron.device import NPU1Col4, NPU2
 from aie.iron.compile import compile_mlir_module_to_pdi
 from ml_dtypes import bfloat16
 
@@ -23,7 +23,8 @@ if not os.path.isdir(mlir_aie_include_dir):
     raise RuntimeError(f"MLIR-AIE headers not found in {mlir_aie_include_dir}")
 
 supported_devices = {
-    "aie2": NPU1Col1(),
+    "aie2": NPU1Col4(),
+    "aie2p": NPU2(),
 }
 
 supported_dtypes = {
@@ -76,27 +77,21 @@ class CoreFunctionCompileSpec:
 
 
 def to_device(device):
-    """
-    Returns the supported device from the string.
-    """
+    """Returns the device from the string."""
     if isinstance(device, str):
         return supported_devices[device]
     return device
 
 
 def str_to_dtype(dtype):
-    """
-    Returns the supported datatype from the string.
-    """
+    """Returns the datatype from the string."""
     if isinstance(dtype, str):
         return supported_dtypes[dtype]
     return dtype
 
 
 def dtype_to_str(dtype):
-    """
-    Returns the datatype as a string.
-    """
+    """Returns the datatype as a string."""
     if isinstance(dtype, str):
         return dtype
     for key, value in supported_dtypes.items():
@@ -106,18 +101,14 @@ def dtype_to_str(dtype):
 
 
 def to_tuple_of_ints(string: str):
-    """
-    Converts a string of the form (x,...) to a tuple of ints.
-    """
+    """Converts a string of the form (x,...) to a tuple of ints."""
     string = string.replace("(", "").replace(")", "").strip(",")
     ints = map(int, string.split(","))
     return tuple(ints)
 
 
 def to_tensor_desc(string: str) -> TensorDesc:
-    """
-    Converts a string of the form (x,...)/dtype to a TensorDesc object.
-    """
+    """Converts a string of the form (x,...)/dtype to a TensorDesc object."""
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
     dtype = str_to_dtype(dtype)
@@ -125,9 +116,7 @@ def to_tensor_desc(string: str) -> TensorDesc:
 
 
 def import_from_path(module_name, path):
-    """
-    Imports module_name from path.
-    """
+    """Imports the module with name module_name from path."""
     spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
@@ -139,7 +128,8 @@ def compile_kernel(
     kernel_name: str,
     kernel_source: str,
     device: str,
-    tensors: list[TensorDesc],
+    input_tensors: list[TensorDesc],
+    output_tensor: TensorDesc,
     exported_name: str,
     output_directory: str,
 ):
@@ -158,7 +148,7 @@ def compile_kernel(
     module = import_from_path(kernel_name, kernel_source)
     kernel_mlir = getattr(module, kernel_name)
     set_current_device(dev)
-    mlir_module = kernel_mlir(*tensors)
+    mlir_module = kernel_mlir(input_tensors=input_tensors, output_tensor=output_tensor)
     mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
@@ -166,7 +156,9 @@ def compile_kernel(
     # if there is a single-core spec, compile it with Peano
     if hasattr(module, "core_function_compile_spec"):
         core_function_compile_spec = getattr(module, "core_function_compile_spec")
-        spec = core_function_compile_spec(dev, *tensors)
+        spec = core_function_compile_spec(
+            device=dev, input_tensors=input_tensors, output_tensor=output_tensor
+        )
         output_path = os.path.join(output_directory, spec.output_filename)
         cmd = [
             peano_cxx,
@@ -220,18 +212,14 @@ def compile_kernel(
 
 
 def file_path(string: str):
-    """
-    Checks if a string is an existing file.
-    """
+    """Checks if a string is an existing file."""
     if not os.path.isfile(string):
         raise FileNotFoundError(string)
     return string
 
 
 def main():
-    """
-    Main function for use during AOT compilation.
-    """
+    """Main function for use during AOT compilation."""
 
     from argparse import ArgumentParser  # pylint: disable=import-outside-toplevel
 
@@ -258,11 +246,17 @@ def main():
         help="Target device",
     )
     parser.add_argument(
-        "--tensors",
+        "--input_tensors",
         type=to_tensor_desc,
         nargs="+",
         required=True,
-        help="Kernel tensor shapes and datatypes",
+        help="Input kernel tensor shapes and datatypes",
+    )
+    parser.add_argument(
+        "--output_tensor",
+        type=to_tensor_desc,
+        required=True,
+        help="Output kernel tensor shape and datatype",
     )
     parser.add_argument(
         "--exported_name",
@@ -282,7 +276,8 @@ def main():
         kernel_name=args.kernel_name,
         kernel_source=args.kernel_source,
         device=args.device,
-        tensors=args.tensors,
+        input_tensors=args.input_tensors,
+        output_tensor=args.output_tensor,
         exported_name=args.exported_name,
         output_directory=args.output_directory,
     )
