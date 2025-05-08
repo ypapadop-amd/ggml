@@ -3,16 +3,16 @@
 __all__ = [
     "compile_kernel",
     "TensorDesc",
-    "SingleCoreSpec",
+    "CoreFunctionCompileSpec",
     "to_device",
     "str_to_dtype",
     "dtype_to_str",
-    "to_tensor_desc"
+    "to_tensor_desc",
 ]
 
 from .compiler import (
     TensorDesc,
-    SingleCoreSpec
+    CoreFunctionCompileSpec,
     to_device,
     str_to_dtype,
     dtype_to_str,

@@ -22,6 +22,18 @@ mlir_aie_include_dir = os.path.join(os.getenv("MLIR_AIE_INSTALL_DIR"), "include"
 if not os.path.isdir(mlir_aie_include_dir):
     raise RuntimeError(f"MLIR-AIE headers not found in {mlir_aie_include_dir}")
 
+supported_devices = {
+    "aie2": NPU1Col1(),
+}
+
+supported_dtypes = {
+    "bf16": bfloat16,
+    "i8": np.int8,
+    "i16": np.int16,
+    "i32": np.int32,
+    "f32": np.float32,
+}
+
 
 class TensorDesc:
     """
@@ -47,9 +59,9 @@ class TensorDesc:
         return int(np.prod(self.shape))
 
 
-class SingleCoreSpec:
+class CoreFunctionCompileSpec:
     """
-    Single core specification.
+    Core function compilation specification.
 
     This class provides information necessary to compile a single-core kernel via Peano.
     """
@@ -59,18 +71,8 @@ class SingleCoreSpec:
         self.compile_args = compile_args
         self.output_filename = output_filename
 
-
-supported_devices = {
-    "aie2": NPU1Col1(),
-}
-
-supported_dtypes = {
-    "bf16": bfloat16,
-    "i8": np.int8,
-    "i16": np.int16,
-    "i32": np.int32,
-    "f32": np.float32,
-}
+    def __str__(self):
+        return f'Source:"{self.source_path}", Output:"{self.output_filename}", Compile args:"{self.compile_args}"'
 
 
 def to_device(device):
@@ -162,9 +164,9 @@ def compile_kernel(
         file.write(str(mlir_module))
 
     # if there is a single-core spec, compile it with Peano
-    if hasattr(module, "single_core_spec"):
-        single_core_spec = getattr(module, "single_core_spec")
-        spec = single_core_spec(dev, *tensors)
+    if hasattr(module, "core_function_compile_spec"):
+        core_function_compile_spec = getattr(module, "core_function_compile_spec")
+        spec = core_function_compile_spec(dev, *tensors)
         output_path = os.path.join(output_directory, spec.output_filename)
         cmd = [
             peano_cxx,
@@ -196,19 +198,25 @@ def compile_kernel(
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
-    compile_mlir_module_to_pdi(
-        mlir_module=mlir_module,
-        options=[
-            "--alloc-scheme=basic-sequential",
-            "--no-compile-host",
-            "--no-xchesscc",
-            "--no-xbridge",
-            f"--peano={peano_install_dir}",
-        ],
-        cwd=output_directory,
-        insts_path=insts_path,
-        pdi_path=pdi_path,
-    )
+    try:
+        previous_cwd = os.getcwd()
+        os.chdir(output_directory)
+        compile_mlir_module_to_pdi(
+            mlir_module=mlir_module,
+            options=[
+                "--alloc-scheme=basic-sequential",
+                "--no-compile-host",
+                "--no-xchesscc",
+                "--no-xbridge",
+                f"--peano={peano_install_dir}",
+            ],
+            insts_path=insts_path,
+            pdi_path=pdi_path,
+        )
+    except:  # pylint: disable=try-except-raise
+        raise
+    finally:
+        os.chdir(previous_cwd)
 
 
 def file_path(string: str):

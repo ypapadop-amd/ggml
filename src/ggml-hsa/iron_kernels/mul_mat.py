@@ -9,7 +9,7 @@ import os
 from ml_dtypes import bfloat16
 import numpy as np
 
-from compiler import dtype_to_str, SingleCoreSpec
+from compiler import dtype_to_str, CoreFunctionCompileSpec
 
 from aie.extras.context import mlir_mod_ctx
 
@@ -60,13 +60,6 @@ def main():
         "of the input/output matrices. These objects can be used for visualization.",
     )
     args = argparser.parse_args()
-
-    if args.dev == "aie2":
-        args.dev = "npu"
-
-    if args.dev == "aie2p":
-        args.dev = "npu2"
-
     with mlir_mod_ctx() as ctx:
         maybe_taps = my_matmul(
             args.dev,
@@ -109,6 +102,12 @@ def my_matmul(
     trace_size,
     generate_taps=False,
 ):
+    if dev == "aie2":
+        dev = "npu"
+
+    if dev == "aie2p":
+        dev = "npu2"
+
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
 
@@ -603,18 +602,20 @@ def my_matmul(
         )
 
 
-def single_core_spec(device, A, B, C):
+def core_function_compile_spec(device, A, B, C):
+    """Returns a compilation specification for matrix-multiplication."""
+    assert A.dtype == B.dtype
     m = 8
     k = 8
     n = 8
     current_dir = os.path.dirname(os.path.realpath(__file__))
-    return SingleCoreSpec(
+    return CoreFunctionCompileSpec(
         source_path=os.path.join(current_dir, "mm.cc"),
         compile_args=[
             f"-DDIM_M={m}",
             f"-DDIM_K={k}",
             f"-DDIM_N={n}",
-            f"-Di16_i16_ONLY",
+            f"-D{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}_ONLY",
         ],
         output_filename=f"mm_{m}x{k}x{n}.o",
     )
