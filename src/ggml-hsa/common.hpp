@@ -71,6 +71,13 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * add
 }
 
 /**
+ * @brief Returns the number of sources of the tensor.
+ *
+ * @param[in] tensor tensor to find number of sources for
+ */
+int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
+
+/**
  * @brief Returns the full path to this library.
  */
 const std::filesystem::path & ggml_hsa_library_path();

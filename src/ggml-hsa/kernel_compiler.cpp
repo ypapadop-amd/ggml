@@ -19,16 +19,35 @@ namespace py = pybind11;
  * @brief Information to drive JIT compilation for a kernel.
  */
 struct ggml_hsa_aie_jit_kernel_info {
-    using argument_generator = void (*)(const ggml_hsa_device_info::device_info &,
-                                        const ggml_tensor *,
-                                        std::ostream &);
+    std::string_view name; ///< Kernel name.
+    fs::path source;       ///< Kernel relative path.
 
-    ggml_op op{GGML_OP_NONE};
-    fs::path kernel_source; ///< Kernel relative path from the library.
-    argument_generator arg_gen;
+    ggml_hsa_aie_jit_kernel_info() = default;
 
-    bool is_valid() const { return !kernel_source.empty(); }
+    ggml_hsa_aie_jit_kernel_info(std::string_view name, fs::path source) :
+        name{name}, source{std::move(source)} {}
+
+    bool is_valid() const { return !source.empty(); }
 };
+
+/**
+ * @brief Outputs the tensor description for use in IRON python kernel scripts.
+ */
+static void ggml_hsa_output_tensors(const ggml_tensor * tensor, std::ostream & os) {
+    for (int i = 0; i < GGML_MAX_SRC; ++i) {
+        const auto * src_tensor = tensor->src[i];
+        if (src_tensor == nullptr) {
+            break;
+        }
+        os << '(';
+        ggml_hsa_output_tensor_shape(src_tensor, os, ',');
+        os << ")/" << ggml_type_name(src_tensor->type) << ' ';
+    }
+
+    os << '(';
+    ggml_hsa_output_tensor_shape(tensor, os, ',');
+    os << ")/" << ggml_type_name(tensor->type) << ' ';
+}
 
 /**
  * @brief JIT compilation information for all operations.
@@ -38,31 +57,26 @@ struct ggml_hsa_aie_jit_kernel_info {
  */
 static auto ggml_backend_hsa_kernel_jit_info = []() {
     std::array<ggml_hsa_aie_jit_kernel_info, GGML_OP_COUNT> kernels = {};
-    kernels[GGML_OP_ADD] = {GGML_OP_ADD, "iron-kernels/add.py",
-                            [](const ggml_hsa_device_info::device_info & dev_info,
-                               const ggml_tensor * tensor, std::ostream & os) {
-                                os << "--dev " << dev_info.name << " --dtype "
-                                   << ggml_type_name(tensor->type) << " --dims "
-                                   << ggml_nelements(tensor);
-                            }};
+    kernels[GGML_OP_ADD] = {"vector_vector_add", "add.py"};
+    kernels[GGML_OP_MUL_MAT] = {"mul_mat", "mul_mat.py"};
     return kernels;
 }();
 
 /**
- * @brief Creates the compile arguments for the kernel.
+ * @brief Creates a py::tuple from the tensors dimensions.
  */
-template <typename F>
-std::string ggml_hsa_create_kernel_compile_args(const ggml_hsa_device_info::device_info & dev_info,
-                                                const ggml_tensor * tensor,
-                                                F && f) {
-    std::ostringstream oss;
-    std::forward<F>(f)(dev_info, tensor, oss);
-    return oss.str();
+static py::tuple ggml_hsa_tensor_dims_as_tuple(const ggml_tensor * tensor) {
+    const auto ndims = ggml_n_dims(tensor);
+    auto dims_tuple = py::tuple(ndims);
+    for (auto i = 0; i < ndims; ++i) {
+        dims_tuple[i] = py::int_(tensor->ne[i]);
+    }
+    return dims_tuple;
 }
 
 ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                     const ggml_tensor * tensor,
-                                    const std::string & kernel_name,
+                                    const std::string & exported_name,
                                     const std::filesystem::path & output_path) {
     using namespace pybind11::literals;
 
@@ -79,19 +93,39 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     }
 
     const auto & library_dir = ggml_hsa_library_path();
-    const auto kernel_source_path = library_dir / kernel_jit_info.kernel_source;
-    const auto kernel_compile_args =
-        ggml_hsa_create_kernel_compile_args(dev_info, tensor, kernel_jit_info.arg_gen);
+    const auto module_path = library_dir / "iron_kernels";
+    const auto kernel_source_path = module_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
 
     py::scoped_interpreter guard{};
-    auto sys = py::module_::import("sys");
-    sys.attr("path").attr("append")(library_dir.string());
-    auto compiler = py::module_::import("iron-kernels.compiler");
-    compiler.attr("compile_kernel")("name"_a = kernel_name,
-                                    "kernel_source"_a = kernel_source_path.string(),
-                                    "kernel_compile_args"_a = kernel_compile_args,
-                                    "output_directory"_a = output_directory.string());
+    try {
+        // import packages
+        auto sys = py::module_::import("sys");
+        sys.attr("path").attr("append")(module_path.string());
+        auto iron_compiler = py::module_::import("compiler");
+
+        // convert a tensor to a list of iron_kernels.compiler.TensorDesc objects
+        auto tensor_desc_ctor = iron_compiler.attr("TensorDesc");
+        const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
+        auto tensors = py::list(src_tensor_count + 1);
+        for (auto i = 0; i < src_tensor_count; ++i) {
+            tensors[i] = tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor->src[i]),
+                                          "dtype"_a = ggml_type_name(tensor->src[i]->type));
+        }
+        tensors[src_tensor_count] =
+            tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_tuple(tensor),
+                             "dtype"_a = ggml_type_name(tensor->type));
+
+        // compile the kernel
+        auto compile_kernel = iron_compiler.attr("compile_kernel");
+        compile_kernel("kernel_name"_a = kernel_jit_info.name,
+                       "kernel_source"_a = kernel_source_path.string(), "device"_a = dev_info.name,
+                       "tensors"_a = std::move(tensors), "exported_name"_a = exported_name,
+                       "output_directory"_a = output_directory.string());
+    } catch (const pybind11::error_already_set & ex) {
+        GGML_LOG_ERROR("%s: JIT compilation failed: %s\n", __func__, ex.what());
+        return GGML_STATUS_FAILED;
+    }
 
     return GGML_STATUS_SUCCESS;
 }
