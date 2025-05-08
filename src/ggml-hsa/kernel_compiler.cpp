@@ -66,7 +66,7 @@ static auto ggml_backend_hsa_kernel_jit_info = []() {
  * @brief Creates a iron_kernels.compiler.TensorDesc object from the tensor.
  */
 template <typename F>
-static py::object ggml_hsa_tensor_as_tensor_desc(F && ctor_f, const ggml_tensor * tensor) {
+py::object ggml_hsa_tensor_as_tensor_desc(F && ctor_f, const ggml_tensor * tensor) {
     using namespace pybind11::literals;
 
     // create tuple of dimensions
