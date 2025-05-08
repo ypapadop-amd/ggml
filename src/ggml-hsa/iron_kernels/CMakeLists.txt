@@ -48,9 +48,9 @@ function(add_aie_iron_kernel TARGET_NAME)
         OUTPUT ${MLIR_OUTPUT}
         COMMAND ${Python_EXECUTABLE} ${arg_SOURCE} "--dev=${arg_DEVICE}" ${KERNEL_ARGS} > ${MLIR_OUTPUT}
         DEPENDS ${arg_SOURCE}
-        BYPRODUCTS ${OUTPUT_DIR}/${arg_KERNEL_NAME}.mlir.prj
+        BYPRODUCTS ${OUTPUT_DIR}/${arg_EXPORTED_NAME}.mlir.prj
         WORKING_DIRECTORY ${OUTPUT_DIR}
-        COMMENT "Generating AIE MLIR file for ${arg_KERNEL_NAME}"
+        COMMENT "Generating AIE MLIR file for ${arg_EXPORTED_NAME}"
         VERBATIM
         )
 
