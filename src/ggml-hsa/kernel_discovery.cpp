@@ -26,7 +26,7 @@ static const std::string_view inst_file_suffix = "_insts.bin";
 // System (i.e., precompiled and installed) kernel directory.
 static const fs::path system_kernel_dir = [] {
     // create the kernel directory as a relative path from this shared library
-    auto dir = ggml_hsa_library_path() / "iron-kernels";
+    auto dir = ggml_hsa_library_path() / "kernels";
     if (!fs::is_directory(dir)) {
         GGML_ABORT("Directory %s is not a valid path.\n", dir.c_str());
     }
