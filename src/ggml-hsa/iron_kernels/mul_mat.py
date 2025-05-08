@@ -602,8 +602,15 @@ def my_matmul(
         )
 
 
-def core_function_compile_spec(device, A, B, C):
+def core_function_compile_spec(device, input_tensors: list, output_tensor):
     """Returns a compilation specification for matrix-multiplication."""
+
+    assert len(input_tensors) == 2
+
+    A = input_tensors[0]
+    B = input_tensors[1]
+    C = output_tensor
+
     assert A.dtype == B.dtype
     m = 8
     k = 8
@@ -621,11 +628,17 @@ def core_function_compile_spec(device, A, B, C):
     )
 
 
-def mul_mat(A, B, C):
+def mul_mat(input_tensors: list, output_tensor):
     from aie.iron import get_current_device
 
     # TODO
     dev = "npu"
+
+    assert len(input_tensors) == 2
+
+    A = input_tensors[0]
+    B = input_tensors[1]
+    C = output_tensor
 
     assert A.dtype == B.dtype
     assert A.shape[1] == B.shape[0]
