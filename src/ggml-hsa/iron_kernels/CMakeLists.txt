@@ -145,7 +145,7 @@ add_aie_iron_kernel(ggml-hsa
     DEVICE
         aie2
     KERNEL_ARGS
-        "--tensors (256)/i32 (256)/i32 (256)/i32"
+        "--input_tensors (256)/i32 (256)/i32 --output_tensor (256)/i32"
     EXPORTED_NAME
         "add-256i32-256i32-256i32"
     )
@@ -156,7 +156,7 @@ add_aie_iron_kernel(ggml-hsa
     DEVICE
         aie2
     KERNEL_ARGS
-        "--tensors (256)/f32 (256)/f32 (256)/f32"
+        "--input_tensors (256)/f32 (256)/f32 --output_tensor (256)/f32"
     EXPORTED_NAME
         "add-256f32-256f32-256f32"
     )
@@ -167,7 +167,7 @@ add_aie_iron_kernel(ggml-hsa
     DEVICE
         aie2
     KERNEL_ARGS
-        "--tensors (768)/f32 (768)/f32 (768)/f32"
+        "--input_tensors (768)/f32 (768)/f32 --output_tensor (768)/f32"
     EXPORTED_NAME
         "add-768f32-768f32-768f32"
     )
