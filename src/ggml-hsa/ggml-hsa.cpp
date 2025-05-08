@@ -63,6 +63,13 @@ void ggml_hsa_error(
     GGML_ABORT("HSA error");
 }
 
+int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor) {
+    int64_t nsrcs = 0;
+    for (; (nsrcs < GGML_MAX_SRC) && (tensor->src[nsrcs] != nullptr); ++nsrcs)
+        ;
+    return nsrcs;
+}
+
 static const std::filesystem::path library_dir = [] {
     // retrieve the shared library path
     Dl_info info;
