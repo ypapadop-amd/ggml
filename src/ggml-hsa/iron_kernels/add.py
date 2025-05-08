@@ -7,31 +7,48 @@
 # (c) Copyright 2024-2025 Advanced Micro Devices, Inc. or its affiliates
 
 import argparse
-import sys
 import numpy as np
+import aie.iron as iron
 
-from ggml_hsa_common import (
-    create_device,
-    create_dtype,
-    create_dims,
-    supported_devices,
-    supported_dtypes,
-)
+from compiler import TensorDesc, to_device, to_tensor_desc
+
 from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
 
-def vector_add(dev, dtype, dims):
-    if len(dims) > 1:
-        raise ValueError("Function accepts only 1D dims")
-
+def vector_vector_add(input0, input1, output):
+    if input0.shape != input1.shape:
+        raise ValueError(
+            f"Input shapes are not the equal ({input0.shape} != {input1.shape})."
+        )
+    if input0.shape != output.shape:
+        raise ValueError(
+            f"Input and output shapes are not the equal ({input0.shape} != {output.shape})."
+        )
+    if len(input0.shape) != 1:
+        raise ValueError("Function only supports vectors.")
+    num_elements = input0.numel()
     n = 16
-    N_div_n = dims[0] // n
+    if num_elements % n != 0:
+        raise ValueError(
+            f"Number of elements ({num_elements}) must be a multiple of {n}."
+        )
+    N_div_n = num_elements // n
+
+    if input0.dtype != input1.dtype:
+        raise ValueError(
+            f"Input data types are not the same ({input0.dtype} != {input1.dtype})."
+        )
+    if input0.dtype != output.dtype:
+        raise ValueError(
+            f"Input and output data types are not the same ({input0.dtype} != {output.dtype})."
+        )
+    dtype = input0.dtype
 
     # Define tensor types
-    tensor_ty = np.ndarray[dims, dtype]
-    tile_ty = np.ndarray[(n,), dtype]
+    tensor_ty = np.ndarray[(num_elements,), np.dtype[dtype]]
+    tile_ty = np.ndarray[(n,), np.dtype[dtype]]
 
     # AIE-array data movement with object fifos
     of_in1 = ObjectFifo(tile_ty, name="in1")
@@ -63,7 +80,7 @@ def vector_add(dev, dtype, dims):
         rt.drain(of_out.cons(), C, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(dev, rt).resolve_program(SequentialPlacer())
+    return Program(iron.get_current_device(), rt).resolve_program(SequentialPlacer())
 
 
 def main():
@@ -73,32 +90,24 @@ def main():
     )
     parser.add_argument(
         "--dev",
-        type=str,
+        type=to_device,
         required=True,
-        choices=supported_devices,
         help="Target device",
     )
     parser.add_argument(
-        "--dtype",
-        type=str,
+        "--tensors",
+        type=to_tensor_desc,
+        nargs="+",
         required=True,
-        choices=list(supported_dtypes.keys()),
-        help="Input and output vector sizes",
-    )
-    parser.add_argument(
-        "--dims", type=str, required=True, help="Input and output vector sizes"
+        help="Tensor shapes and datatypes",
     )
     args = parser.parse_args()
 
-    dev = create_device(args.dev)
-    dtype = create_dtype(args.dtype)
-    dims = create_dims(args.dims)
-    module = vector_add(dev, dtype, dims)
+    iron.set_current_device(args.dev)
+
+    module = vector_vector_add(*args.tensors)
     print(module)
 
 
 if __name__ == "__main__":
     main()
-else:
-    print("Not meant to be imported")
-    sys.exit(1)
