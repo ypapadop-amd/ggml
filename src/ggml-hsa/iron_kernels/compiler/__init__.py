@@ -2,20 +2,18 @@
 
 __all__ = [
     "compile_kernel",
-    "TensorDesc",
+    "tensordesc",
     "CoreFunctionCompileSpec",
     "to_device",
     "str_to_dtype",
     "dtype_to_str",
-    "to_tensor_desc",
 ]
 
 from .compiler import (
-    TensorDesc,
+    tensordesc,
     CoreFunctionCompileSpec,
     to_device,
     str_to_dtype,
     dtype_to_str,
-    to_tensor_desc,
     compile_kernel,
 )
