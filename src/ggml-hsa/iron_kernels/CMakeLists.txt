@@ -31,7 +31,7 @@ function(add_aie_iron_kernel TARGET_NAME)
 
     add_custom_command(
         OUTPUT ${INSTS_OUTPUT} ${PDI_OUTPUT} ${MLIR_OUTPUT}
-        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/compiler/compiler.py"
+        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/compiler.py"
             "--kernel_name" "${arg_KERNEL_NAME}"
             "--kernel_source" "${arg_KERNEL_SOURCE}"
             "--device" "${arg_DEVICE}"
@@ -61,21 +61,21 @@ endfunction()
 if (GGML_HSA_JIT_COMPILE)
     # copy support files
     set(IRON_SUPPORT_FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/compiler/__init__.py
-        ${CMAKE_CURRENT_SOURCE_DIR}/compiler/compiler.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/compiler.py
         )
     ggml_hsa_copy_files(ggml_hsa_copy_iron_support_files
         FILES
             ${IRON_SUPPORT_FILES}
         DESTINATION
-            ${CMAKE_CURRENT_BINARY_DIR}/compiler
+            ${CMAKE_CURRENT_BINARY_DIR}
         )
     add_dependencies(ggml-hsa ggml_hsa_copy_iron_support_files)
     install(
         FILES
             ${IRON_SUPPORT_FILES}
         DESTINATION
-            lib/iron_kernels/compiler
+            lib/iron_kernels
         )
 
     # copy kernel sources
