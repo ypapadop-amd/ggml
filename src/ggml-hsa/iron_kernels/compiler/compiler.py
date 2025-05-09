@@ -46,7 +46,7 @@ class TensorDesc:
 
     def __init__(self, shape: tuple, dtype):
         self.shape = shape
-        self.size = math.prod(shape)
+        self.size = int(np.prod(shape))
         self.dtype = str_to_dtype(dtype)
 
     def __str__(self):
@@ -59,7 +59,7 @@ class TensorDesc:
         Returns:
             int: The total number of elements in the tensor.
         """
-        return int(np.prod(self.shape))
+        return self.size
 
 
 class CoreFunctionCompileSpec:
