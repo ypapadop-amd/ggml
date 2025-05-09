@@ -59,26 +59,39 @@ function(add_aie_iron_kernel TARGET_NAME)
 endfunction()
 
 if (GGML_HSA_JIT_COMPILE)
-    add_subdirectory(compiler)
+    # copy support files
+    set(IRON_SUPPORT_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/compiler/__init__.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/compiler/compiler.py
+        )
+    ggml_hsa_copy_files(ggml_hsa_copy_iron_support_files
+        FILES
+            ${IRON_SUPPORT_FILES}
+        DESTINATION
+            ${CMAKE_CURRENT_BINARY_DIR}/compiler
+        )
+    add_dependencies(ggml-hsa ggml_hsa_copy_iron_support_files)
+    install(
+        FILES
+            ${IRON_SUPPORT_FILES}
+        DESTINATION
+            lib/iron_kernels/compiler
+        )
 
-    # copy kernel sources and helper function to build and install directories
-
+    # copy kernel sources
     set(IRON_KERNEL_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/add.py
         ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
         ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
         )
-
-    ggml_hsa_copy_files(ggml_hsa_copy_iron_files
+    ggml_hsa_copy_files(ggml_hsa_copy_iron_kernel_files
         FILES
             ${IRON_KERNEL_FILES}
         DESTINATION
             ${CMAKE_CURRENT_BINARY_DIR}
         )
-
-    add_dependencies(ggml-hsa ggml_hsa_copy_iron_files)
-
+    add_dependencies(ggml-hsa ggml_hsa_copy_iron_kernel_files)
     install(
         FILES
             ${IRON_KERNEL_FILES}

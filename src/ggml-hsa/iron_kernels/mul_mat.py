@@ -622,7 +622,6 @@ def core_function_compile_spec(device, input_tensors: list, output_tensor):
 
 
 def mul_mat(input_tensors: list, output_tensor):
-    from aie.iron import get_current_device
     from compiler import dtype_to_str
 
     # TODO
