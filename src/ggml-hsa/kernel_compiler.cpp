@@ -63,10 +63,10 @@ static auto ggml_backend_hsa_kernel_jit_info = []() {
 }();
 
 /**
- * @brief Creates a iron_kernels.compiler.TensorDesc object from the tensor.
+ * @brief Creates a TensorDesc object from the tensor.
  */
 template <typename F>
-static py::object ggml_hsa_tensor_as_tensor_desc(F && ctor_f, const ggml_tensor * tensor) {
+py::object ggml_hsa_tensor_as_tensor_desc(F && ctor_f, const ggml_tensor * tensor) {
     using namespace pybind11::literals;
 
     // create tuple of dimensions
@@ -110,8 +110,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         sys.attr("path").attr("append")(module_path.string());
         auto iron_compiler = py::module_::import("compiler");
 
-        // convert a GGML tensor to input and output iron_kernels.compiler.TensorDesc objects
-        auto tensor_desc_ctor = iron_compiler.attr("TensorDesc");
+        // convert a GGML tensor to input and output TensorDesc objects
+        auto tensor_desc_ctor = iron_compiler.attr("tensordesc");
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto input_tensors = py::list(src_tensor_count);
         for (auto i = 0; i < src_tensor_count; ++i) {
