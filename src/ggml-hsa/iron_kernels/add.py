@@ -1,4 +1,4 @@
-# add.py -*- Python -*-
+# vector_vector_add/vector_vector_add.py -*- Python -*-
 #
 # This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -7,16 +7,17 @@
 # (c) Copyright 2024-2025 Advanced Micro Devices, Inc. or its affiliates
 
 import argparse
+import sys
 import numpy as np
 import aie.iron as iron
 
-from compiler import TensorDesc, to_device, to_tensor_desc
-
 from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
+from aie.iron.device import NPU1Col1, NPU2Col1
 from aie.iron.controlflow import range_
 
 
+#@iron.jit(is_placed=False)
 def vector_vector_add(input0, input1, output):
     if input0.shape != input1.shape:
         raise ValueError(
@@ -26,9 +27,9 @@ def vector_vector_add(input0, input1, output):
         raise ValueError(
             f"Input and output shapes are not the equal ({input0.shape} != {output.shape})."
         )
-    if len(input0.shape) != 1:
+    if len(np.shape(input0)) != 1:
         raise ValueError("Function only supports vectors.")
-    num_elements = input0.numel()
+    num_elements = np.size(input0)
     n = 16
     if num_elements % n != 0:
         raise ValueError(
@@ -88,35 +89,66 @@ def vector_vector_add_ggml(input_tensors: list, output_tensor):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        prog="add.py",
-        description="AIE Vector Add MLIR Design (Whole Array)",
+    device_map = {
+        "npu": NPU1Col1(),
+        "npu2": NPU2Col1(),
+    }
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable verbose output"
     )
     parser.add_argument(
-        "--dev",
-        type=to_device,
-        required=True,
+        "-d",
+        "--device",
+        choices=["npu", "npu2"],
+        default="npu",
         help="Target device",
     )
     parser.add_argument(
-        "--input_tensors",
-        type=to_tensor_desc,
-        nargs="+",
-        required=True,
-        help="Input tensor shapes and datatypes",
-    )
-    parser.add_argument(
-        "--output_tensor",
-        type=to_tensor_desc,
-        required=True,
-        help="Output tensor shape and datatype",
+        "-n",
+        "--num-elements",
+        type=int,
+        default=32,
+        help="Number of elements (default: 32)",
     )
     args = parser.parse_args()
 
-    iron.set_current_device(args.dev)
+    # Construct two input random tensors and an output zeroed tensor
+    # The three tensor are in memory accessible to the NPU
+    input0 = iron.randint(0, 100, (args.num_elements,), dtype=np.int32, device="npu")
+    input1 = iron.randint(0, 100, (args.num_elements,), dtype=np.int32, device="npu")
+    output = iron.zeros_like(input0)
 
-    module = vector_vector_add(*args.input_tensors, args.output_tensor)
-    print(module)
+    iron.set_current_device(device_map[args.device])
+
+    # JIT-compile the kernel then launches the kernel with the given arguments. Future calls
+    # to the kernel will use the same compiled kernel and loaded code objects
+    vector_vector_add(input0, input1, output)
+
+    # Check the correctness of the result
+    e = np.equal(input0.numpy() + input1.numpy(), output.numpy())
+    errors = np.size(e) - np.count_nonzero(e)
+
+    # Optionally, print the results
+    if args.verbose:
+        print(f"{'input0':>4} + {'input1':>4} = {'output':>4}")
+        print("-" * 34)
+        count = input0.numel()
+        for idx, (a, b, c) in enumerate(
+            zip(input0[:count], input1[:count], output[:count])
+        ):
+            print(f"{idx:2}: {a:4} + {b:4} = {c:4}")
+
+    # If the result is correct, exit with a success code.
+    # Otherwise, exit with a failure code
+    if not errors:
+        print("\nPASS!\n")
+        sys.exit(0)
+    else:
+        print("\nError count: ", errors)
+        print("\nFailed.\n")
+        sys.exit(-1)
 
 
 if __name__ == "__main__":
