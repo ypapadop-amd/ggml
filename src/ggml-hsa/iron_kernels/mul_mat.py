@@ -5,11 +5,9 @@
 #
 # (c) Copyright 2025 AMD Inc.
 import argparse
-import os
 from ml_dtypes import bfloat16
 import numpy as np
-
-from compiler import dtype_to_str, CoreFunctionCompileSpec
+import sys
 
 from aie.extras.context import mlir_mod_ctx
 
@@ -32,25 +30,23 @@ def main():
         prog="AIE Matrix Multiplication MLIR Design (Whole Array)",
         description="Emits MLIR code for a matrix multiplication design of the given input size",
     )
-    argparser.add_argument("--dev", type=str, choices=["aie2", "aie2p"], required=True)
-    argparser.add_argument("-M", type=int, required=True)
-    argparser.add_argument("-K", type=int, required=True)
-    argparser.add_argument("-N", type=int, required=True)
-    argparser.add_argument("-m", type=int, required=True)
-    argparser.add_argument("-k", type=int, required=True)
-    argparser.add_argument("-n", type=int, required=True)
+    argparser.add_argument("--dev", type=str, choices=["npu", "npu2"], default="npu")
+    argparser.add_argument("-M", type=int, default=512)
+    argparser.add_argument("-K", type=int, default=512)
+    argparser.add_argument("-N", type=int, default=512)
+    argparser.add_argument("-m", type=int, default=64)
+    argparser.add_argument("-k", type=int, default=64)
+    argparser.add_argument("-n", type=int, default=32)
+    argparser.add_argument("--n-aie-cols", type=int, choices=[1, 2, 4, 8], default=4)
+    argparser.add_argument("--b-col-maj", type=int, choices=[0, 1], default=0)
     argparser.add_argument(
-        "--n-aie-cols", type=int, choices=[1, 2, 4, 8], required=True
-    )
-    argparser.add_argument("--b-col-maj", type=int, choices=[0, 1], required=True)
-    argparser.add_argument(
-        "--dtype_in", type=str, choices=["bf16", "i8", "i16"], required=True
+        "--dtype_in", type=str, choices=["bf16", "i8", "i16"], default="i16"
     )
     argparser.add_argument(
         "--dtype_out",
         type=str,
         choices=["bf16", "i8", "i16", "f32", "i32"],
-        required=True,
+        default="i16",
     )
     argparser.add_argument("--trace_size", type=int, default=0)
     argparser.add_argument(
@@ -102,12 +98,6 @@ def my_matmul(
     trace_size,
     generate_taps=False,
 ):
-    if dev == "aie2":
-        dev = "npu"
-
-    if dev == "aie2p":
-        dev = "npu2"
-
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
 
@@ -605,6 +595,9 @@ def my_matmul(
 def core_function_compile_spec(device, input_tensors: list, output_tensor):
     """Returns a compilation specification for matrix-multiplication."""
 
+    from os import path
+    from compiler import CoreFunctionCompileSpec, dtype_to_str
+
     assert len(input_tensors) == 2
 
     A = input_tensors[0]
@@ -615,9 +608,9 @@ def core_function_compile_spec(device, input_tensors: list, output_tensor):
     m = 8
     k = 8
     n = 8
-    current_dir = os.path.dirname(os.path.realpath(__file__))
+    current_dir = path.dirname(path.realpath(__file__))
     return CoreFunctionCompileSpec(
-        source_path=os.path.join(current_dir, "mm.cc"),
+        source_path=path.join(current_dir, "mm.cc"),
         compile_args=[
             f"-DDIM_M={m}",
             f"-DDIM_K={k}",
@@ -629,7 +622,7 @@ def core_function_compile_spec(device, input_tensors: list, output_tensor):
 
 
 def mul_mat(input_tensors: list, output_tensor):
-    from aie.iron import get_current_device
+    from compiler import dtype_to_str
 
     # TODO
     dev = "npu"
