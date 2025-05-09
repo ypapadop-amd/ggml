@@ -36,6 +36,30 @@ supported_dtypes = {
 }
 
 
+def to_device(device):
+    """Returns the device from the string."""
+    if isinstance(device, str):
+        return supported_devices[device]
+    return device
+
+
+def str_to_dtype(dtype):
+    """Returns the datatype from the string."""
+    if isinstance(dtype, str):
+        return supported_dtypes[dtype]
+    return dtype
+
+
+def dtype_to_str(dtype):
+    """Returns the datatype as a string."""
+    if isinstance(dtype, str):
+        return dtype
+    for key, value in supported_dtypes.items():
+        if value == dtype:
+            return key
+    return None
+
+
 class TensorDesc:
     """
     Tensor description.
@@ -61,6 +85,20 @@ class TensorDesc:
         return self.size
 
 
+def tensordesc(shape, dtype) -> TensorDesc:
+    """
+    Creates a TensorDesc from the specified shape and dtype.
+
+    Parameters:
+        shape(tuple): Tensor shape.
+        dtype (np.dtype, optional): Desired data type.
+
+    Returns:
+        TensorDesc: A new TensorDesc instance.
+    """
+    return TensorDesc(shape=shape, dtype=dtype)
+
+
 class CoreFunctionCompileSpec:
     """
     Core function compilation specification.
@@ -77,30 +115,6 @@ class CoreFunctionCompileSpec:
         return f'Source:"{self.source_path}", Output:"{self.output_filename}", Compile args:"{self.compile_args}"'
 
 
-def to_device(device):
-    """Returns the device from the string."""
-    if isinstance(device, str):
-        return supported_devices[device]
-    return device
-
-
-def str_to_dtype(dtype):
-    """Returns the datatype from the string."""
-    if isinstance(dtype, str):
-        return supported_dtypes[dtype]
-    return dtype
-
-
-def dtype_to_str(dtype):
-    """Returns the datatype as a string."""
-    if isinstance(dtype, str):
-        return dtype
-    for key, value in supported_dtypes.items():
-        if value == dtype:
-            return key
-    return None
-
-
 def to_tuple_of_ints(string: str):
     """Converts a string of the form (x,...) to a tuple of ints."""
     string = string.replace("(", "").replace(")", "").strip(",")
@@ -108,8 +122,17 @@ def to_tuple_of_ints(string: str):
     return tuple(ints)
 
 
-def to_tensor_desc(string: str) -> TensorDesc:
-    """Converts a string of the form (x,...)/dtype to a TensorDesc object."""
+def to_tensordesc(string: str) -> TensorDesc:
+    """
+    Creates a TensorDesc from the string.
+
+    Parameters:
+        string (str): string of the form (shape)/dtype.
+
+    Returns:
+    Returns:
+        TensorDesc: A new TensorDesc instance.
+    """
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
     dtype = str_to_dtype(dtype)
@@ -248,14 +271,14 @@ def main():
     )
     parser.add_argument(
         "--input_tensors",
-        type=to_tensor_desc,
+        type=to_tensordesc,
         nargs="+",
         required=True,
         help="Input kernel tensor shapes and datatypes",
     )
     parser.add_argument(
         "--output_tensor",
-        type=to_tensor_desc,
+        type=to_tensordesc,
         required=True,
         help="Output kernel tensor shape and datatype",
     )
