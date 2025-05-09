@@ -3,6 +3,7 @@
 
 import subprocess
 import importlib.util
+import math
 import os
 import sys
 import numpy as np
@@ -45,6 +46,7 @@ class TensorDesc:
 
     def __init__(self, shape: tuple, dtype):
         self.shape = shape
+        self.size = math.prod(shape)
         self.dtype = str_to_dtype(dtype)
 
     def __str__(self):
