@@ -5,7 +5,10 @@ import subprocess
 import importlib.util
 import os
 import sys
+
 import numpy as np
+
+from aie.iron import set_current_device, get_current_device
 from aie.iron.device import NPU1Col4, NPU2
 from aie.iron.compile import compile_mlir_module_to_pdi
 from ml_dtypes import bfloat16
@@ -148,6 +151,54 @@ def import_from_path(module_name, path):
     return module
 
 
+def compile_mlir(
+    module,
+    kernel_name: str,
+    device: str,
+    input_tensors: list[TensorDesc],
+    output_tensor: TensorDesc,
+) -> str:
+    """Generate MLIR from the source code."""
+    kernel_mlir = getattr(module, kernel_name)
+    set_current_device(device)
+    return kernel_mlir(input_tensors=input_tensors, output_tensor=output_tensor)
+
+
+def compile_core_function(
+    spec: CoreFunctionCompileSpec,
+    device: str,
+    output_directory: str,
+):
+    """Compiles a C/C++ core function."""
+    output_path = os.path.join(output_directory, spec.output_filename)
+    cmd = [
+        peano_cxx,
+        spec.source_path,
+        "-c",
+        "-o",
+        f"{output_path}",
+        f"-I{mlir_aie_include_dir}",
+        "-std=c++20",
+        "-Wno-parentheses",
+        "-Wno-attributes",
+        "-Wno-macro-redefined",
+        "-Wno-empty-body",
+        "-O2",
+        "-DNDEBUG",
+        f"--target={device}-none-unknown-elf",
+    ] + spec.compile_args
+    try:
+        subprocess.run(
+            cmd,
+            cwd=output_directory,
+            check=True,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    except subprocess.CalledProcessError as ex:
+        raise RuntimeError("Peano compilation failed") from ex
+
+
 def compile_kernel(
     kernel_name: str,
     kernel_source: str,
@@ -157,22 +208,21 @@ def compile_kernel(
     exported_name: str,
     output_directory: str,
 ):
-    """
-    Compiles the kernel code to PDI and instruction files.
-
-    This function should be called when the compilation is initiated from another function (e.g., during JIT).
-    """
-    from aie.iron import set_current_device
-
+    """Compiles the kernel code to PDI and instruction files."""
     os.makedirs(output_directory, exist_ok=True)
+
+    module = import_from_path(kernel_name, kernel_source)
 
     dev = to_device(device)
 
     # generate MLIR and write to file for debugging
-    module = import_from_path(kernel_name, kernel_source)
-    kernel_mlir = getattr(module, kernel_name)
-    set_current_device(dev)
-    mlir_module = kernel_mlir(input_tensors=input_tensors, output_tensor=output_tensor)
+    mlir_module = compile_mlir(
+        module=module,
+        kernel_name=kernel_name,
+        device=dev,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+    )
     mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
@@ -181,35 +231,11 @@ def compile_kernel(
     if hasattr(module, "core_function_compile_spec"):
         core_function_compile_spec = getattr(module, "core_function_compile_spec")
         spec = core_function_compile_spec(
-            device=dev, input_tensors=input_tensors, output_tensor=output_tensor
+            device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
-        output_path = os.path.join(output_directory, spec.output_filename)
-        cmd = [
-            peano_cxx,
-            spec.source_path,
-            "-c",
-            "-o",
-            f"{output_path}",
-            f"-I{mlir_aie_include_dir}",
-            "-std=c++20",
-            "-Wno-parentheses",
-            "-Wno-attributes",
-            "-Wno-macro-redefined",
-            "-Wno-empty-body",
-            "-O2",
-            "-DNDEBUG",
-            f"--target={device}-none-unknown-elf",
-        ] + spec.compile_args
-        try:
-            subprocess.run(
-                cmd,
-                cwd=output_directory,
-                check=True,
-                stdout=sys.stdout,
-                stderr=sys.stderr,
-            )
-        except subprocess.CalledProcessError as ex:
-            raise RuntimeError("Peano compilation failed") from ex
+        compile_core_function(
+            spec=spec, device=device, output_directory=output_directory
+        )
 
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
