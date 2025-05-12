@@ -135,21 +135,6 @@ add_aie_iron_kernel(ggml-hsa
 
 add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
-        ggml_op_add
-    KERNEL_SOURCE
-        ${CMAKE_CURRENT_SOURCE_DIR}/binbcast.py
-    DEVICE
-        aie2
-    INPUT_TENSORS
-        "(768)/f32" "(768)/f32"
-    OUTPUT_TENSOR
-        "(768)/f32"
-    EXPORTED_NAME
-        "add-768f32-768f32-768f32"
-    )
-
-add_aie_iron_kernel(ggml-hsa
-    KERNEL_NAME
         mul_mat
     KERNEL_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
