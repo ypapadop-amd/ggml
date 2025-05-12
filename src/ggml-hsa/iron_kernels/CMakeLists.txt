@@ -80,7 +80,7 @@ if (GGML_HSA_JIT_COMPILE)
 
     # copy kernel sources
     set(IRON_KERNEL_FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/binbcast.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
         ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
         ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
@@ -107,7 +107,7 @@ add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
         ggml_op_add
     KERNEL_SOURCE
-        ${CMAKE_CURRENT_SOURCE_DIR}/binbcast.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
     DEVICE
         aie2
     INPUT_TENSORS
@@ -122,7 +122,7 @@ add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
         ggml_op_add
     KERNEL_SOURCE
-        ${CMAKE_CURRENT_SOURCE_DIR}/binbcast.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
     DEVICE
         aie2
     INPUT_TENSORS

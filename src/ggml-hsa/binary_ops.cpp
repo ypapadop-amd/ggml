@@ -5,7 +5,7 @@
 #include "ggml-impl.h"
 #include "kernel_discovery.hpp"
 
-static ggml_status ggml_hsa_binbcast(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
+static ggml_status ggml_hsa_binary_op(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
     if (!tensor_extra.kernel.is_valid()) {
         if (auto status = ggml_hsa_create_aie_kernel(ctx, tensor, tensor_extra.kernel);
@@ -46,17 +46,17 @@ static ggml_status ggml_hsa_binbcast(ggml_backend_hsa_context & ctx, ggml_tensor
 }
 
 ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
-    return ggml_hsa_binbcast(ctx, tensor);
+    return ggml_hsa_binary_op(ctx, tensor);
 }
 
 ggml_status ggml_hsa_sub(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
-    return ggml_hsa_binbcast(ctx, tensor);
+    return ggml_hsa_binary_op(ctx, tensor);
 }
 
 ggml_status ggml_hsa_div(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
-    return ggml_hsa_binbcast(ctx, tensor);
+    return ggml_hsa_binary_op(ctx, tensor);
 }
 
 ggml_status ggml_hsa_mul(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
-    return ggml_hsa_binbcast(ctx, tensor);
+    return ggml_hsa_binary_op(ctx, tensor);
 }
