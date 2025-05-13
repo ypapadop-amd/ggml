@@ -3,7 +3,7 @@
 #include "kernels.hpp"
 
 #include "ggml-impl.h"
-#include "kernel_discovery.hpp"
+#include "kernel-discovery.hpp"
 
 ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
