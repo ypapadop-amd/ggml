@@ -80,7 +80,7 @@ if (GGML_HSA_JIT_COMPILE)
 
     # copy kernel sources
     set(IRON_KERNEL_FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/add.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
         ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
         ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
@@ -105,9 +105,9 @@ endif ()
 
 add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
-        vector_vector_add_ggml
+        ggml_op_add
     KERNEL_SOURCE
-        ${CMAKE_CURRENT_SOURCE_DIR}/add.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
     DEVICE
         aie2
     INPUT_TENSORS
@@ -120,9 +120,9 @@ add_aie_iron_kernel(ggml-hsa
 
 add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
-        vector_vector_add_ggml
+        ggml_op_add
     KERNEL_SOURCE
-        ${CMAKE_CURRENT_SOURCE_DIR}/add.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
     DEVICE
         aie2
     INPUT_TENSORS
@@ -131,21 +131,6 @@ add_aie_iron_kernel(ggml-hsa
         "(256)/f32"
     EXPORTED_NAME
         "add-256f32-256f32-256f32"
-    )
-
-add_aie_iron_kernel(ggml-hsa
-    KERNEL_NAME
-        vector_vector_add_ggml
-    KERNEL_SOURCE
-        ${CMAKE_CURRENT_SOURCE_DIR}/add.py
-    DEVICE
-        aie2
-    INPUT_TENSORS
-        "(768)/f32" "(768)/f32"
-    OUTPUT_TENSOR
-        "(768)/f32"
-    EXPORTED_NAME
-        "add-768f32-768f32-768f32"
     )
 
 add_aie_iron_kernel(ggml-hsa
