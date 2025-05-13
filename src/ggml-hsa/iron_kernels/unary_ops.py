@@ -6,7 +6,6 @@
 #
 # (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
-import operator
 import numpy as np
 import pytest
 
@@ -75,9 +74,104 @@ def ggml_op_sqr(input_tensors: list, output_tensor):
     return unary_op(*input_tensors, lambda x: x * x, output_tensor)
 
 
+def ggml_op_sqrt(input_tensors: list, output_tensor):
+    """GGML_OP_SQRT implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_log(input_tensors: list, output_tensor):
+    """GGML_OP_LOG implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_sin(input_tensors: list, output_tensor):
+    """GGML_OP_SIN implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_cos(input_tensors: list, output_tensor):
+    """GGML_OP_COS implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_abs(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_ABS implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_sgn(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_SGN implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_neg(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_NEG implementation."""
+    return unary_op(*input_tensors, lambda x: -x, output_tensor)
+
+
+def ggml_op_step(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_STEP implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_tanh(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_TANH implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_elu(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_ELU implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_relu(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_RELU implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_sigmoid(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_SIGMOID implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_gelu(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_GELU implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_gelu_quick(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_GELU implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_silu(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_SILU implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_hardswish(input_tensors: list, output_tensor):
+    """GGML_OP_HARDSWISH implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_hardsigmoid(input_tensors: list, output_tensor):
+    """GGML_OP_HARDSIGMOID implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_exp(input_tensors: list, output_tensor):
+    """GGML_OP_EXP implementation."""
+    raise NotImplementedError
+
+
 @iron.jit(is_placed=False)
-def ggml_op_sqr_jit(input, output):
-    return ggml_op_sqr([input], output)
+def ggml_op_neg_jit(input_tensor, output_tensor):
+    return ggml_op_neg([input_tensor], output_tensor)
+
+
+@iron.jit(is_placed=False)
+def ggml_op_sqr_jit(input_tensor, output_tensor):
+    return ggml_op_sqr([input_tensor], output_tensor)
 
 
 @pytest.mark.parametrize("num_elements", [16, 256, 4096])
@@ -85,6 +179,7 @@ def ggml_op_sqr_jit(input, output):
 @pytest.mark.parametrize(
     "function, op",
     [
+        (ggml_op_neg_jit, lambda x: -x),
         (ggml_op_sqr_jit, lambda x: x * x),
     ],
 )
@@ -92,10 +187,10 @@ def test_ggml_op_unary(function, op, dtype, num_elements):
     iron.set_current_device(NPU1Col4())
 
     # Construct two input random tensors and an output zeroed tensor
-    input = iron.randint(-100, 100, (num_elements,), dtype=dtype, device="npu")
-    output = iron.zeros_like(input)
+    input_tensor = iron.randint(-100, 100, (num_elements,), dtype=dtype, device="npu")
+    output_tensor = iron.zeros_like(input_tensor)
 
     # JIT-compile the kernel then launch the kernel with the given arguments
-    function(input, output)
+    function(input_tensor, output_tensor)
 
-    assert np.array_equal(op(input.numpy()), output.numpy())
+    assert np.array_equal(op(input_tensor.numpy()), output_tensor.numpy())
