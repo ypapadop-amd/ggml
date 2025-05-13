@@ -94,79 +94,79 @@ def ggml_op_cos(input_tensors: list, output_tensor):
     raise NotImplementedError
 
 
-def ggml_op_abs(input_tensors: list, output_tensor):
+def ggml_unary_op_abs(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_ABS implementation."""
     raise NotImplementedError
 
 
-def ggml_op_sgn(input_tensors: list, output_tensor):
+def ggml_unary_op_sgn(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_SGN implementation."""
     raise NotImplementedError
 
 
-def ggml_op_neg(input_tensors: list, output_tensor):
+def ggml_unary_op_neg(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_NEG implementation."""
     return unary_op(*input_tensors, lambda x: -x, output_tensor)
 
 
-def ggml_op_step(input_tensors: list, output_tensor):
+def ggml_unary_op_step(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_STEP implementation."""
     raise NotImplementedError
 
 
-def ggml_op_tanh(input_tensors: list, output_tensor):
+def ggml_unary_op_tanh(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_TANH implementation."""
     raise NotImplementedError
 
 
-def ggml_op_elu(input_tensors: list, output_tensor):
+def ggml_unary_op_elu(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_ELU implementation."""
     raise NotImplementedError
 
 
-def ggml_op_relu(input_tensors: list, output_tensor):
+def ggml_unary_op_relu(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_RELU implementation."""
     raise NotImplementedError
 
 
-def ggml_op_sigmoid(input_tensors: list, output_tensor):
+def ggml_unary_op_sigmoid(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_SIGMOID implementation."""
     raise NotImplementedError
 
 
-def ggml_op_gelu(input_tensors: list, output_tensor):
+def ggml_unary_op_gelu(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_GELU implementation."""
     raise NotImplementedError
 
 
-def ggml_op_gelu_quick(input_tensors: list, output_tensor):
+def ggml_unary_op_gelu_quick(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_GELU implementation."""
     raise NotImplementedError
 
 
-def ggml_op_silu(input_tensors: list, output_tensor):
+def ggml_unary_op_silu(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_SILU implementation."""
     raise NotImplementedError
 
 
-def ggml_op_hardswish(input_tensors: list, output_tensor):
-    """GGML_OP_HARDSWISH implementation."""
+def ggml_unary_op_hardswish(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_HARDSWISH implementation."""
     raise NotImplementedError
 
 
-def ggml_op_hardsigmoid(input_tensors: list, output_tensor):
-    """GGML_OP_HARDSIGMOID implementation."""
+def ggml_unary_op_hardsigmoid(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_HARDSIGMOID implementation."""
     raise NotImplementedError
 
 
-def ggml_op_exp(input_tensors: list, output_tensor):
-    """GGML_OP_EXP implementation."""
+def ggml_unary_op_exp(input_tensors: list, output_tensor):
+    """GGML_UNARY_OP_EXP implementation."""
     raise NotImplementedError
 
 
 @iron.jit(is_placed=False)
-def ggml_op_neg_jit(input_tensor, output_tensor):
-    return ggml_op_neg([input_tensor], output_tensor)
+def ggml_unary_op_neg_jit(input_tensor, output_tensor):
+    return ggml_unary_op_neg([input_tensor], output_tensor)
 
 
 @iron.jit(is_placed=False)
@@ -179,8 +179,8 @@ def ggml_op_sqr_jit(input_tensor, output_tensor):
 @pytest.mark.parametrize(
     "function, op",
     [
-        (ggml_op_neg_jit, lambda x: -x),
         (ggml_op_sqr_jit, lambda x: x * x),
+        (ggml_unary_op_neg_jit, lambda x: -x),
     ],
 )
 def test_ggml_op_unary(function, op, dtype, num_elements):
