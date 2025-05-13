@@ -8,5 +8,8 @@
 #include "ggml.h"
 
 ggml_status ggml_hsa_add(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
+ggml_status ggml_hsa_sub(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
+ggml_status ggml_hsa_mul(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
+ggml_status ggml_hsa_div(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
 
 ggml_status ggml_hsa_mul_mat(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
