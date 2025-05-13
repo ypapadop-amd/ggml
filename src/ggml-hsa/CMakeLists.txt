@@ -25,7 +25,7 @@ option(GGML_HSA_JIT_COMPILE "ggml: allow JIT compilation of kernels" ON)
 option(GGML_HSA_CPU_FALLBACK "ggml: use fallback to CPU if HSA kernel not implemented" OFF)
 
 set(GGML_KERNEL_SOURCES_HSA
-    add.cpp
+    binary-ops.cpp
     mul_mat.cpp
     )
 
