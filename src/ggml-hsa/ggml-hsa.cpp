@@ -3,7 +3,7 @@
 #include "ggml-hsa.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
-#include "kernel_discovery.hpp"
+#include "kernel-discovery.hpp"
 #include "kernels.hpp"
 
 #include "ggml-hsa/common.hpp"
