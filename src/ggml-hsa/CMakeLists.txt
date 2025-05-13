@@ -26,13 +26,13 @@ option(GGML_HSA_CPU_FALLBACK "ggml: use fallback to CPU if HSA kernel not implem
 
 set(GGML_KERNEL_SOURCES_HSA
     binary-ops.cpp
-    mul_mat.cpp
+    mul-mat.cpp
     )
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
     ggml-hsa.cpp
-    kernel_discovery.cpp
+    kernel-discovery.cpp
     ${GGML_KERNEL_SOURCES_HSA}
     )
 
@@ -49,7 +49,7 @@ if (GGML_HSA_JIT_COMPILE)
     set(PYBIND11_FINDPYTHON OFF)
     FetchContent_MakeAvailable(pybind11)
 
-    set(GGML_SOURCES_HSA kernel_compiler.cpp ${GGML_SOURCES_HSA})
+    set(GGML_SOURCES_HSA kernel-compiler.cpp ${GGML_SOURCES_HSA})
 endif ()
 
 ggml_add_backend_library(ggml-hsa
@@ -62,16 +62,14 @@ target_include_directories(ggml-hsa PRIVATE . ..)
 
 target_sources(ggml-hsa
     PRIVATE
-        common.hpp kernel_discovery.hpp kernels.hpp
+        common.hpp
+        kernel-discovery.hpp
+        kernels.hpp
     )
 
 if (GGML_HSA_JIT_COMPILE)
     add_subdirectory(iron_kernels)
-
-    target_sources(ggml-hsa
-        PRIVATE
-            kernel_compiler.hpp
-        )
+    target_sources(ggml-hsa PRIVATE kernel-compiler.hpp)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_JIT_COMPILE)
     target_link_libraries(ggml-hsa PRIVATE pybind11::embed)
 endif ()
