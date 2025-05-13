@@ -13,9 +13,9 @@ add_executable(${TEST_TARGET} simple-backend.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml)
 
 #
-# simple-add
+# simple-vector
 
-set(TEST_TARGET simple-add)
+set(TEST_TARGET simple-vector)
 add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml)
 
@@ -25,4 +25,8 @@ endif()
 
 if (GGML_METAL)
     add_compile_definitions(GGML_USE_METAL)
+endif()
+
+if (GGML_HSA)
+    add_compile_definitions(GGML_USE_HSA)
 endif()
