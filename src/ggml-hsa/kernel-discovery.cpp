@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -33,9 +34,9 @@ static const fs::path system_kernel_dir = [] {
     return dir;
 }();
 
-// User (i.e., out-of-tree and JIT compiled) kernel base path.
-static const fs::path user_kernel_dir = [] {
-    // user compiled and JIT kernels are stored in XDG_CACHE_HOME if defined or $HOME/.cache if not
+// Cached (i.e., JIT compiled) kernel base path.
+static const fs::path cached_kernel_dir = [] {
+    // JIT kernels are stored in XDG_CACHE_HOME if defined or $HOME/.cache if not
     fs::path dir;
     if (const char * cache_dir = std::getenv("XDG_CACHE_HOME"); cache_dir != nullptr) {
         dir = fs::path(cache_dir) / "ggml";
@@ -46,7 +47,14 @@ static const fs::path user_kernel_dir = [] {
         }
         dir = fs::path(home_dir) / ".cache/ggml";
     }
-    GGML_LOG_INFO("ggml_hsa_backend: User kernels in %s\n", dir.c_str());
+    GGML_LOG_INFO("ggml_hsa_backend: Cached kernels in %s\n", dir.c_str());
+
+    if (const char * clear_cache = std::getenv("GGML_HSA_CLEAR_KERNEL_CACHE");
+        clear_cache != nullptr && std::strcmp(clear_cache, "0") != 0) {
+        GGML_LOG_INFO("ggml_hsa_backend: Clearing kernel cache in %s\n", dir.c_str());
+        fs::remove_all(dir);
+    }
+
     return dir;
 }();
 
@@ -100,9 +108,9 @@ static bool ggml_hsa_find_kernel(const std::string & device_name,
     const auto partial_insts_path = fs::path(partial_path).concat(inst_file_suffix);
 
     {
-        // search in user kernel dir
-        auto tmp_pdi_path = user_kernel_dir / partial_pdi_path;
-        auto tmp_insts_path = user_kernel_dir / partial_insts_path;
+        // search in cached kernel dir
+        auto tmp_pdi_path = cached_kernel_dir / partial_pdi_path;
+        auto tmp_insts_path = cached_kernel_dir / partial_insts_path;
         if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
             pdi_path = std::move(tmp_pdi_path);
             insts_path = std::move(tmp_insts_path);
@@ -207,7 +215,7 @@ ggml_hsa_find_or_compile_kernel(const ggml_hsa_device_info::device_info & dev_in
 
 #ifdef GGML_HSA_JIT_COMPILE
     // kernel files not found, compile kernel
-    if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, user_kernel_dir);
+    if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, cached_kernel_dir);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
