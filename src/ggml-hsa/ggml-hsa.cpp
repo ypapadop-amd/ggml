@@ -945,8 +945,16 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
 
             case GGML_OP_ADD :
-            case GGML_OP_ADD1 :
                 status = ggml_hsa_add(ctx, node);
+                break;
+            case GGML_OP_SUB :
+                status = ggml_hsa_sub(ctx, node);
+                break;
+            case GGML_OP_MUL :
+                status = ggml_hsa_mul(ctx, node);
+                break;
+            case GGML_OP_DIV :
+                status = ggml_hsa_div(ctx, node);
                 break;
 
             case GGML_OP_MUL_MAT :
