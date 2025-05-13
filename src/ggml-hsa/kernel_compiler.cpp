@@ -57,7 +57,10 @@ static void ggml_hsa_output_tensors(const ggml_tensor * tensor, std::ostream & o
  */
 static auto ggml_backend_hsa_kernel_jit_info = []() {
     std::array<ggml_hsa_aie_jit_kernel_info, GGML_OP_COUNT> kernels = {};
-    kernels[GGML_OP_ADD] = {"vector_vector_add_ggml", "add.py"};
+    kernels[GGML_OP_ADD] = {"ggml_op_add", "binary_ops.py"};
+    kernels[GGML_OP_SUB] = {"ggml_op_sub", "binary_ops.py"};
+    kernels[GGML_OP_MUL] = {"ggml_op_mul", "binary_ops.py"};
+    kernels[GGML_OP_DIV] = {"ggml_op_div", "binary_ops.py"};
     kernels[GGML_OP_MUL_MAT] = {"mul_mat", "mul_mat.py"};
     return kernels;
 }();
