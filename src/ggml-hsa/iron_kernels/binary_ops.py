@@ -17,7 +17,7 @@ from aie.iron.device import NPU1Col4
 from aie.iron.controlflow import range_
 
 
-def vector_vector_op(input0, input1, op, output):
+def binary_op(input0, input1, op, output):
     """Implements output = input0 op input1"""
     if input0.shape != input1.shape:
         raise ValueError(
@@ -27,8 +27,6 @@ def vector_vector_op(input0, input1, op, output):
         raise ValueError(
             f"Input and output shapes are not the equal ({input0.shape} != {output.shape})."
         )
-    if len(np.shape(input0)) != 1:
-        raise ValueError("Function only supports vectors.")
     num_elements = np.size(input0)
     n = 16
     if num_elements % n != 0:
@@ -86,22 +84,22 @@ def vector_vector_op(input0, input1, op, output):
 
 def ggml_op_add(input_tensors: list, output_tensor):
     """GGML_OP_ADD implementation."""
-    return vector_vector_op(*input_tensors, lambda x, y: x + y, output_tensor)
+    return binary_op(*input_tensors, lambda x, y: x + y, output_tensor)
 
 
 def ggml_op_sub(input_tensors: list, output_tensor):
     """GGML_OP_SUB implementation."""
-    return vector_vector_op(*input_tensors, lambda x, y: x - y, output_tensor)
+    return binary_op(*input_tensors, lambda x, y: x - y, output_tensor)
 
 
 def ggml_op_mul(input_tensors: list, output_tensor):
     """GGML_OP_MUL implementation."""
-    return vector_vector_op(*input_tensors, lambda x, y: x * y, output_tensor)
+    return binary_op(*input_tensors, lambda x, y: x * y, output_tensor)
 
 
 def ggml_op_div(input_tensors: list, output_tensor):
     """GGML_OP_DIV implementation."""
-    return vector_vector_op(*input_tensors, lambda x, y: x / y, output_tensor)
+    return binary_op(*input_tensors, lambda x, y: x / y, output_tensor)
 
 
 @iron.jit(is_placed=False)
@@ -135,7 +133,7 @@ def ggml_op_div_jit(input0, input1, output):
         (ggml_op_div_jit, operator.floordiv),
     ],
 )
-def test_ggml_op_add(function, op, dtype, num_elements):
+def test_ggml_op_binary(function, op, dtype, num_elements):
     iron.set_current_device(NPU1Col4())
 
     # Construct two input random tensors and an output zeroed tensor
