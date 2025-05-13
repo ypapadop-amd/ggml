@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "kernel_compiler.hpp"
+#include "kernel-compiler.hpp"
 
 #include <array>
 #include <cstdlib>
