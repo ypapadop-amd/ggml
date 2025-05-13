@@ -34,13 +34,24 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& v) {
     return os << " ]";
 }
 
-int main(void) {
+int main(int argc, char* argv[]) {
+    std::size_t N = 32;
+    const char* op = "+";
+    if (argc > 1) {
+        N = std::atoi(argv[1]);
+    }
+    if (argc > 2) {
+        op = argv[2];
+    }
+
+    std::cout << "Creating arrays of " << N
+              << " elements and doing A " << op << " B.\n";
+
     // create data
     using value_type = std::int32_t;
     constexpr auto ggml_type = GGML_TYPE_I32;
-    const std::size_t N = 256;
-    const std::vector<value_type> A = create_data<value_type>(N, 0);
-    const std::vector<value_type> B = create_data<value_type>(N, 1);
+    const std::vector<value_type> A = create_data<value_type>(N, 10);
+    const std::vector<value_type> B = create_data<value_type>(N, 2);
 
     // initialize GGML backend and allocators
     ggml_backend_t backend = {};
@@ -70,7 +81,7 @@ int main(void) {
 
     // allocate tensors on HSA memory
     const std::size_t ctx_size =
-        tensor_count * ggml_tensor_overhead() + ggml_graph_overhead_custom(tensor_count, false) + 64;
+        tensor_count * ggml_tensor_overhead() + ggml_graph_overhead_custom(tensor_count, false) + 1024;
     ggml_init_params params = {
         /*.mem_size   =*/ ctx_size,
         /*.mem_buffer =*/ nullptr,
@@ -87,8 +98,26 @@ int main(void) {
     // create graph
     ggml_cgraph * gf = ggml_new_graph_custom(ctx, tensor_count, /*grads*/ false);
 
-    // add vector-add operation
-    ggml_tensor * tensor_result = ggml_add(ctx, tensor_a, tensor_b);
+    // add operation
+    ggml_tensor * tensor_result = nullptr;
+    if (std::strcmp(op, "+") == 0) {
+        tensor_result = ggml_add(ctx, tensor_a, tensor_b);
+    }
+    else if (std::strcmp(op, "-") == 0) {
+        tensor_result = ggml_sub(ctx, tensor_a, tensor_b);
+    }
+    else if (std::strcmp(op, "*") == 0) {
+        tensor_result = ggml_mul(ctx, tensor_a, tensor_b);
+    }
+    else if (std::strcmp(op, "/") == 0) {
+        tensor_result = ggml_div(ctx, tensor_a, tensor_b);
+    }
+    else {
+        std::cerr << "Unknown operation \"" << op << "\".\n";
+        return EXIT_FAILURE;
+    }
+
+    ggml_mul(ctx, tensor_a, tensor_b);
     if (!ggml_backend_supports_op(backend, tensor_result)) {
         std::cerr << "Operation not supported\n";
         return EXIT_FAILURE;
@@ -112,9 +141,9 @@ int main(void) {
     // copy data out and print
     std::vector<value_type> result(N);
     ggml_backend_tensor_get(tensor_result, std::data(result), 0, ggml_nbytes(tensor_result));
-    std::cout << "A =     " << A << '\n';
-    std::cout << "B =     " << B << '\n';
-    std::cout << "A + B = " << result << '\n';
+    std::cout << "A =     " << A << '\n'
+              << "B =     " << B << '\n'
+              << "A " << op << " B = " << result << '\n';
 
     // free resources
     ggml_free(ctx);
