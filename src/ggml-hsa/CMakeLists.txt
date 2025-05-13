@@ -27,6 +27,7 @@ option(GGML_HSA_CPU_FALLBACK "ggml: use fallback to CPU if HSA kernel not implem
 set(GGML_KERNEL_SOURCES_HSA
     binary-ops.cpp
     mul-mat.cpp
+    unary-ops.cpp
     )
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)

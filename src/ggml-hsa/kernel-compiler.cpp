@@ -61,6 +61,9 @@ static auto ggml_backend_hsa_kernel_jit_info = []() {
     kernels[GGML_OP_SUB] = {"ggml_op_sub", "binary_ops.py"};
     kernels[GGML_OP_MUL] = {"ggml_op_mul", "binary_ops.py"};
     kernels[GGML_OP_DIV] = {"ggml_op_div", "binary_ops.py"};
+
+    kernels[GGML_OP_SQR] = {"ggml_op_sqr", "unary_ops.py"};
+
     kernels[GGML_OP_MUL_MAT] = {"mul_mat", "mul_mat.py"};
     return kernels;
 }();

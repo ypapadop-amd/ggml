@@ -83,6 +83,7 @@ if (GGML_HSA_JIT_COMPILE)
         ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
         ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.py
         ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
         )
     ggml_hsa_copy_files(ggml_hsa_copy_iron_kernel_files

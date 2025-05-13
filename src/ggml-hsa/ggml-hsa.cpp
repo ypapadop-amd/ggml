@@ -957,6 +957,10 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 status = ggml_hsa_div(ctx, node);
                 break;
 
+            case GGML_OP_SQR:
+                status = ggml_hsa_sqr(ctx, node);
+                break;
+
             case GGML_OP_MUL_MAT :
                 status = ggml_hsa_mul_mat(ctx, node);
                 break;
@@ -971,7 +975,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             default :
 #ifndef GGML_HSA_CPU_FALLBACK
                 GGML_LOG_ERROR("%s: op %s not supported for \"%s\"\n", __func__,
-                               ggml_op_name(node->op), node->name);
+                               ggml_op_desc(node), node->name);
 #endif
                 status = GGML_STATUS_FAILED;
                 break;
@@ -981,7 +985,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         if (status != GGML_STATUS_SUCCESS) {
             auto tensor_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
             if (!tensor_extra->emulated_tensor) {
-                GGML_LOG_INFO("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_name(node->op),
+                GGML_LOG_INFO("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_desc(node),
                               node->name);
                 tensor_extra->emulated_tensor =
                     std::make_unique<ggml_backend_hsa_emulated_tensor>(ctx, node);
