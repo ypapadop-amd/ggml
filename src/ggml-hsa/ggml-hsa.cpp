@@ -4,7 +4,6 @@
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 #include "kernel-discovery.hpp"
-#include "kernels.hpp"
 
 #include "ggml-hsa/common.hpp"
 
@@ -314,9 +313,18 @@ void ggml_backend_hsa_context::free_pending_payloads() {
     pending_payloads.clear();
 }
 
-void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
-                              hsa_amd_aie_ert_start_kernel_data_t * payload,
-                              std::size_t payload_size) {
+/**
+ * @brief Dispatches an HSA packet.
+ *
+ * @note This function assumes ownership of @p payload.
+ *
+ * @param[in] ctx backend context
+ * @param[in] payload packet payload
+ * @param[in] payload_size payload size in dwords
+ */
+static void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
+                                     hsa_amd_aie_ert_start_kernel_data_t * payload,
+                                     std::size_t payload_size) {
     auto * queue = ctx.queue;
 
     hsa_amd_aie_ert_packet_t pkt{};
@@ -335,6 +343,70 @@ void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
     ctx.pending_payloads.push_back(payload);
 
     hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
+}
+
+ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
+    auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
+    if (!tensor_extra.kernel.is_valid()) {
+        if (auto status = ggml_hsa_create_aie_kernel(ctx, tensor, tensor_extra.kernel);
+            status != GGML_STATUS_SUCCESS) {
+            return status;
+        }
+    }
+
+    const auto & kernel = tensor_extra.kernel;
+    auto & info = ggml_hsa_info();
+    auto & dev_info = info.devices[ctx.device];
+    const auto nsrcs = ggml_hsa_nsrcs(tensor);
+    const std::size_t packet_dwords =
+        3 /* instructions */ + (nsrcs + 1) * 3 /* source and destination tensors */;
+    hsa_amd_aie_ert_start_kernel_data_t * cmd_payload = nullptr;
+    if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0,
+                                                   reinterpret_cast<void **>(&cmd_payload));
+        status != HSA_STATUS_SUCCESS) {
+        GGML_LOG_ERROR("%s: Could not allocate space for the packet (%d)\n", __func__, status);
+        return GGML_STATUS_ALLOC_FAILED;
+    }
+    cmd_payload->pdi_addr = kernel.pdi.data; // PDI to use with this command
+
+    // transaction opcode; not counted in packet_dwords
+    cmd_payload->data[0] = 0x3;
+    cmd_payload->data[1] = 0x0;
+
+    std::size_t dword_idx = 2;
+
+    // instructions; 3 dwords
+    std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
+        ggml_hsa_addr_to_hilo(kernel.insts.data);
+    cmd_payload->data[dword_idx + 2] = static_cast<std::uint32_t>(kernel.insts.size);
+
+    dword_idx += 3;
+
+    // sources; 2 dwords each
+    for (std::size_t src_idx = 0; src_idx < nsrcs; ++src_idx, dword_idx += 2) {
+        const ggml_tensor * src = tensor->src[src_idx];
+        std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
+            ggml_hsa_addr_to_hilo(src->data);
+    }
+
+    // destination; 2 dwords
+    std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
+        ggml_hsa_addr_to_hilo(tensor->data);
+
+    dword_idx += 2;
+
+    // sizes; 1 dword per tensor
+    for (std::size_t src_idx = 0; src_idx < nsrcs; ++src_idx, ++dword_idx) {
+        const ggml_tensor * src = tensor->src[src_idx];
+        cmd_payload->data[dword_idx] = ggml_nbytes(src);
+    }
+    cmd_payload->data[dword_idx] = ggml_nbytes(tensor);
+
+    assert(dword_idx == packet_dwords + 1); // 2 extra uncounted dwords
+
+    ggml_hsa_dispatch_packet(ctx, cmd_payload, packet_dwords);
+
+    return GGML_STATUS_SUCCESS;
 }
 
 // HSA buffer
@@ -944,23 +1016,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 // NOP
                 break;
 
-            case GGML_OP_ADD :
-                status = ggml_hsa_add(ctx, node);
-                break;
-            case GGML_OP_SUB :
-                status = ggml_hsa_sub(ctx, node);
-                break;
-            case GGML_OP_MUL :
-                status = ggml_hsa_mul(ctx, node);
-                break;
-            case GGML_OP_DIV :
-                status = ggml_hsa_div(ctx, node);
-                break;
-
-            case GGML_OP_MUL_MAT :
-                status = ggml_hsa_mul_mat(ctx, node);
-                break;
-
             case GGML_OP_PERMUTE :
             case GGML_OP_RESHAPE :
             case GGML_OP_TRANSPOSE :
@@ -969,11 +1024,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
 
             default :
-#ifndef GGML_HSA_CPU_FALLBACK
-                GGML_LOG_ERROR("%s: op %s not supported for \"%s\"\n", __func__,
-                               ggml_op_name(node->op), node->name);
-#endif
-                status = GGML_STATUS_FAILED;
+                status = ggml_hsa_dispatch_kernel(ctx, node);
                 break;
         }
 
@@ -981,7 +1032,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         if (status != GGML_STATUS_SUCCESS) {
             auto tensor_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
             if (!tensor_extra->emulated_tensor) {
-                GGML_LOG_INFO("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_name(node->op),
+                GGML_LOG_INFO("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_desc(node),
                               node->name);
                 tensor_extra->emulated_tensor =
                     std::make_unique<ggml_backend_hsa_emulated_tensor>(ctx, node);
@@ -990,6 +1041,11 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             status = (*tensor_extra->emulated_tensor)();
         }
 #endif
+
+        if (status != GGML_STATUS_SUCCESS) {
+            GGML_LOG_ERROR("%s: op %s failed or not supported for \"%s\"\n", __func__,
+                           ggml_op_desc(node), node->name);
+        }
     }
 
     return status;
@@ -1181,12 +1237,11 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
     bool supported = false;
     switch (tensor->op) {
         case GGML_OP_NONE :
-            supported = true;
-            break;
         case GGML_OP_PERMUTE :
         case GGML_OP_RESHAPE :
         case GGML_OP_TRANSPOSE :
         case GGML_OP_VIEW :
+            // noops; supported by default
             supported = true;
             break;
         default :
