@@ -24,16 +24,10 @@ find_package(hsa-runtime64 1.0 REQUIRED)
 option(GGML_HSA_JIT_COMPILE "ggml: allow JIT compilation of kernels" ON)
 option(GGML_HSA_CPU_FALLBACK "ggml: use fallback to CPU if HSA kernel not implemented" OFF)
 
-set(GGML_KERNEL_SOURCES_HSA
-    binary-ops.cpp
-    mul-mat.cpp
-    )
-
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
     ggml-hsa.cpp
     kernel-discovery.cpp
-    ${GGML_KERNEL_SOURCES_HSA}
     )
 
 if (GGML_HSA_JIT_COMPILE)
@@ -64,7 +58,6 @@ target_sources(ggml-hsa
     PRIVATE
         common.hpp
         kernel-discovery.hpp
-        kernels.hpp
     )
 
 if (GGML_HSA_JIT_COMPILE)
