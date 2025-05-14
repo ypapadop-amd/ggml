@@ -212,17 +212,12 @@ struct ggml_backend_hsa_context {
 };
 
 /**
- * @brief Dispatches an HSA packet.
- *
- * @note This function assumes ownership of @p payload.
+ * @brief Dispatches a kernel that implements for the tensor operation.
  *
  * @param[in] ctx backend context
- * @param[in] payload packet payload
- * @param[in] payload_size payload size in dwords
+ * @param[in] tensor tensor with the operation to dispatch for
  */
-void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
-                              hsa_amd_aie_ert_start_kernel_data_t * payload,
-                              std::size_t payload_size);
+ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
 
 /**
  * @brief Creates a string representation of the tensor shape.
