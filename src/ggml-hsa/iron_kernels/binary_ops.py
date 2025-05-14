@@ -17,19 +17,17 @@ from aie.iron.device import NPU1Col4
 from aie.iron.controlflow import range_
 
 
-def vector_vector_op(input0, input1, op, output):
-    """Implements output = input0 op input1"""
-    if input0.shape != input1.shape:
+def binary_op(input_tensor0, input_tensor1, op, output):
+    """Implements output = input_tensor0 op input_tensor1"""
+    if input_tensor0.shape != input_tensor1.shape:
         raise ValueError(
-            f"Input shapes are not the equal ({input0.shape} != {input1.shape})."
+            f"Input shapes are not the equal ({input_tensor0.shape} != {input_tensor1.shape})."
         )
-    if input0.shape != output.shape:
+    if input_tensor0.shape != output.shape:
         raise ValueError(
-            f"Input and output shapes are not the equal ({input0.shape} != {output.shape})."
+            f"Input and output shapes are not the equal ({input_tensor0.shape} != {output.shape})."
         )
-    if len(np.shape(input0)) != 1:
-        raise ValueError("Function only supports vectors.")
-    num_elements = np.size(input0)
+    num_elements = np.size(input_tensor0)
     n = 16
     if num_elements % n != 0:
         raise ValueError(
@@ -37,15 +35,15 @@ def vector_vector_op(input0, input1, op, output):
         )
     num_elements_div_n = num_elements // n
 
-    if input0.dtype != input1.dtype:
+    if input_tensor0.dtype != input_tensor1.dtype:
         raise ValueError(
-            f"Input data types are not the same ({input0.dtype} != {input1.dtype})."
+            f"Input data types are not the same ({input_tensor0.dtype} != {input_tensor1.dtype})."
         )
-    if input0.dtype != output.dtype:
+    if input_tensor0.dtype != output.dtype:
         raise ValueError(
-            f"Input and output data types are not the same ({input0.dtype} != {output.dtype})."
+            f"Input and output data types are not the same ({input_tensor0.dtype} != {output.dtype})."
         )
-    dtype = input0.dtype
+    dtype = input_tensor0.dtype
 
     # Define tensor types
     tensor_ty = np.ndarray[(num_elements,), np.dtype[dtype]]
@@ -86,42 +84,42 @@ def vector_vector_op(input0, input1, op, output):
 
 def ggml_op_add(input_tensors: list, output_tensor):
     """GGML_OP_ADD implementation."""
-    return vector_vector_op(*input_tensors, lambda x, y: x + y, output_tensor)
+    return binary_op(*input_tensors, lambda x, y: x + y, output_tensor)
 
 
 def ggml_op_sub(input_tensors: list, output_tensor):
     """GGML_OP_SUB implementation."""
-    return vector_vector_op(*input_tensors, lambda x, y: x - y, output_tensor)
+    return binary_op(*input_tensors, lambda x, y: x - y, output_tensor)
 
 
 def ggml_op_mul(input_tensors: list, output_tensor):
     """GGML_OP_MUL implementation."""
-    return vector_vector_op(*input_tensors, lambda x, y: x * y, output_tensor)
+    return binary_op(*input_tensors, lambda x, y: x * y, output_tensor)
 
 
 def ggml_op_div(input_tensors: list, output_tensor):
     """GGML_OP_DIV implementation."""
-    return vector_vector_op(*input_tensors, lambda x, y: x / y, output_tensor)
+    return binary_op(*input_tensors, lambda x, y: x / y, output_tensor)
 
 
 @iron.jit(is_placed=False)
-def ggml_op_add_jit(input0, input1, output):
-    return ggml_op_add([input0, input1], output)
+def ggml_op_add_jit(input_tensor0, input_tensor1, output_tensor):
+    return ggml_op_add([input_tensor0, input_tensor1], output_tensor)
 
 
 @iron.jit(is_placed=False)
-def ggml_op_sub_jit(input0, input1, output):
-    return ggml_op_sub([input0, input1], output)
+def ggml_op_sub_jit(input_tensor0, input_tensor1, output_tensor):
+    return ggml_op_sub([input_tensor0, input_tensor1], output_tensor)
 
 
 @iron.jit(is_placed=False)
-def ggml_op_mul_jit(input0, input1, output):
-    return ggml_op_mul([input0, input1], output)
+def ggml_op_mul_jit(input_tensor0, input_tensor1, output_tensor):
+    return ggml_op_mul([input_tensor0, input_tensor1], output_tensor)
 
 
 @iron.jit(is_placed=False)
-def ggml_op_div_jit(input0, input1, output):
-    return ggml_op_div([input0, input1], output)
+def ggml_op_div_jit(input_tensor0, input_tensor1, output_tensor):
+    return ggml_op_div([input_tensor0, input_tensor1], output_tensor)
 
 
 @pytest.mark.parametrize("num_elements", [16, 256, 4096])
@@ -135,15 +133,17 @@ def ggml_op_div_jit(input0, input1, output):
         (ggml_op_div_jit, operator.floordiv),
     ],
 )
-def test_ggml_op_add(function, op, dtype, num_elements):
+def test_ggml_op_binary(function, op, dtype, num_elements):
     iron.set_current_device(NPU1Col4())
 
     # Construct two input random tensors and an output zeroed tensor
-    input0 = iron.randint(1, 100, (num_elements,), dtype=dtype, device="npu")
-    input1 = iron.randint(1, 100, (num_elements,), dtype=dtype, device="npu")
-    output = iron.zeros_like(input0)
+    input_tensor0 = iron.randint(1, 100, (num_elements,), dtype=dtype, device="npu")
+    input_tensor1 = iron.randint(1, 100, (num_elements,), dtype=dtype, device="npu")
+    output_tensor = iron.zeros_like(input_tensor0)
 
     # JIT-compile the kernel then launch the kernel with the given arguments
-    function(input0, input1, output)
+    function(input_tensor0, input_tensor1, output_tensor)
 
-    assert np.array_equal(op(input0.numpy(), input1.numpy()), output.numpy())
+    assert np.array_equal(
+        op(input_tensor0.numpy(), input_tensor1.numpy()), output_tensor.numpy()
+    )

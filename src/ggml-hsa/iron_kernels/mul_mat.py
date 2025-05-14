@@ -620,7 +620,7 @@ def core_function_compile_spec(device, input_tensors: list, output_tensor):
     )
 
 
-def mul_mat(input_tensors: list, output_tensor):
+def ggml_op_mul_mat(input_tensors: list, output_tensor):
     from compiler import dtype_to_str
 
     # TODO

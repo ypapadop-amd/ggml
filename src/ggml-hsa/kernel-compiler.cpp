@@ -17,6 +17,9 @@ namespace py = pybind11;
 
 /**
  * @brief Information to drive JIT compilation for a kernel.
+ *
+ * Operations that cannot be JIT compiled have default constructed
+ * @ref ggml_hsa_aie_jit_kernel_info objects.
  */
 struct ggml_hsa_aie_jit_kernel_info {
     std::string_view name; ///< Kernel name.
@@ -50,10 +53,7 @@ static void ggml_hsa_output_tensors(const ggml_tensor * tensor, std::ostream & o
 }
 
 /**
- * @brief JIT compilation information for all operations.
- *
- * Operations that cannot be JIT compiled yet will have default constructed
- * @ref ggml_hsa_aie_jit_kernel_info objects.
+ * @brief JIT compilation information for operations.
  */
 static auto ggml_backend_hsa_kernel_jit_info = []() {
     std::array<ggml_hsa_aie_jit_kernel_info, GGML_OP_COUNT> kernels = {};
@@ -61,7 +61,36 @@ static auto ggml_backend_hsa_kernel_jit_info = []() {
     kernels[GGML_OP_SUB] = {"ggml_op_sub", "binary_ops.py"};
     kernels[GGML_OP_MUL] = {"ggml_op_mul", "binary_ops.py"};
     kernels[GGML_OP_DIV] = {"ggml_op_div", "binary_ops.py"};
-    kernels[GGML_OP_MUL_MAT] = {"mul_mat", "mul_mat.py"};
+
+    kernels[GGML_OP_SQR] = {"ggml_op_sqr", "unary_ops.py"};
+    kernels[GGML_OP_SQRT] = {"ggml_op_sqrt", "unary_ops.py"};
+    kernels[GGML_OP_LOG] = {"ggml_op_log", "unary_ops.py"};
+    kernels[GGML_OP_SIN] = {"ggml_op_sin", "unary_ops.py"};
+    kernels[GGML_OP_COS] = {"ggml_op_cos", "unary_ops.py"};
+
+    kernels[GGML_OP_MUL_MAT] = {"ggml_op_mul_mat", "mul_mat.py"};
+    return kernels;
+}();
+
+/**
+ * @brief JIT compilation information for unary operations.
+ */
+static auto ggml_backend_hsa_unary_kernel_jit_info = []() {
+    std::array<ggml_hsa_aie_jit_kernel_info, GGML_UNARY_OP_COUNT> kernels = {};
+    kernels[GGML_UNARY_OP_ABS] = {"ggml_unary_op_abs", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_SGN] = {"ggml_unary_op_sgn", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_NEG] = {"ggml_unary_op_neg", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_STEP] = {"ggml_unary_op_step", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_TANH] = {"ggml_unary_op_tanh", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_ELU] = {"ggml_unary_op_elu", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_RELU] = {"ggml_unary_op_relu", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_SIGMOID] = {"ggml_unary_op_sigmoid", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_GELU] = {"ggml_unary_op_gelu", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_GELU_QUICK] = {"ggml_unary_op_gelu_quick", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_SILU] = {"ggml_unary_op_silu", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_HARDSWISH] = {"ggml_unary_op_hardswish", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_HARDSIGMOID] = {"ggml_unary_op_hardsigmoid", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_EXP] = {"ggml_unary_op_exp", "unary_ops.py"};
     return kernels;
 }();
 
@@ -95,15 +124,23 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         return GGML_STATUS_FAILED;
     }
 
-    const auto & kernel_jit_info = ggml_backend_hsa_kernel_jit_info[tensor->op];
-    if (!kernel_jit_info.is_valid()) {
+    ggml_hsa_aie_jit_kernel_info * kernel_jit_info = nullptr;
+    switch (tensor->op) {
+        case GGML_OP_UNARY :
+            kernel_jit_info = &(ggml_backend_hsa_unary_kernel_jit_info[ggml_get_unary_op(tensor)]);
+            break;
+        default :
+            kernel_jit_info = &(ggml_backend_hsa_kernel_jit_info[tensor->op]);
+            break;
+    }
+    if (!kernel_jit_info->is_valid()) {
         // no JIT compilable kernel
         return GGML_STATUS_FAILED;
     }
 
     const auto & library_dir = ggml_hsa_library_path();
     const auto module_path = library_dir / "iron_kernels";
-    const auto kernel_source_path = module_path / kernel_jit_info.source;
+    const auto kernel_source_path = module_path / kernel_jit_info->source;
     const auto output_directory = output_path / dev_info.name;
 
     py::scoped_interpreter guard{};
@@ -124,11 +161,12 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
 
         // compile the kernel
         auto compile_kernel = iron_compiler.attr("compile_kernel");
-        compile_kernel(
-            "kernel_name"_a = kernel_jit_info.name, "kernel_source"_a = kernel_source_path.string(),
-            "device"_a = dev_info.name, "input_tensors"_a = std::move(input_tensors),
-            "output_tensor"_a = std::move(output_tensor), "exported_name"_a = exported_name,
-            "output_directory"_a = output_directory.string());
+        compile_kernel("kernel_name"_a = kernel_jit_info->name,
+                       "kernel_source"_a = kernel_source_path.string(), "device"_a = dev_info.name,
+                       "input_tensors"_a = std::move(input_tensors),
+                       "output_tensor"_a = std::move(output_tensor),
+                       "exported_name"_a = exported_name,
+                       "output_directory"_a = output_directory.string());
     } catch (const pybind11::error_already_set & ex) {
         GGML_LOG_ERROR("%s: JIT compilation failed: %s\n", __func__, ex.what());
         return GGML_STATUS_FAILED;
