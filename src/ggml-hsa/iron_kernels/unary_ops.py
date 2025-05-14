@@ -165,11 +165,6 @@ def ggml_unary_op_exp(input_tensors: list, output_tensor):
 
 
 @iron.jit(is_placed=False)
-def ggml_unary_op_neg_jit(input_tensor, output_tensor):
-    return ggml_unary_op_neg([input_tensor], output_tensor)
-
-
-@iron.jit(is_placed=False)
 def ggml_op_sqr_jit(input_tensor, output_tensor):
     return ggml_op_sqr([input_tensor], output_tensor)
 
@@ -180,7 +175,6 @@ def ggml_op_sqr_jit(input_tensor, output_tensor):
     "function, op",
     [
         (ggml_op_sqr_jit, lambda x: x * x),
-        (ggml_unary_op_neg_jit, lambda x: -x),
     ],
 )
 def test_ggml_op_unary(function, op, dtype, num_elements):

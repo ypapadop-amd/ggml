@@ -136,7 +136,7 @@ add_aie_iron_kernel(ggml-hsa
 
 add_aie_iron_kernel(ggml-hsa
     KERNEL_NAME
-        mul_mat
+        ggml_op_mul_mat
     KERNEL_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
     DEVICE
