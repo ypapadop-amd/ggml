@@ -19,6 +19,12 @@ set(TEST_TARGET simple-add)
 add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml)
 
+#
+# simple-hetero-sched
+set(TEST_TARGET simple-hetero-sched)
+add_executable(${TEST_TARGET} simple-hetero-sched)
+target_link_libraries(${TEST_TARGET} PRIVATE ggml)
+
 if (GGML_CUDA)
     add_compile_definitions(GGML_USE_CUDA)
 endif()

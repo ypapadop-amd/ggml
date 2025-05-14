@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "ggml.h"
+#include "ggml-cpu.h"
 
 #ifdef GGML_USE_CUDA
 #include "ggml-cuda.h"
@@ -48,13 +49,12 @@ int main(void) {
 #ifdef GGML_USE_HSA
     std::cout << "Using HSA backend\n";
     backend = ggml_backend_hsa_init(0);
-#endif
-
-#ifdef GGML_USE_CUDA
-    if (!backend) {
-        std::cout << "Using CUDA backend\n";
-        backend = ggml_backend_cuda_init(0); // init device 0
-    }
+#elif GGML_USE_CUDA
+    std::cout << "Using CUDA backend\n";
+    backend = ggml_backend_cuda_init(0); // init device 0
+#else
+    std::cout << "Using CPU backend\n";
+    backend = ggml_backend_cpu_init();
 #endif
 
     if (backend == nullptr) {
