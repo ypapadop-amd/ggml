@@ -70,7 +70,7 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
     }
 
     std::ostringstream oss;
-    std::string_view op_name = ggml_op_name(tensor->op);
+    std::string_view op_name = ggml_op_desc(tensor);
     std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss),
                    [&](char c) { return std::tolower(c); });
     oss << '-';
