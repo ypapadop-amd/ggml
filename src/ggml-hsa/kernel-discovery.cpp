@@ -278,7 +278,7 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
     if (auto status =
             ggml_hsa_find_or_compile_kernel(dev_info, tensor, kernel_name, pdi_path, insts_path);
         status != GGML_STATUS_SUCCESS) {
-        // kernel files not found and could not be compiler; block the kernel from further attempts
+        // kernel not found and could not be compiled; block to avoid further compilation attempts
         ctx.blocked_aie_kernels.insert(kernel_name);
         return status;
     }
@@ -298,7 +298,9 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
         return status;
     }
 
+    tmp_kernel.num_src_tensors = ggml_hsa_nsrcs(tensor);
     ctx.aie_kernels.emplace(std::move(kernel_name), tmp_kernel);
+
     kernel = tmp_kernel;
 
     return GGML_STATUS_SUCCESS;
