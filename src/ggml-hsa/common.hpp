@@ -75,7 +75,7 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * add
  *
  * @param[in] tensor tensor to find number of sources for
  */
-int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
+std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
 
 /**
  * @brief Returns the full path to this library.
@@ -150,6 +150,7 @@ struct ggml_hsa_insts_buffer {
 struct ggml_hsa_aie_kernel {
     ggml_hsa_pdi_buffer pdi;
     ggml_hsa_insts_buffer insts;
+    std::int64_t num_src_tensors{};
 
     bool is_valid() const {
         assert(pdi.is_valid() == insts.is_valid());
