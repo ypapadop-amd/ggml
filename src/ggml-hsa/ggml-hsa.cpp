@@ -347,13 +347,6 @@ static void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
 
 ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
     auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
-    if (!tensor_extra.kernel.is_valid()) {
-        if (auto status = ggml_hsa_create_aie_kernel(ctx, tensor, tensor_extra.kernel);
-            status != GGML_STATUS_SUCCESS) {
-            return status;
-        }
-    }
-
     const auto & kernel = tensor_extra.kernel;
     auto & info = ggml_hsa_info();
     auto & dev_info = info.devices[ctx.device];
@@ -1024,7 +1017,16 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
 
             default :
-                status = ggml_hsa_dispatch_kernel(ctx, node);
+                {
+                    auto & tensor_extra =
+                        *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+                    if (!tensor_extra.kernel.is_valid()) {
+                        status = ggml_hsa_create_aie_kernel(ctx, node, tensor_extra.kernel);
+                    }
+                    if (status == GGML_STATUS_SUCCESS) {
+                        status = ggml_hsa_dispatch_kernel(ctx, node);
+                    }
+                }
                 break;
         }
 
@@ -1116,7 +1118,8 @@ void ggml_backend_hsa_get_device_description(int device,
 }
 
 /**
- * @brief Returns the free and total memory in @p free and @p total respectively for device @p dev.
+ * @brief Returns the free and total memory in @p free and @p total respectively for device
+ *        @p dev.
  */
 void ggml_backend_hsa_get_device_memory(int device, size_t * free, size_t * total) {
     const auto & info = ggml_hsa_info();
@@ -1170,7 +1173,8 @@ static const char * ggml_backend_hsa_device_get_description(ggml_backend_dev_t d
 }
 
 /**
- * @brief Returns the free and total memory in @p free and @p total respectively for device @p dev.
+ * @brief Returns the free and total memory in @p free and @p total respectively for device
+ *        @p dev.
  */
 static void
 ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
