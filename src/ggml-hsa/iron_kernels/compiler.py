@@ -107,7 +107,7 @@ class CoreFunctionCompileSpec:
 
 
 def core_function_compile_spec(spec=None) -> Callable:
-    """Adds a core function to the kernel."""
+    """Adds a core function compile spec to the kernel."""
 
     def wrapper(func):
         if spec:
@@ -143,17 +143,17 @@ def compile_kernel(
     dev = to_device(device)
 
     # generate MLIR and write to file for debugging
-    kernel_mlir = getattr(module, kernel_name)
+    kernel = getattr(module, kernel_name)
     set_current_device(dev)
-    mlir_module = kernel_mlir(input_tensors=input_tensors, output_tensor=output_tensor)
+    mlir_module = kernel(input_tensors=input_tensors, output_tensor=output_tensor)
     mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
 
     # if there is a core function spec, compile it with Peano
     try:
-        core_function_compile_spec = getattr(kernel_mlir, "core_function_compile_spec")
-        spec = core_function_compile_spec(
+        compile_spec = getattr(kernel, "core_function_compile_spec")
+        spec = compile_spec(
             device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
         output_path = os.path.join(output_directory, spec.output_filename)
