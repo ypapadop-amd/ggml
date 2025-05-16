@@ -1,7 +1,6 @@
 # compiler.py -*- Python -*-
 #  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-import subprocess
 import importlib.util
 import os
 import sys
@@ -10,20 +9,8 @@ import numpy as np
 
 from aie.iron import set_current_device, get_current_device
 from aie.iron.device import NPU1Col4, NPU2
-from aie.iron.compile import compile_mlir_module_to_pdi
+from aie.iron.compile import compile_cxx_core_function, compile_mlir_module_to_pdi
 from ml_dtypes import bfloat16
-
-peano_install_dir = os.getenv("PEANO_INSTALL_DIR")
-if not os.path.isdir(peano_install_dir):
-    raise RuntimeError("PEANO_INSTALL_DIR is not defined or does not exist")
-
-peano_cxx = os.path.join(peano_install_dir, "bin/clang++")
-if not os.path.isfile(peano_cxx):
-    raise RuntimeError(f"Peano compiler not found in {peano_install_dir}")
-
-mlir_aie_include_dir = os.path.join(os.getenv("MLIR_AIE_INSTALL_DIR"), "include")
-if not os.path.isdir(mlir_aie_include_dir):
-    raise RuntimeError(f"MLIR-AIE headers not found in {mlir_aie_include_dir}")
 
 supported_devices = {
     "aie2": NPU1Col4(),
@@ -151,54 +138,6 @@ def import_from_path(module_name, path):
     return module
 
 
-def compile_mlir(
-    module,
-    kernel_name: str,
-    device: str,
-    input_tensors: list[TensorDesc],
-    output_tensor: TensorDesc,
-) -> str:
-    """Generate MLIR from the source code."""
-    kernel_mlir = getattr(module, kernel_name)
-    set_current_device(device)
-    return kernel_mlir(input_tensors=input_tensors, output_tensor=output_tensor)
-
-
-def compile_core_function(
-    spec: CoreFunctionCompileSpec,
-    device: str,
-    output_directory: str,
-):
-    """Compiles a C/C++ core function."""
-    output_path = os.path.join(output_directory, spec.output_filename)
-    cmd = [
-        peano_cxx,
-        spec.source_path,
-        "-c",
-        "-o",
-        f"{output_path}",
-        f"-I{mlir_aie_include_dir}",
-        "-std=c++20",
-        "-Wno-parentheses",
-        "-Wno-attributes",
-        "-Wno-macro-redefined",
-        "-Wno-empty-body",
-        "-O2",
-        "-DNDEBUG",
-        f"--target={device}-none-unknown-elf",
-    ] + spec.compile_args
-    try:
-        subprocess.run(
-            cmd,
-            cwd=output_directory,
-            check=True,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        )
-    except subprocess.CalledProcessError as ex:
-        raise RuntimeError("Peano compilation failed") from ex
-
-
 def compile_kernel(
     kernel_name: str,
     kernel_source: str,
@@ -216,13 +155,9 @@ def compile_kernel(
     dev = to_device(device)
 
     # generate MLIR and write to file for debugging
-    mlir_module = compile_mlir(
-        module=module,
-        kernel_name=kernel_name,
-        device=dev,
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-    )
+    kernel_mlir = getattr(module, kernel_name)
+    set_current_device(dev)
+    mlir_module = kernel_mlir(input_tensors=input_tensors, output_tensor=output_tensor)
     mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
@@ -233,32 +168,33 @@ def compile_kernel(
         spec = core_function_compile_spec(
             device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
-        compile_core_function(
-            spec=spec, device=device, output_directory=output_directory
+        output_path = os.path.join(output_directory, spec.output_filename)
+        compile_cxx_core_function(
+            source_path=spec.source_path,
+            target_arch=device,
+            output_path=output_path,
+            compile_args=spec.compile_args,
+            cwd=output_directory,
         )
 
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
+    previous_cwd = None
     try:
         previous_cwd = os.getcwd()
         os.chdir(output_directory)
         compile_mlir_module_to_pdi(
             mlir_module=mlir_module,
-            options=[
-                "--alloc-scheme=basic-sequential",
-                "--no-compile-host",
-                "--no-xchesscc",
-                "--no-xbridge",
-                f"--peano={peano_install_dir}",
-            ],
+            options=["--alloc-scheme=basic-sequential"],
             insts_path=insts_path,
             pdi_path=pdi_path,
         )
     except:  # pylint: disable=try-except-raise
         raise
     finally:
-        os.chdir(previous_cwd)
+        if previous_cwd:
+            os.chdir(previous_cwd)
 
 
 def file_path(string: str):
