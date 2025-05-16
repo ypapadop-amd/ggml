@@ -4,6 +4,7 @@
 import importlib.util
 import os
 import sys
+from typing import Callable
 
 import numpy as np
 
@@ -105,28 +106,15 @@ class CoreFunctionCompileSpec:
         return f'Source:"{self.source_path}", Output:"{self.output_filename}", Compile args:"{self.compile_args}"'
 
 
-def to_tuple_of_ints(string: str):
-    """Converts a string of the form (x,...) to a tuple of ints."""
-    string = string.replace("(", "").replace(")", "").strip(",")
-    ints = map(int, string.split(","))
-    return tuple(ints)
+def core_function_compile_spec(spec=None) -> Callable:
+    """Adds a core function to the kernel."""
 
+    def wrapper(func):
+        if spec:
+            func.core_function_compile_spec = spec
+        return func
 
-def to_tensordesc(string: str) -> TensorDesc:
-    """
-    Creates a TensorDesc from the string.
-
-    Parameters:
-        string (str): string of the form (shape)/dtype.
-
-    Returns:
-    Returns:
-        TensorDesc: A new TensorDesc instance.
-    """
-    shape, dtype = string.split("/")
-    shape = to_tuple_of_ints(shape)
-    dtype = str_to_dtype(dtype)
-    return TensorDesc(shape=shape, dtype=dtype)
+    return wrapper
 
 
 def import_from_path(module_name, path):
@@ -162,9 +150,9 @@ def compile_kernel(
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
 
-    # if there is a single-core spec, compile it with Peano
-    if hasattr(module, "core_function_compile_spec"):
-        core_function_compile_spec = getattr(module, "core_function_compile_spec")
+    # if there is a core function spec, compile it with Peano
+    try:
+        core_function_compile_spec = getattr(kernel_mlir, "core_function_compile_spec")
         spec = core_function_compile_spec(
             device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
@@ -176,6 +164,9 @@ def compile_kernel(
             compile_args=spec.compile_args,
             cwd=output_directory,
         )
+    except AttributeError:
+        # ignore missing attribute
+        pass
 
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
@@ -195,6 +186,30 @@ def compile_kernel(
     finally:
         if previous_cwd:
             os.chdir(previous_cwd)
+
+
+def to_tuple_of_ints(string: str):
+    """Converts a string of the form (x,...) to a tuple of ints."""
+    string = string.replace("(", "").replace(")", "").strip(",")
+    ints = map(int, string.split(","))
+    return tuple(ints)
+
+
+def to_tensordesc(string: str) -> TensorDesc:
+    """
+    Creates a TensorDesc from the string.
+
+    Parameters:
+        string (str): string of the form (shape)/dtype.
+
+    Returns:
+    Returns:
+        TensorDesc: A new TensorDesc instance.
+    """
+    shape, dtype = string.split("/")
+    shape = to_tuple_of_ints(shape)
+    dtype = str_to_dtype(dtype)
+    return TensorDesc(shape=shape, dtype=dtype)
 
 
 def file_path(string: str):
