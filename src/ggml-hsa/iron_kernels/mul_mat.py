@@ -15,6 +15,8 @@ from aie.dialects.aiex import *
 from aie.helpers.dialects.ext.scf import _for as range_
 from aie.helpers.taplib import TensorAccessPattern, TensorAccessSequence
 
+from compiler import core_function_compile_spec
+
 dtype_map = {
     "bf16": bfloat16,
     "i8": np.int8,
@@ -591,7 +593,7 @@ def my_matmul(
         )
 
 
-def core_function_compile_spec(device, input_tensors: list, output_tensor):
+def mul_mat_compile_spec(device, input_tensors: list, output_tensor):
     """Returns a compilation specification for matrix-multiplication."""
 
     from os import path
@@ -620,6 +622,7 @@ def core_function_compile_spec(device, input_tensors: list, output_tensor):
     )
 
 
+@core_function_compile_spec(spec=mul_mat_compile_spec)
 def ggml_op_mul_mat(input_tensors: list, output_tensor):
     from compiler import dtype_to_str
 
