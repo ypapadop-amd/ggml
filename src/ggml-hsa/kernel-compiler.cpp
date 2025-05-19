@@ -2,9 +2,11 @@
 
 #include "kernel-compiler.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
+#include <iterator>
 #include <sstream>
 #include <string>
 
@@ -135,6 +137,17 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     }
     if (!kernel_jit_info->is_valid()) {
         // no JIT compilable kernel
+        return GGML_STATUS_FAILED;
+    }
+
+    // non-contiguous, permuted or transposed tensors are not yet supported
+    auto unsupported_tensor = [](const ggml_tensor * tensor) {
+        return tensor != nullptr && (!ggml_is_contiguous(tensor) || ggml_is_permuted(tensor) ||
+                                     ggml_is_transposed(tensor));
+    };
+    if (unsupported_tensor(tensor) ||
+        std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor)) {
+        GGML_LOG_INFO("%s: Unsupported tensors for %s\n", __func__, ggml_op_desc(tensor));
         return GGML_STATUS_FAILED;
     }
 
