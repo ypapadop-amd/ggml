@@ -4,7 +4,9 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 # (c) Copyright 2025 AMD Inc.
+
 import argparse
+from os import path
 from ml_dtypes import bfloat16
 import numpy as np
 
@@ -15,7 +17,7 @@ from aie.dialects.aiex import *
 from aie.helpers.dialects.ext.scf import _for as range_
 from aie.helpers.taplib import TensorAccessPattern, TensorAccessSequence
 
-from compiler import core_function_compile_spec
+from compiler import core_function, CoreFunctionInfo, dtype_to_str
 
 dtype_map = {
     "bf16": bfloat16,
@@ -98,6 +100,7 @@ def my_matmul(
     b_col_maj,
     trace_size,
     generate_taps=False,
+    core_fn_info=None,
 ):
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
@@ -378,7 +381,7 @@ def my_matmul(
         for row in range(n_aie_rows):
             for col in range(n_aie_cols):
 
-                @core(core_tiles[row][col], f"mm_{m}x{k}x{n}.o")
+                @core(core_tiles[row][col], core_fn_info.object_file)
                 def core_body():
                     for _ in range_(0xFFFFFFFF):
                         loop = (
@@ -593,11 +596,8 @@ def my_matmul(
         )
 
 
-def mul_mat_compile_spec(device, input_tensors: list, output_tensor):
-    """Returns a compilation specification for matrix-multiplication."""
-
-    from os import path
-    from compiler import CoreFunctionCompileSpec, dtype_to_str
+def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
+    """Returns a compilation specification for matrix multiplication."""
 
     assert len(input_tensors) == 2
 
@@ -610,7 +610,7 @@ def mul_mat_compile_spec(device, input_tensors: list, output_tensor):
     k = 8
     n = 8
     current_dir = path.dirname(path.realpath(__file__))
-    return CoreFunctionCompileSpec(
+    return CoreFunctionInfo(
         source_path=path.join(current_dir, "mm.cc"),
         compile_args=[
             f"-DDIM_M={m}",
@@ -618,11 +618,12 @@ def mul_mat_compile_spec(device, input_tensors: list, output_tensor):
             f"-DDIM_N={n}",
             f"-D{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}_ONLY",
         ],
-        output_filename=f"mm_{m}x{k}x{n}.o",
+        exported_functions=[],
+        object_file=f"mm_{m}x{k}x{n}.o",
     )
 
 
-@core_function_compile_spec(spec=mul_mat_compile_spec)
+@core_function(mul_mat_core_function_info)
 def ggml_op_mul_mat(input_tensors: list, output_tensor):
     from compiler import dtype_to_str
 
@@ -640,6 +641,10 @@ def ggml_op_mul_mat(input_tensors: list, output_tensor):
     assert A.shape[0] == C.shape[0]
     assert B.shape[1] == C.shape[1]
 
+    core_fn_info = mul_mat_core_function_info(
+        "aie2", input_tensors=input_tensors, output_tensor=output_tensor
+    )
+
     with mlir_mod_ctx() as ctx:
         my_matmul(
             dev=dev,
@@ -654,6 +659,7 @@ def ggml_op_mul_mat(input_tensors: list, output_tensor):
             dtype_out_str=dtype_to_str(C.dtype),
             b_col_maj=0,
             trace_size=0,
+            core_fn_info=core_fn_info,
         )
         return ctx.module
 

@@ -90,28 +90,31 @@ def tensordesc(shape, dtype) -> TensorDesc:
     return TensorDesc(shape=shape, dtype=dtype)
 
 
-class CoreFunctionCompileSpec:
+class CoreFunctionInfo:
     """
-    Core function compilation specification.
+    Core function information.
 
-    This class provides information necessary to compile a single-core kernel via Peano.
+    This class provides information necessary to compile a core function via Peano and use it in a kernel.
     """
 
-    def __init__(self, source_path: str, compile_args: list[str], output_filename: str):
+    def __init__(
+        self, source_path: str, compile_args, exported_functions, object_file: str
+    ):
         self.source_path = source_path
         self.compile_args = compile_args
-        self.output_filename = output_filename
+        self.exported_functions = exported_functions
+        self.object_file = object_file
 
     def __str__(self):
-        return f'Source:"{self.source_path}", Output:"{self.output_filename}", Compile args:"{self.compile_args}"'
+        return f'Source: "{self.source_path}", Compile args: {self.compile_args}, Exported functions: "{self.exported_functions}", Object file: "{self.object_file}"'
 
 
-def core_function_compile_spec(spec=None) -> Callable:
-    """Adds a core function compile spec to the kernel."""
+def core_function(function_info=None) -> Callable:
+    """Associates a core function with a kernel."""
 
     def wrapper(func):
-        if spec:
-            func.core_function_compile_spec = spec
+        if function_info:
+            func.core_function_info = function_info
         return func
 
     return wrapper
@@ -152,16 +155,15 @@ def compile_kernel(
 
     # if there is a core function spec, compile it with Peano
     try:
-        compile_spec = getattr(kernel, "core_function_compile_spec")
-        spec = compile_spec(
+        core_function_info = getattr(kernel, "core_function_info")
+        info = core_function_info(
             device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
-        output_path = os.path.join(output_directory, spec.output_filename)
         compile_cxx_core_function(
-            source_path=spec.source_path,
+            source_path=info.source_path,
             target_arch=device,
-            output_path=output_path,
-            compile_args=spec.compile_args,
+            output_path=os.path.join(output_directory, info.object_file),
+            compile_args=info.compile_args,
             cwd=output_directory,
         )
     except AttributeError:
