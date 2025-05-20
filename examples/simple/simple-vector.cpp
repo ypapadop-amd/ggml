@@ -81,7 +81,7 @@ int main(int argc, char* argv[]) {
 
     // allocate tensors on HSA memory
     const std::size_t ctx_size =
-        tensor_count * ggml_tensor_overhead() + ggml_graph_overhead_custom(tensor_count, false) + 1024;
+        tensor_count * ggml_tensor_overhead() + ggml_graph_overhead_custom(tensor_count, false);
     ggml_init_params params = {
         /*.mem_size   =*/ ctx_size,
         /*.mem_buffer =*/ nullptr,
@@ -117,7 +117,6 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    ggml_mul(ctx, tensor_a, tensor_b);
     if (!ggml_backend_supports_op(backend, tensor_result)) {
         std::cerr << "Operation not supported\n";
         return EXIT_FAILURE;
