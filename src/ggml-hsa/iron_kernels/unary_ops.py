@@ -117,15 +117,17 @@ def abs_core_function_info(device, input_tensors: list, output_tensor):
     current_dir = path.dirname(path.realpath(__file__))
     input_tensor_dtype = dtype_to_str(input_tensors[0].dtype)
     output_tensor_dtype = dtype_to_str(output_tensor.dtype)
+    func_name = f"abs_{input_tensor_dtype}_{output_tensor_dtype}"
     return CoreFunctionInfo(
         source_path=path.join(current_dir, "unary_ops.cc"),
         compile_args=[
             "-DABS=1",
-            f"-DINPUT_DTYPE=\"{input_tensor_dtype}\"",
-            f"-DOUTPUT_DTYPE=\"{output_tensor_dtype}\"",
+            f"-DINPUT_DTYPE={input_tensor_dtype}",
+            f"-DOUTPUT_DTYPE={output_tensor_dtype}",
+            f"-DFUNC_NAME={func_name}",
         ],
-        exported_functions=f"abs_{input_tensor_dtype}_{output_tensor_dtype}",
-        object_file=f"abs_{input_tensor_dtype}_{output_tensor_dtype}.o",
+        exported_functions=func_name,
+        object_file=f"{func_name}.o",
     )
 
 
