@@ -137,6 +137,7 @@ def compile_kernel(
     output_tensor: TensorDesc,
     exported_name: str,
     output_directory: str,
+    verbose=False,
 ):
     """Compiles the kernel code to PDI and instruction files."""
     os.makedirs(output_directory, exist_ok=True)
@@ -165,6 +166,7 @@ def compile_kernel(
             output_path=os.path.join(output_directory, info.object_file),
             compile_args=info.compile_args,
             cwd=output_directory,
+            verbose=verbose,
         )
     except AttributeError:
         # ignore missing attribute
@@ -182,6 +184,7 @@ def compile_kernel(
             options=["--alloc-scheme=basic-sequential"],
             insts_path=insts_path,
             pdi_path=pdi_path,
+            verbose=verbose,
         )
     except:  # pylint: disable=try-except-raise
         raise
@@ -273,6 +276,12 @@ def main():
         required=True,
         help="Output directory",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Verbose output",
+    )
     args = parser.parse_args()
 
     compile_kernel(
@@ -283,6 +292,7 @@ def main():
         output_tensor=args.output_tensor,
         exported_name=args.exported_name,
         output_directory=args.output_directory,
+        verbose=args.verbose,
     )
 
 
