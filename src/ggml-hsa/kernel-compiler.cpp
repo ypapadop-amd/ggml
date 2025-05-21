@@ -181,7 +181,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                        "exported_name"_a = exported_name,
                        "output_directory"_a = output_directory.string());
     } catch (const pybind11::error_already_set & ex) {
-        GGML_LOG_ERROR("%s: JIT compilation failed: %s\n", __func__, ex.what());
+        GGML_LOG_ERROR("%s: JIT compilation failed:\n%s\n", __func__, ex.what());
         return GGML_STATUS_FAILED;
     }
 
