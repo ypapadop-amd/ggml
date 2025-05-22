@@ -2,9 +2,11 @@
 
 #include "kernel-compiler.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
+#include <iterator>
 #include <sstream>
 #include <string>
 
@@ -138,6 +140,17 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         return GGML_STATUS_FAILED;
     }
 
+    // non-contiguous, permuted or transposed tensors are not yet supported
+    auto unsupported_tensor = [](const ggml_tensor * tensor) {
+        return tensor != nullptr && (!ggml_is_contiguous(tensor) || ggml_is_permuted(tensor) ||
+                                     ggml_is_transposed(tensor));
+    };
+    if (unsupported_tensor(tensor) ||
+        std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor)) {
+        GGML_LOG_INFO("%s: Unsupported tensors for %s\n", __func__, ggml_op_desc(tensor));
+        return GGML_STATUS_FAILED;
+    }
+
     const auto & library_dir = ggml_hsa_library_path();
     const auto module_path = library_dir / "iron_kernels";
     const auto kernel_source_path = module_path / kernel_jit_info->source;
@@ -168,7 +181,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                        "exported_name"_a = exported_name,
                        "output_directory"_a = output_directory.string());
     } catch (const pybind11::error_already_set & ex) {
-        GGML_LOG_ERROR("%s: JIT compilation failed: %s\n", __func__, ex.what());
+        GGML_LOG_ERROR("%s: JIT compilation failed:\n%s\n", __func__, ex.what());
         return GGML_STATUS_FAILED;
     }
 
