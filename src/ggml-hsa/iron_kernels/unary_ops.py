@@ -19,7 +19,7 @@ from aie.iron.controlflow import range_
 from compiler import core_function, CoreFunctionInfo, dtype_to_str
 
 
-def unary_op(input_tensor, output_tensor, core_fn_info: CoreFunctionInfo):
+def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
     """Implements output = op(input)."""
 
     tile_size = 16
@@ -47,8 +47,8 @@ def unary_op(input_tensor, output_tensor, core_fn_info: CoreFunctionInfo):
 
     # External, binary kernel definition
     kernel_fn = Kernel(
-        name=core_fn_info.exported_functions,
-        bin_name=core_fn_info.object_file,
+        name=core_function_info.exported_functions,
+        bin_name=core_function_info.object_file,
         arg_types=[tile_ty, tile_ty, np.int32],
     )
 
@@ -132,16 +132,11 @@ def abs_core_function_info(device, input_tensors: list, output_tensor):
 
 
 @core_function(abs_core_function_info)
-def ggml_unary_op_abs(input_tensors: list, output_tensor):
+def ggml_unary_op_abs(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_ABS implementation."""
-    core_fn_info = abs_core_function_info(
-        device="aie2", input_tensors=input_tensors, output_tensor=output_tensor
-    )
-    return unary_op(
-        *input_tensors,
-        output_tensor,
-        core_fn_info,
-    )
+    return unary_op(*input_tensors, output_tensor, core_function_info)
 
 
 def ggml_unary_op_sgn(input_tensors: list, output_tensor):

@@ -137,40 +137,49 @@ def compile_kernel(
     output_tensor: TensorDesc,
     exported_name: str,
     output_directory: str,
-    verbose=False,
+    verbose: bool = False,
 ):
     """Compiles the kernel code to PDI and instruction files."""
     os.makedirs(output_directory, exist_ok=True)
 
+    # import IRON kernel
     module = import_from_path(kernel_name, kernel_source)
-
-    dev = to_device(device)
-
-    # generate MLIR and write to file for debugging
     kernel = getattr(module, kernel_name)
-    set_current_device(dev)
-    mlir_module = kernel(input_tensors=input_tensors, output_tensor=output_tensor)
-    mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
-    with open(mlir_path, "wt", encoding="utf-8") as file:
-        file.write(str(mlir_module))
 
-    # if there is a core function spec, compile it with Peano
+    # compile core function if it exists
+    core_function_info = None
     try:
-        core_function_info = getattr(kernel, "core_function_info")
-        info = core_function_info(
+        core_function_info_func = getattr(kernel, "core_function_info")
+        core_function_info = core_function_info_func(
             device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
+        output_path = os.path.join(output_directory, core_function_info.object_file)
         compile_cxx_core_function(
-            source_path=info.source_path,
+            source_path=core_function_info.source_path,
             target_arch=device,
-            output_path=os.path.join(output_directory, info.object_file),
-            compile_args=info.compile_args,
+            output_path=output_path,
+            compile_args=core_function_info.compile_args,
             cwd=output_directory,
             verbose=verbose,
         )
     except AttributeError:
         # ignore missing attribute
         pass
+
+    # generate MLIR and write to file for debugging
+    dev = to_device(device)
+    set_current_device(dev)
+    if core_function_info:
+        mlir_module = kernel(
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            core_function_info=core_function_info,
+        )
+    else:
+        mlir_module = kernel(input_tensors=input_tensors, output_tensor=output_tensor)
+    mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
+    with open(mlir_path, "wt", encoding="utf-8") as file:
+        file.write(str(mlir_module))
 
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")

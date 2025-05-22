@@ -99,8 +99,8 @@ def my_matmul(
     dtype_out_str,
     b_col_maj,
     trace_size,
+    core_function_info: CoreFunctionInfo,
     generate_taps=False,
-    core_fn_info=None,
 ):
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
@@ -381,7 +381,7 @@ def my_matmul(
         for row in range(n_aie_rows):
             for col in range(n_aie_cols):
 
-                @core(core_tiles[row][col], core_fn_info.object_file)
+                @core(core_tiles[row][col], core_function_info.object_file)
                 def core_body():
                     for _ in range_(0xFFFFFFFF):
                         loop = (
@@ -624,7 +624,7 @@ def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
 
 
 @core_function(mul_mat_core_function_info)
-def ggml_op_mul_mat(input_tensors: list, output_tensor):
+def ggml_op_mul_mat(input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo):
     from compiler import dtype_to_str
 
     # TODO
@@ -641,10 +641,6 @@ def ggml_op_mul_mat(input_tensors: list, output_tensor):
     assert A.shape[0] == C.shape[0]
     assert B.shape[1] == C.shape[1]
 
-    core_fn_info = mul_mat_core_function_info(
-        "aie2", input_tensors=input_tensors, output_tensor=output_tensor
-    )
-
     with mlir_mod_ctx() as ctx:
         my_matmul(
             dev=dev,
@@ -659,7 +655,7 @@ def ggml_op_mul_mat(input_tensors: list, output_tensor):
             dtype_out_str=dtype_to_str(C.dtype),
             b_col_maj=0,
             trace_size=0,
-            core_fn_info=core_fn_info,
+            core_function_info=core_function_info,
         )
         return ctx.module
 
