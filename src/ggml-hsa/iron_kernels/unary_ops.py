@@ -115,17 +115,13 @@ def abs_core_function_info(device, input_tensors: list, output_tensor):
     assert input_tensors[0].shape == output_tensor.shape
 
     current_dir = path.dirname(path.realpath(__file__))
-    input_tensor_dtype = dtype_to_str(input_tensors[0].dtype)
-    output_tensor_dtype = dtype_to_str(output_tensor.dtype)
-    func_name = f"abs_{input_tensor_dtype}_{output_tensor_dtype}"
     return CoreFunctionInfo(
         source_file=path.join(current_dir, "unary_ops.cc"),
-        exported_function=func_name,
+        exported_function="ggml_op_abs",
         compile_args=[
-            "-DABS=1",
-            f"-DINPUT_DTYPE={input_tensor_dtype}",
-            f"-DOUTPUT_DTYPE={output_tensor_dtype}",
-            f"-DFUNC_NAME={func_name}",
+            "-DCOMPILE_ABS=1",
+            f"-DINPUT_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
+            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
         ],
     )
 
@@ -201,29 +197,3 @@ def ggml_unary_op_hardsigmoid(input_tensors: list, output_tensor):
 def ggml_unary_op_exp(input_tensors: list, output_tensor):
     """GGML_UNARY_OP_EXP implementation."""
     raise NotImplementedError
-
-
-@iron.jit(is_placed=False)
-def ggml_op_sqr_jit(input_tensor, output_tensor):
-    return ggml_op_sqr([input_tensor], output_tensor)
-
-
-@pytest.mark.parametrize("num_elements", [16, 256, 4096])
-@pytest.mark.parametrize("dtype", [np.int32])
-@pytest.mark.parametrize(
-    "function, op",
-    [
-        # (ggml_op_sqr_jit, lambda x: x * x),
-    ],
-)
-def test_ggml_op_unary(function, op, dtype, num_elements):
-    iron.set_current_device(NPU1Col4())
-
-    # Construct two input random tensors and an output zeroed tensor
-    input_tensor = iron.randint(-100, 100, (num_elements,), dtype=dtype, device="npu")
-    output_tensor = iron.zeros_like(input_tensor)
-
-    # JIT-compile the kernel then launch the kernel with the given arguments
-    function(input_tensor, output_tensor)
-
-    assert np.array_equal(op(input_tensor.numpy()), output_tensor.numpy())
