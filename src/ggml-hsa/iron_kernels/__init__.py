@@ -3,19 +3,19 @@
 __all__ = [
     "compile_kernel",
     "tensordesc",
-    "CoreFunctionCompileSpec",
+    "CoreFunctionInfo",
     "to_device",
     "str_to_dtype",
     "dtype_to_str",
-    "core_function_compile_spec",
+    "core_function",
 ]
 
 from .compiler import (
     tensordesc,
-    CoreFunctionCompileSpec,
+    CoreFunctionInfo,
     to_device,
     str_to_dtype,
     dtype_to_str,
     compile_kernel,
-    core_function_compile_spec,
+    core_function,
 )
