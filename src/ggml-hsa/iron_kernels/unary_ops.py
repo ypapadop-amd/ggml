@@ -8,12 +8,11 @@
 
 from os import path
 import numpy as np
-import pytest
+from functools import partial
 
 import aie.iron as iron
 from aie.iron import ObjectFifo, Kernel, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
-from aie.iron.device import NPU1Col4
 from aie.iron.controlflow import range_
 
 from compiler import core_function, CoreFunctionInfo, dtype_to_str
@@ -82,33 +81,10 @@ def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
     return Program(iron.get_current_device(), rt).resolve_program(SequentialPlacer())
 
 
-def ggml_op_sqr(input_tensors: list, output_tensor):
-    """GGML_OP_SQR implementation."""
-    raise NotImplementedError
-
-
-def ggml_op_sqrt(input_tensors: list, output_tensor):
-    """GGML_OP_SQRT implementation."""
-    raise NotImplementedError
-
-
-def ggml_op_log(input_tensors: list, output_tensor):
-    """GGML_OP_LOG implementation."""
-    raise NotImplementedError
-
-
-def ggml_op_sin(input_tensors: list, output_tensor):
-    """GGML_OP_SIN implementation."""
-    raise NotImplementedError
-
-
-def ggml_op_cos(input_tensors: list, output_tensor):
-    """GGML_OP_COS implementation."""
-    raise NotImplementedError
-
-
-def abs_core_function_info(device, input_tensors: list, output_tensor):
-    """Returns a compilation specification for abs."""
+def unary_op_core_function_info(
+    op_name: str, device, input_tensors: list, output_tensor
+):
+    """Returns a compilation specification for unary ops."""
 
     assert len(input_tensors) == 1
     assert input_tensors[0].dtype == output_tensor.dtype
@@ -117,16 +93,53 @@ def abs_core_function_info(device, input_tensors: list, output_tensor):
     current_dir = path.dirname(path.realpath(__file__))
     return CoreFunctionInfo(
         source_file=path.join(current_dir, "unary_ops.cc"),
-        exported_function="ggml_op_abs",
+        exported_function="ggml_op_" + op_name,
         compile_args=[
-            "-DCOMPILE_ABS=1",
+            f"-DCOMPILE_{op_name.upper()}=1",
             f"-DINPUT_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
         ],
     )
 
 
-@core_function(abs_core_function_info)
+@core_function(partial(unary_op_core_function_info, op_name="sqr"))
+def ggml_op_sqr(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
+    """GGML_OP_SQR implementation."""
+    return unary_op(*input_tensors, output_tensor, core_function_info)
+
+
+@core_function(partial(unary_op_core_function_info, op_name="sqrt"))
+def ggml_op_sqrt(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
+    """GGML_OP_SQRT implementation."""
+    return unary_op(*input_tensors, output_tensor, core_function_info)
+
+
+def ggml_op_log(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
+    """GGML_OP_LOG implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_sin(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
+    """GGML_OP_SIN implementation."""
+    raise NotImplementedError
+
+
+def ggml_op_cos(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
+    """GGML_OP_COS implementation."""
+    raise NotImplementedError
+
+
+@core_function(partial(unary_op_core_function_info, op_name="abs"))
 def ggml_unary_op_abs(
     input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
 ):
@@ -134,66 +147,98 @@ def ggml_unary_op_abs(
     return unary_op(*input_tensors, output_tensor, core_function_info)
 
 
-def ggml_unary_op_sgn(input_tensors: list, output_tensor):
+@core_function(partial(unary_op_core_function_info, op_name="sgn"))
+def ggml_unary_op_sgn(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_SGN implementation."""
-    raise NotImplementedError
+    return unary_op(*input_tensors, output_tensor, core_function_info)
 
 
-def ggml_unary_op_neg(input_tensors: list, output_tensor):
+@core_function(partial(unary_op_core_function_info, op_name="neg"))
+def ggml_unary_op_neg(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_NEG implementation."""
-    raise NotImplementedError
+    return unary_op(*input_tensors, output_tensor, core_function_info)
 
 
-def ggml_unary_op_step(input_tensors: list, output_tensor):
+@core_function(partial(unary_op_core_function_info, op_name="step"))
+def ggml_unary_op_step(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_STEP implementation."""
-    raise NotImplementedError
+    return unary_op(*input_tensors, output_tensor, core_function_info)
 
 
-def ggml_unary_op_tanh(input_tensors: list, output_tensor):
+def ggml_unary_op_tanh(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_TANH implementation."""
     raise NotImplementedError
 
 
-def ggml_unary_op_elu(input_tensors: list, output_tensor):
+def ggml_unary_op_elu(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_ELU implementation."""
     raise NotImplementedError
 
 
-def ggml_unary_op_relu(input_tensors: list, output_tensor):
+@core_function(partial(unary_op_core_function_info, op_name="relu"))
+def ggml_unary_op_relu(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_RELU implementation."""
-    raise NotImplementedError
+    return unary_op(*input_tensors, output_tensor, core_function_info)
 
 
-def ggml_unary_op_sigmoid(input_tensors: list, output_tensor):
+def ggml_unary_op_sigmoid(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_SIGMOID implementation."""
     raise NotImplementedError
 
 
-def ggml_unary_op_gelu(input_tensors: list, output_tensor):
+def ggml_unary_op_gelu(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_GELU implementation."""
     raise NotImplementedError
 
 
-def ggml_unary_op_gelu_quick(input_tensors: list, output_tensor):
+def ggml_unary_op_gelu_quick(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_GELU implementation."""
     raise NotImplementedError
 
 
-def ggml_unary_op_silu(input_tensors: list, output_tensor):
+def ggml_unary_op_silu(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_SILU implementation."""
     raise NotImplementedError
 
 
-def ggml_unary_op_hardswish(input_tensors: list, output_tensor):
+@core_function(partial(unary_op_core_function_info, op_name="hardswish"))
+def ggml_unary_op_hardswish(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_HARDSWISH implementation."""
-    raise NotImplementedError
+    return unary_op(*input_tensors, output_tensor, core_function_info)
 
 
-def ggml_unary_op_hardsigmoid(input_tensors: list, output_tensor):
+@core_function(partial(unary_op_core_function_info, op_name="hardsigmoid"))
+def ggml_unary_op_hardsigmoid(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_HARDSIGMOID implementation."""
-    raise NotImplementedError
+    return unary_op(*input_tensors, output_tensor, core_function_info)
 
 
-def ggml_unary_op_exp(input_tensors: list, output_tensor):
+def ggml_unary_op_exp(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     """GGML_UNARY_OP_EXP implementation."""
     raise NotImplementedError
