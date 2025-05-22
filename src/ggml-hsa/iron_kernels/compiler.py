@@ -97,16 +97,14 @@ class CoreFunctionInfo:
     This class provides information necessary to compile a core function via Peano and use it in a kernel.
     """
 
-    def __init__(
-        self, source_path: str, compile_args, exported_functions, object_file: str
-    ):
-        self.source_path = source_path
+    def __init__(self, source_file: str, exported_function: str, compile_args):
+        self.source_file = source_file
         self.compile_args = compile_args
-        self.exported_functions = exported_functions
-        self.object_file = object_file
+        self.exported_function = exported_function
+        self.object_file = None
 
     def __str__(self):
-        return f'Source: "{self.source_path}", Compile args: {self.compile_args}, Exported functions: "{self.exported_functions}", Object file: "{self.object_file}"'
+        return f'Source file: "{self.source_file}", Compile args: {self.compile_args}, Exported function: "{self.exported_function}", Object file: "{self.object_file}"'
 
 
 def core_function(function_info=None) -> Callable:
@@ -153,15 +151,16 @@ def compile_kernel(
         core_function_info = core_function_info_func(
             device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
-        output_path = os.path.join(output_directory, core_function_info.object_file)
+        output_path = os.path.join(output_directory, exported_name + ".o")
         compile_cxx_core_function(
-            source_path=core_function_info.source_path,
+            source_path=core_function_info.source_file,
             target_arch=device,
             output_path=output_path,
             compile_args=core_function_info.compile_args,
             cwd=output_directory,
             verbose=verbose,
         )
+        core_function_info.object_file = output_path
     except AttributeError:
         # ignore missing attribute
         pass

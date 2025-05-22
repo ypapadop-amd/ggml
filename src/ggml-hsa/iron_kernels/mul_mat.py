@@ -225,13 +225,8 @@ def my_matmul(
 
         # AIE Core Function declarations
         zero = external_func(f"zero_{dtype_out_str}", inputs=[C_l1_ty])
-        matmul_vectorized_func_name = (
-            f"matmul_{dtype_in_str}_{dtype_out_str}"
-            if not b_col_maj
-            else f"matmul_{dtype_in_str}_{dtype_out_str}_b_col_maj"
-        )
         matmul = external_func(
-            matmul_vectorized_func_name,
+            core_function_info.exported_function,
             inputs=[A_l1_ty, B_l1_ty, C_l1_ty],
         )
 
@@ -611,20 +606,21 @@ def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
     n = 8
     current_dir = path.dirname(path.realpath(__file__))
     return CoreFunctionInfo(
-        source_path=path.join(current_dir, "mm.cc"),
+        source_file=path.join(current_dir, "mm.cc"),
+        exported_function=f"matmul_{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}",
         compile_args=[
             f"-DDIM_M={m}",
             f"-DDIM_K={k}",
             f"-DDIM_N={n}",
             f"-D{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}_ONLY",
         ],
-        exported_functions=[],
-        object_file=f"mm_{m}x{k}x{n}.o",
     )
 
 
 @core_function(mul_mat_core_function_info)
-def ggml_op_mul_mat(input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo):
+def ggml_op_mul_mat(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     from compiler import dtype_to_str
 
     # TODO

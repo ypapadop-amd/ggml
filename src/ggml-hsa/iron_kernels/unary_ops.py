@@ -47,7 +47,7 @@ def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
 
     # External, binary kernel definition
     kernel_fn = Kernel(
-        name=core_function_info.exported_functions,
+        name=core_function_info.exported_function,
         bin_name=core_function_info.object_file,
         arg_types=[tile_ty, tile_ty, np.int32],
     )
@@ -119,15 +119,14 @@ def abs_core_function_info(device, input_tensors: list, output_tensor):
     output_tensor_dtype = dtype_to_str(output_tensor.dtype)
     func_name = f"abs_{input_tensor_dtype}_{output_tensor_dtype}"
     return CoreFunctionInfo(
-        source_path=path.join(current_dir, "unary_ops.cc"),
+        source_file=path.join(current_dir, "unary_ops.cc"),
+        exported_function=func_name,
         compile_args=[
             "-DABS=1",
             f"-DINPUT_DTYPE={input_tensor_dtype}",
             f"-DOUTPUT_DTYPE={output_tensor_dtype}",
             f"-DFUNC_NAME={func_name}",
         ],
-        exported_functions=func_name,
-        object_file=f"{func_name}.o",
     )
 
 
