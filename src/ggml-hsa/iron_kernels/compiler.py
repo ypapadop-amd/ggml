@@ -97,9 +97,12 @@ class CoreFunctionInfo:
     This class provides information necessary to compile a core function via Peano and use it in a kernel.
     """
 
-    def __init__(self, source_file: str, exported_function: str, compile_args):
+    def __init__(self, source_file: str, exported_function, compile_args):
         self.source_file = source_file
-        self.compile_args = compile_args
+        if compile_args is None:
+            self.compile_args = []
+        else:
+            self.compile_args = compile_args
         self.exported_function = exported_function
         self.object_file = None
 

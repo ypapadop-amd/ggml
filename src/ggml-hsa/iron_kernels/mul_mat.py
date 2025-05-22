@@ -224,9 +224,11 @@ def my_matmul(
         C_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
         # AIE Core Function declarations
-        zero = external_func(f"zero_{dtype_out_str}", inputs=[C_l1_ty])
+        zero = external_func(
+            core_function_info.exported_function["zero"], inputs=[C_l1_ty]
+        )
         matmul = external_func(
-            core_function_info.exported_function,
+            core_function_info.exported_function["matmul"],
             inputs=[A_l1_ty, B_l1_ty, C_l1_ty],
         )
 
@@ -607,7 +609,10 @@ def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
     current_dir = path.dirname(path.realpath(__file__))
     return CoreFunctionInfo(
         source_file=path.join(current_dir, "mm.cc"),
-        exported_function=f"matmul_{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}",
+        exported_function={
+            "matmul": f"matmul_{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}",
+            "zero": f"zero_{dtype_to_str(C.dtype)}",
+        },
         compile_args=[
             f"-DDIM_M={m}",
             f"-DDIM_K={k}",
