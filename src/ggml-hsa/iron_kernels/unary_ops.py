@@ -110,11 +110,12 @@ def ggml_op_sqr(
     return unary_op(*input_tensors, output_tensor, core_function_info)
 
 
+@core_function(partial(unary_op_core_function_info, op_name="sqrt"))
 def ggml_op_sqrt(
     input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
 ):
     """GGML_OP_SQRT implementation."""
-    raise NotImplementedError
+    return unary_op(*input_tensors, output_tensor, core_function_info)
 
 
 def ggml_op_log(

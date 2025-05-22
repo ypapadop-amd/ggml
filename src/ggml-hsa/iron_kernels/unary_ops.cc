@@ -27,6 +27,14 @@ void ggml_op_sqr(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict ou
 
 #endif // COMPILE_SQR
 
+#ifdef COMPILE_SQRT
+
+void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return aie::sqrt(v); });
+}
+
+#endif // COMPILE_SQRT
+
 #ifdef COMPILE_ABS
 
 void ggml_op_abs(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
