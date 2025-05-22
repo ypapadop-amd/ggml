@@ -90,28 +90,32 @@ def tensordesc(shape, dtype) -> TensorDesc:
     return TensorDesc(shape=shape, dtype=dtype)
 
 
-class CoreFunctionCompileSpec:
+class CoreFunctionInfo:
     """
-    Core function compilation specification.
+    Core function information.
 
-    This class provides information necessary to compile a single-core kernel via Peano.
+    This class provides information necessary to compile a core function via Peano and use it in a kernel.
     """
 
-    def __init__(self, source_path: str, compile_args: list[str], output_filename: str):
-        self.source_path = source_path
-        self.compile_args = compile_args
-        self.output_filename = output_filename
+    def __init__(self, source_file: str, exported_function, compile_args):
+        self.source_file = source_file
+        if compile_args is None:
+            self.compile_args = []
+        else:
+            self.compile_args = compile_args
+        self.exported_function = exported_function
+        self.object_file = None
 
     def __str__(self):
-        return f'Source:"{self.source_path}", Output:"{self.output_filename}", Compile args:"{self.compile_args}"'
+        return f'Source file: "{self.source_file}", Compile args: {self.compile_args}, Exported function: "{self.exported_function}", Object file: "{self.object_file}"'
 
 
-def core_function_compile_spec(spec=None) -> Callable:
-    """Adds a core function compile spec to the kernel."""
+def core_function(function_info=None) -> Callable:
+    """Associates a core function with a kernel."""
 
     def wrapper(func):
-        if spec:
-            func.core_function_compile_spec = spec
+        if function_info:
+            func.core_function_info = function_info
         return func
 
     return wrapper
@@ -134,58 +138,61 @@ def compile_kernel(
     output_tensor: TensorDesc,
     exported_name: str,
     output_directory: str,
+    verbose: bool = False,
 ):
     """Compiles the kernel code to PDI and instruction files."""
     os.makedirs(output_directory, exist_ok=True)
 
+    # import IRON kernel
     module = import_from_path(kernel_name, kernel_source)
-
-    dev = to_device(device)
-
-    # generate MLIR and write to file for debugging
     kernel = getattr(module, kernel_name)
-    set_current_device(dev)
-    mlir_module = kernel(input_tensors=input_tensors, output_tensor=output_tensor)
-    mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
-    with open(mlir_path, "wt", encoding="utf-8") as file:
-        file.write(str(mlir_module))
 
-    # if there is a core function spec, compile it with Peano
+    # compile core function if it exists
+    core_function_info = None
     try:
-        compile_spec = getattr(kernel, "core_function_compile_spec")
-        spec = compile_spec(
+        core_function_info_func = getattr(kernel, "core_function_info")
+        core_function_info = core_function_info_func(
             device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
-        output_path = os.path.join(output_directory, spec.output_filename)
+        output_path = os.path.join(output_directory, exported_name + ".o")
         compile_cxx_core_function(
-            source_path=spec.source_path,
+            source_path=core_function_info.source_file,
             target_arch=device,
             output_path=output_path,
-            compile_args=spec.compile_args,
+            compile_args=core_function_info.compile_args,
             cwd=output_directory,
+            verbose=verbose,
         )
+        core_function_info.object_file = output_path
     except AttributeError:
         # ignore missing attribute
         pass
 
+    # generate MLIR and write to file for debugging
+    dev = to_device(device)
+    set_current_device(dev)
+    if core_function_info:
+        mlir_module = kernel(
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            core_function_info=core_function_info,
+        )
+    else:
+        mlir_module = kernel(input_tensors=input_tensors, output_tensor=output_tensor)
+    mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
+    with open(mlir_path, "wt", encoding="utf-8") as file:
+        file.write(str(mlir_module))
+
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
-    previous_cwd = None
-    try:
-        previous_cwd = os.getcwd()
-        os.chdir(output_directory)
-        compile_mlir_module_to_pdi(
-            mlir_module=mlir_module,
-            options=["--alloc-scheme=basic-sequential"],
-            insts_path=insts_path,
-            pdi_path=pdi_path,
-        )
-    except:  # pylint: disable=try-except-raise
-        raise
-    finally:
-        if previous_cwd:
-            os.chdir(previous_cwd)
+    compile_mlir_module_to_pdi(
+        mlir_module=mlir_module,
+        options=["--alloc-scheme=basic-sequential"],
+        insts_path=insts_path,
+        pdi_path=pdi_path,
+        verbose=verbose,
+    )
 
 
 def to_tuple_of_ints(string: str):
@@ -271,6 +278,12 @@ def main():
         required=True,
         help="Output directory",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Verbose output",
+    )
     args = parser.parse_args()
 
     compile_kernel(
@@ -281,6 +294,7 @@ def main():
         output_tensor=args.output_tensor,
         exported_name=args.exported_name,
         output_directory=args.output_directory,
+        verbose=args.verbose,
     )
 
 
