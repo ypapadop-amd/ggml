@@ -186,22 +186,13 @@ def compile_kernel(
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
-    previous_cwd = None
-    try:
-        previous_cwd = os.getcwd()
-        os.chdir(output_directory)
-        compile_mlir_module_to_pdi(
-            mlir_module=mlir_module,
-            options=["--alloc-scheme=basic-sequential"],
-            insts_path=insts_path,
-            pdi_path=pdi_path,
-            verbose=verbose,
-        )
-    except:  # pylint: disable=try-except-raise
-        raise
-    finally:
-        if previous_cwd:
-            os.chdir(previous_cwd)
+    compile_mlir_module_to_pdi(
+        mlir_module=mlir_module,
+        options=["--alloc-scheme=basic-sequential"],
+        insts_path=insts_path,
+        pdi_path=pdi_path,
+        verbose=verbose,
+    )
 
 
 def to_tuple_of_ints(string: str):
