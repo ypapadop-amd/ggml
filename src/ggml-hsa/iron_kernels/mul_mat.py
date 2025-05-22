@@ -4,7 +4,9 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 # (c) Copyright 2025 AMD Inc.
+
 import argparse
+from os import path
 from ml_dtypes import bfloat16
 import numpy as np
 
@@ -15,7 +17,7 @@ from aie.dialects.aiex import *
 from aie.helpers.dialects.ext.scf import _for as range_
 from aie.helpers.taplib import TensorAccessPattern, TensorAccessSequence
 
-from compiler import core_function_compile_spec
+from compiler import core_function, CoreFunctionInfo, dtype_to_str
 
 dtype_map = {
     "bf16": bfloat16,
@@ -97,6 +99,7 @@ def my_matmul(
     dtype_out_str,
     b_col_maj,
     trace_size,
+    core_function_info: CoreFunctionInfo,
     generate_taps=False,
 ):
     n_aie_rows = 4
@@ -221,14 +224,11 @@ def my_matmul(
         C_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
         # AIE Core Function declarations
-        zero = external_func(f"zero_{dtype_out_str}", inputs=[C_l1_ty])
-        matmul_vectorized_func_name = (
-            f"matmul_{dtype_in_str}_{dtype_out_str}"
-            if not b_col_maj
-            else f"matmul_{dtype_in_str}_{dtype_out_str}_b_col_maj"
+        zero = external_func(
+            core_function_info.exported_function["zero"], inputs=[C_l1_ty]
         )
         matmul = external_func(
-            matmul_vectorized_func_name,
+            core_function_info.exported_function["matmul"],
             inputs=[A_l1_ty, B_l1_ty, C_l1_ty],
         )
 
@@ -378,7 +378,7 @@ def my_matmul(
         for row in range(n_aie_rows):
             for col in range(n_aie_cols):
 
-                @core(core_tiles[row][col], f"mm_{m}x{k}x{n}.o")
+                @core(core_tiles[row][col], core_function_info.object_file)
                 def core_body():
                     for _ in range_(0xFFFFFFFF):
                         loop = (
@@ -593,11 +593,8 @@ def my_matmul(
         )
 
 
-def mul_mat_compile_spec(device, input_tensors: list, output_tensor):
-    """Returns a compilation specification for matrix-multiplication."""
-
-    from os import path
-    from compiler import CoreFunctionCompileSpec, dtype_to_str
+def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
+    """Returns a compilation specification for matrix multiplication."""
 
     assert len(input_tensors) == 2
 
@@ -610,20 +607,25 @@ def mul_mat_compile_spec(device, input_tensors: list, output_tensor):
     k = 8
     n = 8
     current_dir = path.dirname(path.realpath(__file__))
-    return CoreFunctionCompileSpec(
-        source_path=path.join(current_dir, "mm.cc"),
+    return CoreFunctionInfo(
+        source_file=path.join(current_dir, "mm.cc"),
+        exported_function={
+            "matmul": f"matmul_{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}",
+            "zero": f"zero_{dtype_to_str(C.dtype)}",
+        },
         compile_args=[
             f"-DDIM_M={m}",
             f"-DDIM_K={k}",
             f"-DDIM_N={n}",
             f"-D{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}_ONLY",
         ],
-        output_filename=f"mm_{m}x{k}x{n}.o",
     )
 
 
-@core_function_compile_spec(spec=mul_mat_compile_spec)
-def ggml_op_mul_mat(input_tensors: list, output_tensor):
+@core_function(mul_mat_core_function_info)
+def ggml_op_mul_mat(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
     from compiler import dtype_to_str
 
     # TODO
@@ -654,6 +656,7 @@ def ggml_op_mul_mat(input_tensors: list, output_tensor):
             dtype_out_str=dtype_to_str(C.dtype),
             b_col_maj=0,
             trace_size=0,
+            core_function_info=core_function_info,
         )
         return ctx.module
 
