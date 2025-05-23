@@ -75,9 +75,7 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
                    [&](char c) { return std::tolower(c); });
     oss << '-';
     ggml_hsa_output_tensor(tensor, oss);
-    oss << '-';
-    ggml_hsa_output_tensor(tensor->src[0], oss);
-    for (int i = 1; i < GGML_MAX_SRC; ++i) {
+    for (int i = 0; i < GGML_MAX_SRC; ++i) {
         if (tensor->src[i] == nullptr) {
             break;
         }
