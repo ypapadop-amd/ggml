@@ -246,10 +246,15 @@ void ggml_hsa_output_tensor_shape(const ggml_tensor * tensor, OutputStream & os,
  *
  * @param[in] tensor tensor to output
  * @param[out] os output stream
+ * @param[in] flatten if @c true, outputs the number of elements in the tensor instead of the shape
  */
 template <typename OutputStream>
-void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os) {
-    ggml_hsa_output_tensor_shape(tensor, os);
+void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os, bool flatten = false) {
+    if (flatten) {
+        os << ggml_nelements(tensor);
+    } else {
+        ggml_hsa_output_tensor_shape(tensor, os);
+    }
 
     os << ggml_type_name(tensor->type);
 
