@@ -36,25 +36,6 @@ struct ggml_hsa_aie_jit_kernel_info {
 };
 
 /**
- * @brief Outputs the tensor description for use in IRON python kernel scripts.
- */
-static void ggml_hsa_output_tensors(const ggml_tensor * tensor, std::ostream & os) {
-    for (int i = 0; i < GGML_MAX_SRC; ++i) {
-        const auto * src_tensor = tensor->src[i];
-        if (src_tensor == nullptr) {
-            break;
-        }
-        os << '(';
-        ggml_hsa_output_tensor_shape(src_tensor, os, ',');
-        os << ")/" << ggml_type_name(src_tensor->type) << ' ';
-    }
-
-    os << '(';
-    ggml_hsa_output_tensor_shape(tensor, os, ',');
-    os << ")/" << ggml_type_name(tensor->type) << ' ';
-}
-
-/**
  * @brief JIT compilation information for operations.
  */
 static auto ggml_backend_hsa_kernel_jit_info = []() {
@@ -93,8 +74,25 @@ static auto ggml_backend_hsa_unary_kernel_jit_info = []() {
     kernels[GGML_UNARY_OP_HARDSWISH] = {"ggml_unary_op_hardswish", "unary_ops.py"};
     kernels[GGML_UNARY_OP_HARDSIGMOID] = {"ggml_unary_op_hardsigmoid", "unary_ops.py"};
     kernels[GGML_UNARY_OP_EXP] = {"ggml_unary_op_exp", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_GELU_ERF] = {"ggml_unary_op_gelu_erf", "unary_ops.py"};
     return kernels;
 }();
+
+/**
+ * @brief Returns the JIT compilation information for the given operation.
+ */
+static const ggml_hsa_aie_jit_kernel_info &
+ggml_hsa_get_kernel_jit_info(const ggml_tensor * tensor) {
+    assert((tensor->op > GGML_OP_NONE) && (tensor->op < GGML_OP_COUNT) &&
+           "Tensor operation index out of bounds");
+
+    if (tensor->op == GGML_OP_UNARY) {
+        // for unary operations, we need to get the specific unary operation type
+        return ggml_backend_hsa_unary_kernel_jit_info[ggml_get_unary_op(tensor)];
+    }
+
+    return ggml_backend_hsa_kernel_jit_info[tensor->op];
+}
 
 /**
  * @brief Creates a TensorDesc object from the tensor.
@@ -114,46 +112,41 @@ py::object ggml_hsa_tensor_as_tensor_desc(F && ctor_f, const ggml_tensor * tenso
                                    "dtype"_a = ggml_type_name(tensor->type));
 }
 
+/**
+ * @brief Returns if the tensor is a view.
+ */
+static bool ggml_hsa_is_view(const ggml_tensor * tensor) {
+    // A view is a tensor that is not contiguous, permuted or transposed.
+    return tensor->view_src != nullptr;
+}
+
 ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                     const ggml_tensor * tensor,
                                     const std::string & exported_name,
                                     const std::filesystem::path & output_path) {
     using namespace pybind11::literals;
 
-    if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
-        GGML_LOG_ERROR("%s: Tensor operation index out of bounds (%d >= GGML_OP_COUNT)\n", __func__,
-                       tensor->op);
+    // non-contiguous, permuted or transposed tensors are not yet supported
+    auto unsupported_tensor = [](const ggml_tensor * tensor) {
+        return tensor != nullptr && (!ggml_is_contiguous(tensor) || ggml_hsa_is_view(tensor));
+    };
+    if (unsupported_tensor(tensor) ||
+        std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor)) {
+        GGML_LOG_INFO("%s: Tensor \"%s\" unsupported layout\n", __func__, ggml_get_name(tensor));
         return GGML_STATUS_FAILED;
     }
 
-    ggml_hsa_aie_jit_kernel_info * kernel_jit_info = nullptr;
-    switch (tensor->op) {
-        case GGML_OP_UNARY :
-            kernel_jit_info = &(ggml_backend_hsa_unary_kernel_jit_info[ggml_get_unary_op(tensor)]);
-            break;
-        default :
-            kernel_jit_info = &(ggml_backend_hsa_kernel_jit_info[tensor->op]);
-            break;
-    }
-    if (!kernel_jit_info->is_valid()) {
+    // retrieve the JIT compilation information for the kernel
+    const auto & kernel_jit_info = ggml_hsa_get_kernel_jit_info(tensor);
+    if (!kernel_jit_info.is_valid()) {
         // no JIT compilable kernel
         return GGML_STATUS_FAILED;
     }
 
-    // non-contiguous, permuted or transposed tensors are not yet supported
-    auto unsupported_tensor = [](const ggml_tensor * tensor) {
-        return tensor != nullptr && (!ggml_is_contiguous(tensor) || ggml_is_permuted(tensor) ||
-                                     ggml_is_transposed(tensor));
-    };
-    if (unsupported_tensor(tensor) ||
-        std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor)) {
-        GGML_LOG_INFO("%s: Unsupported tensors for %s\n", __func__, ggml_op_desc(tensor));
-        return GGML_STATUS_FAILED;
-    }
-
+    // JIT compile kernel
     const auto & library_dir = ggml_hsa_library_path();
     const auto module_path = library_dir / "iron_kernels";
-    const auto kernel_source_path = module_path / kernel_jit_info->source;
+    const auto kernel_source_path = module_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
 
     py::scoped_interpreter guard{};
@@ -174,12 +167,11 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
 
         // compile the kernel
         auto compile_kernel = iron_compiler.attr("compile_kernel");
-        compile_kernel("kernel_name"_a = kernel_jit_info->name,
-                       "kernel_source"_a = kernel_source_path.string(), "device"_a = dev_info.name,
-                       "input_tensors"_a = std::move(input_tensors),
-                       "output_tensor"_a = std::move(output_tensor),
-                       "exported_name"_a = exported_name,
-                       "output_directory"_a = output_directory.string());
+        compile_kernel(
+            "kernel_name"_a = kernel_jit_info.name, "kernel_source"_a = kernel_source_path.string(),
+            "device"_a = dev_info.name, "input_tensors"_a = std::move(input_tensors),
+            "output_tensor"_a = std::move(output_tensor), "exported_name"_a = exported_name,
+            "output_directory"_a = output_directory.string());
     } catch (const pybind11::error_already_set & ex) {
         GGML_LOG_ERROR("%s: JIT compilation failed:\n%s\n", __func__, ex.what());
         return GGML_STATUS_FAILED;
