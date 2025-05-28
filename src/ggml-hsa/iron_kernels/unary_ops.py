@@ -210,7 +210,7 @@ def ggml_unary_op_gelu(
 def ggml_unary_op_gelu_quick(
     input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
 ):
-    """GGML_UNARY_OP_GELU implementation."""
+    """GGML_UNARY_OP_GELU_QUICK implementation."""
     raise NotImplementedError
 
 
@@ -241,4 +241,10 @@ def ggml_unary_op_exp(
     input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
 ):
     """GGML_UNARY_OP_EXP implementation."""
+    raise NotImplementedError
+
+def ggml_unary_op_gelu_erf(
+    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+):
+    """GGML_UNARY_OP_GELU_ERF implementation."""
     raise NotImplementedError
