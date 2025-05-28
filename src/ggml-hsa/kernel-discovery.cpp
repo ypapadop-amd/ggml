@@ -64,7 +64,7 @@ static const fs::path cached_kernel_dir = [] {
  * A tensor can be flattened if it participates in an operation that is independent of the tensor's
  * dimensions.
  */
-static bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
+constexpr bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
     return (tensor->op == GGML_OP_UNARY) || (tensor->op == GGML_OP_SQR) ||
            (tensor->op == GGML_OP_SQRT) || (tensor->op == GGML_OP_LOG) ||
            (tensor->op == GGML_OP_SIN) || (tensor->op == GGML_OP_COS) ||
@@ -77,8 +77,8 @@ static bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
 static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
                                                std::string & kernel_name) {
     if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
-        GGML_LOG_ERROR("%s: Tensor operation index out of bounds (%d >= GGML_OP_COUNT)\n", __func__,
-                       tensor->op);
+        GGML_LOG_ERROR("%s: Tensor \"%s\" operation index out of bounds (%d >= GGML_OP_COUNT)\n",
+                       __func__, ggml_get_name(tensor), tensor->op);
         return GGML_STATUS_FAILED;
     }
 

@@ -81,21 +81,17 @@ static auto ggml_backend_hsa_unary_kernel_jit_info = []() {
 /**
  * @brief Returns the JIT compilation information for the given operation.
  */
-static const ggml_hsa_aie_jit_kernel_info *
+static const ggml_hsa_aie_jit_kernel_info &
 ggml_hsa_get_kernel_jit_info(const ggml_tensor * tensor) {
-    if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
-        GGML_LOG_ERROR(
-            "%s: Tensor operation index out of bounds for tensor \"%s\" (%d >= GGML_OP_COUNT)\n",
-            __func__, ggml_get_name(tensor), tensor->op);
-        return nullptr;
-    }
+    assert((tensor->op > GGML_OP_NONE) && (tensor->op < GGML_OP_COUNT) &&
+           "Tensor operation index out of bounds");
 
     if (tensor->op == GGML_OP_UNARY) {
         // for unary operations, we need to get the specific unary operation type
-        return &(ggml_backend_hsa_unary_kernel_jit_info[ggml_get_unary_op(tensor)]);
+        return ggml_backend_hsa_unary_kernel_jit_info[ggml_get_unary_op(tensor)];
     }
 
-    return &(ggml_backend_hsa_kernel_jit_info[tensor->op]);
+    return ggml_backend_hsa_kernel_jit_info[tensor->op];
 }
 
 /**
@@ -136,14 +132,13 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     };
     if (unsupported_tensor(tensor) ||
         std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor)) {
-        GGML_LOG_INFO("%s: Unsupported tensors for tensor \"%s\" (%s)\n", __func__,
-                      ggml_get_name(tensor), ggml_op_desc(tensor));
+        GGML_LOG_INFO("%s: Tensor \"%s\" unsupported layout\n", __func__, ggml_get_name(tensor));
         return GGML_STATUS_FAILED;
     }
 
     // retrieve the JIT compilation information for the kernel
-    auto kernel_jit_info = ggml_hsa_get_kernel_jit_info(tensor);
-    if (!kernel_jit_info || !kernel_jit_info->is_valid()) {
+    const auto & kernel_jit_info = ggml_hsa_get_kernel_jit_info(tensor);
+    if (!kernel_jit_info.is_valid()) {
         // no JIT compilable kernel
         return GGML_STATUS_FAILED;
     }
@@ -151,7 +146,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     // JIT compile kernel
     const auto & library_dir = ggml_hsa_library_path();
     const auto module_path = library_dir / "iron_kernels";
-    const auto kernel_source_path = module_path / kernel_jit_info->source;
+    const auto kernel_source_path = module_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
 
     py::scoped_interpreter guard{};
@@ -172,12 +167,11 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
 
         // compile the kernel
         auto compile_kernel = iron_compiler.attr("compile_kernel");
-        compile_kernel("kernel_name"_a = kernel_jit_info->name,
-                       "kernel_source"_a = kernel_source_path.string(), "device"_a = dev_info.name,
-                       "input_tensors"_a = std::move(input_tensors),
-                       "output_tensor"_a = std::move(output_tensor),
-                       "exported_name"_a = exported_name,
-                       "output_directory"_a = output_directory.string());
+        compile_kernel(
+            "kernel_name"_a = kernel_jit_info.name, "kernel_source"_a = kernel_source_path.string(),
+            "device"_a = dev_info.name, "input_tensors"_a = std::move(input_tensors),
+            "output_tensor"_a = std::move(output_tensor), "exported_name"_a = exported_name,
+            "output_directory"_a = output_directory.string());
     } catch (const pybind11::error_already_set & ex) {
         GGML_LOG_ERROR("%s: JIT compilation failed:\n%s\n", __func__, ex.what());
         return GGML_STATUS_FAILED;
