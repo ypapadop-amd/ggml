@@ -42,9 +42,7 @@ struct ggml_tensor * ggml_mul_mat_i16(
     struct ggml_context * ctx,
     struct ggml_tensor  * a,
     struct ggml_tensor  * b) {
-    GGML_ASSERT(!ggml_is_transposed(a));
-
-    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
+    const int64_t ne[4] = { a->ne[0], b->ne[1], b->ne[2], b->ne[3] };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_I16, 4, ne);
 
     result->op     = GGML_OP_MUL_MAT;
@@ -115,8 +113,8 @@ void load_model(test_model & model, T * a, T * b, int M, int N, int K, bool use_
 
     // create tensors
     model.a = ggml_new_tensor_2d(model.ctx, ggml_type, K, M);
-    printf("Matrix A: [%i, %i]\n", K, M);
-    model.b = ggml_new_tensor_2d(model.ctx, ggml_type, K, N);
+    printf("Matrix A: [%i, %i]\n", M, K);
+    model.b = ggml_new_tensor_2d(model.ctx, ggml_type, N, K);
     printf("Matrix B: [%i, %i]\n", K, N);
 
     // create a allocator
@@ -176,7 +174,10 @@ ggml_tensor* compute(test_model & model, ggml_gallocr_t allocr) {
         ggml_backend_cpu_set_n_threads(model.backend, n_threads);
     }
 
-    ggml_backend_graph_compute(model.backend, gf);
+    if (ggml_backend_graph_compute(model.backend, gf) != GGML_STATUS_SUCCESS) {
+        fprintf(stderr, "%s: ggml_backend_graph_compute() failed\n", __func__);
+        std::exit(-1);
+    }
 
     ggml_graph_print(gf);
 
@@ -211,7 +212,7 @@ void gemm(int M, int N, int K,
     for (int m = 0; m < M; ++m) {
         for (int n = 0; n < N; ++n) {
             for (int k = 0; k < K; ++k) {
-                C[m * K + k] += A[m * N + n] * B[n * K + k];
+                C[m * N + n] += A[m * K + k] * B[k * N + n];
             }
         }
     }
@@ -225,30 +226,30 @@ int main()
     using value_type = float;
 #endif
 
-    const int M = 32, N = 32, K = 32;  // a conv2d expected matrix multiplication
+    const int M = 32, N = 32, K = 32;
 
     ggml_time_init();
 
     // matrix A
     value_type matrixA[M * K] = {};
-    std::iota(matrixA, std::next(matrixA, M*K), 0);
+    std::iota(matrixA, std::next(matrixA, M * K), 0);
 
     // matrix B
-    value_type matrixB[N * K] = {};
-    make_eye(matrixB, N, K);
+    value_type matrixB[K * N] = {};
+    make_eye(matrixB, K, N);
 
     matrixB[100] = 10;
 
     // matrix C
-    value_type matrixC_cpu[M * N] = {};
-    gemm(M, N, K, matrixA, matrixB, matrixC_cpu);
+    value_type matrixC_naive[M * N] = {};
+    gemm(M, N, K, matrixA, matrixB, matrixC_naive);
 
-    std::cout << "\nA\n";
+    std::cout << "\nA[" << M << ',' << K << "]\n";
     print_matrix(matrixA, M, K);
-    std::cout << "\nB\n";
-    print_matrix(matrixB, N, K);
-    std::cout << "\nC (CPU)\n";
-    print_matrix(matrixC_cpu, M, N);
+    std::cout << "\nB[" << K << ',' << N << "]\n";
+    print_matrix(matrixB, K, N);
+    std::cout << "\nC[" << M << ',' << N << "]\n";
+    print_matrix(matrixC_naive, M, N);
 
 #if USE_NPU
     const bool use_npu = true;
@@ -272,23 +273,22 @@ int main()
     ggml_tensor * result = compute(model, allocr);
 
     std::vector<value_type> matrixC(ggml_nelements(result));
-
     ggml_backend_tensor_get(result, matrixC.data(), 0, ggml_nbytes(result));
-
-    std::cout << "\nC (GGML)\n";
-    print_matrix(matrixC.data(), M, N);
 
     printf("\nPerforming ggml_mul_mat test:\n");
 
     bool passed = true;
     for(int i = 0; i < M * N; i++) {
-        if(matrixC_cpu[i] != matrixC[i]) {
+        if(matrixC_naive[i] != matrixC[i]) {
             passed = false;
             break;
         }
     }
 
     printf("ggml_mul_mat (%d): %s\n", (int) ggml_nelements(result), passed && (ggml_nelements(result) == M * N) ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m");
+
+    std::cout << "\nC (GGML)\n";
+    print_matrix(matrixC.data(), M, N);
 
     // free memory
     ggml_free(model.ctx);
