@@ -12,10 +12,17 @@
 
 #include <pybind11/embed.h>
 
+#include "common.hpp"
 #include "ggml-impl.h"
 
 namespace fs = std::filesystem;
 namespace py = pybind11;
+
+/// @brief If @c true, JIT compilation will print verbose output.
+static const bool verbose_compilation = [] {
+    const char * env = std::getenv("GGML_HSA_JIT_VERBOSE");
+    return env != nullptr && ggml_hsa_string_to_bool(env);
+}();
 
 /**
  * @brief Information to drive JIT compilation for a kernel.
@@ -171,7 +178,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
             "kernel_name"_a = kernel_jit_info.name, "kernel_source"_a = kernel_source_path.string(),
             "device"_a = dev_info.name, "input_tensors"_a = std::move(input_tensors),
             "output_tensor"_a = std::move(output_tensor), "exported_name"_a = exported_name,
-            "output_directory"_a = output_directory.string());
+            "output_directory"_a = output_directory.string(), "verbose"_a = verbose_compilation);
     } catch (const pybind11::error_already_set & ex) {
         GGML_LOG_ERROR("%s: JIT compilation failed:\n%s\n", __func__, ex.what());
         return GGML_STATUS_FAILED;

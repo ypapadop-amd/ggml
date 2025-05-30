@@ -13,6 +13,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -22,6 +23,11 @@
 #include <hsa/hsa_ext_amd.h>
 
 #include "ggml-common.h"
+
+/**
+ * @brief Returns if the string evaluates to `true` or `false`.
+ */
+bool ggml_hsa_string_to_bool(std::string_view s);
 
 /**
  * @brief Returns the description of @p status as a string.
