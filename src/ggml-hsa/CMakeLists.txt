@@ -25,6 +25,7 @@ option(GGML_HSA_JIT_COMPILE "ggml-hsa: enable JIT compilation of kernels" ON)
 if (GGML_HSA_JIT_COMPILE)
     option(GGML_HSA_JIT_STDOUT_REDIRECT "ggml-hsa: redirect stdout during JIT" ON)
 endif()
+
 option(GGML_HSA_CPU_FALLBACK "ggml-hsa: use fallback to CPU if HSA kernel not implemented" OFF)
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
@@ -68,6 +69,9 @@ if (GGML_HSA_JIT_COMPILE)
     target_sources(ggml-hsa PRIVATE kernel-compiler.hpp)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_JIT_COMPILE)
     target_link_libraries(ggml-hsa PRIVATE pybind11::embed)
+    if (GGML_HSA_JIT_STDOUT_REDIRECT)
+        target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_JIT_STDOUT_REDIRECT)
+    endif()
 endif ()
 
 
