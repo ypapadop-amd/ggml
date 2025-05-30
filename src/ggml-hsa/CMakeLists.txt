@@ -21,8 +21,11 @@ endif()
 
 find_package(hsa-runtime64 1.0 REQUIRED)
 
-option(GGML_HSA_JIT_COMPILE "ggml: allow JIT compilation of kernels" ON)
-option(GGML_HSA_CPU_FALLBACK "ggml: use fallback to CPU if HSA kernel not implemented" OFF)
+option(GGML_HSA_JIT_COMPILE "ggml-hsa: enable JIT compilation of kernels" ON)
+if (GGML_HSA_JIT_COMPILE)
+    option(GGML_HSA_JIT_STDOUT_REDIRECT "ggml-hsa: redirect stdout during JIT" ON)
+endif()
+option(GGML_HSA_CPU_FALLBACK "ggml-hsa: use fallback to CPU if HSA kernel not implemented" OFF)
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
