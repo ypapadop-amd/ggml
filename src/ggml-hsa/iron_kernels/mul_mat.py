@@ -596,13 +596,15 @@ def my_matmul(
 def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
     """Returns a compilation specification for matrix multiplication."""
 
-    assert len(input_tensors) == 2
+    assert len(input_tensors) == 2, "mul_mat requires exactly two input tensors"
 
     A = input_tensors[0]
     B = input_tensors[1]
     C = output_tensor
 
-    assert A.dtype == B.dtype
+    assert (
+        A.dtype == B.dtype and A.dtype == C.dtype
+    ), "mul_mat matrix datatypes must match"
     m = 8
     k = 8
     n = 8
@@ -631,16 +633,24 @@ def ggml_op_mul_mat(
     # TODO
     dev = "npu"
 
-    assert len(input_tensors) == 2
+    assert len(input_tensors) == 2, "mul_mat requires exactly two input tensors"
 
     A = input_tensors[0]
     B = input_tensors[1]
     C = output_tensor
 
-    assert A.dtype == B.dtype
-    assert A.shape[1] == B.shape[0]
-    assert A.shape[0] == C.shape[0]
-    assert B.shape[1] == C.shape[1]
+    assert (
+        A.dtype == B.dtype and A.dtype == C.dtype
+    ), "mul_mat matrix datatypes must match"
+    assert (
+        A.shape[1] == B.shape[0]
+    ), "mul_mat matrices must have compatible dimensions (A.shape[1] == B.shape[0])"
+    assert (
+        A.shape[0] == C.shape[0]
+    ), "mul_mat matrices must have compatible dimensions (A.shape[0] == C.shape[0])"
+    assert (
+        B.shape[1] == C.shape[1]
+    ), "mul_mat matrices must have compatible dimensions (B.shape[1] == C.shape[1])"
 
     with mlir_mod_ctx() as ctx:
         my_matmul(
