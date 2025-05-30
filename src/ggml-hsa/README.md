@@ -7,7 +7,6 @@ HSA backend compile options:
 |--------------------------------|---------------------------------------------------------------------------------------------------------------------|
 | `GGML_HSA`                     | Enable HSA backend.                                                                                                 |
 | `GGML_HSA_JIT_COMPILE`         | Enable JIT compilation of kernels. Requires an IRON environment to be active.                                       |
-| `GGML_HSA_JIT_STDOUT_REDIRECT` | Redirect stdout during JIT compilation. Resolves issues with partial lines disappearing when JIT compiling kernels. |
 | `GGML_HSA_CPU_FALLBACK`        | Enable fallback to  for HSA backend. This is an option to be used only during development, as the CPU fallback requires additional synchronization and has significant overhead.                                                                                                          |
 
 ## Environment Variables

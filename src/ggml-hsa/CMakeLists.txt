@@ -69,9 +69,6 @@ if (GGML_HSA_JIT_COMPILE)
     target_sources(ggml-hsa PRIVATE kernel-compiler.hpp)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_JIT_COMPILE)
     target_link_libraries(ggml-hsa PRIVATE pybind11::embed)
-    if (GGML_HSA_JIT_STDOUT_REDIRECT)
-        target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_JIT_STDOUT_REDIRECT)
-    endif()
 endif ()
 
 
