@@ -40,9 +40,11 @@
         GGML_ABORT("(%s:%d) %s not implemented\n", __FILE__, __LINE__, __PRETTY_FUNCTION__);       \
     } while (false)
 
-/**
- * @brief Returns the description of @p status.
- */
+bool ggml_hsa_string_to_bool(std::string_view s) {
+    return s == "1" || s == "true" || s == "True" || s == "TRUE" || s == "yes" || s == "Yes" ||
+           s == "YES";
+}
+
 const char * ggml_hsa_get_status_string(hsa_status_t status) {
     const char * msg = nullptr;
     if (hsa_status_string(status, &msg) != HSA_STATUS_SUCCESS) {
@@ -680,10 +682,10 @@ static bool ggml_backend_hsa_buffer_type_is_host(ggml_backend_buffer_type_t buft
     // we can infer if it is host memory from the agent type since the memory pools are
     // derived from the agent
     switch (dev_info.type) {
-        case HSA_DEVICE_TYPE_CPU :
-        case HSA_DEVICE_TYPE_AIE :
+        case HSA_DEVICE_TYPE_CPU:
+        case HSA_DEVICE_TYPE_AIE:
             return true;
-        default :
+        default:
             return false;
     }
 }
@@ -1016,18 +1018,18 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         }
 
         switch (node->op) {
-            case GGML_OP_NONE :
-                // NOP
+            case GGML_OP_NONE:
+                // NOP, no kernel required
                 break;
 
-            case GGML_OP_PERMUTE :
-            case GGML_OP_RESHAPE :
-            case GGML_OP_TRANSPOSE :
-            case GGML_OP_VIEW :
-                // NOP
+            case GGML_OP_PERMUTE:
+            case GGML_OP_RESHAPE:
+            case GGML_OP_TRANSPOSE:
+            case GGML_OP_VIEW:
+                // implemented as views, so no kernel required
                 break;
 
-            default :
+            default:
                 {
                     auto & tensor_extra =
                         *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
@@ -1201,14 +1203,14 @@ ggml_backend_hsa_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t
 static enum ggml_backend_dev_type ggml_backend_hsa_device_get_type(ggml_backend_dev_t dev) {
     const auto & dev_info = ggml_hsa_get_device_info(dev);
     switch (dev_info.type) {
-        case HSA_DEVICE_TYPE_CPU :
+        case HSA_DEVICE_TYPE_CPU:
             return GGML_BACKEND_DEVICE_TYPE_CPU;
-        case HSA_DEVICE_TYPE_GPU :
+        case HSA_DEVICE_TYPE_GPU:
             return GGML_BACKEND_DEVICE_TYPE_GPU;
-        case HSA_DEVICE_TYPE_DSP :
-        case HSA_DEVICE_TYPE_AIE :
+        case HSA_DEVICE_TYPE_DSP:
+        case HSA_DEVICE_TYPE_AIE:
             return GGML_BACKEND_DEVICE_TYPE_ACCEL;
-        default :
+        default:
             GGML_ABORT("%s: error: unknown HSA device type %d", __func__, dev_info.type);
     }
 }
@@ -1251,15 +1253,20 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
                                                 const ggml_tensor * tensor) try {
     bool supported = false;
     switch (tensor->op) {
-        case GGML_OP_NONE :
-        case GGML_OP_PERMUTE :
-        case GGML_OP_RESHAPE :
-        case GGML_OP_TRANSPOSE :
-        case GGML_OP_VIEW :
-            // noops; supported by default
+        case GGML_OP_NONE:
+            // NOP, no kernel required
             supported = true;
             break;
-        default :
+
+        case GGML_OP_PERMUTE:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_TRANSPOSE:
+        case GGML_OP_VIEW:
+            // implemented as views, so no kernel required
+            supported = true;
+            break;
+
+        default:
             // check if the kernel is cached at the tensor level and if not, check if the kernel
             // files exist
             if (auto tensor_extra =
@@ -1293,14 +1300,14 @@ static bool ggml_backend_hsa_device_supports_buft(ggml_backend_dev_t dev,
 
 static std::int64_t get_op_batch_size(const ggml_tensor * op) {
     switch (op->op) {
-        case GGML_OP_GET_ROWS :
+        case GGML_OP_GET_ROWS:
             return 0;
-        case GGML_OP_MUL_MAT :
+        case GGML_OP_MUL_MAT:
             return op->ne[1];
-        case GGML_OP_MUL_MAT_ID :
-        case GGML_OP_ROPE :
+        case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_ROPE:
             return op->ne[2];
-        default :
+        default:
             return ggml_nrows(op);
     }
 }
