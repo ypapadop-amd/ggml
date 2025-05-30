@@ -134,18 +134,3 @@ add_aie_iron_kernel(ggml-hsa
     EXPORTED_NAME
         "add-256f32-256f32-256f32"
     )
-
-add_aie_iron_kernel(ggml-hsa
-    KERNEL_NAME
-        ggml_op_mul_mat
-    KERNEL_SOURCE
-        ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
-    DEVICE
-        aie2
-    INPUT_TENSORS
-        "(32,32)/i16" "(32,32)/i16"
-    OUTPUT_TENSOR
-        "(32,32)/i16"
-    EXPORTED_NAME
-        "mul_mat-32x32i16-32x32i16-32x32i16"
-    )
