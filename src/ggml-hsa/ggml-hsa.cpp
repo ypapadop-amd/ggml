@@ -3,9 +3,10 @@
 #include "ggml-hsa.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
-#include "kernel-discovery.hpp"
 
 #include "ggml-hsa/common.hpp"
+#include "ggml-hsa/host-ops.hpp"
+#include "ggml-hsa/kernel-discovery.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -24,13 +25,6 @@
 #ifdef GGML_HSA_CPU_FALLBACK
 #include "ggml-cpu.h"
 #endif
-
-// The following data types are natively supported by AIEs:
-// - GGML_TYPE_F32 (emulated)
-// - GGML_TYPE_I8
-// - GGML_TYPE_I16
-// - GGML_TYPE_I32
-// - GGML_TYPE_BF16
 
 #define MATRIX_ROW_PADDING                                                                         \
     512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
@@ -378,7 +372,7 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor
     dword_idx += 3;
 
     // sources; 2 dwords each
-    for (std::size_t src_idx = 0; src_idx < nsrcs; ++src_idx, dword_idx += 2) {
+    for (std::int64_t src_idx = 0; src_idx < nsrcs; ++src_idx, dword_idx += 2) {
         const ggml_tensor * src = tensor->src[src_idx];
         std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
             ggml_hsa_addr_to_hilo(src->data);
@@ -391,7 +385,7 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor
     dword_idx += 2;
 
     // sizes; 1 dword per tensor
-    for (std::size_t src_idx = 0; src_idx < nsrcs; ++src_idx, ++dword_idx) {
+    for (std::int64_t src_idx = 0; src_idx < nsrcs; ++src_idx, ++dword_idx) {
         const ggml_tensor * src = tensor->src[src_idx];
         cmd_payload->data[dword_idx] = ggml_nbytes(src);
     }
@@ -1023,10 +1017,13 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
 
             case GGML_OP_DUP:
+                status = ggml_hsa_compute_dup(ctx, node);
+                break;
             case GGML_OP_CPY:
+                status = ggml_hsa_compute_cpy(ctx, node);
+                break;
             case GGML_OP_CONT:
-                // implemented as host kernel
-                // TODO
+                status = ggml_hsa_compute_cont(ctx, node);
                 break;
 
             case GGML_OP_RESHAPE:
