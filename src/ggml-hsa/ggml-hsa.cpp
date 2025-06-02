@@ -1022,10 +1022,17 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 // NOP, no kernel required
                 break;
 
-            case GGML_OP_PERMUTE:
+            case GGML_OP_DUP:
+            case GGML_OP_CPY:
+            case GGML_OP_CONT:
+                // implemented as host kernel
+                // TODO
+                break;
+
             case GGML_OP_RESHAPE:
-            case GGML_OP_TRANSPOSE:
             case GGML_OP_VIEW:
+            case GGML_OP_PERMUTE:
+            case GGML_OP_TRANSPOSE:
                 // implemented as views, so no kernel required
                 break;
 
@@ -1258,10 +1265,17 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             supported = true;
             break;
 
-        case GGML_OP_PERMUTE:
+        case GGML_OP_DUP:
+        case GGML_OP_CPY:
+        case GGML_OP_CONT:
+            // implemented as host kernel
+            supported = true;
+            break;
+
         case GGML_OP_RESHAPE:
-        case GGML_OP_TRANSPOSE:
         case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
             // implemented as views, so no kernel required
             supported = true;
             break;
