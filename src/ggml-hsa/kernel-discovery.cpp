@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "kernel-discovery.hpp"
+#include "ggml-hsa/kernel-discovery.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -13,7 +13,7 @@
 
 #include "ggml-impl.h"
 #ifdef GGML_HSA_JIT_COMPILE
-#include "kernel-compiler.hpp"
+#include "ggml-hsa/kernel-compiler.hpp"
 #endif
 
 namespace fs = std::filesystem;
