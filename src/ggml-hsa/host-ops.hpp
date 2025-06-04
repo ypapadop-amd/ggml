@@ -7,6 +7,14 @@
 #include "ggml.h"
 
 /**
+ * @brief Copy the contents of tensor @p src to tensor @p dst.
+ *
+ * @param[in] src tensor to copy from
+ * @param[in] dst tensor to copy to
+ */
+ggml_status copy_tensor(const ggml_tensor * src, ggml_tensor * dst);
+
+/**
  * @brief Duplicate tensor @c t->src[0] to @p t without changing the shape or the datatype of the
  * tensor.
  *

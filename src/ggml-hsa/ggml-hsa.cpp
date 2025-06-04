@@ -550,9 +550,6 @@ static void ggml_backend_hsa_buffer_get_tensor(ggml_backend_buffer_t /* buffer *
 static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t /* buffer */,
                                                const ggml_tensor * src,
                                                ggml_tensor * dst) {
-    if (!ggml_is_contiguous(src) || !ggml_is_contiguous(dst)) {
-        return false; // only contiguous tensors supported
-    }
     if (ggml_backend_buffer_is_hsa(src->buffer)) {
         std::memcpy(dst->data, src->data, ggml_nbytes(dst));
         return true;
@@ -711,7 +708,7 @@ static struct {
     std::once_flag flag;
 } ggml_backend_hsa_buffer_type_metadata;
 
-ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) try {
+ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(std::int32_t device) try {
     const auto device_count = ggml_backend_hsa_get_device_count();
 
     if (device >= device_count) {
@@ -977,9 +974,9 @@ struct ggml_backend_hsa_emulated_tensor {
         // copy input tensors
         for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
             if (tensor->src[i] == nullptr) {
-                continue;
+                break;
             }
-            ggml_backend_tensor_copy(tensor->src[i], new_tensor->src[i]);
+            copy_tensor(tensor->src[i], new_tensor->src[i]);
         }
 
         // execute
@@ -992,7 +989,7 @@ struct ggml_backend_hsa_emulated_tensor {
         }
 
         // copy output tensor
-        ggml_backend_tensor_copy(new_tensor, tensor);
+        copy_tensor(new_tensor, tensor);
 
         return GGML_STATUS_SUCCESS;
     }
@@ -1005,8 +1002,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
     ggml_status status = GGML_STATUS_SUCCESS;
 
-    const int node_count = ggml_graph_n_nodes(cgraph);
-    for (int i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
+    const std::int32_t node_count = ggml_graph_n_nodes(cgraph);
+    for (std::int32_t i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
         ggml_tensor * node = ggml_graph_node(cgraph, i);
         if (ggml_is_empty(node)) {
             continue;
@@ -1057,7 +1054,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 tensor_extra->emulated_tensor =
                     std::make_unique<ggml_backend_hsa_emulated_tensor>(ctx, node);
             }
-            ggml_backend_hsa_synchronize(backend);
+            ggml_hsa_wait_dispatches(ctx);
             status = (*tensor_extra->emulated_tensor)();
         }
 #endif
@@ -1122,12 +1119,12 @@ bool ggml_backend_is_hsa(ggml_backend_t backend) {
 /**
  * @brief Returns if the number of devices (i.e., HSA agents) associated with the HSA backend.
  */
-int ggml_backend_hsa_get_device_count() { return ggml_hsa_info().device_count; }
+std::int32_t ggml_backend_hsa_get_device_count() { return ggml_hsa_info().device_count; }
 
 /**
  * @brief Returns the device description of device @p device.
  */
-void ggml_backend_hsa_get_device_description(int device,
+void ggml_backend_hsa_get_device_description(std::int32_t device,
                                              char * description,
                                              size_t description_size) {
     const auto & info = ggml_hsa_info();
@@ -1139,7 +1136,7 @@ void ggml_backend_hsa_get_device_description(int device,
  * @brief Returns the free and total memory in @p free and @p total respectively for device
  *        @p dev.
  */
-void ggml_backend_hsa_get_device_memory(int device, size_t * free, size_t * total) {
+void ggml_backend_hsa_get_device_memory(std::int32_t device, size_t * free, size_t * total) {
     const auto & info = ggml_hsa_info();
     const auto & dev_info = info.devices[device];
     *total = dev_info.data_memory.size;
@@ -1455,7 +1452,7 @@ ggml_backend_reg_t ggml_backend_hsa_reg() try {
     return nullptr;
 }
 
-ggml_backend_t ggml_backend_hsa_init(int device) try {
+ggml_backend_t ggml_backend_hsa_init(std::int32_t device) try {
     const auto & info = ggml_hsa_info();
 
     if (device < 0 || device >= info.device_count) {

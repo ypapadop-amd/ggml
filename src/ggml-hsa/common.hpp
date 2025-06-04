@@ -246,7 +246,7 @@ template <typename OutputStream>
 void ggml_hsa_output_tensor_shape(const ggml_tensor * tensor, OutputStream & os, char delim = 'x') {
     const auto ndims = ggml_n_dims(tensor);
     os << tensor->ne[0];
-    for (int i = 1; i < ndims; ++i) {
+    for (std::int32_t i = 1; i < ndims; ++i) {
         os << delim << tensor->ne[i];
     }
 }
