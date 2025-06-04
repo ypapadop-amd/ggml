@@ -227,6 +227,13 @@ struct ggml_backend_hsa_context {
 ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
 
 /**
+ * @brief Waits for all dispatched kernels to finish.
+ *
+ * @param[in] ctx backend context
+ */
+void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
+
+/**
  * @brief Creates a string representation of the tensor shape.
  *
  * The representation is of the form `3x3x4` for a 3D tensor with dimensions `[3,3,4]`.

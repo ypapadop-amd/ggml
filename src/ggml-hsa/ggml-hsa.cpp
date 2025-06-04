@@ -398,6 +398,16 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor
     return GGML_STATUS_SUCCESS;
 }
 
+void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
+    if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
+                                             UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
+        val != 0) {
+        GGML_ABORT("%s: error: unexpected signal value (%ld)\n", __func__, val);
+    }
+
+    ctx.free_pending_payloads();
+}
+
 // HSA buffer
 
 /**
@@ -884,13 +894,7 @@ static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t backend_src,
 
 static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
-    if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
-                                             UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
-        val != 0) {
-        GGML_ABORT("%s: error: unexpected signal value (%ld)\n", __func__, val);
-    }
-
-    ctx.free_pending_payloads();
+    ggml_hsa_wait_dispatches(ctx);
 }
 
 #ifdef GGML_HSA_CPU_FALLBACK
