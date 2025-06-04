@@ -7,7 +7,7 @@
 #include "ggml.h"
 
 /**
- * @brief Duplicate tensor @c t->src[0] to @p t without changing the layout or the datatype of the
+ * @brief Duplicate tensor @c t->src[0] to @p t without changing the shape or the datatype of the
  * tensor.
  *
  * @note @p t may be a view of @c t->src[0], in which case the operation is a no-op.
