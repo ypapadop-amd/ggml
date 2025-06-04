@@ -500,7 +500,6 @@ static void ggml_backend_hsa_buffer_memset_tensor(ggml_backend_buffer_t /* buffe
                                                   uint8_t value,
                                                   size_t offset,
                                                   size_t size) {
-    assert(ggml_is_contiguous(tensor) && "Only contiguous tensors supported");
     std::memset(static_cast<std::byte *>(tensor->data) + offset, value, size);
 }
 
@@ -518,7 +517,6 @@ static void ggml_backend_hsa_buffer_set_tensor(ggml_backend_buffer_t /* buffer *
                                                const void * data,
                                                size_t offset,
                                                size_t size) {
-    assert(ggml_is_contiguous(tensor) && "Only contiguous tensors supported");
     std::memcpy(static_cast<std::byte *>(tensor->data) + offset, data, size);
 }
 
@@ -536,7 +534,6 @@ static void ggml_backend_hsa_buffer_get_tensor(ggml_backend_buffer_t /* buffer *
                                                void * data,
                                                size_t offset,
                                                size_t size) {
-    assert(ggml_is_contiguous(tensor) && "Only contiguous tensors supported");
     std::memcpy(data, static_cast<const char *>(tensor->data) + offset, size);
 }
 
