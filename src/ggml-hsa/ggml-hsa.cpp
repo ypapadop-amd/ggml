@@ -976,7 +976,7 @@ struct ggml_backend_hsa_emulated_tensor {
             if (tensor->src[i] == nullptr) {
                 break;
             }
-            copy_tensor(tensor->src[i], new_tensor->src[i]);
+            ggml_hsa_copy_tensor(tensor->src[i], new_tensor->src[i]);
         }
 
         // execute
@@ -989,7 +989,7 @@ struct ggml_backend_hsa_emulated_tensor {
         }
 
         // copy output tensor
-        copy_tensor(new_tensor, tensor);
+        ggml_hsa_copy_tensor(new_tensor, tensor);
 
         return GGML_STATUS_SUCCESS;
     }

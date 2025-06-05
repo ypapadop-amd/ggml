@@ -6,6 +6,7 @@
 #include "ggml-impl.h"
 
 #include <cassert>
+#include <cstddef>
 
 /**
  * @brief @ref ggml_typetype traits.
@@ -60,16 +61,68 @@ struct ggml_hsa_type_traits<GGML_TYPE_BF16> {
 };
 
 /**
- * @brief Copies the data from the source tensor to the destination tensor.
+ * @brief Copies the data from the source tensor to a destination tensor with the same shape.
  *
  * This function handles different types of tensors and performs necessary conversions
  * based on the type traits defined for each tensor type.
- *
- * @note @p dst needs to be contiguous.
  */
-template <ggml_type SrcT, ggml_type DstT = SrcT>
-void copy_tensor_to_cont_tensor(const ggml_tensor * src, ggml_tensor * dst) {
-    assert(ggml_is_contiguous(dst));
+template <ggml_type SrcT, ggml_type DstT>
+void ggml_hsa_copy_same_shape_tensors(const ggml_tensor * src, ggml_tensor * dst) {
+    assert(ggml_are_same_shape(src, dst));
+
+    using src_traits = ggml_hsa_type_traits<SrcT>;
+    using dst_traits = ggml_hsa_type_traits<DstT>;
+
+    using src_type = typename src_traits::type;
+    using dst_type = typename dst_traits::type;
+
+    for (std::int64_t i03 = 0; i03 < src->ne[3]; ++i03) {
+        for (std::int64_t i02 = 0; i02 < src->ne[2]; ++i02) {
+            for (std::int64_t i01 = 0; i01 < src->ne[1]; ++i01) {
+                for (std::int64_t i00 = 0; i00 < src->ne[0]; ++i00) {
+                    auto src_ptr = reinterpret_cast<const src_type *>(
+                        static_cast<const std::byte *>(src->data) +
+                        (i00 * src->nb[0] + i01 * src->nb[1] + i02 * src->nb[2] +
+                         i03 * src->nb[3]));
+                    auto dst_ptr =
+                        reinterpret_cast<dst_type *>(static_cast<std::byte *>(dst->data) +
+                                                     (i00 * dst->nb[0] + i01 * dst->nb[1] +
+                                                      i02 * dst->nb[2] + i03 * dst->nb[3]));
+
+                    if constexpr (SrcT == DstT) {
+                        // no conversion needed
+                        *dst_ptr = *src_ptr;
+                    } else if constexpr (src_traits::is_fundamental && dst_traits::is_fundamental) {
+                        // trivial conversion based on fundamental types
+                        *dst_ptr = static_cast<dst_type>(*src_ptr);
+                    } else if constexpr (src_traits::is_fundamental) {
+                        // conversion using promotion of source type to fp32
+                        auto src_v = static_cast<float>(*src_ptr);
+                        *dst_ptr = dst_traits::from_fp32(src_v);
+                    } else if constexpr (dst_traits::is_fundamental) {
+                        // conversion using promotion of destination type to fp32
+                        auto src_v = src_traits::to_fp32(*src_ptr);
+                        *dst_ptr = static_cast<dst_type>(src_v);
+                    } else {
+                        // conversion using promotion of source and destination types to fp32
+                        auto src_v = src_traits::to_fp32(*src_ptr);
+                        *dst_ptr = dst_traits::from_fp32(src_v);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @brief Copies the data from the source tensor to a contiguous destination tensor.
+ *
+ * This function handles different types of tensors and performs necessary conversions
+ * based on the type traits defined for each tensor type.
+ */
+template <ggml_type SrcT, ggml_type DstT>
+void ggml_hsa_copy_tensor_to_cont_tensor(const ggml_tensor * src, ggml_tensor * dst) {
+    assert((ggml_nelements(src) == ggml_nelements(dst)) && ggml_is_contiguous(dst));
 
     using src_traits = ggml_hsa_type_traits<SrcT>;
     using dst_traits = ggml_hsa_type_traits<DstT>;
@@ -84,10 +137,10 @@ void copy_tensor_to_cont_tensor(const ggml_tensor * src, ggml_tensor * dst) {
         for (std::int64_t i02 = 0; i02 < src->ne[2]; ++i02) {
             for (std::int64_t i01 = 0; i01 < src->ne[1]; ++i01) {
                 for (std::int64_t i00 = 0; i00 < src->ne[0]; ++i00) {
-                    auto src_ptr =
-                        reinterpret_cast<const src_type *>(static_cast<const char *>(src->data) +
-                                                           (i00 * src->nb[0] + i01 * src->nb[1] +
-                                                            i02 * src->nb[2] + i03 * src->nb[3]));
+                    auto src_ptr = reinterpret_cast<const src_type *>(
+                        static_cast<const std::byte *>(src->data) +
+                        (i00 * src->nb[0] + i01 * src->nb[1] + i02 * src->nb[2] +
+                         i03 * src->nb[3]));
                     if constexpr (SrcT == DstT) {
                         // no conversion needed
                         dst_ptr[id] = *src_ptr;
@@ -115,98 +168,129 @@ void copy_tensor_to_cont_tensor(const ggml_tensor * src, ggml_tensor * dst) {
 }
 
 /**
- * @brief Copies the data from the source tensor to the destination tensor.
- *
- * This function assumes that the source and destination tensors have the same type.
- * It uses template specialization to handle different tensor types.
- *
- * @param[in] src tensor to copy from
- * @param[in] dst tensor to copy to
+ * @brief Function object of @ref ggml_hsa_copy_same_shape_tensors.
  */
-static ggml_status copy_tensor_same_type(const ggml_tensor * src, ggml_tensor * dst) {
-    switch (src->type) {
-        case GGML_TYPE_F32:
-            copy_tensor_to_cont_tensor<GGML_TYPE_F32>(src, dst);
-            break;
-        case GGML_TYPE_F16:
-            copy_tensor_to_cont_tensor<GGML_TYPE_F16>(src, dst);
-            break;
-        case GGML_TYPE_I8:
-            copy_tensor_to_cont_tensor<GGML_TYPE_I8>(src, dst);
-            break;
-        case GGML_TYPE_I16:
-            copy_tensor_to_cont_tensor<GGML_TYPE_I16>(src, dst);
-            break;
-        case GGML_TYPE_I32:
-            copy_tensor_to_cont_tensor<GGML_TYPE_I32>(src, dst);
-            break;
-        case GGML_TYPE_BF16:
-            copy_tensor_to_cont_tensor<GGML_TYPE_BF16>(src, dst);
-            break;
-        default:
-            GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, src->name,
-                           ggml_type_name(src->type));
-            return GGML_STATUS_FAILED;
+struct gggml_hsa_copy_same_shape_tensors_f {
+    template <ggml_type T, ggml_type U = T>
+    void operator()(const ggml_tensor * src, ggml_tensor * dst) {
+        ggml_hsa_copy_same_shape_tensors<T, U>(src, dst);
     }
+};
 
-    return GGML_STATUS_SUCCESS;
+/**
+ * @brief Function object of @ref ggml_hsa_copy_tensor_to_cont_tensor.
+ */
+struct ggml_hsa_copy_tensor_to_cont_tensor_f {
+    template <ggml_type T, ggml_type U = T>
+    void operator()(const ggml_tensor * src, ggml_tensor * dst) {
+        ggml_hsa_copy_tensor_to_cont_tensor<T, U>(src, dst);
+    }
+};
+
+/**
+ * @brief Dispatches the operation based on the tensor type.
+ */
+template <typename F>
+ggml_status ggml_hsa_dispatch(F && f, const ggml_tensor * src, ggml_tensor * dst) {
+    if (src->type == dst->type) {
+        switch (src->type) {
+            case GGML_TYPE_F32:
+                std::forward<F>(f).template operator()<GGML_TYPE_F32>(src, dst);
+                return GGML_STATUS_SUCCESS;
+            case GGML_TYPE_F16:
+                std::forward<F>(f).template operator()<GGML_TYPE_F16>(src, dst);
+                return GGML_STATUS_SUCCESS;
+            case GGML_TYPE_I8:
+                std::forward<F>(f).template operator()<GGML_TYPE_I8>(src, dst);
+                return GGML_STATUS_SUCCESS;
+            case GGML_TYPE_I16:
+                std::forward<F>(f).template operator()<GGML_TYPE_I16>(src, dst);
+                return GGML_STATUS_SUCCESS;
+            case GGML_TYPE_I32:
+                std::forward<F>(f).template operator()<GGML_TYPE_I32>(src, dst);
+                return GGML_STATUS_SUCCESS;
+            case GGML_TYPE_BF16:
+                std::forward<F>(f).template operator()<GGML_TYPE_BF16>(src, dst);
+                return GGML_STATUS_SUCCESS;
+            default:
+                GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, src->name,
+                               ggml_type_name(src->type));
+                return GGML_STATUS_FAILED;
+        }
+    } else {
+        switch (src->type) {
+            case GGML_TYPE_F32:
+                switch (dst->type) {
+                    case GGML_TYPE_F16:
+                        std::forward<F>(f).template operator()<GGML_TYPE_F32, GGML_TYPE_F16>(src,
+                                                                                             dst);
+                        return GGML_STATUS_SUCCESS;
+                    case GGML_TYPE_I8:
+                        std::forward<F>(f).template operator()<GGML_TYPE_F32, GGML_TYPE_I8>(src,
+                                                                                            dst);
+                        return GGML_STATUS_SUCCESS;
+                    case GGML_TYPE_I16:
+                        std::forward<F>(f).template operator()<GGML_TYPE_F32, GGML_TYPE_I16>(src,
+                                                                                             dst);
+                        return GGML_STATUS_SUCCESS;
+                    case GGML_TYPE_I32:
+                        std::forward<F>(f).template operator()<GGML_TYPE_F32, GGML_TYPE_I32>(src,
+                                                                                             dst);
+                        return GGML_STATUS_SUCCESS;
+                    case GGML_TYPE_BF16:
+                        std::forward<F>(f).template operator()<GGML_TYPE_F32, GGML_TYPE_BF16>(src,
+                                                                                              dst);
+                        return GGML_STATUS_SUCCESS;
+                    default:
+                        GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, dst->name,
+                                       ggml_type_name(dst->type));
+                        return GGML_STATUS_FAILED;
+                }
+            case GGML_TYPE_F16:
+                switch (dst->type) {
+                    case GGML_TYPE_F32:
+                        std::forward<F>(f).template operator()<GGML_TYPE_F16, GGML_TYPE_F32>(src,
+                                                                                             dst);
+                        return GGML_STATUS_SUCCESS;
+                    case GGML_TYPE_BF16:
+                        std::forward<F>(f).template operator()<GGML_TYPE_F16, GGML_TYPE_BF16>(src,
+                                                                                              dst);
+                        return GGML_STATUS_SUCCESS;
+                    default:
+                        GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, dst->name,
+                                       ggml_type_name(dst->type));
+                        return GGML_STATUS_FAILED;
+                }
+            case GGML_TYPE_BF16:
+                switch (dst->type) {
+                    case GGML_TYPE_F32:
+                        std::forward<F>(f).template operator()<GGML_TYPE_BF16, GGML_TYPE_F32>(src,
+                                                                                              dst);
+                        return GGML_STATUS_SUCCESS;
+                    default:
+                        GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, dst->name,
+                                       ggml_type_name(dst->type));
+                        return GGML_STATUS_FAILED;
+                }
+            default:
+                GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, src->name,
+                               ggml_type_name(src->type));
+                return GGML_STATUS_FAILED;
+        }
+    }
 }
 
-ggml_status copy_tensor(const ggml_tensor * src, ggml_tensor * dst) {
-    if (src->type == dst->type) {
-        return copy_tensor_same_type(src, dst);
+ggml_status ggml_hsa_copy_tensor(const ggml_tensor * src, ggml_tensor * dst) {
+    if (ggml_is_contiguous(dst)) {
+        return ggml_hsa_dispatch(ggml_hsa_copy_tensor_to_cont_tensor_f{}, src, dst);
     }
 
-    switch (src->type) {
-        case GGML_TYPE_F32:
-            switch (dst->type) {
-                case GGML_TYPE_F16:
-                    copy_tensor_to_cont_tensor<GGML_TYPE_F32, GGML_TYPE_F16>(src, dst);
-                    return GGML_STATUS_SUCCESS;
-                case GGML_TYPE_I8:
-                    copy_tensor_to_cont_tensor<GGML_TYPE_F32, GGML_TYPE_I8>(src, dst);
-                    return GGML_STATUS_SUCCESS;
-                case GGML_TYPE_I16:
-                    copy_tensor_to_cont_tensor<GGML_TYPE_F32, GGML_TYPE_I16>(src, dst);
-                    return GGML_STATUS_SUCCESS;
-                case GGML_TYPE_I32:
-                    copy_tensor_to_cont_tensor<GGML_TYPE_F32, GGML_TYPE_I32>(src, dst);
-                    return GGML_STATUS_SUCCESS;
-                case GGML_TYPE_BF16:
-                    copy_tensor_to_cont_tensor<GGML_TYPE_F32, GGML_TYPE_BF16>(src, dst);
-                    return GGML_STATUS_SUCCESS;
-                default:
-                    break;
-            }
-            break;
-        case GGML_TYPE_F16:
-            switch (dst->type) {
-                case GGML_TYPE_F32:
-                    copy_tensor_to_cont_tensor<GGML_TYPE_F16, GGML_TYPE_F32>(src, dst);
-                    return GGML_STATUS_SUCCESS;
-                case GGML_TYPE_BF16:
-                    copy_tensor_to_cont_tensor<GGML_TYPE_F16, GGML_TYPE_BF16>(src, dst);
-                    return GGML_STATUS_SUCCESS;
-                default:
-                    break;
-            }
-            break;
-        case GGML_TYPE_BF16:
-            switch (dst->type) {
-                case GGML_TYPE_F32:
-                    copy_tensor_to_cont_tensor<GGML_TYPE_BF16, GGML_TYPE_F32>(src, dst);
-                    return GGML_STATUS_SUCCESS;
-                default:
-                    break;
-            }
-            break;
-        default:
-            break;
+    if (ggml_are_same_shape(src, dst)) {
+        return ggml_hsa_dispatch(gggml_hsa_copy_same_shape_tensors_f{}, src, dst);
     }
 
-    GGML_LOG_ERROR(
-        "%s: unsupported type combination between source %s (%s) and destination %s (%s)\n",
-        __func__, src->name, ggml_type_name(src->type), dst->name, ggml_type_name(dst->type));
+    GGML_LOG_ERROR("%s: unsupported tensor combination between source %s and destination %s\n",
+                   __func__, src->name, dst->name);
     return GGML_STATUS_FAILED;
 }
 
@@ -222,14 +306,13 @@ ggml_status ggml_hsa_compute_dup(ggml_backend_hsa_context & ctx, ggml_tensor * t
         return GGML_STATUS_SUCCESS;
     }
 
-    if (!ggml_is_contiguous(dst)) {
-        GGML_LOG_ERROR("%s: destination tensor %s is not contiguous\n", __func__, dst->name);
-        return GGML_STATUS_FAILED;
-    }
-
     ggml_hsa_wait_dispatches(ctx);
 
-    return copy_tensor_same_type(src, dst);
+    if (ggml_is_contiguous(dst)) {
+        return ggml_hsa_dispatch(ggml_hsa_copy_tensor_to_cont_tensor_f{}, src, dst);
+    }
+
+    return ggml_hsa_dispatch(gggml_hsa_copy_same_shape_tensors_f{}, src, dst);
 }
 
 ggml_status ggml_hsa_compute_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * t) {
@@ -238,14 +321,9 @@ ggml_status ggml_hsa_compute_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * t
     auto * src = t->src[0];
     auto * dst = t->src[1];
 
-    if (!ggml_is_contiguous(dst)) {
-        GGML_LOG_ERROR("%s: destination tensor %s is not contiguous\n", __func__, dst->name);
-        return GGML_STATUS_FAILED;
-    }
-
     ggml_hsa_wait_dispatches(ctx);
 
-    return copy_tensor(src, dst);
+    return ggml_hsa_copy_tensor(src, dst);
 }
 
 ggml_status ggml_hsa_compute_cont(ggml_backend_hsa_context & ctx, ggml_tensor * t) {
@@ -257,5 +335,5 @@ ggml_status ggml_hsa_compute_cont(ggml_backend_hsa_context & ctx, ggml_tensor * 
 
     ggml_hsa_wait_dispatches(ctx);
 
-    return copy_tensor_same_type(src, dst);
+    return ggml_hsa_dispatch(ggml_hsa_copy_tensor_to_cont_tensor_f{}, src, dst);
 }
