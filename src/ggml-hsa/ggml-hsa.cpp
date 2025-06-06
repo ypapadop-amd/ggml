@@ -3,9 +3,10 @@
 #include "ggml-hsa.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
-#include "kernel-discovery.hpp"
 
 #include "ggml-hsa/common.hpp"
+#include "ggml-hsa/host-ops.hpp"
+#include "ggml-hsa/kernel-discovery.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -24,13 +25,6 @@
 #ifdef GGML_HSA_CPU_FALLBACK
 #include "ggml-cpu.h"
 #endif
-
-// The following data types are natively supported by AIEs:
-// - GGML_TYPE_F32 (emulated)
-// - GGML_TYPE_I8
-// - GGML_TYPE_I16
-// - GGML_TYPE_I32
-// - GGML_TYPE_BF16
 
 #define MATRIX_ROW_PADDING                                                                         \
     512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
@@ -378,7 +372,7 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor
     dword_idx += 3;
 
     // sources; 2 dwords each
-    for (std::size_t src_idx = 0; src_idx < nsrcs; ++src_idx, dword_idx += 2) {
+    for (std::int64_t src_idx = 0; src_idx < nsrcs; ++src_idx, dword_idx += 2) {
         const ggml_tensor * src = tensor->src[src_idx];
         std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
             ggml_hsa_addr_to_hilo(src->data);
@@ -391,7 +385,7 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor
     dword_idx += 2;
 
     // sizes; 1 dword per tensor
-    for (std::size_t src_idx = 0; src_idx < nsrcs; ++src_idx, ++dword_idx) {
+    for (std::int64_t src_idx = 0; src_idx < nsrcs; ++src_idx, ++dword_idx) {
         const ggml_tensor * src = tensor->src[src_idx];
         cmd_payload->data[dword_idx] = ggml_nbytes(src);
     }
@@ -402,6 +396,16 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor
     ggml_hsa_dispatch_packet(ctx, cmd_payload, packet_dwords);
 
     return GGML_STATUS_SUCCESS;
+}
+
+void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
+    if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
+                                             UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
+        val != 0) {
+        GGML_ABORT("%s: error: unexpected signal value (%ld)\n", __func__, val);
+    }
+
+    ctx.free_pending_payloads();
 }
 
 // HSA buffer
@@ -496,7 +500,6 @@ static void ggml_backend_hsa_buffer_memset_tensor(ggml_backend_buffer_t /* buffe
                                                   uint8_t value,
                                                   size_t offset,
                                                   size_t size) {
-    assert(ggml_is_contiguous(tensor) && "Only contiguous tensors supported");
     std::memset(static_cast<std::byte *>(tensor->data) + offset, value, size);
 }
 
@@ -514,7 +517,6 @@ static void ggml_backend_hsa_buffer_set_tensor(ggml_backend_buffer_t /* buffer *
                                                const void * data,
                                                size_t offset,
                                                size_t size) {
-    assert(ggml_is_contiguous(tensor) && "Only contiguous tensors supported");
     std::memcpy(static_cast<std::byte *>(tensor->data) + offset, data, size);
 }
 
@@ -532,7 +534,6 @@ static void ggml_backend_hsa_buffer_get_tensor(ggml_backend_buffer_t /* buffer *
                                                void * data,
                                                size_t offset,
                                                size_t size) {
-    assert(ggml_is_contiguous(tensor) && "Only contiguous tensors supported");
     std::memcpy(data, static_cast<const char *>(tensor->data) + offset, size);
 }
 
@@ -549,9 +550,6 @@ static void ggml_backend_hsa_buffer_get_tensor(ggml_backend_buffer_t /* buffer *
 static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t /* buffer */,
                                                const ggml_tensor * src,
                                                ggml_tensor * dst) {
-    if (!ggml_is_contiguous(src) || !ggml_is_contiguous(dst)) {
-        return false; // only contiguous tensors supported
-    }
     if (ggml_backend_buffer_is_hsa(src->buffer)) {
         std::memcpy(dst->data, src->data, ggml_nbytes(dst));
         return true;
@@ -710,7 +708,7 @@ static struct {
     std::once_flag flag;
 } ggml_backend_hsa_buffer_type_metadata;
 
-ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int device) try {
+ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(std::int32_t device) try {
     const auto device_count = ggml_backend_hsa_get_device_count();
 
     if (device >= device_count) {
@@ -890,13 +888,7 @@ static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t backend_src,
 
 static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
-    if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
-                                             UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
-        val != 0) {
-        GGML_ABORT("%s: error: unexpected signal value (%ld)\n", __func__, val);
-    }
-
-    ctx.free_pending_payloads();
+    ggml_hsa_wait_dispatches(ctx);
 }
 
 #ifdef GGML_HSA_CPU_FALLBACK
@@ -982,9 +974,9 @@ struct ggml_backend_hsa_emulated_tensor {
         // copy input tensors
         for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
             if (tensor->src[i] == nullptr) {
-                continue;
+                break;
             }
-            ggml_backend_tensor_copy(tensor->src[i], new_tensor->src[i]);
+            ggml_hsa_copy_tensor(tensor->src[i], new_tensor->src[i]);
         }
 
         // execute
@@ -997,7 +989,7 @@ struct ggml_backend_hsa_emulated_tensor {
         }
 
         // copy output tensor
-        ggml_backend_tensor_copy(new_tensor, tensor);
+        ggml_hsa_copy_tensor(new_tensor, tensor);
 
         return GGML_STATUS_SUCCESS;
     }
@@ -1010,8 +1002,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
     ggml_status status = GGML_STATUS_SUCCESS;
 
-    const int node_count = ggml_graph_n_nodes(cgraph);
-    for (int i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
+    const std::int32_t node_count = ggml_graph_n_nodes(cgraph);
+    for (std::int32_t i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
         ggml_tensor * node = ggml_graph_node(cgraph, i);
         if (ggml_is_empty(node)) {
             continue;
@@ -1022,10 +1014,20 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 // NOP, no kernel required
                 break;
 
-            case GGML_OP_PERMUTE:
+            case GGML_OP_DUP:
+                status = ggml_hsa_compute_dup(ctx, node);
+                break;
+            case GGML_OP_CPY:
+                status = ggml_hsa_compute_cpy(ctx, node);
+                break;
+            case GGML_OP_CONT:
+                status = ggml_hsa_compute_cont(ctx, node);
+                break;
+
             case GGML_OP_RESHAPE:
-            case GGML_OP_TRANSPOSE:
             case GGML_OP_VIEW:
+            case GGML_OP_PERMUTE:
+            case GGML_OP_TRANSPOSE:
                 // implemented as views, so no kernel required
                 break;
 
@@ -1052,7 +1054,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 tensor_extra->emulated_tensor =
                     std::make_unique<ggml_backend_hsa_emulated_tensor>(ctx, node);
             }
-            ggml_backend_hsa_synchronize(backend);
+            ggml_hsa_wait_dispatches(ctx);
             status = (*tensor_extra->emulated_tensor)();
         }
 #endif
@@ -1117,12 +1119,12 @@ bool ggml_backend_is_hsa(ggml_backend_t backend) {
 /**
  * @brief Returns if the number of devices (i.e., HSA agents) associated with the HSA backend.
  */
-int ggml_backend_hsa_get_device_count() { return ggml_hsa_info().device_count; }
+std::int32_t ggml_backend_hsa_get_device_count() { return ggml_hsa_info().device_count; }
 
 /**
  * @brief Returns the device description of device @p device.
  */
-void ggml_backend_hsa_get_device_description(int device,
+void ggml_backend_hsa_get_device_description(std::int32_t device,
                                              char * description,
                                              size_t description_size) {
     const auto & info = ggml_hsa_info();
@@ -1134,7 +1136,7 @@ void ggml_backend_hsa_get_device_description(int device,
  * @brief Returns the free and total memory in @p free and @p total respectively for device
  *        @p dev.
  */
-void ggml_backend_hsa_get_device_memory(int device, size_t * free, size_t * total) {
+void ggml_backend_hsa_get_device_memory(std::int32_t device, size_t * free, size_t * total) {
     const auto & info = ggml_hsa_info();
     const auto & dev_info = info.devices[device];
     *total = dev_info.data_memory.size;
@@ -1258,10 +1260,17 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             supported = true;
             break;
 
-        case GGML_OP_PERMUTE:
+        case GGML_OP_DUP:
+        case GGML_OP_CPY:
+        case GGML_OP_CONT:
+            // implemented as host kernel
+            supported = true;
+            break;
+
         case GGML_OP_RESHAPE:
-        case GGML_OP_TRANSPOSE:
         case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
             // implemented as views, so no kernel required
             supported = true;
             break;
@@ -1443,7 +1452,7 @@ ggml_backend_reg_t ggml_backend_hsa_reg() try {
     return nullptr;
 }
 
-ggml_backend_t ggml_backend_hsa_init(int device) try {
+ggml_backend_t ggml_backend_hsa_init(std::int32_t device) try {
     const auto & info = ggml_hsa_info();
 
     if (device < 0 || device >= info.device_count) {

@@ -22,3 +22,14 @@ HSA backend environment variables:
 The HSA backend supports JIT compilation of kernels. This requires an IRON environment to be active. The JIT compilation process generates kernels on-the-fly from the installed IRON kernel sources.
 
 JIT generated kernels are cached in `XDG_CACHE_HOME` or if not defined in `$HOME/.cache/ggml`. One can clear the cache by setting the environment variable `GGML_HSA_JIT_CLEAR_CACHE` to something other than `0`.
+
+## Supported Datatypes
+
+The following data types are natively supported by AIEs:
+| Type             | Comment                                |
+|------------------|----------------------------------------|
+| `GGML_TYPE_I8`   |                                        |
+| `GGML_TYPE_I16`  |                                        |
+| `GGML_TYPE_I32`  |                                        |
+| `GGML_TYPE_BF16` |                                        |
+| `GGML_TYPE_F32`  | Emulated, so slower than native types. |
