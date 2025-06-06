@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "kernel-discovery.hpp"
+#include "ggml-hsa/kernel-discovery.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -13,7 +13,7 @@
 
 #include "ggml-impl.h"
 #ifdef GGML_HSA_JIT_COMPILE
-#include "kernel-compiler.hpp"
+#include "ggml-hsa/kernel-compiler.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -90,7 +90,7 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
                    [&](char c) { return std::tolower(c); });
     oss << '-';
     ggml_hsa_output_tensor(tensor, oss, flatten);
-    for (int i = 0; i < GGML_MAX_SRC; ++i) {
+    for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
         if (tensor->src[i] == nullptr) {
             break;
         }
