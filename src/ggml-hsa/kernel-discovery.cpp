@@ -24,38 +24,48 @@ static const std::string_view pdi_file_suffix = ".pdi";
 // Binary instructions file suffix.
 static const std::string_view inst_file_suffix = "_insts.bin";
 
-// System (i.e., precompiled and installed) kernel directory.
-static const fs::path system_kernel_dir = [] {
-    // create the kernel directory as a relative path from this shared library
-    auto dir = ggml_hsa_library_path() / "kernels";
-    if (!fs::is_directory(dir)) {
-        GGML_ABORT("Directory %s is not a valid path.\n", dir.c_str());
+// Precompiled kernel directory.
+static const fs::path kernel_dir = [] {
+    if (const char * kernel_dir = std::getenv("GGML_HSA_KERNEL_DIR"); kernel_dir != nullptr) {
+        auto dir = fs::path(kernel_dir);
+        if (!fs::is_directory(dir)) {
+            GGML_ABORT(
+                "ggml_hsa_backend: value of GGML_HSA_KERNEL_DIR (%s) is not a valid directory.\n",
+                dir.c_str());
+        }
+        return dir;
     }
-    return dir;
+    GGML_LOG_INFO("ggml_hsa_backend: no pregenerated kernel directory defined.\n");
+    return fs::path{};
 }();
 
-// Cached (i.e., JIT compiled) kernel base path.
+// Cached (i.e., JIT compiled) kernel directory.
 static const fs::path cached_kernel_dir = [] {
-    // JIT kernels are stored in XDG_CACHE_HOME if defined or $HOME/.cache if not
-    fs::path dir;
-    if (const char * cache_dir = std::getenv("XDG_CACHE_HOME"); cache_dir != nullptr) {
-        dir = fs::path(cache_dir) / "ggml";
+    // Cached kernels are stored in the following directories:
+    // 1. GGML_HSA_KERNEL_CACHE_DIR if defined, or
+    // 2. $XDG_CACHE_HOME/ggml if XDG_CACHE_HOME is defined, or
+    // 3. $HOME/.cache/ggml if HOME is defined, or
+    // 4. /tmp/ggml/ggml-hsa otherwise.
+
+    fs::path cache_dir;
+    if (const char * base_dir = std::getenv("GGML_HSA_KERNEL_CACHE_DIR"); base_dir != nullptr) {
+        cache_dir = fs::path(base_dir);
+    } else if (const char * base_dir = std::getenv("XDG_CACHE_HOME"); base_dir != nullptr) {
+        cache_dir = fs::path(base_dir) / "ggml";
+    } else if (const char * base_dir = std::getenv("HOME"); base_dir != nullptr) {
+        cache_dir = fs::path(base_dir) / ".cache/ggml";
     } else {
-        const char * home_dir = std::getenv("HOME");
-        if (home_dir == nullptr) {
-            home_dir = "/tmp";
-        }
-        dir = fs::path(home_dir) / ".cache/ggml";
+        cache_dir = fs::path("/tmp/ggml/ggml-hsa");
     }
-    GGML_LOG_INFO("ggml_hsa_backend: Cached kernels in %s\n", dir.c_str());
+    GGML_LOG_INFO("ggml_hsa_backend: Cached kernels in %s\n", cache_dir.c_str());
 
     if (const char * clear_cache = std::getenv("GGML_HSA_JIT_CLEAR_CACHE");
         clear_cache != nullptr && ggml_hsa_string_to_bool(clear_cache)) {
-        GGML_LOG_INFO("ggml_hsa_backend: Clearing kernel cache in %s\n", dir.c_str());
-        fs::remove_all(dir);
+        GGML_LOG_INFO("ggml_hsa_backend: Clearing kernel cache in %s\n", cache_dir.c_str());
+        fs::remove_all(cache_dir);
     }
 
-    return dir;
+    return cache_dir;
 }();
 
 /**
@@ -120,10 +130,10 @@ static bool ggml_hsa_find_kernel(const std::string & device_name,
     const auto partial_pdi_path = fs::path(partial_path).concat(pdi_file_suffix);
     const auto partial_insts_path = fs::path(partial_path).concat(inst_file_suffix);
 
-    {
-        // search in cached kernel dir
-        auto tmp_pdi_path = cached_kernel_dir / partial_pdi_path;
-        auto tmp_insts_path = cached_kernel_dir / partial_insts_path;
+    if (!kernel_dir.empty()) {
+        // find kernel in pregenerated kernel directory
+        auto tmp_pdi_path = kernel_dir / partial_pdi_path;
+        auto tmp_insts_path = kernel_dir / partial_insts_path;
         if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
             pdi_path = std::move(tmp_pdi_path);
             insts_path = std::move(tmp_insts_path);
@@ -131,15 +141,13 @@ static bool ggml_hsa_find_kernel(const std::string & device_name,
         }
     }
 
-    {
-        // search in system kernel dir
-        auto tmp_pdi_path = system_kernel_dir / partial_pdi_path;
-        auto tmp_insts_path = system_kernel_dir / partial_insts_path;
-        if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
-            pdi_path = std::move(tmp_pdi_path);
-            insts_path = std::move(tmp_insts_path);
-            return true;
-        }
+    // find kernel in cached kernel directory
+    auto tmp_pdi_path = cached_kernel_dir / partial_pdi_path;
+    auto tmp_insts_path = cached_kernel_dir / partial_insts_path;
+    if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
+        pdi_path = std::move(tmp_pdi_path);
+        insts_path = std::move(tmp_insts_path);
+        return true;
     }
 
     // kernel not found
