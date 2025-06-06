@@ -59,7 +59,7 @@ static const fs::path cached_kernel_dir = [] {
     }
     GGML_LOG_INFO("ggml_hsa_backend: Cached kernels in %s\n", cache_dir.c_str());
 
-    if (const char * clear_cache = std::getenv("GGML_HSA_JIT_CLEAR_CACHE");
+    if (const char * clear_cache = std::getenv("GGML_HSA_KERNEL_CACHE_CLEAR");
         clear_cache != nullptr && ggml_hsa_string_to_bool(clear_cache)) {
         GGML_LOG_INFO("ggml_hsa_backend: Clearing kernel cache in %s\n", cache_dir.c_str());
         fs::remove_all(cache_dir);
