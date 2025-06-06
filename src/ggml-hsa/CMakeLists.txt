@@ -28,6 +28,7 @@ option(GGML_HSA_CPU_FALLBACK "ggml-hsa: use fallback to CPU if HSA kernel not im
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
     ggml-hsa.cpp
+    host-ops.cpp
     kernel-discovery.cpp
     )
 
@@ -58,6 +59,7 @@ target_include_directories(ggml-hsa PRIVATE . ..)
 target_sources(ggml-hsa
     PRIVATE
         common.hpp
+        host-ops.hpp
         kernel-discovery.hpp
     )
 

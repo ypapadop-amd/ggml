@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "kernel-compiler.hpp"
+#include "ggml-hsa/kernel-compiler.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,7 +12,7 @@
 
 #include <pybind11/embed.h>
 
-#include "common.hpp"
+#include "ggml-hsa/common.hpp"
 #include "ggml-impl.h"
 
 namespace fs = std::filesystem;
