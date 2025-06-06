@@ -2,62 +2,6 @@
 
 include(ggml_hsa_utils)
 
-# Compile an AIE kernel using IRON.
-#
-# This function generates PDI and insts files that are set as dependencies to `TARGET`.
-#
-# Arguments:
-#     TARGET_NAME (string): target
-#     KERNEL_NAME (string): kernel name
-#     KERNEL_SOURCE (string): kernel source file
-#     DEVICE (string): target device
-#     INPUT_TENSORS (string): input tensor shapes and datatypes
-#     OUTPUT_TENSOR (string): output tensor shape and datatype
-#     EXPORTED_NAME (string): kernel exported name
-#
-function(add_aie_iron_kernel TARGET_NAME)
-    cmake_parse_arguments(PARSE_ARGV 0 arg
-        ""
-        "KERNEL_NAME;KERNEL_SOURCE;DEVICE;OUTPUT_TENSOR;EXPORTED_NAME"
-        "INPUT_TENSORS"
-        )
-
-    set(OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/../kernels/${arg_DEVICE}")
-    set(MLIR_OUTPUT "${OUTPUT_DIR}/${arg_EXPORTED_NAME}.mlir")
-    set(INSTS_OUTPUT "${OUTPUT_DIR}/${arg_EXPORTED_NAME}_insts.bin")
-    set(PDI_OUTPUT "${OUTPUT_DIR}/${arg_EXPORTED_NAME}.pdi")
-
-    file(MAKE_DIRECTORY ${OUTPUT_DIR})
-
-    add_custom_command(
-        OUTPUT ${INSTS_OUTPUT} ${PDI_OUTPUT} ${MLIR_OUTPUT}
-        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/compiler.py"
-            "--kernel_name" "${arg_KERNEL_NAME}"
-            "--kernel_source" "${arg_KERNEL_SOURCE}"
-            "--device" "${arg_DEVICE}"
-            "--input_tensors" ${arg_INPUT_TENSORS}
-            "--output_tensor" "${arg_OUTPUT_TENSOR}"
-            "--exported_name" "${arg_EXPORTED_NAME}"
-            "--output_directory" "${OUTPUT_DIR}"
-        DEPENDS ${arg_KERNEL_SOURCE}
-        WORKING_DIRECTORY ${OUTPUT_DIR}
-        COMMENT "Compiling kernel for ${arg_EXPORTED_NAME}"
-        VERBATIM
-        )
-
-    add_custom_target(ggml_hsa_kernel_${arg_EXPORTED_NAME} ALL DEPENDS ${PDI_OUTPUT} ${INSTS_OUTPUT})
-    add_dependencies(${TARGET_NAME} ggml_hsa_kernel_${arg_EXPORTED_NAME})
-
-    # copy kernel to install directory
-    install(
-        FILES
-            ${PDI_OUTPUT}
-            ${INSTS_OUTPUT}
-        DESTINATION
-            lib/kernels/${arg_DEVICE}
-        )
-endfunction()
-
 if (GGML_HSA_JIT_COMPILE)
     # copy support files
     set(IRON_SUPPORT_FILES
@@ -101,36 +45,3 @@ if (GGML_HSA_JIT_COMPILE)
             lib/iron_kernels
         )
 endif ()
-
-#
-# Pregenerated kernels
-
-add_aie_iron_kernel(ggml-hsa
-    KERNEL_NAME
-        ggml_op_add
-    KERNEL_SOURCE
-        ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
-    DEVICE
-        aie2
-    INPUT_TENSORS
-        "(256)/i32" "(256)/i32"
-    OUTPUT_TENSOR
-        "(256)/i32"
-    EXPORTED_NAME
-        "add-256i32-256i32-256i32"
-    )
-
-add_aie_iron_kernel(ggml-hsa
-    KERNEL_NAME
-        ggml_op_add
-    KERNEL_SOURCE
-        ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
-    DEVICE
-        aie2
-    INPUT_TENSORS
-        "(256)/f32" "(256)/f32"
-    OUTPUT_TENSOR
-        "(256)/f32"
-    EXPORTED_NAME
-        "add-256f32-256f32-256f32"
-    )
