@@ -347,9 +347,9 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
                                      ggml_tensor * dst_tensor) {
     auto & info = ggml_hsa_info();
     auto & dev_info = info.devices[ctx.device];
-    const auto nsrcs = kernel.num_src_tensors;
+    const auto num_src_tensors = kernel.num_src_tensors;
     const std::size_t packet_dwords =
-        3 /* instructions */ + (nsrcs + 1) * 3 /* source and destination tensors */;
+        3 /* instructions */ + (num_src_tensors + 1) * 3 /* source and destination tensors */;
     hsa_amd_aie_ert_start_kernel_data_t * cmd_payload = nullptr;
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0,
                                                    reinterpret_cast<void **>(&cmd_payload));
@@ -373,7 +373,7 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
     dword_idx += 3;
 
     // sources; 2 dwords each
-    for (std::int64_t src_idx = 0; src_idx < nsrcs; ++src_idx, dword_idx += 2) {
+    for (std::int64_t src_idx = 0; src_idx < num_src_tensors; ++src_idx, dword_idx += 2) {
         std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
             ggml_hsa_addr_to_hilo(src_tensors[src_idx]->data);
     }
@@ -385,7 +385,7 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
     dword_idx += 2;
 
     // sizes; 1 dword per tensor
-    for (std::int64_t src_idx = 0; src_idx < nsrcs; ++src_idx, ++dword_idx) {
+    for (std::int64_t src_idx = 0; src_idx < num_src_tensors; ++src_idx, ++dword_idx) {
         cmd_payload->data[dword_idx] = ggml_nbytes(src_tensors[src_idx]);
     }
     cmd_payload->data[dword_idx] = ggml_nbytes(dst_tensor);
