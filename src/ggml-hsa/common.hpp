@@ -222,9 +222,14 @@ struct ggml_backend_hsa_context {
  * @brief Dispatches a kernel that implements for the tensor operation.
  *
  * @param[in] ctx backend context
- * @param[in] tensor tensor with the operation to dispatch for
+ * @param[in] kernel kernel to dispatch
+ * @param[in] src_tensors source tensors
+ * @param[out] dst_tensor destination tensor
  */
-ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
+ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
+                                     const ggml_hsa_aie_kernel & kernel,
+                                     ggml_tensor * src_tensors[],
+                                     ggml_tensor * dst_tensor);
 
 /**
  * @brief Waits for all dispatched kernels to finish.

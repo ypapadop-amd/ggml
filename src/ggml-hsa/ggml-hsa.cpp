@@ -341,9 +341,10 @@ static void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
     hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
 }
 
-ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor * tensor) {
-    auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra);
-    const auto & kernel = tensor_extra.kernel;
+ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
+                                     const ggml_hsa_aie_kernel & kernel,
+                                     ggml_tensor * src_tensors[],
+                                     ggml_tensor * dst_tensor) {
     auto & info = ggml_hsa_info();
     auto & dev_info = info.devices[ctx.device];
     const auto nsrcs = kernel.num_src_tensors;
@@ -373,23 +374,21 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor
 
     // sources; 2 dwords each
     for (std::int64_t src_idx = 0; src_idx < nsrcs; ++src_idx, dword_idx += 2) {
-        const ggml_tensor * src = tensor->src[src_idx];
         std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
-            ggml_hsa_addr_to_hilo(src->data);
+            ggml_hsa_addr_to_hilo(src_tensors[src_idx]->data);
     }
 
     // destination; 2 dwords
     std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
-        ggml_hsa_addr_to_hilo(tensor->data);
+        ggml_hsa_addr_to_hilo(dst_tensor->data);
 
     dword_idx += 2;
 
     // sizes; 1 dword per tensor
     for (std::int64_t src_idx = 0; src_idx < nsrcs; ++src_idx, ++dword_idx) {
-        const ggml_tensor * src = tensor->src[src_idx];
-        cmd_payload->data[dword_idx] = ggml_nbytes(src);
+        cmd_payload->data[dword_idx] = ggml_nbytes(src_tensors[src_idx]);
     }
-    cmd_payload->data[dword_idx] = ggml_nbytes(tensor);
+    cmd_payload->data[dword_idx] = ggml_nbytes(dst_tensor);
 
     assert(dword_idx == packet_dwords + 1); // 2 extra uncounted dwords
 
@@ -1039,7 +1038,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                         status = ggml_hsa_create_aie_kernel(ctx, node, tensor_extra.kernel);
                     }
                     if (status == GGML_STATUS_SUCCESS) {
-                        status = ggml_hsa_dispatch_kernel(ctx, node);
+                        status =
+                            ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, node->src, node);
                     }
                 }
                 break;
