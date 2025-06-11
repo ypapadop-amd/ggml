@@ -250,6 +250,15 @@ const ggml_hsa_device_info & ggml_hsa_info() {
     return info;
 }
 
+ggml_backend_hsa_tensor_extra::~ggml_backend_hsa_tensor_extra() {
+    // free intermediate storage buffer
+    for (auto & buffer : buffers) {
+        if (buffer != nullptr) {
+            HSA_CHECK_ABORT(hsa_amd_memory_pool_free(buffer));
+        }
+    }
+}
+
 ggml_backend_hsa_context::ggml_backend_hsa_context(
     std::int32_t device, const ggml_hsa_device_info::device_info & dev_info) :
     device(device), name(ggml_hsa_format_name(device)) {
@@ -344,10 +353,10 @@ static void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
 ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
                                      const ggml_hsa_aie_kernel & kernel,
                                      ggml_tensor * src_tensors[],
+                                     std::size_t num_src_tensors,
                                      ggml_tensor * dst_tensor) {
     auto & info = ggml_hsa_info();
     auto & dev_info = info.devices[ctx.device];
-    const auto num_src_tensors = kernel.num_src_tensors;
     const std::size_t packet_dwords =
         3 /* instructions */ + (num_src_tensors + 1) * 3 /* source and destination tensors */;
     hsa_amd_aie_ert_start_kernel_data_t * cmd_payload = nullptr;
@@ -373,7 +382,7 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
     dword_idx += 3;
 
     // sources; 2 dwords each
-    for (std::int64_t src_idx = 0; src_idx < num_src_tensors; ++src_idx, dword_idx += 2) {
+    for (std::size_t src_idx = 0; src_idx < num_src_tensors; ++src_idx, dword_idx += 2) {
         std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
             ggml_hsa_addr_to_hilo(src_tensors[src_idx]->data);
     }
@@ -385,7 +394,7 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
     dword_idx += 2;
 
     // sizes; 1 dword per tensor
-    for (std::int64_t src_idx = 0; src_idx < num_src_tensors; ++src_idx, ++dword_idx) {
+    for (std::size_t src_idx = 0; src_idx < num_src_tensors; ++src_idx, ++dword_idx) {
         cmd_payload->data[dword_idx] = ggml_nbytes(src_tensors[src_idx]);
     }
     cmd_payload->data[dword_idx] = ggml_nbytes(dst_tensor);
@@ -478,6 +487,36 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
                         (padded_size - original_size));
         }
     }
+
+    switch (tensor->op) {
+        case GGML_OP_MUL_MAT:
+            {
+                // add temporary buffers to transpose B and C matrices
+                const auto & info = ggml_hsa_info();
+                const auto & dev_info = info.devices[buf_ctx.device];
+
+                const std::size_t alignment = ggml_backend_buffer_get_alignment(buffer);
+                const std::size_t size = GGML_PAD(ggml_nbytes(tensor->src[0]), alignment);
+
+                void * buffer = nullptr;
+                if (auto status =
+                        hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
+                                                     /* flags = */ 0, &buffer);
+                    status != HSA_STATUS_SUCCESS) {
+                    GGML_LOG_ERROR("%s: allocating %.2f MiB on device %d: "
+                                   "hsa_amd_memory_pool_allocate failed: %s\n",
+                                   __func__, size / 1024.0 / 1024.0, buf_ctx.device,
+                                   ggml_hsa_get_status_string(status));
+                    return GGML_STATUS_FAILED;
+                }
+                static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra)
+                    ->buffers.push_back(buffer);
+            }
+            break;
+        default:
+            break;
+    }
+    // add additional storage for
 
     return GGML_STATUS_SUCCESS;
 } catch (const std::exception & ex) {
@@ -1012,9 +1051,42 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             case GGML_OP_NONE:
                 // NOP, no kernel required
                 break;
-
             case GGML_OP_DUP:
                 status = ggml_hsa_compute_dup(ctx, node);
+                break;
+            case GGML_OP_MUL_MAT:
+                {
+                    auto & tensor_extra =
+                        *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+                    if (!tensor_extra.kernel.is_valid()) {
+                        status = ggml_hsa_create_aie_kernel(ctx, node, tensor_extra.kernel);
+                        if (status != GGML_STATUS_SUCCESS) {
+                            break;
+                        }
+                    }
+
+                    assert(tensor_extra.kernel.num_src_tensors == 2);
+
+                    // transpose A matrix to temporary buffer
+                    ggml_hsa_wait_dispatches(ctx);
+                    ggml_tensor * a = node->src[0];
+                    ggml_tensor a_t = {};
+                    a_t.type = a->type;
+                    std::copy_n(a->ne, GGML_MAX_DIMS, a_t.ne);
+                    std::swap(a_t.ne[0], a_t.ne[1]);
+                    std::copy_n(a->nb, GGML_MAX_DIMS, a_t.nb);
+                    std::swap(a_t.nb[0], a_t.nb[1]);
+                    a_t.data = tensor_extra.buffers.front();
+                    status = ggml_hsa_copy_tensor(a, &a_t);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        break;
+                    }
+
+                    // dispatch kernel
+                    ggml_tensor * src_tensors[] = {node->src[1], &a_t};
+                    status =
+                        ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, src_tensors, 2, node);
+                }
                 break;
             case GGML_OP_CPY:
                 status = ggml_hsa_compute_cpy(ctx, node);
@@ -1022,14 +1094,12 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             case GGML_OP_CONT:
                 status = ggml_hsa_compute_cont(ctx, node);
                 break;
-
             case GGML_OP_RESHAPE:
             case GGML_OP_VIEW:
             case GGML_OP_PERMUTE:
             case GGML_OP_TRANSPOSE:
                 // implemented as views, so no kernel required
                 break;
-
             default:
                 {
                     auto & tensor_extra =
@@ -1039,7 +1109,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     }
                     if (status == GGML_STATUS_SUCCESS) {
                         status =
-                            ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, node->src, node);
+                            ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, node->src,
+                                                     tensor_extra.kernel.num_src_tensors, node);
                     }
                 }
                 break;
