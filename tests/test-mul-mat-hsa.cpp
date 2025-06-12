@@ -38,11 +38,22 @@ struct fundamental_to_ggml_type<float> {
     inline static const auto ggml_type = GGML_TYPE_F32;
 };
 
+static inline bool ggml_can_mul_mat(const struct ggml_tensor * t0, const struct ggml_tensor * t1) {
+    static_assert(GGML_MAX_DIMS == 4, "GGML_MAX_DIMS is not 4 - update this function");
+
+    return (t0->ne[0]           == t1->ne[0])  &&
+           (t1->ne[2]%t0->ne[2] == 0)          && // verify t0 is broadcastable
+           (t1->ne[3]%t0->ne[3] == 0);
+}
+
 struct ggml_tensor * ggml_mul_mat_i16(
     struct ggml_context * ctx,
     struct ggml_tensor  * a,
     struct ggml_tensor  * b) {
-    const int64_t ne[4] = { a->ne[0], b->ne[1], b->ne[2], b->ne[3] };
+    GGML_ASSERT(ggml_can_mul_mat(a, b));
+    GGML_ASSERT(!ggml_is_transposed(a));
+
+    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_I16, 4, ne);
 
     result->op     = GGML_OP_MUL_MAT;
@@ -60,6 +71,50 @@ struct test_model {
     ggml_context * ctx;
     std::vector<uint8_t> buf;
 };
+
+void print_ggml_tensor(const ggml_tensor * tensor) {
+    printf("%s (%s):\n\tne=[%3ld, %3ld, %3ld, %3ld], nb=[%3ld, %3ld, %3ld, %3ld], type=%s\n",
+           tensor->name,
+           ggml_op_desc(tensor),
+           tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3],
+           tensor->nb[0], tensor->nb[1], tensor->nb[2], tensor->nb[3],
+           ggml_type_name(tensor->type));
+}
+
+void print_ggml_tensor_data(const ggml_tensor * tensor) {
+    for (int64_t ne03 = 0; ne03 < tensor->ne[3]; ++ne03) {
+        for (int64_t ne02 = 0; ne02 < tensor->ne[2]; ++ne02) {
+            for (int64_t ne01 = 0; ne01 < tensor->ne[1]; ++ne01) {
+                for (int64_t ne00 = 0; ne00 < tensor->ne[0]; ++ne00) {
+                    const size_t idx =
+                        (ne00 * tensor->nb[0]) +
+                        (ne01 * tensor->nb[1]) +
+                        (ne02 * tensor->nb[2]) +
+                        (ne03 * tensor->nb[3]);
+                    auto p = static_cast<const char *>(tensor->data) + idx;
+                    switch (tensor->type) {
+                        case GGML_TYPE_I16: {
+                            const auto value = *reinterpret_cast<const int16_t *>(p);
+                            printf("%d ", value);
+                            break;
+                        }
+                        case GGML_TYPE_F32: {
+                            const auto value = *reinterpret_cast<const float *>(p);
+                            printf("%f ", value);
+                            break;
+                        }
+                        default:
+                            fprintf(stderr, "Unsupported type %s\n", ggml_type_name(tensor->type));
+                            return;
+                    }
+                }
+                printf("\n");
+            }
+            printf("\n");
+        }
+        printf("\n");
+    }
+}
 
 template<typename T>
 void load_model(test_model & model, T * a, T * b, int M, int N, int K, bool use_gpu = false) {
@@ -113,9 +168,10 @@ void load_model(test_model & model, T * a, T * b, int M, int N, int K, bool use_
 
     // create tensors
     model.a = ggml_new_tensor_2d(model.ctx, ggml_type, K, M);
-    printf("Matrix A: [%i, %i]\n", M, K);
     model.b = ggml_new_tensor_2d(model.ctx, ggml_type, N, K);
-    printf("Matrix B: [%i, %i]\n", K, N);
+
+    ggml_set_name(model.a, "a");
+    ggml_set_name(model.b, "b");
 
     // create a allocator
     ggml_tallocr alloc = ggml_tallocr_new(model.buffer);
@@ -127,7 +183,14 @@ void load_model(test_model & model, T * a, T * b, int M, int N, int K, bool use_
     // copy data directly to device
     ggml_backend_tensor_set(model.a, a, 0, ggml_nbytes(model.a));
     ggml_backend_tensor_set(model.b, b, 0, ggml_nbytes(model.b));
+
+    print_ggml_tensor(model.a);
+    print_ggml_tensor_data(model.a);
+
+    print_ggml_tensor(model.b);
+    print_ggml_tensor_data(model.b);
 }
+
 
 ggml_cgraph * build_graph(test_model& model) {
     const size_t buf_size = ggml_tensor_overhead()*GGML_DEFAULT_GRAPH_SIZE + ggml_graph_overhead();
@@ -145,14 +208,23 @@ ggml_cgraph * build_graph(test_model& model) {
     ggml_cgraph * gf = ggml_new_graph(ctx);
 
     // zT = x @ yT
+    ggml_tensor * b_transposed_vw = ggml_transpose(ctx, model.b);
+    ggml_tensor * b_transposed = ggml_cont(ctx, b_transposed_vw);
+
+    print_ggml_tensor(b_transposed_vw);
+    print_ggml_tensor(b_transposed);
+
 #if USE_NPU
-    // HACK: we don't need to transpose
-    ggml_tensor * c = ggml_mul_mat_i16(ctx, model.a, model.b);
+    ggml_tensor * c_transposed = ggml_mul_mat_i16(ctx, model.a, b_transposed);
 #else
-    ggml_tensor * b_transposed = ggml_cont(ctx, ggml_transpose(ctx, model.b));
     ggml_tensor * c_transposed = ggml_mul_mat(ctx, model.a, b_transposed);
-    ggml_tensor * c = ggml_cont(ctx, ggml_transpose(ctx, c_transposed));
 #endif
+
+    ggml_tensor * c_vw = ggml_transpose(ctx, c_transposed);
+    ggml_tensor * c = ggml_cont(ctx, c_vw);
+
+    ggml_set_name(c, "c");
+    print_ggml_tensor(c);
 
     // z = (zT)T
     ggml_build_forward_expand(gf, c);
@@ -168,6 +240,12 @@ ggml_tensor* compute(test_model & model, ggml_gallocr_t allocr) {
 
     // allocate tensors
     ggml_gallocr_alloc_graph(allocr, gf);
+
+    ggml_graph_print(gf);
+
+    size_t mem_size = ggml_gallocr_get_buffer_size(allocr, 0);
+    fprintf(stderr, "%s: compute buffer size: %.2f MB\n", __func__, mem_size/1024.0f/1024.0f);
+
     int n_threads = 1;
 
     if (ggml_backend_is_cpu(model.backend)) {
@@ -178,8 +256,6 @@ ggml_tensor* compute(test_model & model, ggml_gallocr_t allocr) {
         fprintf(stderr, "%s: ggml_backend_graph_compute() failed\n", __func__);
         std::exit(-1);
     }
-
-    ggml_graph_print(gf);
 
     // in this case, the output tensor is the last one in the graph
     return ggml_graph_node(gf, -1);
@@ -226,7 +302,7 @@ int main()
     using value_type = float;
 #endif
 
-    const int M = 32, N = 32, K = 32;
+    const int64_t M = 32, N = 32, K = 32;
 
     ggml_time_init();
 
@@ -238,17 +314,19 @@ int main()
     value_type matrixB[K * N] = {};
     make_eye(matrixB, K, N);
 
-    matrixB[100] = 10;
+    matrixB[0] = 10;
 
     // matrix C
     value_type matrixC_naive[M * N] = {};
     gemm(M, N, K, matrixA, matrixB, matrixC_naive);
 
-    std::cout << "\nA[" << M << ',' << K << "]\n";
+    printf("Matrix A: [%ld, %ld]\n", M, K);
     print_matrix(matrixA, M, K);
-    std::cout << "\nB[" << K << ',' << N << "]\n";
+
+    printf("Matrix B: [%ld, %ld]\n", K, N);
     print_matrix(matrixB, K, N);
-    std::cout << "\nC[" << M << ',' << N << "]\n";
+
+    printf("Matrix C: [%ld, %ld]\n", M, N);
     print_matrix(matrixC_naive, M, N);
 
 #if USE_NPU
@@ -261,14 +339,6 @@ int main()
     load_model(model, matrixA, matrixB, M, N, K, use_npu);
 
     ggml_gallocr_t allocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(model.backend));
-
-    //create the worst case graph for memory usage estimation
-    ggml_cgraph * gf = build_graph(model);
-
-    // compute the required memory
-    ggml_gallocr_reserve(allocr, gf);
-    size_t mem_size = ggml_gallocr_get_buffer_size(allocr, 0);
-    fprintf(stderr, "%s: compute buffer size: %.2f MB\n", __func__, mem_size/1024.0f/1024.0f);
 
     ggml_tensor * result = compute(model, allocr);
 
