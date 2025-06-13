@@ -598,16 +598,16 @@ def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
 
     assert len(input_tensors) == 2, "mul_mat requires exactly two input tensors"
 
-    A = input_tensors[0]
-    B = input_tensors[1]
-    C = output_tensor
+    A = input_tensors[0]  # MxK = A.shape(1) x A.shape(0)
+    B = input_tensors[1]  # KxN = B.shape(1) x B.shape(0)
+    C = output_tensor  # MxN = C.shape(1) x C.shape(0)
 
     assert (
         A.dtype == B.dtype and A.dtype == C.dtype
     ), "mul_mat matrix datatypes must match"
     m = 8
-    k = 8
     n = 8
+    k = 8
     current_dir = path.dirname(path.realpath(__file__))
     return CoreFunctionInfo(
         source_file=path.join(current_dir, "mm.cc"),
@@ -617,10 +617,11 @@ def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
         },
         compile_args=[
             f"-DDIM_M={m}",
-            f"-DDIM_K={k}",
             f"-DDIM_N={n}",
+            f"-DDIM_K={k}",
             f"-D{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}_ONLY",
         ],
+        additional_args={"m": m, "n": n, "k": k},
     )
 
 
@@ -628,39 +629,41 @@ def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
 def ggml_op_mul_mat(
     input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
 ):
-    from compiler import dtype_to_str
-
     # TODO
     dev = "npu"
 
     assert len(input_tensors) == 2, "mul_mat requires exactly two input tensors"
 
-    A = input_tensors[0]
-    B = input_tensors[1]
-    C = output_tensor
+    A = input_tensors[0]  # MxK = A.shape(1) x A.shape(0)
+    B = input_tensors[1]  # KxN = B.shape(1) x B.shape(0)
+    C = output_tensor  # MxN = C.shape(1) x C.shape(0)
 
+    assert A.dtype == B.dtype and A.dtype == C.dtype, "mul_mat datatypes must match"
+
+    # M
     assert (
-        A.dtype == B.dtype and A.dtype == C.dtype
-    ), "mul_mat matrix datatypes must match"
+        A.shape[1] == C.shape[1]
+    ), f"mul_mat matrices must have compatible M ({A.shape[1]} != {C.shape[1]})"
+
+    # N
     assert (
-        A.shape[1] == B.shape[0]
-    ), "mul_mat matrices must have compatible dimensions (A.shape[1] == B.shape[0])"
+        B.shape[0] == C.shape[0]
+    ), f"mul_mat matrices must have compatible N ({B.shape[0]} != {C.shape[0]})"
+
+    # K
     assert (
-        A.shape[0] == C.shape[0]
-    ), "mul_mat matrices must have compatible dimensions (A.shape[0] == C.shape[0])"
-    assert (
-        B.shape[1] == C.shape[1]
-    ), "mul_mat matrices must have compatible dimensions (B.shape[1] == C.shape[1])"
+        A.shape[0] == B.shape[1]
+    ), f"mul_mat matrices must have compatible K ({A.shape[0]} != {B.shape[1]})"
 
     with mlir_mod_ctx() as ctx:
         my_matmul(
             dev=dev,
-            M=A.shape[0],
-            K=A.shape[1],
-            N=B.shape[1],
-            m=8,
-            k=8,
-            n=8,
+            M=A.shape[1],
+            N=B.shape[0],
+            K=A.shape[0],
+            m=core_function_info.additional_args["m"],
+            n=core_function_info.additional_args["n"],
+            k=core_function_info.additional_args["k"],
             n_aie_cols=4,
             dtype_in_str=dtype_to_str(A.dtype),
             dtype_out_str=dtype_to_str(C.dtype),
