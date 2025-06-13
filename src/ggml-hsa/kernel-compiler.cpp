@@ -102,21 +102,14 @@ ggml_hsa_get_kernel_jit_info(const ggml_tensor * tensor) {
 }
 
 /**
- * @brief Creates a TensorDesc object from the tensor.
+ * @brief Creates a @p py::tuple from the tensor dimensions.
  */
-template <typename F>
-py::object ggml_hsa_tensor_as_tensor_desc(F && ctor_f, const ggml_tensor * tensor) {
-    using namespace pybind11::literals;
-
-    // create tuple of dimensions
-    const auto ndims = ggml_n_dims(tensor);
-    auto dims_tuple = py::tuple(ndims);
-    for (auto i = 0; i < ndims; ++i) {
+static py::tuple ggml_hsa_tensor_dims_as_pytuple(const ggml_tensor * tensor) {
+    auto dims_tuple = py::tuple(GGML_MAX_DIMS);
+    for (auto i = 0; i < GGML_MAX_DIMS; ++i) {
         dims_tuple[i] = py::int_(tensor->ne[i]);
     }
-
-    return std::forward<F>(ctor_f)("shape"_a = std::move(dims_tuple),
-                                   "dtype"_a = ggml_type_name(tensor->type));
+    return dims_tuple;
 }
 
 /**
@@ -168,9 +161,13 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto input_tensors = py::list(src_tensor_count);
         for (auto i = 0; i < src_tensor_count; ++i) {
-            input_tensors[i] = ggml_hsa_tensor_as_tensor_desc(tensor_desc_ctor, tensor->src[i]);
+            const auto src_tensor = tensor->src[i];
+            input_tensors[i] =
+                tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_pytuple(src_tensor),
+                                 "dtype"_a = ggml_type_name(src_tensor->type));
         }
-        auto output_tensor = ggml_hsa_tensor_as_tensor_desc(tensor_desc_ctor, tensor);
+        auto output_tensor = tensor_desc_ctor("shape"_a = ggml_hsa_tensor_dims_as_pytuple(tensor),
+                                              "dtype"_a = ggml_type_name(tensor->type));
 
         // compile the kernel
         auto compile_kernel = iron_compiler.attr("compile_kernel");
