@@ -145,15 +145,17 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
 
     // JIT compile kernel
     const auto & library_dir = ggml_hsa_library_path();
-    const auto module_path = library_dir / "iron_kernels";
-    const auto kernel_source_path = module_path / kernel_jit_info.source;
+    const auto kernel_path = library_dir / "iron_kernels";
+    const auto device_kernel_path = kernel_path / dev_info.name;
+    const auto kernel_source_path = device_kernel_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
 
     py::scoped_interpreter guard{};
     try {
-        // import packages
+        // import build and kernel scripts
         auto sys = py::module_::import("sys");
-        sys.attr("path").attr("append")(module_path.string());
+        sys.attr("path").attr("append")(kernel_path.string());
+        sys.attr("path").attr("append")(device_kernel_path.string());
         auto iron_compiler = py::module_::import("compiler");
 
         // convert a GGML tensor to input and output TensorDesc objects
