@@ -1035,6 +1035,39 @@ struct ggml_backend_hsa_emulated_tensor {
 
 #endif
 
+/**
+ * @brief Transposes @p tensor for use with GEMM.
+ *
+ * @note This is a workaround for the fact that the AIE kernel implements a regular GEMM.
+ */
+static ggml_status ggml_hsa_transpose_tensor(const ggml_tensor * tensor,
+                                             void * data,
+                                             ggml_tensor * transposed_tensor) {
+    // transposed view
+    ggml_tensor transposed_vw = {};
+    transposed_vw.type = tensor->type;
+    transposed_vw.data = tensor->data;
+    std::copy_n(tensor->ne, GGML_MAX_DIMS, transposed_vw.ne);
+    std::swap(transposed_vw.ne[0], transposed_vw.ne[1]);
+    std::copy_n(tensor->nb, GGML_MAX_DIMS, transposed_vw.nb);
+    std::swap(transposed_vw.nb[0], transposed_vw.nb[1]);
+
+    // transposed tensor
+    *transposed_tensor = {};
+    transposed_tensor->type = tensor->type;
+    transposed_tensor->data = data;
+    std::copy_n(transposed_vw.ne, GGML_MAX_DIMS, transposed_tensor->ne);
+    transposed_tensor->nb[0] = ggml_type_size(transposed_tensor->type);
+    transposed_tensor->nb[1] = transposed_tensor->nb[0] *
+                               (transposed_tensor->ne[0] / ggml_blck_size(transposed_tensor->type));
+    for (int i = 2; i < GGML_MAX_DIMS; ++i) {
+        transposed_tensor->nb[i] = transposed_tensor->nb[i - 1] * transposed_tensor->ne[i - 1];
+    }
+
+    // copy data
+    return ggml_hsa_copy_tensor(&transposed_vw, transposed_tensor);
+}
+
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                                                        ggml_cgraph * cgraph) try {
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
@@ -1058,34 +1091,33 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 {
                     auto & tensor_extra =
                         *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+
+                    ggml_hsa_wait_dispatches(ctx);
+
+                    // Workaround
+                    // MUL_MAT is implemented as C' = A * B' The IRON kernel currently implements
+                    // C = A * B, so we transpose A to implement the operation as B' * A' = C'
+                    ggml_tensor src0_transposed = {};
+                    if (status = ggml_hsa_transpose_tensor(
+                            node->src[0], tensor_extra.buffers.front(), &src0_transposed);
+                        status != GGML_STATUS_SUCCESS) {
+                        break;
+                    }
+                    auto new_node = *node;
+                    new_node.src[0] = node->src[1];     // B'
+                    new_node.src[1] = &src0_transposed; // A'
+                    // End of workaround
+
                     if (!tensor_extra.kernel.is_valid()) {
-                        status = ggml_hsa_create_aie_kernel(ctx, node, tensor_extra.kernel);
-                        if (status != GGML_STATUS_SUCCESS) {
+                        if (status =
+                                ggml_hsa_create_aie_kernel(ctx, &new_node, tensor_extra.kernel);
+                            status != GGML_STATUS_SUCCESS) {
                             break;
                         }
                     }
-
                     assert(tensor_extra.kernel.num_src_tensors == 2);
-
-                    // transpose A matrix to temporary buffer
-                    ggml_hsa_wait_dispatches(ctx);
-                    ggml_tensor * a = node->src[0];
-                    ggml_tensor a_t = {};
-                    a_t.type = a->type;
-                    std::copy_n(a->ne, GGML_MAX_DIMS, a_t.ne);
-                    std::swap(a_t.ne[0], a_t.ne[1]);
-                    std::copy_n(a->nb, GGML_MAX_DIMS, a_t.nb);
-                    std::swap(a_t.nb[0], a_t.nb[1]);
-                    a_t.data = tensor_extra.buffers.front();
-                    status = ggml_hsa_copy_tensor(a, &a_t);
-                    if (status != GGML_STATUS_SUCCESS) {
-                        break;
-                    }
-
-                    // dispatch kernel
-                    ggml_tensor * src_tensors[] = {node->src[1], &a_t};
-                    status =
-                        ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, src_tensors, 2, node);
+                    status = ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, new_node.src, 2,
+                                                      &new_node);
                 }
                 break;
             case GGML_OP_CPY:
@@ -1105,13 +1137,13 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     auto & tensor_extra =
                         *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
                     if (!tensor_extra.kernel.is_valid()) {
-                        status = ggml_hsa_create_aie_kernel(ctx, node, tensor_extra.kernel);
+                        if (status = ggml_hsa_create_aie_kernel(ctx, node, tensor_extra.kernel);
+                            status != GGML_STATUS_SUCCESS) {
+                            break;
+                        }
                     }
-                    if (status == GGML_STATUS_SUCCESS) {
-                        status =
-                            ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, node->src,
-                                                     tensor_extra.kernel.num_src_tensors, node);
-                    }
+                    status = ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, node->src,
+                                                      tensor_extra.kernel.num_src_tensors, node);
                 }
                 break;
         }

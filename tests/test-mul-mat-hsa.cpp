@@ -117,7 +117,7 @@ void print_ggml_tensor_data(const ggml_tensor * tensor) {
 }
 
 template<typename T>
-void load_model(test_model & model, T * a, T * b, int M, int N, int K, bool use_gpu = false) {
+void load_model(test_model & model, T * a, T * b, int M, int N, int K, bool use_accelerator) {
     const auto ggml_type = fundamental_to_ggml_type<T>::ggml_type;
 
     size_t buffer_size = 0;
@@ -136,22 +136,22 @@ void load_model(test_model & model, T * a, T * b, int M, int N, int K, bool use_
     };
 
     // initialize the backend
-#ifdef GGML_USE_CUDA
-    if (use_gpu) {
-        fprintf(stderr, "%s: using CUDA backend\n", __func__);
-        model.backend = ggml_backend_cuda_init(0);
-        if (!model.backend) {
-            fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
-        }
-    }
-#endif
-
 #ifdef GGML_USE_HSA
-    if (use_gpu) {
+    if (use_accelerator && !model.backend) {
         fprintf(stderr, "%s: using HSA backend\n", __func__);
         model.backend = ggml_backend_hsa_init(0);
         if (!model.backend) {
             fprintf(stderr, "%s: ggml_backend_hsa_init() failed\n", __func__);
+        }
+    }
+#endif
+
+#ifdef GGML_USE_CUDA
+    if (use_accelerator && !model.backend) {
+        fprintf(stderr, "%s: using CUDA backend\n", __func__);
+        model.backend = ggml_backend_cuda_init(0);
+        if (!model.backend) {
+            fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
         }
     }
 #endif
@@ -183,12 +183,6 @@ void load_model(test_model & model, T * a, T * b, int M, int N, int K, bool use_
     // copy data directly to device
     ggml_backend_tensor_set(model.a, a, 0, ggml_nbytes(model.a));
     ggml_backend_tensor_set(model.b, b, 0, ggml_nbytes(model.b));
-
-    print_ggml_tensor(model.a);
-    print_ggml_tensor_data(model.a);
-
-    print_ggml_tensor(model.b);
-    print_ggml_tensor_data(model.b);
 }
 
 
@@ -211,19 +205,23 @@ ggml_cgraph * build_graph(test_model& model) {
     ggml_tensor * b_transposed_vw = ggml_transpose(ctx, model.b);
     ggml_tensor * b_transposed = ggml_cont(ctx, b_transposed_vw);
 
-    print_ggml_tensor(b_transposed_vw);
-    print_ggml_tensor(b_transposed);
 
 #if USE_NPU
     ggml_tensor * c_transposed = ggml_mul_mat_i16(ctx, model.a, b_transposed);
 #else
     ggml_tensor * c_transposed = ggml_mul_mat(ctx, model.a, b_transposed);
 #endif
+    ggml_set_name(c_transposed, "c");
 
     ggml_tensor * c_vw = ggml_transpose(ctx, c_transposed);
     ggml_tensor * c = ggml_cont(ctx, c_vw);
 
-    ggml_set_name(c, "c");
+    print_ggml_tensor(model.a);
+    print_ggml_tensor(model.b);
+    print_ggml_tensor(b_transposed_vw);
+    print_ggml_tensor(b_transposed);
+    print_ggml_tensor(c_transposed);
+    print_ggml_tensor(c_vw);
     print_ggml_tensor(c);
 
     // z = (zT)T
@@ -298,11 +296,14 @@ int main()
 {
 #if USE_NPU
     using value_type = int16_t;
+    const bool use_npu = true;
 #else
     using value_type = float;
+    const bool use_npu = false;
 #endif
+    const bool dump_matrices = false;
 
-    const int64_t M = 32, N = 32, K = 32;
+    const int64_t M = 128, N = 64, K = 32;
 
     ggml_time_init();
 
@@ -316,24 +317,23 @@ int main()
 
     matrixB[0] = 10;
 
-    // matrix C
+    // C = A * B
     value_type matrixC_naive[M * N] = {};
     gemm(M, N, K, matrixA, matrixB, matrixC_naive);
 
     printf("Matrix A: [%ld, %ld]\n", M, K);
-    print_matrix(matrixA, M, K);
-
+    if (dump_matrices) {
+        print_matrix(matrixA, M, K);
+    }
     printf("Matrix B: [%ld, %ld]\n", K, N);
-    print_matrix(matrixB, K, N);
+    if (dump_matrices) {
+        print_matrix(matrixB, K, N);
+    }
 
     printf("Matrix C: [%ld, %ld]\n", M, N);
-    print_matrix(matrixC_naive, M, N);
-
-#if USE_NPU
-    const bool use_npu = true;
-#else
-    const bool use_npu = false;
-#endif
+    if (dump_matrices) {
+        print_matrix(matrixC_naive, M, N);
+    }
 
     test_model model;
     load_model(model, matrixA, matrixB, M, N, K, use_npu);
@@ -342,10 +342,16 @@ int main()
 
     ggml_tensor * result = compute(model, allocr);
 
+    if (dump_matrices) {
+        print_ggml_tensor_data(model.a);
+        print_ggml_tensor_data(model.b);
+        print_ggml_tensor_data(result);
+    }
+
     std::vector<value_type> matrixC(ggml_nelements(result));
     ggml_backend_tensor_get(result, matrixC.data(), 0, ggml_nbytes(result));
 
-    printf("\nPerforming ggml_mul_mat test:\n");
+    printf("Performing ggml_mul_mat test:\n");
 
     bool passed = true;
     for(int i = 0; i < M * N; i++) {
@@ -356,9 +362,6 @@ int main()
     }
 
     printf("ggml_mul_mat (%d): %s\n", (int) ggml_nelements(result), passed && (ggml_nelements(result) == M * N) ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m");
-
-    std::cout << "\nC (GGML)\n";
-    print_matrix(matrixC.data(), M, N);
 
     // free memory
     ggml_free(model.ctx);
