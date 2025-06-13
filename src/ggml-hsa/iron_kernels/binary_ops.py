@@ -27,6 +27,8 @@ def binary_op(input_tensor0, input_tensor1, op, output):
         raise ValueError(
             f"Input and output shapes are not the equal ({input_tensor0.shape} != {output.shape})."
         )
+    if input_tensor0.shape[2] != 1 or input_tensor0.shape[3] != 1:
+        raise ValueError(f"Unsupported shape {input_tensor0.shape}.")
     num_elements = np.size(input_tensor0)
     n = 16
     if num_elements % n != 0:
