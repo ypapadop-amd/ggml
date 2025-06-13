@@ -23,25 +23,25 @@ if (GGML_HSA_JIT_COMPILE)
         )
 
     # copy kernel sources
-    set(IRON_KERNEL_FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
-        ${CMAKE_CURRENT_SOURCE_DIR}/mm.cc
-        ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
-        ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.cc
-        ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.py
-        ${CMAKE_CURRENT_SOURCE_DIR}/zero.cc
+    set(IRON_AIE2_KERNEL_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/aie2/binary_ops.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/aie2/mm.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/aie2/mul_mat.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/aie2/unary_ops.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/aie2/unary_ops.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/aie2/zero.cc
         )
-    ggml_hsa_copy_files(ggml_hsa_copy_iron_kernel_files
+    ggml_hsa_copy_files(ggml_hsa_copy_iron_aie2_kernel_files
         FILES
-            ${IRON_KERNEL_FILES}
+            ${IRON_AIE2_KERNEL_FILES}
         DESTINATION
-            ${CMAKE_CURRENT_BINARY_DIR}
+            ${CMAKE_CURRENT_BINARY_DIR}/aie2
         )
-    add_dependencies(ggml-hsa ggml_hsa_copy_iron_kernel_files)
+    add_dependencies(ggml-hsa ggml_hsa_copy_iron_aie2_kernel_files)
     install(
         FILES
             ${IRON_KERNEL_FILES}
         DESTINATION
-            lib/iron_kernels
+            lib/iron_kernels/aie2
         )
 endif ()
