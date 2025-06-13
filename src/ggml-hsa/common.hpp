@@ -176,7 +176,7 @@ struct ggml_backend_hsa_tensor_extra {
 #ifdef GGML_HSA_CPU_FALLBACK
     std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
 #endif
-    std::vector<void *> buffers; ///< Intermediate storage.
+    std::vector<void *> buffers; ///< Temporary storage.
 
     ggml_backend_hsa_tensor_extra() = default;
 
