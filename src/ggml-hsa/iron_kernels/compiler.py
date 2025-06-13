@@ -34,13 +34,6 @@ def to_device(device):
     return device
 
 
-def str_to_dtype(dtype):
-    """Returns the datatype from the string."""
-    if isinstance(dtype, str):
-        return supported_dtypes[dtype]
-    return dtype
-
-
 def dtype_to_str(dtype):
     """Returns the datatype as a string."""
     if isinstance(dtype, str):
@@ -56,19 +49,25 @@ class TensorDesc:
     Tensor description.
 
     This class provides the tensor information, such as shape and datatype.
+
+    The shape is a tuple of integers, where the innermost dimension is first.
     """
 
     def __init__(self, shape: tuple, dtype):
+        if len(shape) != 4:
+            raise ValueError(
+                f"Shape must be a tuple of 4 integers, got {shape} with length {len(shape)}"
+            )
         self.shape = shape
         self.size = int(np.prod(shape))
-        self.dtype = str_to_dtype(dtype)
+        self.dtype = np.dtype(dtype)
 
     def __str__(self):
         return f"{str(self.shape)}/{str(self.dtype)}"
 
     def numel(self):
         """
-        Calculates the number of elements in the tensor.
+        Returns the number of elements in the tensor.
 
         Returns:
             int: The total number of elements in the tensor.
@@ -81,12 +80,14 @@ def tensordesc(shape, dtype) -> TensorDesc:
     Creates a TensorDesc from the specified shape and dtype.
 
     Parameters:
-        shape(tuple): Tensor shape.
-        dtype (np.dtype, optional): Desired data type.
+        shape(tuple): Tensor shape. This follows the GGML convention, where dimensions are from innermost to outermost (reverse of PyTorch).
+        dtype: Tensor data type.
 
     Returns:
         TensorDesc: A new TensorDesc instance.
     """
+    if isinstance(dtype, str):
+        dtype = supported_dtypes[dtype]
     return TensorDesc(shape=shape, dtype=dtype)
 
 
@@ -97,7 +98,13 @@ class CoreFunctionInfo:
     This class provides information necessary to compile a core function via Peano and use it in a kernel.
     """
 
-    def __init__(self, source_file: str, exported_function, compile_args):
+    def __init__(
+        self,
+        source_file: str,
+        exported_function,
+        compile_args,
+        additional_args=None,
+    ):
         self.source_file = source_file
         if compile_args is None:
             self.compile_args = []
@@ -105,9 +112,19 @@ class CoreFunctionInfo:
             self.compile_args = compile_args
         self.exported_function = exported_function
         self.object_file = None
+        if additional_args is None:
+            self.additional_args = {}
+        else:
+            self.additional_args = additional_args
 
     def __str__(self):
-        return f'Source file: "{self.source_file}", Compile args: {self.compile_args}, Exported function: "{self.exported_function}", Object file: "{self.object_file}"'
+        return (
+            f'Source file: "{self.source_file}", '
+            + f"Compile args: {self.compile_args}, "
+            + f'Exported function: "{self.exported_function}", '
+            + f'Object file: "{self.object_file}", '
+            + f"Additional args: {self.additional_args}"
+        )
 
 
 def core_function(function_info=None) -> Callable:
@@ -215,7 +232,7 @@ def to_tensordesc(string: str) -> TensorDesc:
     """
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
-    dtype = str_to_dtype(dtype)
+    dtype = supported_dtypes[dtype]
     return TensorDesc(shape=shape, dtype=dtype)
 
 
