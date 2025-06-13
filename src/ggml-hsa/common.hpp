@@ -176,6 +176,17 @@ struct ggml_backend_hsa_tensor_extra {
 #ifdef GGML_HSA_CPU_FALLBACK
     std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
 #endif
+    std::vector<void *> buffers; ///< Intermediate storage.
+
+    ggml_backend_hsa_tensor_extra() = default;
+
+    ggml_backend_hsa_tensor_extra(const ggml_backend_hsa_tensor_extra &) = delete;
+    ggml_backend_hsa_tensor_extra(ggml_backend_hsa_tensor_extra &&) = delete;
+
+    ~ggml_backend_hsa_tensor_extra();
+
+    ggml_backend_hsa_tensor_extra & operator=(const ggml_backend_hsa_tensor_extra &) = delete;
+    ggml_backend_hsa_tensor_extra & operator=(ggml_backend_hsa_tensor_extra &&) = delete;
 };
 
 /**
@@ -222,9 +233,16 @@ struct ggml_backend_hsa_context {
  * @brief Dispatches a kernel that implements for the tensor operation.
  *
  * @param[in] ctx backend context
- * @param[in] tensor tensor with the operation to dispatch for
+ * @param[in] kernel kernel to dispatch
+ * @param[in] src_tensors source tensors
+ * @param[in] num_src_tensors number of source tensors
+ * @param[out] dst_tensor destination tensor
  */
-ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx, ggml_tensor * tensor);
+ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
+                                     const ggml_hsa_aie_kernel & kernel,
+                                     ggml_tensor * src_tensors[],
+                                     std::size_t num_src_tensors,
+                                     ggml_tensor * dst_tensor);
 
 /**
  * @brief Waits for all dispatched kernels to finish.
