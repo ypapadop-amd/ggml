@@ -6,7 +6,7 @@ if (GGML_HSA_JIT_COMPILE)
     # copy support files
     set(IRON_SUPPORT_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
-        ${CMAKE_CURRENT_SOURCE_DIR}/compiler.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/build.py
         )
     ggml_hsa_copy_files(ggml_hsa_copy_iron_support_files
         FILES
@@ -19,7 +19,7 @@ if (GGML_HSA_JIT_COMPILE)
         FILES
             ${IRON_SUPPORT_FILES}
         DESTINATION
-            lib/iron_kernels
+            lib/iron-kernels
         )
 
     # copy kernel sources
@@ -42,6 +42,6 @@ if (GGML_HSA_JIT_COMPILE)
         FILES
             ${IRON_KERNEL_FILES}
         DESTINATION
-            lib/iron_kernels/aie2
+            lib/iron-kernels/aie2
         )
 endif ()
