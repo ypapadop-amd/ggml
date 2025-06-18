@@ -113,11 +113,27 @@ static py::tuple ggml_hsa_tensor_dims_as_pytuple(const ggml_tensor * tensor) {
 }
 
 /**
- * @brief Returns if the tensor is a view.
+ * @brief Returns if the tensor is not supported.
  */
-static bool ggml_hsa_is_view(const ggml_tensor * tensor) {
-    // A view is a tensor that is not contiguous, permuted or transposed.
-    return tensor->view_src != nullptr;
+static bool ggml_hsa_unsupported_tensor(const ggml_tensor * tensor) {
+    // non-contiguous tensors are not yet supported
+    auto unsupported_tensor = [](const ggml_tensor * tensor) {
+        return tensor != nullptr && !ggml_is_contiguous(tensor);
+    };
+
+    return unsupported_tensor(tensor) ||
+           std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor);
+}
+
+bool ggml_hsa_can_compile_kernel(const ggml_hsa_device_info::device_info & /* dev_info */,
+                                 const ggml_tensor * tensor) {
+    if (ggml_hsa_unsupported_tensor(tensor)) {
+        return false;
+    }
+
+    // retrieve the JIT compilation information for the kernel
+    const auto & kernel_jit_info = ggml_hsa_get_kernel_jit_info(tensor);
+    return kernel_jit_info.is_valid();
 }
 
 ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
@@ -126,13 +142,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                     const std::filesystem::path & output_path) {
     using namespace pybind11::literals;
 
-    // non-contiguous, permuted or transposed tensors are not yet supported
-    auto unsupported_tensor = [](const ggml_tensor * tensor) {
-        return tensor != nullptr && (!ggml_is_contiguous(tensor) || ggml_hsa_is_view(tensor));
-    };
-    if (unsupported_tensor(tensor) ||
-        std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor)) {
-        GGML_LOG_INFO("%s: Tensor \"%s\" unsupported layout\n", __func__, ggml_get_name(tensor));
+    if (ggml_hsa_unsupported_tensor(tensor)) {
+        GGML_LOG_INFO("%s: Tensor \"%s\" is not supported\n", __func__, ggml_get_name(tensor));
         return GGML_STATUS_FAILED;
     }
 
