@@ -19,7 +19,7 @@ if (GGML_HSA_JIT_COMPILE)
         FILES
             ${IRON_SUPPORT_FILES}
         DESTINATION
-            lib/iron_kernels
+            lib/iron-kernels
         )
 
     # copy kernel sources
@@ -42,6 +42,6 @@ if (GGML_HSA_JIT_COMPILE)
         FILES
             ${IRON_KERNEL_FILES}
         DESTINATION
-            lib/iron_kernels/aie2
+            lib/iron-kernels/aie2
         )
 endif ()
