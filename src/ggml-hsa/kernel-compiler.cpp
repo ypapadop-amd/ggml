@@ -156,7 +156,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         auto sys = py::module_::import("sys");
         sys.attr("path").attr("append")(kernel_path.string());
         sys.attr("path").attr("append")(device_kernel_path.string());
-        auto iron_compiler = py::module_::import("compiler");
+        auto iron_compiler = py::module_::import("build");
 
         // convert a GGML tensor to input and output TensorDesc objects
         auto tensor_desc_ctor = iron_compiler.attr("tensordesc");
