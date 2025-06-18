@@ -1355,9 +1355,9 @@ ggml_backend_hsa_device_get_host_buffer_type(ggml_backend_dev_t /*dev*/) {
  * @brief Returns if the operation in tensor @p op is supported by device @p dev.
  */
 static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
-                                                const ggml_tensor * tensor) try {
+                                                const ggml_tensor * op) try {
     bool supported = false;
-    switch (tensor->op) {
+    switch (op->op) {
         case GGML_OP_NONE:
             // NOP, no kernel required
             supported = true;
@@ -1379,15 +1379,12 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             break;
 
         default:
-            // check if the kernel is cached at the tensor level and if not, check if the kernel
-            // files exist
-            if (auto tensor_extra =
-                    static_cast<const ggml_backend_hsa_tensor_extra *>(tensor->extra);
-                (tensor->extra != nullptr) && tensor_extra->kernel.is_valid()) {
-                supported = true;
-            } else {
-                supported = ggml_hsa_kernel_exists(ggml_hsa_get_device_info(dev), tensor);
-            }
+            // check if the kernel is cached at the tensor level, if the compilation artifacts exist
+            // or if it can be compiled
+            supported =
+                (op->extra != nullptr &&
+                 static_cast<ggml_backend_hsa_tensor_extra *>(op->extra)->kernel.is_valid()) ||
+                ggml_hsa_kernel_supported(ggml_hsa_get_device_info(dev), op);
             break;
     }
 
