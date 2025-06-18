@@ -9,7 +9,7 @@ __all__ = [
     "core_function",
 ]
 
-from .compiler import (
+from .build import (
     tensordesc,
     CoreFunctionInfo,
     to_device,
