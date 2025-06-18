@@ -1366,7 +1366,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
         case GGML_OP_DUP:
         case GGML_OP_CPY:
         case GGML_OP_CONT:
-            // implemented as host kernel
+            // implemented as host kernels
             supported = true;
             break;
 
