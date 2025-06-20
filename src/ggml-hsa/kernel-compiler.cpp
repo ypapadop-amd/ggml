@@ -10,6 +10,11 @@
 #include <sstream>
 #include <string>
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <dlfcn.h>
+
 #include <pybind11/embed.h>
 
 #include "ggml-hsa/common.hpp"
@@ -22,6 +27,16 @@ namespace py = pybind11;
 static const bool verbose_compilation = [] {
     const char * env = std::getenv("GGML_HSA_JIT_VERBOSE");
     return env != nullptr && ggml_hsa_string_to_bool(env);
+}();
+
+/// @brief Path to the shared library directory.
+static const std::filesystem::path ggml_hsa_library_dir = [] {
+    // retrieve the shared library path
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_compile_kernel), &info) == 0) {
+        GGML_ABORT("Could not retrieve library directory\n");
+    }
+    return std::filesystem::path{info.dli_fname}.parent_path();
 }();
 
 /**
@@ -153,8 +168,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     }
 
     // JIT compile kernel
-    const auto & library_dir = ggml_hsa_library_path();
-    const auto kernel_path = library_dir / "iron-kernels";
+    const auto kernel_path = ggml_hsa_library_dir / "iron-kernels";
     const auto device_kernel_path = kernel_path / dev_info.name;
     const auto kernel_source_path = device_kernel_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
