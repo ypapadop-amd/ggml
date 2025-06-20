@@ -87,14 +87,10 @@ std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
  * @brief Returns if the tensor can be flattened.
  *
  * A tensor can be flattened if it participates in an operation that is independent of the tensor's
- * dimensions.
+ * dimensions, such as unary operations or element wise operations where the shapes and strides of
+ * the input and output tensors match.
  */
-constexpr bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
-    return (tensor->op == GGML_OP_UNARY) || (tensor->op == GGML_OP_SQR) ||
-           (tensor->op == GGML_OP_SQRT) || (tensor->op == GGML_OP_LOG) ||
-           (tensor->op == GGML_OP_SIN) || (tensor->op == GGML_OP_COS) ||
-           (tensor->op == GGML_OP_SILU_BACK) || (tensor->op == GGML_OP_LEAKY_RELU);
-}
+bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor);
 
 /**
  * @brief Device information.
