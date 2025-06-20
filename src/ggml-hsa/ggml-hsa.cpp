@@ -61,6 +61,60 @@ std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor) {
 }
 
 /**
+ * @brief Returns if the operation is unary.
+ */
+constexpr bool ggml_hsa_is_unary_op(ggml_op op) {
+    return (op == GGML_OP_UNARY) || (op == GGML_OP_SQR) || (op == GGML_OP_SQRT) ||
+           (op == GGML_OP_LOG) || (op == GGML_OP_SIN) || (op == GGML_OP_COS) ||
+           (op == GGML_OP_SILU_BACK) || (op == GGML_OP_LEAKY_RELU);
+}
+
+/**
+ * @brief Returns if the operation is an element-wise operation.
+ */
+constexpr bool ggml_hsa_is_elementwise_op(ggml_op op) {
+    return (op == GGML_OP_ADD) || (op == GGML_OP_SUB) || (op == GGML_OP_MUL) || (op == GGML_OP_DIV);
+}
+
+bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
+    // unary operations can be flattened
+    if (ggml_hsa_is_unary_op(tensor->op)) {
+        return true;
+    }
+
+    // element-wise operations can be flattened if the strides match irrespectively of the datatype
+    if (ggml_hsa_is_elementwise_op(tensor->op)) {
+        const auto dst_type = tensor->type;
+        for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
+            if (tensor->src[i] == nullptr) {
+                break;
+            }
+            const auto * src_tensor = tensor->src[i];
+            if (src_tensor->type == dst_type) {
+                // if the data types match, check the strides
+                if (!ggml_are_same_stride(src_tensor, tensor)) {
+                    return false;
+                }
+            } else {
+                // normalize src_tensor stride to the destination tensor stride
+                const auto src_type_size = ggml_type_size(src_tensor->type);
+                const auto dst_type_size = ggml_type_size(dst_type);
+                for (std::int32_t nb_i = 0; nb_i < GGML_MAX_DIMS; ++nb_i) {
+                    const auto src_nb_normalized =
+                        (src_tensor->nb[nb_i] / src_type_size) * dst_type_size;
+                    if (src_nb_normalized != tensor->nb[nb_i]) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    return false;
+}
+
+/**
  * @brief Creates a device name from the device index @p device.
  */
 static std::string ggml_hsa_format_name(std::int32_t device) {
