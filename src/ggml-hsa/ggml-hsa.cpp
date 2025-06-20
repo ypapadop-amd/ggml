@@ -467,27 +467,18 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
 static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
                                                             ggml_tensor * tensor) try {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
+
+    if ((tensor->type != GGML_TYPE_F32) && (tensor->type != GGML_TYPE_I8) &&
+        (tensor->type != GGML_TYPE_I16) && (tensor->type != GGML_TYPE_I32) &&
+        (tensor->type != GGML_TYPE_BF16)) {
+        GGML_LOG_ERROR("%s: unsupported tensor type %s\n", __func__, ggml_type_name(tensor->type));
+        return GGML_STATUS_FAILED;
+    }
+
+    // initialize tensor extra
     assert(tensor->extra == nullptr);
-    buf_ctx.tensor_extras.push_back(std::make_unique<ggml_backend_hsa_tensor_extra>());
-    tensor->extra = buf_ctx.tensor_extras.back().get();
-
-    if (tensor->view_src != nullptr) {
-        GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
-        return GGML_STATUS_SUCCESS;
-    }
-
-    if (ggml_is_quantized(tensor->type) &&
-        (ggml_backend_buffer_get_usage(buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE)) {
-        // initialize padding to 0 to avoid possible NaN values
-        const std::size_t original_size = ggml_nbytes(tensor);
-        const std::size_t padded_size = ggml_backend_buft_get_alloc_size(buffer->buft, tensor);
-
-        if (padded_size > original_size) {
-            std::memset(static_cast<std::byte *>(tensor->data) + original_size, 0,
-                        (padded_size - original_size));
-        }
-    }
-
+    auto extra = std::make_unique<ggml_backend_hsa_tensor_extra>();
+    extra->can_flatten = ggml_hsa_tensor_can_flatten(tensor);
     switch (tensor->op) {
         case GGML_OP_MUL_MAT:
             {
@@ -509,14 +500,21 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
                                    ggml_hsa_get_status_string(status));
                     return GGML_STATUS_FAILED;
                 }
-                static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra)
-                    ->buffers.push_back(buffer);
+                extra->buffers.push_back(buffer);
             }
             break;
         default:
             break;
     }
-    // add additional storage for
+
+    // register tensor extra with the context and the buffer
+    buf_ctx.tensor_extras.push_back(std::move(extra));
+    tensor->extra = buf_ctx.tensor_extras.back().get();
+
+    if (tensor->view_src != nullptr) {
+        GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
+        return GGML_STATUS_SUCCESS;
+    }
 
     return GGML_STATUS_SUCCESS;
 } catch (const std::exception & ex) {

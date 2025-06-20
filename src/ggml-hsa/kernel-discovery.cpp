@@ -69,19 +69,6 @@ static const fs::path cached_kernel_dir = [] {
 }();
 
 /**
- * @brief Returns if the tensor can be flattened.
- *
- * A tensor can be flattened if it participates in an operation that is independent of the tensor's
- * dimensions.
- */
-constexpr bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
-    return (tensor->op == GGML_OP_UNARY) || (tensor->op == GGML_OP_SQR) ||
-           (tensor->op == GGML_OP_SQRT) || (tensor->op == GGML_OP_LOG) ||
-           (tensor->op == GGML_OP_SIN) || (tensor->op == GGML_OP_COS) ||
-           (tensor->op == GGML_OP_SILU_BACK) || (tensor->op == GGML_OP_LEAKY_RELU);
-}
-
-/**
  * @brief Creates a kernel name for the operation in tensor @p tensor.
  */
 static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
@@ -95,11 +82,17 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
     const bool flatten = ggml_hsa_tensor_can_flatten(tensor);
 
     std::ostringstream oss;
+
+    // name in lowercase
     std::string_view op_name = ggml_op_desc(tensor);
     std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss),
                    [&](char c) { return std::tolower(c); });
+
+    // output tensor
     oss << '-';
     ggml_hsa_output_tensor(tensor, oss, flatten);
+
+    // input tensors
     for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
         if (tensor->src[i] == nullptr) {
             break;
@@ -107,8 +100,8 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
         oss << '-';
         ggml_hsa_output_tensor(tensor->src[i], oss, flatten);
     }
-    kernel_name = oss.str();
 
+    kernel_name = oss.str();
     return GGML_STATUS_SUCCESS;
 }
 
