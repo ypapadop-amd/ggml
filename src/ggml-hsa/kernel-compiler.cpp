@@ -32,7 +32,7 @@ static const bool verbose_compilation = [] {
  */
 struct ggml_hsa_aie_jit_kernel_info {
     std::string_view name; ///< Kernel name.
-    fs::path source;       ///< Kernel relative path.
+    fs::path source;       ///< Kernel source file relative to the kernel directory.
 
     ggml_hsa_aie_jit_kernel_info() = default;
 
@@ -51,13 +51,11 @@ static auto ggml_backend_hsa_kernel_jit_info = []() {
     kernels[GGML_OP_SUB] = {"ggml_op_sub", "binary_ops.py"};
     kernels[GGML_OP_MUL] = {"ggml_op_mul", "binary_ops.py"};
     kernels[GGML_OP_DIV] = {"ggml_op_div", "binary_ops.py"};
-
     kernels[GGML_OP_SQR] = {"ggml_op_sqr", "unary_ops.py"};
     kernels[GGML_OP_SQRT] = {"ggml_op_sqrt", "unary_ops.py"};
     kernels[GGML_OP_LOG] = {"ggml_op_log", "unary_ops.py"};
     kernels[GGML_OP_SIN] = {"ggml_op_sin", "unary_ops.py"};
     kernels[GGML_OP_COS] = {"ggml_op_cos", "unary_ops.py"};
-
     kernels[GGML_OP_MUL_MAT] = {"ggml_op_mul_mat", "mul_mat.py"};
     return kernels;
 }();
