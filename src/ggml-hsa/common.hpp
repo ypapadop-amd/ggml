@@ -97,11 +97,6 @@ constexpr bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
 }
 
 /**
- * @brief Returns the full path to this library.
- */
-const std::filesystem::path & ggml_hsa_library_path();
-
-/**
  * @brief Device information.
  */
 struct ggml_hsa_device_info {

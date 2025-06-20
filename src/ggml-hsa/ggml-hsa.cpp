@@ -17,11 +17,6 @@
 #include <string>
 #include <vector>
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#include <dlfcn.h>
-
 #ifdef GGML_HSA_CPU_FALLBACK
 #include "ggml-cpu.h"
 #endif
@@ -64,17 +59,6 @@ std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor) {
         ;
     return nsrcs;
 }
-
-static const std::filesystem::path library_dir = [] {
-    // retrieve the shared library path
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_library_path), &info) == 0) {
-        GGML_ABORT("Could not retrieve library directory\n");
-    }
-    return std::filesystem::path{info.dli_fname}.parent_path();
-}();
-
-const std::filesystem::path & ggml_hsa_library_path() { return library_dir; }
 
 /**
  * @brief Creates a device name from the device index @p device.
