@@ -256,6 +256,13 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     }
     dev_info.name = std::string(name);
 
+    if (dev_info.name == "aie2" || dev_info.name == "aie2p") {
+        dev_info.supported_types = {GGML_TYPE_F32, GGML_TYPE_I8, GGML_TYPE_I16, GGML_TYPE_I32,
+                                    GGML_TYPE_BF16};
+    } else {
+        GGML_ABORT("%s: Unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
+    }
+
     if (auto status =
             hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &dev_info);
         status != HSA_STATUS_SUCCESS) {

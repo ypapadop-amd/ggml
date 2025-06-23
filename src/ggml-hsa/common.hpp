@@ -112,12 +112,13 @@ struct ggml_hsa_device_info {
      * @brief Information about a single HSA device.
      */
     struct device_info {
-        hsa_agent_t agent{};               ///< HSA agent associated with the device.
-        hsa_device_type_t type{};          ///< Agent type.
-        std::string name;                  ///< Agent name.
-        memory_pool_info dev_memory{};     ///< Pool for kernels.
-        memory_pool_info kernarg_memory{}; ///< Pool for kernel arguments.
-        memory_pool_info data_memory{};    ///< Pool for data.
+        hsa_agent_t agent{};                    ///< HSA agent associated with the device.
+        hsa_device_type_t type{};               ///< Agent type.
+        std::string name;                       ///< Agent name.
+        std::vector<ggml_type> supported_types; ///< Supported tensor types.
+        memory_pool_info dev_memory{};          ///< Pool for kernels.
+        memory_pool_info kernarg_memory{};      ///< Pool for kernel arguments.
+        memory_pool_info data_memory{};         ///< Pool for data.
     };
 
     std::array<device_info, GGML_HSA_MAX_DEVICES> devices = {};
