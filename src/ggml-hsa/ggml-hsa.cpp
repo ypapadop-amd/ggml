@@ -295,6 +295,17 @@ const ggml_hsa_device_info & ggml_hsa_info() {
     return info;
 }
 
+ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
+    const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor) {
+    if (std::find(dev_info.supported_types.begin(), dev_info.supported_types.end(), tensor->type) ==
+        dev_info.supported_types.end()) {
+        throw std::runtime_error{
+            std::string{}.append("Unsupported tensor type ").append(ggml_type_name(tensor->type))};
+    }
+
+    can_flatten = ggml_hsa_tensor_can_flatten(tensor);
+}
+
 ggml_backend_hsa_tensor_extra::~ggml_backend_hsa_tensor_extra() {
     // free intermediate storage buffer
     for (auto & buffer : buffers) {
@@ -512,25 +523,16 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
 static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
                                                             ggml_tensor * tensor) try {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
-
-    if ((tensor->type != GGML_TYPE_F32) && (tensor->type != GGML_TYPE_I8) &&
-        (tensor->type != GGML_TYPE_I16) && (tensor->type != GGML_TYPE_I32) &&
-        (tensor->type != GGML_TYPE_BF16)) {
-        GGML_LOG_ERROR("%s: unsupported tensor type %s\n", __func__, ggml_type_name(tensor->type));
-        return GGML_STATUS_FAILED;
-    }
+    const auto & info = ggml_hsa_info();
+    const auto & dev_info = info.devices[buf_ctx.device];
 
     // initialize tensor extra
     assert(tensor->extra == nullptr);
-    auto extra = std::make_unique<ggml_backend_hsa_tensor_extra>();
-    extra->can_flatten = ggml_hsa_tensor_can_flatten(tensor);
+    auto extra = std::make_unique<ggml_backend_hsa_tensor_extra>(dev_info, tensor);
     switch (tensor->op) {
         case GGML_OP_MUL_MAT:
             {
                 // add temporary buffers to transpose B and C matrices
-                const auto & info = ggml_hsa_info();
-                const auto & dev_info = info.devices[buf_ctx.device];
-
                 const std::size_t alignment = ggml_backend_buffer_get_alignment(buffer);
                 const std::size_t size = GGML_PAD(ggml_nbytes(tensor->src[0]), alignment);
 
@@ -915,7 +917,6 @@ static void ggml_backend_hsa_set_tensor_async(
     GGML_ASSERT((ggml_backend_hsa_get_tensor_buft(tensor) ==
                  ggml_backend_dev_buffer_type(backend->device)) &&
                 "unsupported buffer type");
-    assert(ggml_is_contiguous(tensor) && "Only contiguous tensors supported");
     std::memcpy(static_cast<std::byte *>(tensor->data) + offset, data, size);
     GGML_UNUSED(backend);
 }
@@ -934,7 +935,6 @@ static void ggml_backend_hsa_get_tensor_async(
     GGML_ASSERT((ggml_backend_hsa_get_tensor_buft(tensor) ==
                  ggml_backend_dev_buffer_type(backend->device)) &&
                 "unsupported buffer type");
-    assert(ggml_is_contiguous(tensor) && "Only contiguous tensors supported");
     std::memcpy(data, static_cast<std::byte *>(tensor->data) + offset, size);
     GGML_UNUSED(backend);
 }
@@ -1138,8 +1138,9 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     ggml_hsa_wait_dispatches(ctx);
 
                     // Workaround
-                    // MUL_MAT is implemented as C' = A * B' The IRON kernel currently implements
-                    // C = A * B, so we transpose A to implement the operation as B' * A' = C'
+                    // MUL_MAT is implemented as C' = A * B' The IRON kernel currently
+                    // implements C = A * B, so we transpose A to implement the operation as B'
+                    // * A' = C'
                     ggml_tensor src0_transposed = {};
                     if (status = ggml_hsa_transpose_tensor(
                             node->src[0], tensor_extra.buffers.front(), &src0_transposed);
@@ -1399,6 +1400,12 @@ ggml_backend_hsa_device_get_host_buffer_type(ggml_backend_dev_t /*dev*/) {
  */
 static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
                                                 const ggml_tensor * op) try {
+    if ((op->extra != nullptr) &&
+        static_cast<ggml_backend_hsa_tensor_extra *>(op->extra)->kernel.is_valid()) {
+        // tensor that is already initialized with a valid kernel
+        return true;
+    }
+
     bool supported = false;
     switch (op->op) {
         case GGML_OP_NONE:
@@ -1422,12 +1429,9 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             break;
 
         default:
-            // check if the kernel is cached at the tensor level, if the compilation artifacts exist
-            // or if it can be compiled
-            supported =
-                (op->extra != nullptr &&
-                 static_cast<ggml_backend_hsa_tensor_extra *>(op->extra)->kernel.is_valid()) ||
-                ggml_hsa_kernel_supported(ggml_hsa_get_device_info(dev), op);
+            // check if the kernel is cached at the tensor level, if the compilation artifacts
+            // exist or if it can be compiled
+            supported = ggml_hsa_kernel_is_supported(ggml_hsa_get_device_info(dev), op);
             break;
     }
 

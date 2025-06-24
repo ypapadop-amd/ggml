@@ -115,7 +115,7 @@ struct ggml_hsa_device_info {
         hsa_agent_t agent{};                    ///< HSA agent associated with the device.
         hsa_device_type_t type{};               ///< Agent type.
         std::string name;                       ///< Agent name.
-        std::vector<ggml_type> supported_types; ///< Supported tensor types.
+        std::vector<ggml_type> supported_types; ///< Device natively supported tensor types.
         memory_pool_info dev_memory{};          ///< Pool for kernels.
         memory_pool_info kernarg_memory{};      ///< Pool for kernel arguments.
         memory_pool_info data_memory{};         ///< Pool for data.
@@ -184,7 +184,8 @@ struct ggml_backend_hsa_tensor_extra {
 #endif
     std::vector<void *> buffers; ///< Temporary storage.
 
-    ggml_backend_hsa_tensor_extra() = default;
+    ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
+                                  const ggml_tensor * tensor);
 
     ggml_backend_hsa_tensor_extra(const ggml_backend_hsa_tensor_extra &) = delete;
     ggml_backend_hsa_tensor_extra(ggml_backend_hsa_tensor_extra &&) = delete;

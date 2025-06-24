@@ -138,17 +138,6 @@ static bool ggml_hsa_unsupported_tensor(const ggml_tensor * tensor) {
            std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor);
 }
 
-bool ggml_hsa_can_compile_kernel(const ggml_hsa_device_info::device_info & /* dev_info */,
-                                 const ggml_tensor * tensor) {
-    if (ggml_hsa_unsupported_tensor(tensor)) {
-        return false;
-    }
-
-    // retrieve the JIT compilation information for the kernel
-    const auto & kernel_jit_info = ggml_hsa_get_kernel_jit_info(tensor);
-    return kernel_jit_info.is_valid();
-}
-
 ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                     const ggml_tensor * tensor,
                                     const std::string & exported_name,
