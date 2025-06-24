@@ -40,7 +40,7 @@ if (GGML_HSA_JIT_COMPILE)
     add_dependencies(ggml-hsa ggml_hsa_copy_iron_aie2_kernel_files)
     install(
         FILES
-            ${IRON_KERNEL_FILES}
+            ${IRON_AIE2_KERNEL_FILES}
         DESTINATION
             lib/iron-kernels/aie2
         )

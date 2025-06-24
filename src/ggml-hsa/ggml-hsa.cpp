@@ -17,11 +17,6 @@
 #include <string>
 #include <vector>
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#include <dlfcn.h>
-
 #ifdef GGML_HSA_CPU_FALLBACK
 #include "ggml-cpu.h"
 #endif
@@ -65,16 +60,59 @@ std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor) {
     return nsrcs;
 }
 
-static const std::filesystem::path library_dir = [] {
-    // retrieve the shared library path
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_library_path), &info) == 0) {
-        GGML_ABORT("Could not retrieve library directory\n");
-    }
-    return std::filesystem::path{info.dli_fname}.parent_path();
-}();
+/**
+ * @brief Returns if the operation is unary.
+ */
+constexpr bool ggml_hsa_is_unary_op(ggml_op op) {
+    return (op == GGML_OP_UNARY) || (op == GGML_OP_SQR) || (op == GGML_OP_SQRT) ||
+           (op == GGML_OP_LOG) || (op == GGML_OP_SIN) || (op == GGML_OP_COS) ||
+           (op == GGML_OP_SILU_BACK) || (op == GGML_OP_LEAKY_RELU);
+}
 
-const std::filesystem::path & ggml_hsa_library_path() { return library_dir; }
+/**
+ * @brief Returns if the operation is an element-wise operation.
+ */
+constexpr bool ggml_hsa_is_elementwise_op(ggml_op op) {
+    return (op == GGML_OP_ADD) || (op == GGML_OP_SUB) || (op == GGML_OP_MUL) || (op == GGML_OP_DIV);
+}
+
+bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
+    // unary operations can be flattened
+    if (ggml_hsa_is_unary_op(tensor->op)) {
+        return true;
+    }
+
+    // element-wise operations can be flattened if the strides match irrespectively of the datatype
+    if (ggml_hsa_is_elementwise_op(tensor->op)) {
+        const auto dst_type = tensor->type;
+        for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
+            if (tensor->src[i] == nullptr) {
+                break;
+            }
+            const auto * src_tensor = tensor->src[i];
+            if (src_tensor->type == dst_type) {
+                // if the data types match, check the strides
+                if (!ggml_are_same_stride(src_tensor, tensor)) {
+                    return false;
+                }
+            } else {
+                // normalize src_tensor stride to the destination tensor stride
+                const auto src_type_size = ggml_type_size(src_tensor->type);
+                const auto dst_type_size = ggml_type_size(dst_type);
+                for (std::int32_t nb_i = 0; nb_i < GGML_MAX_DIMS; ++nb_i) {
+                    const auto src_nb_normalized =
+                        (src_tensor->nb[nb_i] / src_type_size) * dst_type_size;
+                    if (src_nb_normalized != tensor->nb[nb_i]) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    return false;
+}
 
 /**
  * @brief Creates a device name from the device index @p device.
@@ -89,14 +127,14 @@ static std::string ggml_hsa_format_name(std::int32_t device) {
 static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
     constexpr std::size_t agent_name_size = 64;
     char agent_name[agent_name_size];
-    HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, &agent_name));
+    GGML_HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, &agent_name));
     return std::string{agent_name};
 }
 
 // Returns the minimum queue size
 static std::uint32_t ggml_hsa_get_agent_min_queue_size(hsa_agent_t agent) {
     std::uint32_t min_queue_size = 0;
-    HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_QUEUE_MIN_SIZE, &min_queue_size));
+    GGML_HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_QUEUE_MIN_SIZE, &min_queue_size));
     return min_queue_size;
 }
 
@@ -218,6 +256,13 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     }
     dev_info.name = std::string(name);
 
+    if (dev_info.name == "aie2" || dev_info.name == "aie2p") {
+        dev_info.supported_types = {GGML_TYPE_F32, GGML_TYPE_I8, GGML_TYPE_I16, GGML_TYPE_I32,
+                                    GGML_TYPE_BF16};
+    } else {
+        GGML_ABORT("%s: Unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
+    }
+
     if (auto status =
             hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &dev_info);
         status != HSA_STATUS_SUCCESS) {
@@ -237,10 +282,10 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
  * memory pools.
  */
 static ggml_hsa_device_info ggml_hsa_init() {
-    HSA_CHECK_THROW(hsa_init());
+    GGML_HSA_CHECK_THROW(hsa_init());
 
     ggml_hsa_device_info info = {};
-    HSA_CHECK_THROW(hsa_iterate_agents(ggml_hsa_find_hsa_agents, &info));
+    GGML_HSA_CHECK_THROW(hsa_iterate_agents(ggml_hsa_find_hsa_agents, &info));
 
     return info;
 }
@@ -250,11 +295,22 @@ const ggml_hsa_device_info & ggml_hsa_info() {
     return info;
 }
 
+ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
+    const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * tensor) {
+    if (std::find(dev_info.supported_types.begin(), dev_info.supported_types.end(), tensor->type) ==
+        dev_info.supported_types.end()) {
+        throw std::runtime_error{
+            std::string{}.append("Unsupported tensor type ").append(ggml_type_name(tensor->type))};
+    }
+
+    can_flatten = ggml_hsa_tensor_can_flatten(tensor);
+}
+
 ggml_backend_hsa_tensor_extra::~ggml_backend_hsa_tensor_extra() {
     // free intermediate storage buffer
     for (auto & buffer : buffers) {
         if (buffer != nullptr) {
-            HSA_CHECK_ABORT(hsa_amd_memory_pool_free(buffer));
+            GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(buffer));
         }
     }
 }
@@ -296,8 +352,8 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     destroy_kernels();
-    HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
-    HSA_CHECK_ABORT(hsa_queue_destroy(queue));
+    GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
+    GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_gallocr_free(fallback_galloc);
     ggml_backend_free(fallback_backend);
@@ -432,7 +488,7 @@ struct ggml_backend_hsa_buffer_context {
     ggml_backend_hsa_buffer_context(const ggml_backend_hsa_buffer_context &) = delete;
     ggml_backend_hsa_buffer_context(ggml_backend_hsa_buffer_context &&) = delete;
 
-    ~ggml_backend_hsa_buffer_context() { HSA_CHECK_ABORT(hsa_amd_memory_pool_free(dev_ptr)); }
+    ~ggml_backend_hsa_buffer_context() { GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(dev_ptr)); }
 
     ggml_backend_hsa_buffer_context & operator=(const ggml_backend_hsa_buffer_context &) = delete;
     ggml_backend_hsa_buffer_context & operator=(ggml_backend_hsa_buffer_context &&) = delete;
@@ -467,34 +523,16 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
 static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
                                                             ggml_tensor * tensor) try {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
+    const auto & info = ggml_hsa_info();
+    const auto & dev_info = info.devices[buf_ctx.device];
+
+    // initialize tensor extra
     assert(tensor->extra == nullptr);
-    buf_ctx.tensor_extras.push_back(std::make_unique<ggml_backend_hsa_tensor_extra>());
-    tensor->extra = buf_ctx.tensor_extras.back().get();
-
-    if (tensor->view_src != nullptr) {
-        GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
-        return GGML_STATUS_SUCCESS;
-    }
-
-    if (ggml_is_quantized(tensor->type) &&
-        (ggml_backend_buffer_get_usage(buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE)) {
-        // initialize padding to 0 to avoid possible NaN values
-        const std::size_t original_size = ggml_nbytes(tensor);
-        const std::size_t padded_size = ggml_backend_buft_get_alloc_size(buffer->buft, tensor);
-
-        if (padded_size > original_size) {
-            std::memset(static_cast<std::byte *>(tensor->data) + original_size, 0,
-                        (padded_size - original_size));
-        }
-    }
-
+    auto extra = std::make_unique<ggml_backend_hsa_tensor_extra>(dev_info, tensor);
     switch (tensor->op) {
         case GGML_OP_MUL_MAT:
             {
                 // add temporary buffers to transpose B and C matrices
-                const auto & info = ggml_hsa_info();
-                const auto & dev_info = info.devices[buf_ctx.device];
-
                 const std::size_t alignment = ggml_backend_buffer_get_alignment(buffer);
                 const std::size_t size = GGML_PAD(ggml_nbytes(tensor->src[0]), alignment);
 
@@ -509,14 +547,21 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
                                    ggml_hsa_get_status_string(status));
                     return GGML_STATUS_FAILED;
                 }
-                static_cast<ggml_backend_hsa_tensor_extra *>(tensor->extra)
-                    ->buffers.push_back(buffer);
+                extra->buffers.push_back(buffer);
             }
             break;
         default:
             break;
     }
-    // add additional storage for
+
+    // register tensor extra with the context and the buffer
+    buf_ctx.tensor_extras.push_back(std::move(extra));
+    tensor->extra = buf_ctx.tensor_extras.back().get();
+
+    if (tensor->view_src != nullptr) {
+        GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
+        return GGML_STATUS_SUCCESS;
+    }
 
     return GGML_STATUS_SUCCESS;
 } catch (const std::exception & ex) {
@@ -872,7 +917,6 @@ static void ggml_backend_hsa_set_tensor_async(
     GGML_ASSERT((ggml_backend_hsa_get_tensor_buft(tensor) ==
                  ggml_backend_dev_buffer_type(backend->device)) &&
                 "unsupported buffer type");
-    assert(ggml_is_contiguous(tensor) && "Only contiguous tensors supported");
     std::memcpy(static_cast<std::byte *>(tensor->data) + offset, data, size);
     GGML_UNUSED(backend);
 }
@@ -891,7 +935,6 @@ static void ggml_backend_hsa_get_tensor_async(
     GGML_ASSERT((ggml_backend_hsa_get_tensor_buft(tensor) ==
                  ggml_backend_dev_buffer_type(backend->device)) &&
                 "unsupported buffer type");
-    assert(ggml_is_contiguous(tensor) && "Only contiguous tensors supported");
     std::memcpy(data, static_cast<std::byte *>(tensor->data) + offset, size);
     GGML_UNUSED(backend);
 }
@@ -1095,8 +1138,9 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     ggml_hsa_wait_dispatches(ctx);
 
                     // Workaround
-                    // MUL_MAT is implemented as C' = A * B' The IRON kernel currently implements
-                    // C = A * B, so we transpose A to implement the operation as B' * A' = C'
+                    // MUL_MAT is implemented as C' = A * B' The IRON kernel currently
+                    // implements C = A * B, so we transpose A to implement the operation as B'
+                    // * A' = C'
                     ggml_tensor src0_transposed = {};
                     if (status = ggml_hsa_transpose_tensor(
                             node->src[0], tensor_extra.buffers.front(), &src0_transposed);
@@ -1355,9 +1399,15 @@ ggml_backend_hsa_device_get_host_buffer_type(ggml_backend_dev_t /*dev*/) {
  * @brief Returns if the operation in tensor @p op is supported by device @p dev.
  */
 static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
-                                                const ggml_tensor * tensor) try {
+                                                const ggml_tensor * op) try {
+    if ((op->extra != nullptr) &&
+        static_cast<ggml_backend_hsa_tensor_extra *>(op->extra)->kernel.is_valid()) {
+        // tensor that is already initialized with a valid kernel
+        return true;
+    }
+
     bool supported = false;
-    switch (tensor->op) {
+    switch (op->op) {
         case GGML_OP_NONE:
             // NOP, no kernel required
             supported = true;
@@ -1379,15 +1429,9 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             break;
 
         default:
-            // check if the kernel is cached at the tensor level and if not, check if the kernel
-            // files exist
-            if (auto tensor_extra =
-                    static_cast<const ggml_backend_hsa_tensor_extra *>(tensor->extra);
-                (tensor->extra != nullptr) && tensor_extra->kernel.is_valid()) {
-                supported = true;
-            } else {
-                supported = ggml_hsa_kernel_exists(ggml_hsa_get_device_info(dev), tensor);
-            }
+            // check if the kernel is cached at the tensor level, if the compilation artifacts
+            // exist or if it can be compiled
+            supported = ggml_hsa_kernel_is_supported(ggml_hsa_get_device_info(dev), op);
             break;
     }
 
