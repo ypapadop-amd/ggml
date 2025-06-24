@@ -69,19 +69,6 @@ static const fs::path cached_kernel_dir = [] {
 }();
 
 /**
- * @brief Returns if the tensor can be flattened.
- *
- * A tensor can be flattened if it participates in an operation that is independent of the tensor's
- * dimensions.
- */
-constexpr bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
-    return (tensor->op == GGML_OP_UNARY) || (tensor->op == GGML_OP_SQR) ||
-           (tensor->op == GGML_OP_SQRT) || (tensor->op == GGML_OP_LOG) ||
-           (tensor->op == GGML_OP_SIN) || (tensor->op == GGML_OP_COS) ||
-           (tensor->op == GGML_OP_SILU_BACK) || (tensor->op == GGML_OP_LEAKY_RELU);
-}
-
-/**
  * @brief Creates a kernel name for the operation in tensor @p tensor.
  */
 static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
@@ -95,11 +82,17 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
     const bool flatten = ggml_hsa_tensor_can_flatten(tensor);
 
     std::ostringstream oss;
+
+    // name in lowercase
     std::string_view op_name = ggml_op_desc(tensor);
     std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss),
                    [&](char c) { return std::tolower(c); });
+
+    // output tensor
     oss << '-';
     ggml_hsa_output_tensor(tensor, oss, flatten);
+
+    // input tensors
     for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
         if (tensor->src[i] == nullptr) {
             break;
@@ -107,8 +100,8 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
         oss << '-';
         ggml_hsa_output_tensor(tensor->src[i], oss, flatten);
     }
-    kernel_name = oss.str();
 
+    kernel_name = oss.str();
     return GGML_STATUS_SUCCESS;
 }
 
@@ -120,12 +113,12 @@ static bool ggml_hsa_is_file(const fs::path & p) {
 }
 
 /**
- * @brief Searches all directories for the kernel.
+ * @brief Returns if the kernel exists in any of the directories.
  */
-static bool ggml_hsa_find_kernel(const std::string & device_name,
-                                 const std::string & kernel_name,
-                                 fs::path & pdi_path,
-                                 fs::path & insts_path) {
+static bool ggml_hsa_find_kernel_files(const std::string & device_name,
+                                       const std::string & kernel_name,
+                                       fs::path & pdi_path,
+                                       fs::path & insts_path) {
     const auto partial_path = fs::path(device_name).append(kernel_name);
     const auto partial_pdi_path = fs::path(partial_path).concat(pdi_file_suffix);
     const auto partial_insts_path = fs::path(partial_path).concat(inst_file_suffix);
@@ -152,6 +145,38 @@ static bool ggml_hsa_find_kernel(const std::string & device_name,
 
     // kernel not found
     return false;
+}
+
+/**
+ * @brief Tries to finds and if not found, tries to compile the kernel.
+ */
+static ggml_status
+ggml_hsa_find_or_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                const ggml_tensor * tensor,
+                                const std::string & kernel_name,
+                                fs::path & pdi_path,
+                                fs::path & insts_path) {
+    // search for kernel files
+    if (ggml_hsa_find_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        return GGML_STATUS_SUCCESS;
+    }
+
+#ifdef GGML_HSA_JIT_COMPILE
+    // kernel files not found, compile kernel
+    if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, cached_kernel_dir);
+        status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
+
+    // search for kernel files after compilation
+    if (ggml_hsa_find_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        return GGML_STATUS_SUCCESS;
+    }
+#else
+    GGML_UNUSED(tensor);
+#endif
+
+    return GGML_STATUS_ABORTED;
 }
 
 /**
@@ -220,47 +245,14 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
     return GGML_STATUS_SUCCESS;
 }
 
-/**
- * @brief Finds and if not found, compiles the kernel.
- */
-static ggml_status
-ggml_hsa_find_or_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                const ggml_tensor * tensor,
-                                const std::string & kernel_name,
-                                fs::path & pdi_path,
-                                fs::path & insts_path) {
-    // search for kernel files
-    if (ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
-        return GGML_STATUS_SUCCESS;
-    }
-
-#ifdef GGML_HSA_JIT_COMPILE
-    // kernel files not found, compile kernel
-    if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, cached_kernel_dir);
-        status != GGML_STATUS_SUCCESS) {
-        return status;
-    }
-
-    // search for kernel files after compilation
-    if (ggml_hsa_find_kernel(dev_info.name, kernel_name, pdi_path, insts_path)) {
-        return GGML_STATUS_SUCCESS;
-    }
-#else
-    GGML_UNUSED(tensor);
-#endif
-
-    return GGML_STATUS_ABORTED;
-}
-
-bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
-                            const ggml_tensor * tensor) {
-    // generate kernel name
+bool ggml_hsa_kernel_is_supported(const ggml_hsa_device_info::device_info & dev_info,
+                                  const ggml_tensor * tensor) {
     std::string kernel_name;
     if (ggml_hsa_create_kernel_name(tensor, kernel_name) != GGML_STATUS_SUCCESS) {
         return false;
     }
 
-    // check if the kernel exists as a file; it will generate the kernel if it can JIT compiled
+    // check if the kernel exists; it will generate the kernel if JIT compilation is enabled
     fs::path pdi_path;
     fs::path insts_path;
     return ggml_hsa_find_or_compile_kernel(dev_info, tensor, kernel_name, pdi_path, insts_path) ==
@@ -270,7 +262,6 @@ bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
 ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
                                        const ggml_tensor * tensor,
                                        ggml_hsa_aie_kernel & kernel) {
-    // generate kernel name
     std::string kernel_name;
     if (auto status = ggml_hsa_create_kernel_name(tensor, kernel_name);
         status != GGML_STATUS_SUCCESS) {
