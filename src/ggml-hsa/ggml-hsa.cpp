@@ -127,14 +127,14 @@ static std::string ggml_hsa_format_name(std::int32_t device) {
 static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
     constexpr std::size_t agent_name_size = 64;
     char agent_name[agent_name_size];
-    HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, &agent_name));
+    GGML_HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, &agent_name));
     return std::string{agent_name};
 }
 
 // Returns the minimum queue size
 static std::uint32_t ggml_hsa_get_agent_min_queue_size(hsa_agent_t agent) {
     std::uint32_t min_queue_size = 0;
-    HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_QUEUE_MIN_SIZE, &min_queue_size));
+    GGML_HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_QUEUE_MIN_SIZE, &min_queue_size));
     return min_queue_size;
 }
 
@@ -282,10 +282,10 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
  * memory pools.
  */
 static ggml_hsa_device_info ggml_hsa_init() {
-    HSA_CHECK_THROW(hsa_init());
+    GGML_HSA_CHECK_THROW(hsa_init());
 
     ggml_hsa_device_info info = {};
-    HSA_CHECK_THROW(hsa_iterate_agents(ggml_hsa_find_hsa_agents, &info));
+    GGML_HSA_CHECK_THROW(hsa_iterate_agents(ggml_hsa_find_hsa_agents, &info));
 
     return info;
 }
@@ -310,7 +310,7 @@ ggml_backend_hsa_tensor_extra::~ggml_backend_hsa_tensor_extra() {
     // free intermediate storage buffer
     for (auto & buffer : buffers) {
         if (buffer != nullptr) {
-            HSA_CHECK_ABORT(hsa_amd_memory_pool_free(buffer));
+            GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(buffer));
         }
     }
 }
@@ -352,8 +352,8 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     destroy_kernels();
-    HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
-    HSA_CHECK_ABORT(hsa_queue_destroy(queue));
+    GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
+    GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_gallocr_free(fallback_galloc);
     ggml_backend_free(fallback_backend);
@@ -488,7 +488,7 @@ struct ggml_backend_hsa_buffer_context {
     ggml_backend_hsa_buffer_context(const ggml_backend_hsa_buffer_context &) = delete;
     ggml_backend_hsa_buffer_context(ggml_backend_hsa_buffer_context &&) = delete;
 
-    ~ggml_backend_hsa_buffer_context() { HSA_CHECK_ABORT(hsa_amd_memory_pool_free(dev_ptr)); }
+    ~ggml_backend_hsa_buffer_context() { GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(dev_ptr)); }
 
     ggml_backend_hsa_buffer_context & operator=(const ggml_backend_hsa_buffer_context &) = delete;
     ggml_backend_hsa_buffer_context & operator=(ggml_backend_hsa_buffer_context &&) = delete;

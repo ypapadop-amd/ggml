@@ -50,7 +50,7 @@ void ggml_hsa_error(
 /**
  * @brief Checks if @p status is an error code, prints an error message and aborts.
  */
-#define HSA_CHECK_ABORT(status)                                                                    \
+#define GGML_HSA_CHECK_ABORT(status)                                                               \
     do {                                                                                           \
         auto status_ = (status);                                                                   \
         if (status_ != HSA_STATUS_SUCCESS)                                                         \
@@ -60,7 +60,7 @@ void ggml_hsa_error(
 /**
  * @brief Checks if @p status is an error code and throws an exception.
  */
-#define HSA_CHECK_THROW(status)                                                                    \
+#define GGML_HSA_CHECK_THROW(status)                                                               \
     do {                                                                                           \
         auto status_ = (status);                                                                   \
         if (status_ != HSA_STATUS_SUCCESS)                                                         \
