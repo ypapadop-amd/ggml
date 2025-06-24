@@ -178,7 +178,6 @@ struct ggml_backend_hsa_emulated_tensor;
  */
 struct ggml_backend_hsa_tensor_extra {
     ggml_hsa_aie_kernel kernel; ///< Kernel associated with this tensor.
-    bool can_flatten{false};    ///< If @c true, the tensor can be flattened to a single dimension.
 #ifdef GGML_HSA_CPU_FALLBACK
     std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
 #endif

@@ -302,8 +302,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         throw std::runtime_error{
             std::string{}.append("Unsupported tensor type ").append(ggml_type_name(tensor->type))};
     }
-
-    can_flatten = ggml_hsa_tensor_can_flatten(tensor);
 }
 
 ggml_backend_hsa_tensor_extra::~ggml_backend_hsa_tensor_extra() {

@@ -131,7 +131,8 @@ static py::tuple ggml_hsa_tensor_dims_as_pytuple(const ggml_tensor * tensor) {
 static bool ggml_hsa_unsupported_tensor(const ggml_tensor * tensor) {
     // non-contiguous tensors are not yet supported
     auto unsupported_tensor = [](const ggml_tensor * tensor) {
-        return tensor != nullptr && !ggml_is_contiguous(tensor);
+        return tensor != nullptr &&
+               (!ggml_is_contiguous(tensor) && !ggml_hsa_tensor_can_flatten(tensor));
     };
 
     return unsupported_tensor(tensor) ||
