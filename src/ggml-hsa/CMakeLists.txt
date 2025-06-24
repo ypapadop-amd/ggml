@@ -61,6 +61,7 @@ target_sources(ggml-hsa
         common.hpp
         host-ops.hpp
         kernel-discovery.hpp
+        type-traits.hpp
     )
 
 if (GGML_HSA_JIT_COMPILE)
