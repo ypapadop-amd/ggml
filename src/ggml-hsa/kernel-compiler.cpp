@@ -10,6 +10,11 @@
 #include <sstream>
 #include <string>
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <dlfcn.h>
+
 #include <pybind11/embed.h>
 
 #include "ggml-hsa/common.hpp"
@@ -24,6 +29,16 @@ static const bool verbose_compilation = [] {
     return env != nullptr && ggml_hsa_string_to_bool(env);
 }();
 
+/// @brief Path to the shared library directory.
+static const std::filesystem::path ggml_hsa_library_dir = [] {
+    // retrieve the shared library path
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_compile_kernel), &info) == 0) {
+        GGML_ABORT("Could not retrieve library directory\n");
+    }
+    return std::filesystem::path{info.dli_fname}.parent_path();
+}();
+
 /**
  * @brief Information to drive JIT compilation for a kernel.
  *
@@ -32,7 +47,7 @@ static const bool verbose_compilation = [] {
  */
 struct ggml_hsa_aie_jit_kernel_info {
     std::string_view name; ///< Kernel name.
-    fs::path source;       ///< Kernel relative path.
+    fs::path source;       ///< Kernel source file relative to the kernel directory.
 
     ggml_hsa_aie_jit_kernel_info() = default;
 
@@ -51,13 +66,11 @@ static auto ggml_backend_hsa_kernel_jit_info = []() {
     kernels[GGML_OP_SUB] = {"ggml_op_sub", "binary_ops.py"};
     kernels[GGML_OP_MUL] = {"ggml_op_mul", "binary_ops.py"};
     kernels[GGML_OP_DIV] = {"ggml_op_div", "binary_ops.py"};
-
     kernels[GGML_OP_SQR] = {"ggml_op_sqr", "unary_ops.py"};
     kernels[GGML_OP_SQRT] = {"ggml_op_sqrt", "unary_ops.py"};
     kernels[GGML_OP_LOG] = {"ggml_op_log", "unary_ops.py"};
     kernels[GGML_OP_SIN] = {"ggml_op_sin", "unary_ops.py"};
     kernels[GGML_OP_COS] = {"ggml_op_cos", "unary_ops.py"};
-
     kernels[GGML_OP_MUL_MAT] = {"ggml_op_mul_mat", "mul_mat.py"};
     return kernels;
 }();
@@ -113,11 +126,16 @@ static py::tuple ggml_hsa_tensor_dims_as_pytuple(const ggml_tensor * tensor) {
 }
 
 /**
- * @brief Returns if the tensor is a view.
+ * @brief Returns if the tensor is not supported.
  */
-static bool ggml_hsa_is_view(const ggml_tensor * tensor) {
-    // A view is a tensor that is not contiguous, permuted or transposed.
-    return tensor->view_src != nullptr;
+static bool ggml_hsa_unsupported_tensor(const ggml_tensor * tensor) {
+    // non-contiguous tensors are not yet supported
+    auto unsupported_tensor = [](const ggml_tensor * tensor) {
+        return tensor != nullptr && !ggml_is_contiguous(tensor);
+    };
+
+    return unsupported_tensor(tensor) ||
+           std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor);
 }
 
 ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
@@ -126,13 +144,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                     const std::filesystem::path & output_path) {
     using namespace pybind11::literals;
 
-    // non-contiguous, permuted or transposed tensors are not yet supported
-    auto unsupported_tensor = [](const ggml_tensor * tensor) {
-        return tensor != nullptr && (!ggml_is_contiguous(tensor) || ggml_hsa_is_view(tensor));
-    };
-    if (unsupported_tensor(tensor) ||
-        std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor)) {
-        GGML_LOG_INFO("%s: Tensor \"%s\" unsupported layout\n", __func__, ggml_get_name(tensor));
+    if (ggml_hsa_unsupported_tensor(tensor)) {
+        GGML_LOG_INFO("%s: Tensor \"%s\" is not supported\n", __func__, ggml_get_name(tensor));
         return GGML_STATUS_FAILED;
     }
 
@@ -144,8 +157,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     }
 
     // JIT compile kernel
-    const auto & library_dir = ggml_hsa_library_path();
-    const auto kernel_path = library_dir / "iron-kernels";
+    const auto kernel_path = ggml_hsa_library_dir / "iron-kernels";
     const auto device_kernel_path = kernel_path / dev_info.name;
     const auto kernel_source_path = device_kernel_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
