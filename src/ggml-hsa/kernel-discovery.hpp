@@ -6,13 +6,15 @@
 #include "ggml.h"
 
 /**
- * @brief Returns if the kernel exists for the device and tensor.
+ * @brief Returns if the kernel is supported for the device and tensor.
+ *
+ * @note This function may trigger kernel compilation if JIT is enabled.
  *
  * @param dev_info[in] device information
  * @param tensor[in] tensor to load a kernel for
  */
-bool ggml_hsa_kernel_exists(const ggml_hsa_device_info::device_info & dev_info,
-                            const ggml_tensor * tensor);
+bool ggml_hsa_kernel_is_supported(const ggml_hsa_device_info::device_info & dev_info,
+                                  const ggml_tensor * tensor);
 
 /**
  * @brief Creates the AIE kernel for the tensor's operation.
