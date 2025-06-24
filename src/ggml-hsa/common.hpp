@@ -50,7 +50,7 @@ void ggml_hsa_error(
 /**
  * @brief Checks if @p status is an error code, prints an error message and aborts.
  */
-#define HSA_CHECK_ABORT(status)                                                                    \
+#define GGML_HSA_CHECK_ABORT(status)                                                               \
     do {                                                                                           \
         auto status_ = (status);                                                                   \
         if (status_ != HSA_STATUS_SUCCESS)                                                         \
@@ -60,7 +60,7 @@ void ggml_hsa_error(
 /**
  * @brief Checks if @p status is an error code and throws an exception.
  */
-#define HSA_CHECK_THROW(status)                                                                    \
+#define GGML_HSA_CHECK_THROW(status)                                                               \
     do {                                                                                           \
         auto status_ = (status);                                                                   \
         if (status_ != HSA_STATUS_SUCCESS)                                                         \
@@ -84,9 +84,13 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * add
 std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
 
 /**
- * @brief Returns the full path to this library.
+ * @brief Returns if the tensor can be flattened.
+ *
+ * A tensor can be flattened if it participates in an operation that is independent of the tensor's
+ * dimensions, such as unary operations or element wise operations where the shapes and strides of
+ * the input and output tensors match.
  */
-const std::filesystem::path & ggml_hsa_library_path();
+bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor);
 
 /**
  * @brief Device information.
@@ -108,12 +112,13 @@ struct ggml_hsa_device_info {
      * @brief Information about a single HSA device.
      */
     struct device_info {
-        hsa_agent_t agent{};               ///< HSA agent associated with the device.
-        hsa_device_type_t type{};          ///< Agent type.
-        std::string name;                  ///< Agent name.
-        memory_pool_info dev_memory{};     ///< Pool for kernels.
-        memory_pool_info kernarg_memory{}; ///< Pool for kernel arguments.
-        memory_pool_info data_memory{};    ///< Pool for data.
+        hsa_agent_t agent{};                    ///< HSA agent associated with the device.
+        hsa_device_type_t type{};               ///< Agent type.
+        std::string name;                       ///< Agent name.
+        std::vector<ggml_type> supported_types; ///< Device natively supported tensor types.
+        memory_pool_info dev_memory{};          ///< Pool for kernels.
+        memory_pool_info kernarg_memory{};      ///< Pool for kernel arguments.
+        memory_pool_info data_memory{};         ///< Pool for data.
     };
 
     std::array<device_info, GGML_HSA_MAX_DEVICES> devices = {};
@@ -173,12 +178,14 @@ struct ggml_backend_hsa_emulated_tensor;
  */
 struct ggml_backend_hsa_tensor_extra {
     ggml_hsa_aie_kernel kernel; ///< Kernel associated with this tensor.
+    bool can_flatten{false};    ///< If @c true, the tensor can be flattened to a single dimension.
 #ifdef GGML_HSA_CPU_FALLBACK
     std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
 #endif
     std::vector<void *> buffers; ///< Temporary storage.
 
-    ggml_backend_hsa_tensor_extra() = default;
+    ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
+                                  const ggml_tensor * tensor);
 
     ggml_backend_hsa_tensor_extra(const ggml_backend_hsa_tensor_extra &) = delete;
     ggml_backend_hsa_tensor_extra(ggml_backend_hsa_tensor_extra &&) = delete;
@@ -254,7 +261,7 @@ void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
 /**
  * @brief Creates a string representation of the tensor shape.
  *
- * The representation is of the form `3x3x4` for a 3D tensor with dimensions `[3,3,4]`.
+ * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `3x3x4`.
  *
  * @param[in] tensor tensor to output shape for
  * @param[out] os output stream
@@ -266,6 +273,27 @@ void ggml_hsa_output_tensor_shape(const ggml_tensor * tensor, OutputStream & os,
     os << tensor->ne[0];
     for (std::int32_t i = 1; i < ndims; ++i) {
         os << delim << tensor->ne[i];
+    }
+}
+
+/**
+ * @brief Creates a string representation of the tensor stride.
+ *
+ * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `X,Y,Z`,
+ * where X, Y, Z are the stride in bytes in the first, second, and third dimensions, respectively.
+ *
+ * @param[in] tensor tensor to output stride for
+ * @param[out] os output stream
+ * @param[in] delim delimiter
+ */
+template <typename OutputStream>
+void ggml_hsa_output_tensor_stride(const ggml_tensor * tensor,
+                                   OutputStream & os,
+                                   char delim = ',') {
+    const auto ndims = ggml_n_dims(tensor);
+    os << tensor->nb[0];
+    for (std::int32_t i = 1; i < ndims; ++i) {
+        os << delim << tensor->nb[i];
     }
 }
 
