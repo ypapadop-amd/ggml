@@ -8,13 +8,13 @@ from typing import Callable
 
 import numpy as np
 
-from aie.iron import set_current_device, get_current_device
-from aie.iron.device import NPU1Col4, NPU2
+from aie.iron import set_current_device
+from aie.iron.device import NPU1, NPU2
 from aie.iron.compile import compile_cxx_core_function, compile_mlir_module_to_pdi
 from ml_dtypes import bfloat16
 
 supported_devices = {
-    "aie2": NPU1Col4(),
+    "aie2": NPU1(),
     "aie2p": NPU2(),
 }
 
