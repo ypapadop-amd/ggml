@@ -195,5 +195,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         return GGML_STATUS_FAILED;
     }
 
+    GGML_LOG_INFO("%s: Generated kernel %s in %s\n", __func__, exported_name.c_str(),
+                  output_directory.c_str());
+
     return GGML_STATUS_SUCCESS;
 }
