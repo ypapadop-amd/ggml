@@ -79,6 +79,8 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
         return GGML_STATUS_FAILED;
     }
 
+    const bool flatten = ggml_hsa_tensor_can_flatten(tensor);
+
     std::ostringstream oss;
 
     // name in lowercase
@@ -88,7 +90,7 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
 
     // output tensor
     oss << '-';
-    ggml_hsa_output_tensor(tensor, oss, ggml_hsa_tensor_can_flatten(tensor));
+    ggml_hsa_output_tensor(tensor, oss, flatten);
 
     // input tensors
     for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
@@ -96,7 +98,7 @@ static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
             break;
         }
         oss << '-';
-        ggml_hsa_output_tensor(tensor->src[i], oss, ggml_hsa_tensor_can_flatten(tensor->src[i]));
+        ggml_hsa_output_tensor(tensor->src[i], oss, flatten);
     }
 
     kernel_name = oss.str();

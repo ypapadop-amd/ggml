@@ -129,14 +129,25 @@ static py::tuple ggml_hsa_tensor_dims_as_pytuple(const ggml_tensor * tensor) {
  * @brief Returns if the tensor is not supported.
  */
 static bool ggml_hsa_unsupported_tensor(const ggml_tensor * tensor) {
-    // non-contiguous tensors are not yet supported
-    auto unsupported_tensor = [](const ggml_tensor * tensor) {
-        return tensor != nullptr &&
-               (!ggml_is_contiguous(tensor) && !ggml_hsa_tensor_can_flatten(tensor));
-    };
+    if (ggml_hsa_tensor_can_flatten(tensor)) {
+        return false;
+    }
 
-    return unsupported_tensor(tensor) ||
-           std::any_of(tensor->src, std::next(tensor->src, GGML_MAX_SRC), unsupported_tensor);
+    // non-contiguous tensors are not yet supported
+    if (!ggml_is_contiguous(tensor)) {
+        return true;
+    }
+    for (int i = 0; i < GGML_MAX_SRC; ++i) {
+        const auto src = tensor->src[i];
+        if (src == nullptr) {
+            break;
+        }
+        if (!ggml_is_contiguous(src)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
@@ -168,7 +179,6 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         // import build and kernel scripts
         auto sys = py::module_::import("sys");
         sys.attr("path").attr("append")(kernel_path.string());
-        sys.attr("path").attr("append")(device_kernel_path.string());
         auto iron_compiler = py::module_::import("build");
 
         // convert a GGML tensor to input and output TensorDesc objects
