@@ -191,7 +191,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
             "output_tensor"_a = std::move(output_tensor), "exported_name"_a = exported_name,
             "output_directory"_a = output_directory.string(), "verbose"_a = verbose_compilation);
     } catch (const pybind11::error_already_set & ex) {
-        GGML_LOG_ERROR("%s: JIT compilation failed:\n%s\n", __func__, ex.what());
+        GGML_LOG_ERROR("%s: JIT compilation for kernel %s failed:\n%s\n", __func__,
+                       exported_name.c_str(), ex.what());
         return GGML_STATUS_FAILED;
     }
 
