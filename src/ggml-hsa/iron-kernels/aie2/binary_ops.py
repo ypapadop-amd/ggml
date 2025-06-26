@@ -13,7 +13,7 @@ import pytest
 import aie.iron as iron
 from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
-from aie.iron.device import NPU1Col4
+from aie.iron.device import NPU1
 from aie.iron.controlflow import range_
 
 
@@ -136,7 +136,7 @@ def ggml_op_div_jit(input_tensor0, input_tensor1, output_tensor):
     ],
 )
 def test_ggml_op_binary(function, op, dtype, num_elements):
-    iron.set_current_device(NPU1Col4())
+    iron.set_current_device(NPU1())
 
     # Construct two input random tensors and an output zeroed tensor
     input_tensor0 = iron.randint(1, 100, (num_elements,), dtype=dtype, device="npu")
