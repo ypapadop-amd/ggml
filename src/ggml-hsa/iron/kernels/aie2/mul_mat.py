@@ -17,7 +17,7 @@ from aie.dialects.aiex import *
 from aie.helpers.dialects.ext.scf import _for as range_
 from aie.helpers.taplib import TensorAccessPattern, TensorAccessSequence
 
-from build import core_function, CoreFunctionInfo, dtype_to_str
+from utils import core_function, CoreFunctionInfo, dtype_to_str
 
 dtype_map = {
     "bf16": bfloat16,

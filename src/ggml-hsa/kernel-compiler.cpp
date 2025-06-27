@@ -169,7 +169,9 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     }
 
     // JIT compile kernel
-    const auto kernel_path = ggml_hsa_library_dir / "iron-kernels";
+    const auto iron_path = ggml_hsa_library_dir / "iron";
+    const auto utils_path = iron_path / "utils";
+    const auto kernel_path = iron_path / "kernels";
     const auto device_kernel_path = kernel_path / dev_info.name;
     const auto kernel_source_path = device_kernel_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
@@ -178,11 +180,12 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     try {
         // import build and kernel scripts
         auto sys = py::module_::import("sys");
-        sys.attr("path").attr("append")(kernel_path.string());
-        auto iron_compiler = py::module_::import("build");
+        sys.attr("path").attr("append")(iron_path.string());
+        sys.attr("path").attr("append")(utils_path.string());
 
         // convert a GGML tensor to input and output TensorDesc objects
-        auto tensor_desc_ctor = iron_compiler.attr("tensordesc");
+        auto utils = py::module_::import("utils");
+        auto tensor_desc_ctor = utils.attr("tensordesc");
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto input_tensors = py::list(src_tensor_count);
         for (auto i = 0; i < src_tensor_count; ++i) {
@@ -195,6 +198,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                               "dtype"_a = ggml_type_name(tensor->type));
 
         // compile the kernel
+        auto iron_compiler = py::module_::import("build");
         auto compile_kernel = iron_compiler.attr("compile_kernel");
         compile_kernel(
             "kernel_name"_a = kernel_jit_info.name, "kernel_source"_a = kernel_source_path.string(),

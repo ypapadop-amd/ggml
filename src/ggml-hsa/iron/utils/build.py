@@ -4,26 +4,16 @@
 import importlib.util
 import os
 import sys
-from typing import Callable
-
-import numpy as np
 
 from aie.iron import set_current_device
 from aie.iron.device import NPU1, NPU2
 from aie.iron.compile import compile_cxx_core_function, compile_mlir_module_to_pdi
-from ml_dtypes import bfloat16
+
+from tensor_desc import tensordesc, TensorDesc
 
 supported_devices = {
     "aie2": NPU1(),
     "aie2p": NPU2(),
-}
-
-supported_dtypes = {
-    "bf16": bfloat16,
-    "i8": np.int8,
-    "i16": np.int16,
-    "i32": np.int32,
-    "f32": np.float32,
 }
 
 
@@ -32,110 +22,6 @@ def to_device(device):
     if isinstance(device, str):
         return supported_devices[device]
     return device
-
-
-def dtype_to_str(dtype):
-    """Returns the datatype as a string."""
-    if isinstance(dtype, str):
-        return dtype
-    for key, value in supported_dtypes.items():
-        if value == dtype:
-            return key
-    return None
-
-
-class TensorDesc:
-    """
-    Tensor description.
-
-    This class provides the tensor information, such as shape and datatype.
-
-    The shape is a tuple of integers, where the innermost dimension is first.
-    """
-
-    def __init__(self, shape: tuple, dtype):
-        if len(shape) != 4:
-            raise ValueError(
-                f"Shape must be a tuple of 4 integers, got {shape} with length {len(shape)}"
-            )
-        self.shape = shape
-        self.size = int(np.prod(shape))
-        self.dtype = np.dtype(dtype)
-
-    def __str__(self):
-        return f"{str(self.shape)}/{str(self.dtype)}"
-
-    def numel(self):
-        """
-        Returns the number of elements in the tensor.
-
-        Returns:
-            int: The total number of elements in the tensor.
-        """
-        return self.size
-
-
-def tensordesc(shape, dtype) -> TensorDesc:
-    """
-    Creates a TensorDesc from the specified shape and dtype.
-
-    Parameters:
-        shape(tuple): Tensor shape. This follows the GGML convention, where dimensions are from innermost to outermost (reverse of PyTorch).
-        dtype: Tensor data type.
-
-    Returns:
-        TensorDesc: A new TensorDesc instance.
-    """
-    if isinstance(dtype, str):
-        dtype = supported_dtypes[dtype]
-    return TensorDesc(shape=shape, dtype=dtype)
-
-
-class CoreFunctionInfo:
-    """
-    Core function information.
-
-    This class provides information necessary to compile a core function via Peano and use it in a kernel.
-    """
-
-    def __init__(
-        self,
-        source_file: str,
-        exported_function,
-        compile_args,
-        additional_args=None,
-    ):
-        self.source_file = source_file
-        if compile_args is None:
-            self.compile_args = []
-        else:
-            self.compile_args = compile_args
-        self.exported_function = exported_function
-        self.object_file = None
-        if additional_args is None:
-            self.additional_args = {}
-        else:
-            self.additional_args = additional_args
-
-    def __str__(self):
-        return (
-            f'Source file: "{self.source_file}", '
-            + f"Compile args: {self.compile_args}, "
-            + f'Exported function: "{self.exported_function}", '
-            + f'Object file: "{self.object_file}", '
-            + f"Additional args: {self.additional_args}"
-        )
-
-
-def core_function(function_info=None) -> Callable:
-    """Associates a core function with a kernel."""
-
-    def wrapper(func):
-        if function_info:
-            func.core_function_info = function_info
-        return func
-
-    return wrapper
 
 
 def import_from_path(module_name, path):
@@ -232,8 +118,7 @@ def to_tensordesc(string: str) -> TensorDesc:
     """
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
-    dtype = supported_dtypes[dtype]
-    return TensorDesc(shape=shape, dtype=dtype)
+    return tensordesc(shape=shape, dtype=dtype)
 
 
 def file_path(string: str):
@@ -249,7 +134,7 @@ def main():
     from argparse import ArgumentParser  # pylint: disable=import-outside-toplevel
 
     parser = ArgumentParser(
-        prog="compiler.py",
+        prog="build.py",
         description="Compiles IRON kernels",
     )
     parser.add_argument(
