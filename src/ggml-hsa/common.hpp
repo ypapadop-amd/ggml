@@ -316,6 +316,10 @@ void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os, bool 
 
     os << ggml_type_name(tensor->type);
 
+    if (flatten) {
+        return;
+    }
+
     // modifiers
     if (!ggml_is_contiguous(tensor)) {
         os << 'n';

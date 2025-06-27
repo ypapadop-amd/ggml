@@ -65,10 +65,11 @@ target_sources(ggml-hsa
     )
 
 if (GGML_HSA_JIT_COMPILE)
-    add_subdirectory(iron-kernels)
     target_sources(ggml-hsa PRIVATE kernel-compiler.hpp)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_JIT_COMPILE)
     target_link_libraries(ggml-hsa PRIVATE pybind11::embed)
+
+    add_subdirectory(iron)
 endif ()
 
 

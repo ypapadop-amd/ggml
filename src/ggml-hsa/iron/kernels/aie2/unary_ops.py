@@ -15,7 +15,7 @@ from aie.iron import ObjectFifo, Kernel, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from build import core_function, CoreFunctionInfo, dtype_to_str
+from utils import core_function, CoreFunctionInfo, dtype_to_str
 
 
 def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
