@@ -566,13 +566,12 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
             break;
     }
 
-    // register tensor extra with the context and the buffer
+    // register tensor extra with the buffer context and the tensor
     buf_ctx.tensor_extras.push_back(std::move(extra));
     tensor->extra = buf_ctx.tensor_extras.back().get();
 
     if (tensor->view_src != nullptr) {
         GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
-        return GGML_STATUS_SUCCESS;
     }
 
     return GGML_STATUS_SUCCESS;
