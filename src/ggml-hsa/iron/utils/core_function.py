@@ -5,10 +5,16 @@ from typing import Callable
 
 
 class CoreFunctionInfo:
-    """
-    Core function information.
+    """Core function information.
 
     This class provides information necessary to compile a core function via Peano and use it in a kernel.
+
+    Attributes:
+        source_file (str): Path to the source file containing the core function.
+        exported_function (str): Name of the function to be exported.
+        compile_args (list): List of arguments to be passed to the compiler.
+        object_file (str): Path to the object file generated after compilation.
+        additional_args (dict): Additional arguments that may be required for the function.
     """
 
     def __init__(
