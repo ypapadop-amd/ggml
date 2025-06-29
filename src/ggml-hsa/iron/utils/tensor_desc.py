@@ -25,29 +25,53 @@ def dtype_to_str(dtype):
 
 
 class TensorDesc:
+    """ggml_tensor description.
+
+    Attributes:
+        dtype: Data type of the tensor.
+        shape (tuple): Shape of the tensor as a tuple of integers. Dimensions are from innermost to outermost (reverse of PyTorch).
+        stride (tuple): Stride of the tensor as a tuple of integers, or None if not specified. Dimensions are from innermost to outermost (reverse of PyTorch).
+        size (int): Total number of elements in the tensor, calculated as the product of the shape dimensions.
+        contiguous (bool): Indicates if the tensor is contiguous in memory.
     """
-    Tensor description.
 
-    This class provides the tensor information, such as shape and datatype.
-
-    The shape is a tuple of integers, where the innermost dimension is first.
-    """
-
-    def __init__(self, shape: tuple, dtype):
+    def __init__(
+        self,
+        dtype,
+        shape: tuple[int, int, int, int],
+        stride,
+        contiguous: bool,
+    ):
         if len(shape) != 4:
-            raise ValueError(
-                f"Shape must be a tuple of 4 integers, got {shape} with length {len(shape)}"
-            )
+            raise ValueError(f"Shape must be a tuple of 4 integers, got {shape}")
+        if stride is not None and len(stride) != 4:
+            raise ValueError(f"Stride must be a tuple of 4 integers, got {stride}")
+        self.dtype = np.dtype(dtype)
         self.shape = shape
         self.size = int(np.prod(shape))
-        self.dtype = np.dtype(dtype)
+        self.stride = stride
+        self.contiguous = contiguous
 
-    def __str__(self):
-        return f"{str(self.shape)}/{str(self.dtype)}"
+    def __repr__(self):
+        """Returns a string representation of the TensorDesc."""
+        if self.stride is not None:
+            return (
+                f"{self.__class__.__name__}"
+                f"(dtype={str(self.dtype)} "
+                f"shape={str(self.shape)} "
+                f"stride={str(self.stride)} "
+                f"contiguous={str(self.contiguous)})"
+            )
+        else:
+            return (
+                f"{self.__class__.__name__}"
+                f"(dtype={str(self.dtype)} "
+                f"shape={str(self.shape)} "
+                f"contiguous={str(self.contiguous)})"
+            )
 
     def numel(self):
-        """
-        Returns the number of elements in the tensor.
+        """Returns the number of elements in the tensor.
 
         Returns:
             int: The total number of elements in the tensor.
@@ -55,17 +79,18 @@ class TensorDesc:
         return self.size
 
 
-def tensordesc(shape, dtype) -> TensorDesc:
-    """
-    Creates a TensorDesc from the specified shape and dtype.
+def tensordesc(dtype, shape, stride=None, contiguous=True) -> TensorDesc:
+    """Creates a TensorDesc from the specified shape and dtype.
 
     Parameters:
-        shape(tuple): Tensor shape. This follows the GGML convention, where dimensions are from innermost to outermost (reverse of PyTorch).
         dtype: Tensor data type.
+        shape (tuple): Tensor number of elements in each dimension. Dimensions are from innermost to outermost (reverse of PyTorch).
+        stride (tuple): Tensor stride in bytes for each dimension. Dimensions are from innermost to outermost (reverse of PyTorch).
+        contiguous (bool): Indicates if the tensor is contiguous in memory.
 
     Returns:
         TensorDesc: A new TensorDesc instance.
     """
     if isinstance(dtype, str):
         dtype = supported_dtypes[dtype]
-    return TensorDesc(shape=shape, dtype=dtype)
+    return TensorDesc(dtype=dtype, shape=shape, stride=stride, contiguous=contiguous)

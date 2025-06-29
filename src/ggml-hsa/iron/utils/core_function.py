@@ -20,8 +20,8 @@ class CoreFunctionInfo:
     def __init__(
         self,
         source_file: str,
-        exported_function,
-        compile_args,
+        exported_function: str,
+        compile_args: list[str],
         additional_args=None,
     ):
         self.source_file = source_file
@@ -36,13 +36,14 @@ class CoreFunctionInfo:
         else:
             self.additional_args = additional_args
 
-    def __str__(self):
+    def __repr__(self):
         return (
-            f'Source file: "{self.source_file}", '
-            + f"Compile args: {self.compile_args}, "
-            + f'Exported function: "{self.exported_function}", '
-            + f'Object file: "{self.object_file}", '
-            + f"Additional args: {self.additional_args}"
+            f"{self.__class__.__name__}"
+            f"(source_file={self.source_file} "
+            f"compile_args={self.compile_args} "
+            f"exported_function={self.exported_function} "
+            f"object_file={self.object_file} "
+            f"additional_args={self.additional_args})"
         )
 
 

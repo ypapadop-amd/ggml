@@ -4,6 +4,7 @@
 import importlib.util
 import os
 import sys
+import logging
 
 from aie.iron import set_current_device
 from aie.iron.device import NPU1, NPU2
@@ -44,6 +45,27 @@ def compile_kernel(
     verbose: bool = False,
 ):
     """Compiles the kernel code to PDI and instruction files."""
+
+    logger = logging.getLogger(__name__)
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.DEBUG)
+        formatter = logging.Formatter("%(levelname)s: %(message)s")
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
+    logger.info(
+        "Compiling kernel: %s\n\tKernel source: %s\n\tDevice: %s\n\tInput tensors: %s\n\tOutput tensor: %s\n\tExported name: %s\n\tOutput directory: %s",
+        kernel_name,
+        kernel_source,
+        device,
+        input_tensors,
+        output_tensor,
+        exported_name,
+        output_directory,
+    )
+
     os.makedirs(output_directory, exist_ok=True)
 
     # import IRON kernel
@@ -67,9 +89,12 @@ def compile_kernel(
             verbose=verbose,
         )
         core_function_info.object_file = output_path
+        logger.info(
+            "Core function found for kernel %s: %s", kernel_name, core_function_info
+        )
     except AttributeError:
         # ignore missing attribute
-        pass
+        logger.info("No core function found for kernel %s", kernel_name)
 
     # generate MLIR and write to file for debugging
     dev = to_device(device)
@@ -83,6 +108,7 @@ def compile_kernel(
     else:
         mlir_module = kernel(input_tensors=input_tensors, output_tensor=output_tensor)
     mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
+    logger.info("Writing MLIR module for kernel %s in %s", kernel_name, mlir_path)
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
 
@@ -96,6 +122,7 @@ def compile_kernel(
         pdi_path=pdi_path,
         verbose=verbose,
     )
+    logger.info("Finished compilation for kernel %s in %s", kernel_name, mlir_path)
 
 
 def to_tuple_of_ints(string: str):
