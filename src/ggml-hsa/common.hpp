@@ -299,8 +299,8 @@ void ggml_hsa_output_tensor_stride(const ggml_tensor * tensor,
 /**
  * @brief Creates a string representation of the tensor.
  *
- * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32npt` for a 3D tensor
- * with dimensions `[3,3,4]` that is non-contiguous, is permuted, and transposed.
+ * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32` for a contiguous 3D
+ * tensor with dimensions `[3,3,4]`.
  *
  * @param[in] tensor tensor to output
  * @param[out] os output stream
@@ -320,14 +320,7 @@ void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os, bool 
         return;
     }
 
-    // modifiers
     if (!ggml_is_contiguous(tensor)) {
         os << 'n';
-    }
-    if (ggml_is_permuted(tensor)) {
-        os << 'p';
-    }
-    if (ggml_is_transposed(tensor)) {
-        os << 't';
     }
 }
