@@ -108,12 +108,14 @@ def my_matmul(
     dtype_in = dtype_map[dtype_in_str]
     dtype_out = dtype_map[dtype_out_str]
 
-    assert np.issubdtype(dtype_in, np.integer) == np.issubdtype(
-        dtype_out, np.integer
-    ), f"Input dtype ({dtype_in}) and output dtype ({dtype_out}) must either both be integral or both be float"
-    assert (
-        np.dtype(dtype_out).itemsize >= np.dtype(dtype_in).itemsize
-    ), f"Output dtype ({dtype_out}) must be equal or larger to input dtype ({dtype_in})"
+    if np.issubdtype(dtype_in, np.integer) != np.issubdtype(dtype_out, np.integer):
+        raise ValueError(
+            f"Input dtype ({dtype_in}) and output dtype ({dtype_out}) must either both be integral or both be float"
+        )
+    if np.dtype(dtype_out).itemsize < np.dtype(dtype_in).itemsize:
+        raise ValueError(
+            f"Output dtype ({dtype_out}) must be equal or larger to input dtype ({dtype_in})"
+        )
 
     if dev == "npu":
         if dtype_in_str == "bf16":
@@ -596,15 +598,21 @@ def my_matmul(
 def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
     """Returns a compilation specification for matrix multiplication."""
 
-    assert len(input_tensors) == 2, "mul_mat requires exactly two input tensors"
+    if len(input_tensors) != 2:
+        raise ValueError("mul_mat requires exactly two input tensors")
 
     A = input_tensors[0]  # MxK = A.shape(1) x A.shape(0)
     B = input_tensors[1]  # KxN = B.shape(1) x B.shape(0)
     C = output_tensor  # MxN = C.shape(1) x C.shape(0)
 
-    assert (
-        A.dtype == B.dtype and A.dtype == C.dtype
-    ), "mul_mat matrix datatypes must match"
+    if A.dtype != B.dtype or A.dtype != C.dtype:
+        raise ValueError(
+            "mul_mat requires input and output tensors to have the same datatype"
+        )
+
+    if !(A.contiguous and B.contiguous and C.contiguous):
+        raise ValueError("mul_mat tensors must be contiguous")
+
     m = 8
     n = 8
     k = 8
@@ -632,13 +640,9 @@ def ggml_op_mul_mat(
     # TODO
     dev = "npu"
 
-    assert len(input_tensors) == 2, "mul_mat requires exactly two input tensors"
-
     A = input_tensors[0]  # MxK = A.shape(1) x A.shape(0)
     B = input_tensors[1]  # KxN = B.shape(1) x B.shape(0)
     C = output_tensor  # MxN = C.shape(1) x C.shape(0)
-
-    assert A.dtype == B.dtype and A.dtype == C.dtype, "mul_mat datatypes must match"
 
     # M
     assert (

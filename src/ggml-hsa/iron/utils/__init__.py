@@ -1,4 +1,5 @@
-#  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+# __init__.py -*- Python -*-
+# (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
 __all__ = [
     "CoreFunctionInfo",
@@ -6,7 +7,10 @@ __all__ = [
     "dtype_to_str",
     "TensorDesc",
     "tensordesc",
+    "compile_kernel",
 ]
+
+from .build import compile_kernel
 
 from .core_function import (
     CoreFunctionInfo,

@@ -6,15 +6,15 @@ import os
 import sys
 import logging
 
-from aie.iron import set_current_device
-from aie.iron.device import NPU1, NPU2
-from aie.iron.compile import compile_cxx_core_function, compile_mlir_module_to_pdi
+import aie.iron
+import aie.iron.compile
+import aie.iron.device
 
 from tensor_desc import tensordesc, TensorDesc
 
 supported_devices = {
-    "aie2": NPU1(),
-    "aie2p": NPU2(),
+    "aie2": aie.iron.device.NPU1(),
+    "aie2p": aie.iron.device.NPU2(),
 }
 
 
@@ -80,7 +80,7 @@ def compile_kernel(
             device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
         output_path = os.path.join(output_directory, exported_name + ".o")
-        compile_cxx_core_function(
+        aie.iron.compile.compile_cxx_core_function(
             source_path=core_function_info.source_file,
             target_arch=device,
             output_path=output_path,
@@ -98,7 +98,7 @@ def compile_kernel(
 
     # generate MLIR and write to file for debugging
     dev = to_device(device)
-    set_current_device(dev)
+    aie.iron.set_current_device(dev)
     if core_function_info:
         mlir_module = kernel(
             input_tensors=input_tensors,
@@ -115,7 +115,7 @@ def compile_kernel(
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
-    compile_mlir_module_to_pdi(
+    aie.iron.compile.compile_mlir_module_to_pdi(
         mlir_module=mlir_module,
         options=["--alloc-scheme=basic-sequential"],
         insts_path=insts_path,
@@ -145,7 +145,7 @@ def to_tensordesc(string: str) -> TensorDesc:
     """
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
-    return tensordesc(shape=shape, dtype=dtype)
+    return tensordesc(dtype=dtype, shape=shape)
 
 
 def file_path(string: str):
