@@ -39,6 +39,20 @@ static const std::filesystem::path ggml_hsa_library_dir = [] {
     return std::filesystem::path{info.dli_fname}.parent_path();
 }();
 
+/// @brief Path to IRON kernel support.
+static const std::filesystem::path iron_path = ggml_hsa_library_dir / "iron";
+
+/// @brief Python interpreter initialization guard.
+static pybind11::scoped_interpreter python_interpreter_guard = [] {
+    const auto utils_path = iron_path / "utils";
+
+    pybind11::scoped_interpreter guard;
+    auto sys = pybind11::module_::import("sys");
+    sys.attr("path").attr("append")(iron_path.string());
+    sys.attr("path").attr("append")(utils_path.string());
+    return guard;
+}();
+
 /**
  * @brief Information to drive JIT compilation for a kernel.
  *
@@ -150,20 +164,12 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     }
 
     // JIT compile kernel
-    const auto iron_path = ggml_hsa_library_dir / "iron";
-    const auto utils_path = iron_path / "utils";
     const auto kernel_path = iron_path / "kernels";
     const auto device_kernel_path = kernel_path / dev_info.name;
     const auto kernel_source_path = device_kernel_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
 
-    py::scoped_interpreter guard{};
     try {
-        // import build and kernel scripts
-        auto sys = py::module_::import("sys");
-        sys.attr("path").attr("append")(iron_path.string());
-        sys.attr("path").attr("append")(utils_path.string());
-
         // convert a GGML tensor to input and output TensorDesc objects
         auto utils = py::module_::import("utils");
         auto tensor_desc_ctor = utils.attr("tensordesc");
