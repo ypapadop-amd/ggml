@@ -21,8 +21,8 @@
 #include "ggml-cpu.h"
 #endif
 
-#define MATRIX_ROW_PADDING                                                                         \
-    512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
+/// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
+#define MATRIX_ROW_PADDING 512
 
 #define NOT_IMPLEMENTED()                                                                          \
     do {                                                                                           \
@@ -77,13 +77,25 @@ constexpr bool ggml_hsa_is_elementwise_op(ggml_op op) {
 }
 
 bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
-    // unary operations can be flattened
-    if (ggml_hsa_is_unary_op(tensor->op)) {
-        return true;
+    // non-contiguous tensors cannot be flattened
+    if (!ggml_is_contiguous(tensor)) {
+        return false;
+    }
+    for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
+        if (tensor->src[i] == nullptr) {
+            break;
+        }
+        if (!ggml_is_contiguous(tensor->src[i])) {
+            return false;
+        }
     }
 
-    // element-wise operations can be flattened if the strides match irrespectively of the datatype
-    if (ggml_hsa_is_elementwise_op(tensor->op)) {
+    if (ggml_hsa_is_unary_op(tensor->op)) {
+        // unary operations can be flattened
+        return true;
+    } else if (ggml_hsa_is_elementwise_op(tensor->op)) {
+        // element-wise operations can be flattened if the strides match irrespectively of the
+        // datatype
         const auto dst_type = tensor->type;
         for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
             if (tensor->src[i] == nullptr) {
@@ -131,7 +143,9 @@ static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
     return std::string{agent_name};
 }
 
-// Returns the minimum queue size
+/**
+ * @brief Returns the minimum queue size.
+ */
 static std::uint32_t ggml_hsa_get_agent_min_queue_size(hsa_agent_t agent) {
     std::uint32_t min_queue_size = 0;
     GGML_HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_QUEUE_MIN_SIZE, &min_queue_size));
@@ -302,8 +316,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         throw std::runtime_error{
             std::string{}.append("Unsupported tensor type ").append(ggml_type_name(tensor->type))};
     }
-
-    can_flatten = ggml_hsa_tensor_can_flatten(tensor);
 }
 
 ggml_backend_hsa_tensor_extra::~ggml_backend_hsa_tensor_extra() {
@@ -554,13 +566,12 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
             break;
     }
 
-    // register tensor extra with the context and the buffer
+    // register tensor extra with the buffer context and the tensor
     buf_ctx.tensor_extras.push_back(std::move(extra));
     tensor->extra = buf_ctx.tensor_extras.back().get();
 
     if (tensor->view_src != nullptr) {
         GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
-        return GGML_STATUS_SUCCESS;
     }
 
     return GGML_STATUS_SUCCESS;
