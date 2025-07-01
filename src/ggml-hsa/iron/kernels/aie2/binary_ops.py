@@ -19,16 +19,27 @@ from aie.iron.controlflow import range_
 
 def binary_op(input_tensor0, input_tensor1, op, output):
     """Implements output = input_tensor0 op input_tensor1"""
+
+    if (
+        not input_tensor0.contiguous
+        or not input_tensor1.contiguous
+        or not output.contiguous
+    ):
+        raise ValueError("Input and output tensors must be contiguous in memory.")
+
     if input_tensor0.shape != input_tensor1.shape:
         raise ValueError(
-            f"Input shapes are not the equal ({input_tensor0.shape} != {input_tensor1.shape})."
+            f"Incompatible input shapes ({input_tensor0.shape} != {input_tensor1.shape})."
         )
+
     if input_tensor0.shape != output.shape:
         raise ValueError(
-            f"Input and output shapes are not the equal ({input_tensor0.shape} != {output.shape})."
+            f"Incompatible input and output shapes ({input_tensor0.shape} != {output.shape})."
         )
+
     if input_tensor0.shape[2] != 1 or input_tensor0.shape[3] != 1:
-        raise ValueError(f"Unsupported shape {input_tensor0.shape}.")
+        raise ValueError(f"Unsupported shape ({input_tensor0.shape}).")
+
     num_elements = np.size(input_tensor0)
     n = 16
     if num_elements % n != 0:
@@ -39,11 +50,11 @@ def binary_op(input_tensor0, input_tensor1, op, output):
 
     if input_tensor0.dtype != input_tensor1.dtype:
         raise ValueError(
-            f"Input data types are not the same ({input_tensor0.dtype} != {input_tensor1.dtype})."
+            f"Incompatible input data types ({input_tensor0.dtype} != {input_tensor1.dtype})."
         )
     if input_tensor0.dtype != output.dtype:
         raise ValueError(
-            f"Input and output data types are not the same ({input_tensor0.dtype} != {output.dtype})."
+            f"Incompatible output data types ({input_tensor0.dtype} != {output.dtype})."
         )
     dtype = input_tensor0.dtype
 
