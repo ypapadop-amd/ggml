@@ -12,16 +12,16 @@ import aie.iron.device
 
 from tensor_desc import tensordesc, TensorDesc
 
-supported_devices = {
-    "aie2": aie.iron.device.NPU1(),
-    "aie2p": aie.iron.device.NPU2(),
-}
-
 
 def to_device(device):
     """Returns the device from the string."""
     if isinstance(device, str):
-        return supported_devices[device]
+        if device == "aie2":
+            return aie.iron.device.NPU1()
+        elif device == "aie2p":
+            return aie.iron.device.NPU2()
+        else:
+            raise ValueError(f"Unsupported device: {device}")
     return device
 
 
