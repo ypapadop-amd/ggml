@@ -4,138 +4,25 @@
 import importlib.util
 import os
 import sys
-from typing import Callable
+import logging
 
-import numpy as np
+import aie.iron
+import aie.iron.compile
+import aie.iron.device
 
-from aie.iron import set_current_device
-from aie.iron.device import NPU1, NPU2
-from aie.iron.compile import compile_cxx_core_function, compile_mlir_module_to_pdi
-from ml_dtypes import bfloat16
-
-supported_devices = {
-    "aie2": NPU1(),
-    "aie2p": NPU2(),
-}
-
-supported_dtypes = {
-    "bf16": bfloat16,
-    "i8": np.int8,
-    "i16": np.int16,
-    "i32": np.int32,
-    "f32": np.float32,
-}
+from tensor_desc import tensordesc, TensorDesc
 
 
 def to_device(device):
     """Returns the device from the string."""
     if isinstance(device, str):
-        return supported_devices[device]
+        if device == "aie2":
+            return aie.iron.device.NPU1()
+        elif device == "aie2p":
+            return aie.iron.device.NPU2()
+        else:
+            raise ValueError(f"Unsupported device: {device}")
     return device
-
-
-def dtype_to_str(dtype):
-    """Returns the datatype as a string."""
-    if isinstance(dtype, str):
-        return dtype
-    for key, value in supported_dtypes.items():
-        if value == dtype:
-            return key
-    return None
-
-
-class TensorDesc:
-    """
-    Tensor description.
-
-    This class provides the tensor information, such as shape and datatype.
-
-    The shape is a tuple of integers, where the innermost dimension is first.
-    """
-
-    def __init__(self, shape: tuple, dtype):
-        if len(shape) != 4:
-            raise ValueError(
-                f"Shape must be a tuple of 4 integers, got {shape} with length {len(shape)}"
-            )
-        self.shape = shape
-        self.size = int(np.prod(shape))
-        self.dtype = np.dtype(dtype)
-
-    def __str__(self):
-        return f"{str(self.shape)}/{str(self.dtype)}"
-
-    def numel(self):
-        """
-        Returns the number of elements in the tensor.
-
-        Returns:
-            int: The total number of elements in the tensor.
-        """
-        return self.size
-
-
-def tensordesc(shape, dtype) -> TensorDesc:
-    """
-    Creates a TensorDesc from the specified shape and dtype.
-
-    Parameters:
-        shape(tuple): Tensor shape. This follows the GGML convention, where dimensions are from innermost to outermost (reverse of PyTorch).
-        dtype: Tensor data type.
-
-    Returns:
-        TensorDesc: A new TensorDesc instance.
-    """
-    if isinstance(dtype, str):
-        dtype = supported_dtypes[dtype]
-    return TensorDesc(shape=shape, dtype=dtype)
-
-
-class CoreFunctionInfo:
-    """
-    Core function information.
-
-    This class provides information necessary to compile a core function via Peano and use it in a kernel.
-    """
-
-    def __init__(
-        self,
-        source_file: str,
-        exported_function,
-        compile_args,
-        additional_args=None,
-    ):
-        self.source_file = source_file
-        if compile_args is None:
-            self.compile_args = []
-        else:
-            self.compile_args = compile_args
-        self.exported_function = exported_function
-        self.object_file = None
-        if additional_args is None:
-            self.additional_args = {}
-        else:
-            self.additional_args = additional_args
-
-    def __str__(self):
-        return (
-            f'Source file: "{self.source_file}", '
-            + f"Compile args: {self.compile_args}, "
-            + f'Exported function: "{self.exported_function}", '
-            + f'Object file: "{self.object_file}", '
-            + f"Additional args: {self.additional_args}"
-        )
-
-
-def core_function(function_info=None) -> Callable:
-    """Associates a core function with a kernel."""
-
-    def wrapper(func):
-        if function_info:
-            func.core_function_info = function_info
-        return func
-
-    return wrapper
 
 
 def import_from_path(module_name, path):
@@ -158,6 +45,27 @@ def compile_kernel(
     verbose: bool = False,
 ):
     """Compiles the kernel code to PDI and instruction files."""
+
+    logger = logging.getLogger(__name__)
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.DEBUG)
+        formatter = logging.Formatter("%(levelname)s: %(message)s")
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
+    logger.info(
+        "Compiling kernel: %s\n\tKernel source: %s\n\tDevice: %s\n\tInput tensors: %s\n\tOutput tensor: %s\n\tExported name: %s\n\tOutput directory: %s",
+        kernel_name,
+        kernel_source,
+        device,
+        input_tensors,
+        output_tensor,
+        exported_name,
+        output_directory,
+    )
+
     os.makedirs(output_directory, exist_ok=True)
 
     # import IRON kernel
@@ -172,7 +80,7 @@ def compile_kernel(
             device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
         output_path = os.path.join(output_directory, exported_name + ".o")
-        compile_cxx_core_function(
+        aie.iron.compile.compile_cxx_core_function(
             source_path=core_function_info.source_file,
             target_arch=device,
             output_path=output_path,
@@ -181,13 +89,16 @@ def compile_kernel(
             verbose=verbose,
         )
         core_function_info.object_file = output_path
+        logger.info(
+            "Core function found for kernel %s: %s", kernel_name, core_function_info
+        )
     except AttributeError:
         # ignore missing attribute
-        pass
+        logger.info("No core function found for kernel %s", kernel_name)
 
     # generate MLIR and write to file for debugging
     dev = to_device(device)
-    set_current_device(dev)
+    aie.iron.set_current_device(dev)
     if core_function_info:
         mlir_module = kernel(
             input_tensors=input_tensors,
@@ -197,19 +108,21 @@ def compile_kernel(
     else:
         mlir_module = kernel(input_tensors=input_tensors, output_tensor=output_tensor)
     mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
+    logger.info("Writing MLIR module for kernel %s in %s", kernel_name, mlir_path)
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
 
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
-    compile_mlir_module_to_pdi(
+    aie.iron.compile.compile_mlir_module_to_pdi(
         mlir_module=mlir_module,
         options=["--alloc-scheme=basic-sequential"],
         insts_path=insts_path,
         pdi_path=pdi_path,
         verbose=verbose,
     )
+    logger.info("Finished compilation for kernel %s in %s", kernel_name, mlir_path)
 
 
 def to_tuple_of_ints(string: str):
@@ -232,8 +145,7 @@ def to_tensordesc(string: str) -> TensorDesc:
     """
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
-    dtype = supported_dtypes[dtype]
-    return TensorDesc(shape=shape, dtype=dtype)
+    return tensordesc(dtype=dtype, shape=shape)
 
 
 def file_path(string: str):
@@ -249,7 +161,7 @@ def main():
     from argparse import ArgumentParser  # pylint: disable=import-outside-toplevel
 
     parser = ArgumentParser(
-        prog="compiler.py",
+        prog="build.py",
         description="Compiles IRON kernels",
     )
     parser.add_argument(

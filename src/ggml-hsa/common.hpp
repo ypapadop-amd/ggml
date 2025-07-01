@@ -178,7 +178,6 @@ struct ggml_backend_hsa_emulated_tensor;
  */
 struct ggml_backend_hsa_tensor_extra {
     ggml_hsa_aie_kernel kernel; ///< Kernel associated with this tensor.
-    bool can_flatten{false};    ///< If @c true, the tensor can be flattened to a single dimension.
 #ifdef GGML_HSA_CPU_FALLBACK
     std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
 #endif
@@ -300,8 +299,8 @@ void ggml_hsa_output_tensor_stride(const ggml_tensor * tensor,
 /**
  * @brief Creates a string representation of the tensor.
  *
- * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32npt` for a 3D tensor
- * with dimensions `[3,3,4]` that is non-contiguous, is permuted, and transposed.
+ * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32` for a contiguous 3D
+ * tensor with dimensions `[3,3,4]`.
  *
  * @param[in] tensor tensor to output
  * @param[out] os output stream
@@ -317,14 +316,11 @@ void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os, bool 
 
     os << ggml_type_name(tensor->type);
 
-    // modifiers
+    if (flatten) {
+        return;
+    }
+
     if (!ggml_is_contiguous(tensor)) {
         os << 'n';
-    }
-    if (ggml_is_permuted(tensor)) {
-        os << 'p';
-    }
-    if (ggml_is_transposed(tensor)) {
-        os << 't';
     }
 }
