@@ -156,14 +156,14 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                     const std::filesystem::path & output_path) {
     using namespace pybind11::literals;
 
-    // retrieve the JIT compilation information for the kernel
+    // retrieve the compilation information for the kernel
     const auto & kernel_jit_info = ggml_hsa_get_kernel_jit_info(tensor);
     if (!kernel_jit_info.is_valid()) {
         // no JIT compilable kernel
         return GGML_STATUS_FAILED;
     }
 
-    // JIT compile kernel
+    // compile kernel
     const auto kernel_path = iron_path / "kernels";
     const auto device_kernel_path = kernel_path / dev_info.name;
     const auto kernel_source_path = device_kernel_path / kernel_jit_info.source;
