@@ -33,18 +33,12 @@ set(GGML_SOURCES_HSA
     )
 
 if (GGML_HSA_JIT_COMPILE)
-    include(FetchContent)
-
-    FetchContent_Declare(
-        pybind11
-        GIT_REPOSITORY https://github.com/pybind/pybind11.git
-        GIT_TAG        v2.13
-        )
-
-    find_package(Python COMPONENTS Interpreter Development REQUIRED)
+    find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
     set(PYBIND11_FINDPYTHON OFF)
-    FetchContent_MakeAvailable(pybind11)
-
+    find_package(pybind11 REQUIRED CONFIG
+        PATHS ${Python3_SITELIB}/pybind11
+        NO_DEFAULT_PATH
+    )
     set(GGML_SOURCES_HSA kernel-compiler.cpp ${GGML_SOURCES_HSA})
 endif ()
 
@@ -65,10 +59,11 @@ target_sources(ggml-hsa
     )
 
 if (GGML_HSA_JIT_COMPILE)
-    add_subdirectory(iron-kernels)
     target_sources(ggml-hsa PRIVATE kernel-compiler.hpp)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_JIT_COMPILE)
     target_link_libraries(ggml-hsa PRIVATE pybind11::embed)
+
+    add_subdirectory(iron)
 endif ()
 
 
