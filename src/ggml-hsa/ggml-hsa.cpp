@@ -218,18 +218,18 @@ static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, v
         return ggml_hsa_set_memory_pool_info(pool, dev_info.kernarg_memory);
     }
 
-    std::size_t max_alloc_size;
-    if (auto status = hsa_amd_memory_pool_get_info(pool, HSA_AMD_MEMORY_POOL_INFO_ALLOC_MAX_SIZE,
-                                                   &max_alloc_size);
-        status != HSA_STATUS_SUCCESS) {
-        return status;
-    }
-
     const bool coarse_grained_pool =
         (pool_flags & HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED) != 0x0;
     if (coarse_grained_pool) {
-        if (max_alloc_size == 0) {
-            // XDNA dev heap has max_alloc_size == 0
+        std::size_t alloc_rec_granule = 0;
+        if (auto status = hsa_amd_memory_pool_get_info(
+                pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_REC_GRANULE, &alloc_rec_granule);
+            status != HSA_STATUS_SUCCESS) {
+            return status;
+        }
+
+        if (alloc_rec_granule == 0) {
+            // XDNA dev heap has alloc_rec_granule == 0
             return ggml_hsa_set_memory_pool_info(pool, dev_info.dev_memory);
         } else {
             return ggml_hsa_set_memory_pool_info(pool, dev_info.data_memory);
