@@ -7,15 +7,14 @@
 # (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
 from os import path
-import numpy as np
 from functools import partial
+import numpy as np
 
-import aie.iron as iron
-from aie.iron import ObjectFifo, Kernel, Program, Runtime, Worker
+from aie.iron import ObjectFifo, Kernel, Program, Runtime, Worker, get_current_device
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from build import core_function, CoreFunctionInfo, dtype_to_str
+from utils import core_function, CoreFunctionInfo, dtype_to_str
 
 
 def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
@@ -23,9 +22,12 @@ def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
 
     tile_size = 16
 
+    if not input_tensor.contiguous or not output_tensor.contiguous:
+        raise ValueError("Input and output tensors must be contiguous in memory.")
+
     if input_tensor.shape != output_tensor.shape:
         raise ValueError(
-            f"Input and output shapes are not the equal ({input_tensor.shape} != {output_tensor.shape})."
+            f"Incompatible input and output shapes ({input_tensor.shape} != {output_tensor.shape})."
         )
     num_elements = np.size(input_tensor)
     if num_elements % tile_size != 0:
@@ -36,7 +38,7 @@ def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
 
     if input_tensor.dtype != output_tensor.dtype:
         raise ValueError(
-            f"Input and output data types are not the same ({input_tensor.dtype} != {output_tensor.dtype})."
+            f"Incompatible input and output data types ({input_tensor.dtype} != {output_tensor.dtype})."
         )
 
     # Define tensor types
@@ -78,7 +80,7 @@ def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
         rt.drain(of_out.cons(), b_out, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(iron.get_current_device(), rt).resolve_program(SequentialPlacer())
+    return Program(get_current_device(), rt).resolve_program(SequentialPlacer())
 
 
 def unary_op_core_function_info(
