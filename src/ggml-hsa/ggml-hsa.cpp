@@ -1449,7 +1449,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
 #ifdef GGML_HSA_CPU_FALLBACK
     if (!supported) {
         auto cpu_dev = ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0);
-        supported = ggml_backend_dev_supports_op(cpu_dev, tensor);
+        supported = ggml_backend_dev_supports_op(cpu_dev, op);
     }
 #endif
 
