@@ -45,6 +45,7 @@ if (GGML_HSA_JIT_COMPILE)
     # copy kernel files
     set(IRON_KERNEL_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/kernels/__init__.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernels/aie_kernel_utils.h
         )
     ggml_hsa_copy_files(ggml_hsa_copy_iron_kernel_files
         FILES
