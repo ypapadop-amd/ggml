@@ -622,8 +622,8 @@ def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
     if not A.contiguous or not B.contiguous or not C.contiguous:
         raise ValueError("mul_mat tensors must be contiguous")
 
-    m = 8
-    n = 8
+    m = 16
+    n = 16
     k = 8
     current_dir = path.dirname(path.realpath(__file__))
     return CoreFunctionInfo(
