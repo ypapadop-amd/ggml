@@ -237,7 +237,10 @@ ggml_tensor* compute(test_model & model, ggml_gallocr_t allocr) {
     ggml_cgraph * gf = build_graph(model);
 
     // allocate tensors
-    ggml_gallocr_alloc_graph(allocr, gf);
+    if (!ggml_gallocr_alloc_graph(allocr, gf)) {
+        fprintf(stderr, "%s: ggml_gallocr_alloc_graph() failed\n", __func__);
+        std::exit(-1);
+    }
 
     ggml_graph_print(gf);
 
@@ -303,7 +306,7 @@ int main()
 #endif
     const bool dump_matrices = false;
 
-    const int64_t M = 128, N = 64, K = 32;
+    const int64_t M = 256, N = 128, K = 64;
 
     ggml_time_init();
 
