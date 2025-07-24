@@ -77,18 +77,16 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * add
 }
 
 /**
- * @brief Returns the number of sources of the tensor.
- *
- * @param[in] tensor tensor to find number of sources for
+ * @brief Returns the number of sources of @p tensor.
  */
 std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
 
 /**
- * @brief Returns if the tensor can be flattened.
+ * @brief Returns if @p tensor can be flattened.
  *
  * A tensor can be flattened if it participates in an operation that is independent of the tensor's
- * dimensions, such as unary operations or element wise operations where the shapes and strides of
- * the input and output tensors match.
+ * dimensions, such as element wise operations where the shapes and strides of the input and output
+ * tensors match.
  */
 bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor);
 
