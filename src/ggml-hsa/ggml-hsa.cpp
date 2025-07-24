@@ -61,7 +61,7 @@ std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor) {
 }
 
 /**
- * @brief Returns if the operation is unary.
+ * @brief Returns if @p op is a unary operation.
  */
 constexpr bool ggml_hsa_is_unary_op(ggml_op op) {
     return (op == GGML_OP_UNARY) || (op == GGML_OP_SQR) || (op == GGML_OP_SQRT) ||
@@ -70,22 +70,22 @@ constexpr bool ggml_hsa_is_unary_op(ggml_op op) {
 }
 
 /**
- * @brief Returns if the operation is an element-wise operation.
+ * @brief Returns if @p op is an element-wise operation.
  */
 constexpr bool ggml_hsa_is_elementwise_op(ggml_op op) {
     return (op == GGML_OP_ADD) || (op == GGML_OP_SUB) || (op == GGML_OP_MUL) || (op == GGML_OP_DIV);
 }
 
 bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
-    // non-contiguous tensors cannot be flattened
-    if (!ggml_is_contiguous(tensor)) {
+    // non-contiguously allocated tensors cannot be flattened
+    if (!ggml_is_contiguously_allocated(tensor)) {
         return false;
     }
     for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
         if (tensor->src[i] == nullptr) {
             break;
         }
-        if (!ggml_is_contiguous(tensor->src[i])) {
+        if (!ggml_is_contiguously_allocated(tensor->src[i])) {
             return false;
         }
     }
@@ -94,30 +94,13 @@ bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor) {
         // unary operations can be flattened
         return true;
     } else if (ggml_hsa_is_elementwise_op(tensor->op)) {
-        // element-wise operations can be flattened if the strides match irrespectively of the
-        // datatype
-        const auto dst_type = tensor->type;
+        // element-wise operations can be flattened if the shapes match
         for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
             if (tensor->src[i] == nullptr) {
                 break;
             }
-            const auto * src_tensor = tensor->src[i];
-            if (src_tensor->type == dst_type) {
-                // if the data types match, check the strides
-                if (!ggml_are_same_stride(src_tensor, tensor)) {
-                    return false;
-                }
-            } else {
-                // normalize src_tensor stride to the destination tensor stride
-                const auto src_type_size = ggml_type_size(src_tensor->type);
-                const auto dst_type_size = ggml_type_size(dst_type);
-                for (std::int32_t nb_i = 0; nb_i < GGML_MAX_DIMS; ++nb_i) {
-                    const auto src_nb_normalized =
-                        (src_tensor->nb[nb_i] / src_type_size) * dst_type_size;
-                    if (src_nb_normalized != tensor->nb[nb_i]) {
-                        return false;
-                    }
-                }
+            if (!ggml_are_same_shape(tensor->src[i], tensor)) {
+                return false;
             }
         }
         return true;
