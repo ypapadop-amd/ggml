@@ -517,6 +517,12 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
  */
 static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
                                                             ggml_tensor * tensor) try {
+    if (tensor->view_src != nullptr) {
+        // no further initialization needed for views
+        GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
+        return GGML_STATUS_SUCCESS;
+    }
+
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
     const auto & info = ggml_hsa_info();
     const auto & dev_info = info.devices[buf_ctx.device];
@@ -552,10 +558,6 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
     // register tensor extra with the buffer context and the tensor
     buf_ctx.tensor_extras.push_back(std::move(extra));
     tensor->extra = buf_ctx.tensor_extras.back().get();
-
-    if (tensor->view_src != nullptr) {
-        GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
-    }
 
     return GGML_STATUS_SUCCESS;
 } catch (const std::exception & ex) {
