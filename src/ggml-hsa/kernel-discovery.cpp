@@ -316,7 +316,7 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
     return GGML_STATUS_SUCCESS;
 }
 
-void ggml_hsa_destroy_aie_kernel(ggml_backend_hsa_context & /*ctx*/, ggml_hsa_aie_kernel & kernel) {
+void ggml_hsa_destroy_aie_kernel(ggml_hsa_aie_kernel & kernel) {
     if (auto status = hsa_amd_memory_pool_free(kernel.pdi.data); status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
     }

@@ -357,7 +357,7 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
 
 void ggml_backend_hsa_context::destroy_kernels() {
     for (auto & t : aie_kernels) {
-        ggml_hsa_destroy_aie_kernel(*this, t.second);
+        ggml_hsa_destroy_aie_kernel(t.second);
     }
     aie_kernels.clear();
 }
