@@ -731,9 +731,11 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
 /**
  * @brief Returns the memory alignment requirement for buffer type @p buft in bytes.
  */
-static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_type_t /* buft */) {
-    // TODO: verify if 256bytes is the best alignment for all agents (GPU, AIE)
-    return 256;
+static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
+    const auto & buft_ctx = *static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
+    const auto & info = ggml_hsa_info();
+    const auto & dev_info = info.devices[buft_ctx.device];
+    return dev_info.alignment;
 }
 
 /**
