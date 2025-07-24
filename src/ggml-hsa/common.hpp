@@ -25,7 +25,7 @@
 #include "ggml-common.h"
 
 /**
- * @brief Returns if the string evaluates to `true` or `false`.
+ * @brief Returns if @p s evaluates to `true` or `false`.
  */
 bool ggml_hsa_string_to_bool(std::string_view s);
 
@@ -119,6 +119,7 @@ struct ggml_hsa_device_info {
         memory_pool_info dev_memory{};          ///< Pool for kernels.
         memory_pool_info kernarg_memory{};      ///< Pool for kernel arguments.
         memory_pool_info data_memory{};         ///< Pool for data.
+        std::size_t alignment{256};             ///< Memory alignment requirement for buffers.
     };
 
     std::array<device_info, GGML_HSA_MAX_DEVICES> devices = {};
