@@ -297,18 +297,15 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
     ggml_hsa_aie_kernel tmp_kernel;
     if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, tmp_kernel.pdi);
         status != GGML_STATUS_SUCCESS) {
-        ctx.blocked_aie_kernels.insert(kernel_name);
         return status;
     }
 
     if (auto status =
             ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, insts_path, tmp_kernel.insts);
         status != GGML_STATUS_SUCCESS) {
-        ctx.blocked_aie_kernels.insert(kernel_name);
         return status;
     }
 
-    tmp_kernel.num_src_tensors = ggml_hsa_nsrcs(tensor);
     ctx.aie_kernels.emplace(std::move(kernel_name), tmp_kernel);
 
     kernel = tmp_kernel;
