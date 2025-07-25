@@ -82,15 +82,6 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * add
 std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
 
 /**
- * @brief Returns if @p tensor can be flattened.
- *
- * A tensor can be flattened if it participates in an operation that is independent of the tensor's
- * dimensions, such as element wise operations where the shapes and strides of the input and output
- * tensors match.
- */
-bool ggml_hsa_tensor_can_flatten(const ggml_tensor * tensor);
-
-/**
  * @brief Device information.
  */
 struct ggml_hsa_device_info {
@@ -114,9 +105,9 @@ struct ggml_hsa_device_info {
         hsa_device_type_t type{};               ///< Agent type.
         std::string name;                       ///< Agent name.
         std::vector<ggml_type> supported_types; ///< Device natively supported tensor types.
-        memory_pool_info dev_memory{};          ///< Pool for kernels.
-        memory_pool_info kernarg_memory{};      ///< Pool for kernel arguments.
-        memory_pool_info data_memory{};         ///< Pool for data.
+        memory_pool_info dev_memory{};          ///< Kernel memory pool.
+        memory_pool_info kernarg_memory{};      ///< Kernel arguments memory pool.
+        memory_pool_info data_memory{};         ///< Data memory pool.
         std::size_t alignment{256};             ///< Memory alignment requirement for buffers.
     };
 
@@ -160,7 +151,6 @@ struct ggml_hsa_insts_buffer {
 struct ggml_hsa_aie_kernel {
     ggml_hsa_pdi_buffer pdi;
     ggml_hsa_insts_buffer insts;
-    std::int64_t num_src_tensors{};
 
     bool is_valid() const {
         assert(pdi.is_valid() == insts.is_valid());
@@ -176,15 +166,20 @@ struct ggml_backend_hsa_emulated_tensor;
  * @brief Tensor extra information.
  */
 struct ggml_backend_hsa_tensor_extra {
-    ggml_hsa_aie_kernel kernel; ///< Kernel associated with this tensor.
+    ggml_hsa_aie_kernel kernel; ///< Kernel associated with the tensor.
 #ifdef GGML_HSA_CPU_FALLBACK
     std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
 #endif
-    std::vector<void *> buffers; ///< Temporary storage.
+    std::int64_t nsrcs{};                        ///< Number of source tensors.
+    ggml_tensor tensor{};                        ///< Transformed operation tensor.
+    std::array<ggml_tensor, GGML_MAX_SRC> src{}; ///< Source tensors for the operation.
+    std::array<std::size_t, GGML_MAX_SRC>
+        src_sizes{};              ///< Sizes of the source tensors in bytes. 0 for no copy.
+    std::size_t total_src_size{}; ///< Total size of the source tensors in bytes.
+    void * buffer{};              ///< Temporary buffer for the tensor data.
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
-                                  const ggml_tensor * tensor);
-
+                                  const ggml_tensor * parent_tensor);
     ggml_backend_hsa_tensor_extra(const ggml_backend_hsa_tensor_extra &) = delete;
     ggml_backend_hsa_tensor_extra(ggml_backend_hsa_tensor_extra &&) = delete;
 
@@ -192,6 +187,21 @@ struct ggml_backend_hsa_tensor_extra {
 
     ggml_backend_hsa_tensor_extra & operator=(const ggml_backend_hsa_tensor_extra &) = delete;
     ggml_backend_hsa_tensor_extra & operator=(ggml_backend_hsa_tensor_extra &&) = delete;
+
+    /**
+     * @brief Allocates storage for the internal tensor.
+     */
+    ggml_status allocate_internal_storage(const ggml_hsa_device_info::device_info & dev_info);
+
+    /**
+     * @brief Returns if the tensor is valid.
+     */
+    bool is_tensor_valid() const { return tensor.op != GGML_OP_NONE; }
+
+    /**
+     * @brief Returns if a sync is required before invoking the operation.
+     */
+    bool needs_sync() const { return total_src_size > 0; }
 };
 
 /**
@@ -303,22 +313,11 @@ void ggml_hsa_output_tensor_stride(const ggml_tensor * tensor,
  *
  * @param[in] tensor tensor to output
  * @param[out] os output stream
- * @param[in] flatten if @c true, outputs the number of elements in the tensor instead of the shape
  */
 template <typename OutputStream>
-void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os, bool flatten = false) {
-    if (flatten) {
-        os << ggml_nelements(tensor);
-    } else {
-        ggml_hsa_output_tensor_shape(tensor, os);
-    }
-
+void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os) {
+    ggml_hsa_output_tensor_shape(tensor, os);
     os << ggml_type_name(tensor->type);
-
-    if (flatten) {
-        return;
-    }
-
     if (!ggml_is_contiguous(tensor)) {
         os << 'n';
     }
