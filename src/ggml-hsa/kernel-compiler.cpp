@@ -197,13 +197,14 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
             "output_tensor"_a = std::move(output_tensor), "exported_name"_a = exported_name,
             "output_directory"_a = output_directory.string(), "verbose"_a = verbose_compilation);
     } catch (const pybind11::error_already_set & ex) {
-        GGML_LOG_ERROR("%s: compilation for kernel %s failed:\n%s\n", __func__,
-                       exported_name.c_str(), ex.what());
+        GGML_LOG_ERROR("%s: failed to compile kernel %s for tensor \"%s\" (%s): %s\n", __func__,
+                       exported_name.c_str(), tensor->name, ggml_op_desc(tensor), ex.what());
         return GGML_STATUS_FAILED;
     }
 
-    GGML_LOG_INFO("%s: generated kernel %s in %s\n", __func__, exported_name.c_str(),
-                  output_directory.c_str());
+    GGML_LOG_INFO("%s: generated kernel %s in %s for tensor \"%s\" (%s)\n", __func__,
+                  exported_name.c_str(), output_directory.c_str(), tensor->name,
+                  ggml_op_desc(tensor));
 
     return GGML_STATUS_SUCCESS;
 }
