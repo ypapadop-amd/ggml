@@ -45,10 +45,8 @@ const char * ggml_hsa_get_status_string(hsa_status_t status) {
 [[noreturn]]
 void ggml_hsa_error(
     const char * stmt, const char * func, const char * file, int line, hsa_status_t status) {
-    const char * msg = ggml_hsa_get_status_string(status);
-    GGML_LOG_ERROR("HSA error: %s\n", msg);
-    GGML_LOG_ERROR("  in function %s at %s:%d\n", func, file, line);
-    GGML_LOG_ERROR("  %s\n", stmt);
+    GGML_LOG_ERROR("HSA error (%s) in function %s at %s:%d: %s\n",
+                   ggml_hsa_get_status_string(status), func, file, line, stmt);
     // abort with GGML_ABORT to get a stack trace
     GGML_ABORT("HSA error");
 }
@@ -458,9 +456,8 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, total_src_size,
                                                    /* flags = */ 0, &buffer);
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: allocating %.2f MiB on device %s: "
-                       "hsa_amd_memory_pool_allocate failed: %s\n",
-                       __func__, total_src_size / 1024.0 / 1024.0, dev_info.name.c_str(),
+        GGML_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)\n", __func__,
+                       (total_src_size / 1024.0 / 1024.0), dev_info.name.c_str(),
                        ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
@@ -474,7 +471,7 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
         }
     }
 
-    GGML_LOG_INFO("%s: tensor %s (%s): created temporary storage\n", __func__, tensor.name,
+    GGML_LOG_INFO("%s: created temporary storage for tensor %s (%s)\n", __func__, tensor.name,
                   ggml_op_desc(&tensor));
 
     return GGML_STATUS_SUCCESS;
@@ -490,17 +487,17 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     if (auto status = hsa_queue_create(agent, min_queue_size, HSA_QUEUE_TYPE_SINGLE, nullptr,
                                        nullptr, 0, 0, &queue);
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: hsa_queue_create failed: %s", __func__,
-                       ggml_hsa_get_status_string(status));
-        throw std::runtime_error("hsa_queue_create failed");
+        throw std::runtime_error{std::string("hsa_queue creation failed (")
+                                     .append(ggml_hsa_get_status_string(status))
+                                     .append(")")};
     }
 
     // create signal to wait for packets
     if (auto status = hsa_signal_create(0, 0, nullptr, &dispatch_signal);
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: hsa_signal_create failed: %s", __func__,
-                       ggml_hsa_get_status_string(status));
-        throw std::runtime_error("hsa_signal_create failed");
+        throw std::runtime_error{std::string("hsa_signal creation failed (")
+                                     .append(ggml_hsa_get_status_string(status))
+                                     .append(")")};
     }
 
 #ifdef GGML_HSA_CPU_FALLBACK
@@ -584,7 +581,8 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0,
                                                    reinterpret_cast<void **>(&cmd_payload));
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: Could not allocate space for the packet (%d)\n", __func__, status);
+        GGML_LOG_ERROR("%s: failed to allocate hsa_queue packet storage (%s)\n", __func__,
+                       ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
     cmd_payload->pdi_addr = kernel.pdi.data; // PDI to use with this command
@@ -711,7 +709,8 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
 
     return GGML_STATUS_SUCCESS;
 } catch (const std::exception & ex) {
-    GGML_LOG_ERROR("%s: Could not initialize tensor (%s)\n", __func__, ex.what());
+    GGML_LOG_ERROR("%s: failed to initialize tensor \"%s\" (%s): %s\n", __func__, tensor->name,
+                   ggml_op_desc(tensor), ex.what());
     return GGML_STATUS_FAILED;
 }
 
@@ -850,16 +849,16 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
                                                    /* flags = */ 0, &buffer);
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR(
-            "%s: allocating %.2f MiB on device %d: hsa_amd_memory_pool_allocate failed: %s\n",
-            __func__, size / 1024.0 / 1024.0, buft_ctx.device, ggml_hsa_get_status_string(status));
+        GGML_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)\n", __func__,
+                       (size / 1024.0 / 1024.0), dev_info.name.c_str(),
+                       ggml_hsa_get_status_string(status));
         return nullptr;
     }
 
     auto * buf_ctx = new ggml_backend_hsa_buffer_context(buft_ctx.device, buffer);
     return ggml_backend_buffer_init(buft, ggml_backend_hsa_buffer_interface, buf_ctx, size);
 } catch (const std::exception & ex) {
-    GGML_LOG_ERROR("%s: Could not allocate buffer (%s)\n", __func__, ex.what());
+    GGML_LOG_ERROR("%s: failed to allocate buffer: %s\n", __func__, ex.what());
     return nullptr;
 }
 
@@ -958,7 +957,7 @@ ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(std::int32_t device) try
 
     return &ggml_backend_hsa_buffer_type_metadata.type[device];
 } catch (const std::exception & ex) {
-    GGML_LOG_ERROR("%s: Could not create buffer type (%s)\n", __func__, ex.what());
+    GGML_LOG_ERROR("%s: failed to create buffer type: %s\n", __func__, ex.what());
     return nullptr;
 }
 
@@ -1336,8 +1335,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         if (status != GGML_STATUS_SUCCESS) {
             auto tensor_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
             if (!tensor_extra->emulated_tensor) {
-                GGML_LOG_INFO("%s: emulating op %s for \"%s\"\n", __func__, ggml_op_desc(node),
-                              node->name);
+                GGML_LOG_INFO("%s: emulating op %s for tensor \"%s\"\n", __func__,
+                              ggml_op_desc(node), node->name);
                 tensor_extra->emulated_tensor =
                     std::make_unique<ggml_backend_hsa_emulated_tensor>(ctx, node);
             }
@@ -1347,14 +1346,14 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 #endif
 
         if (status != GGML_STATUS_SUCCESS) {
-            GGML_LOG_ERROR("%s: op %s failed or not supported for \"%s\"\n", __func__,
+            GGML_LOG_ERROR("%s: failed to dispatch operation %s for tensor \"%s\"\n", __func__,
                            ggml_op_desc(node), node->name);
         }
     }
 
     return status;
 } catch (const std::exception & ex) {
-    GGML_LOG_ERROR("%s: Could not execute graph (%s)\n", __func__, ex.what());
+    GGML_LOG_ERROR("%s: failed to execute graph: %s\n", __func__, ex.what());
     return GGML_STATUS_FAILED;
 }
 
@@ -1589,7 +1588,8 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
 
     return supported;
 } catch (const std::exception & ex) {
-    GGML_LOG_ERROR("%s: Could not check operation (%s)\n", __func__, ex.what());
+    GGML_LOG_ERROR("%s: failed to verify support for operation %s of tensor \"%s\": %s\n", __func__,
+                   ggml_op_desc(op), op->name, ex.what());
     return false;
 }
 
@@ -1740,7 +1740,7 @@ ggml_backend_reg_t ggml_backend_hsa_reg() try {
 
     return &ggml_backend_hsa_reg_metadata.reg;
 } catch (const std::exception & ex) {
-    GGML_LOG_ERROR("%s: Could not register backend (%s)\n", __func__, ex.what());
+    GGML_LOG_ERROR("%s: could not register HSA backend: %s\n", __func__, ex.what());
     return nullptr;
 }
 
@@ -1748,7 +1748,7 @@ ggml_backend_t ggml_backend_hsa_init(std::int32_t device) try {
     const auto & info = ggml_hsa_info();
 
     if (device < 0 || device >= info.device_count) {
-        GGML_LOG_ERROR("%s: invalid device %d\n", __func__, device);
+        GGML_LOG_ERROR("%s: invalid device ID %d\n", __func__, device);
         return nullptr;
     }
 
@@ -1763,7 +1763,7 @@ ggml_backend_t ggml_backend_hsa_init(std::int32_t device) try {
 
     return hsa_backend;
 } catch (const std::exception & ex) {
-    GGML_LOG_ERROR("%s: Could not initialize backend (%s)\n", __func__, ex.what());
+    GGML_LOG_ERROR("%s: failed to initialize HSA backend: %s\n", __func__, ex.what());
     return nullptr;
 }
 
