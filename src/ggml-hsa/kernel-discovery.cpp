@@ -57,11 +57,11 @@ static const fs::path cached_kernel_dir = [] {
     } else {
         cache_dir = fs::path("/tmp/ggml/ggml-hsa");
     }
-    GGML_LOG_INFO("ggml_hsa_backend: Cached kernels in %s\n", cache_dir.c_str());
+    GGML_LOG_INFO("ggml_hsa_backend: cached kernels in %s\n", cache_dir.c_str());
 
     if (const char * clear_cache = std::getenv("GGML_HSA_KERNEL_CACHE_CLEAR");
         clear_cache != nullptr && ggml_hsa_string_to_bool(clear_cache)) {
-        GGML_LOG_INFO("ggml_hsa_backend: Clearing kernel cache in %s\n", cache_dir.c_str());
+        GGML_LOG_INFO("ggml_hsa_backend: clearing kernel cache in %s\n", cache_dir.c_str());
         fs::remove_all(cache_dir);
     }
 
@@ -74,7 +74,7 @@ static const fs::path cached_kernel_dir = [] {
 static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
                                                std::string & kernel_name) {
     if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
-        GGML_LOG_ERROR("%s: Tensor \"%s\" operation index out of bounds (%d >= GGML_OP_COUNT)\n",
+        GGML_LOG_ERROR("%s: tensor \"%s\" operation index out of bounds (%d >= GGML_OP_COUNT)\n",
                        __func__, ggml_get_name(tensor), tensor->op);
         return GGML_STATUS_FAILED;
     }
@@ -184,19 +184,20 @@ static ggml_status
 ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & path, ggml_hsa_pdi_buffer & buffer) {
     std::ifstream is(path, std::ios::binary | std::ios::ate | std::ios::in);
     if (is.fail()) {
-        GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, path.c_str());
+        GGML_LOG_ERROR("%s: could not open file %s\n", __func__, path.c_str());
         return GGML_STATUS_FAILED;
     }
 
     const std::size_t size = is.tellg();
     if (!is.seekg(0, std::ios::beg) || (size == 0)) {
-        GGML_LOG_ERROR("%s: I/O error, could not get file size for %s\n", __func__, path.c_str());
+        GGML_LOG_ERROR("%s: could not get file size for %s\n", __func__, path.c_str());
         return GGML_STATUS_FAILED;
     }
     if (auto status =
             hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer.data));
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: Could not allocate %zu bytes\n", __func__, size);
+        GGML_LOG_ERROR("%s: failed to allocate %zu bytes (%s)\n", __func__, size,
+                       ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
 
@@ -215,26 +216,28 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
                                        ggml_hsa_insts_buffer & buffer) {
     std::ifstream is(path, std::ios::binary | std::ios::ate | std::ios::in);
     if (is.fail()) {
-        GGML_LOG_ERROR("%s: Could not open file %s\n", __func__, path.c_str());
+        GGML_LOG_ERROR("%s: could not open file %s\n", __func__, path.c_str());
         return GGML_STATUS_FAILED;
     }
 
     const std::size_t size = is.tellg();
     if (!is.seekg(0, std::ios::beg) || (size == 0)) {
-        GGML_LOG_ERROR("%s: I/O error, could not get file size for %s\n", __func__, path.c_str());
+        GGML_LOG_ERROR("%s: could not get file size for %s\n", __func__, path.c_str());
         return GGML_STATUS_FAILED;
-    }
-    if (auto status =
-            hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer.data));
-        status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: Could not allocate %zu bytes\n", __func__, size);
-        return GGML_STATUS_ALLOC_FAILED;
     }
 
     if (size % sizeof(std::uint32_t) != 0) {
-        GGML_LOG_ERROR("%s: File size is not a multiple of %zu bytes\n", __func__,
+        GGML_LOG_ERROR("%s: file size %zu bytes is not a multiple of %zu bytes\n", __func__, size,
                        sizeof(std::uint32_t));
         return GGML_STATUS_FAILED;
+    }
+
+    if (auto status =
+            hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer.data));
+        status != HSA_STATUS_SUCCESS) {
+        GGML_LOG_ERROR("%s: failed to allocate %zu bytes (%s)\n", __func__, size,
+                       ggml_hsa_get_status_string(status));
+        return GGML_STATUS_ALLOC_FAILED;
     }
 
     is.read(reinterpret_cast<char *>(buffer.data), size);
@@ -269,7 +272,7 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
     // check if kernel is blocked
     if (ctx.blocked_aie_kernels.find(kernel_name) != ctx.blocked_aie_kernels.end()) {
         // kernel is blocked from being loaded
-        GGML_LOG_WARN("%s: kernel \"%s\" is blocked\n", __func__, kernel_name.c_str());
+        GGML_LOG_WARN("%s: kernel %s is blocked\n", __func__, kernel_name.c_str());
         return GGML_STATUS_ABORTED;
     }
 
@@ -315,10 +318,12 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
 
 void ggml_hsa_destroy_aie_kernel(ggml_hsa_aie_kernel & kernel) {
     if (auto status = hsa_amd_memory_pool_free(kernel.pdi.data); status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
+        GGML_LOG_ERROR("%s: error freeing memory (%s)\n", __func__,
+                       ggml_hsa_get_status_string(status));
     }
     if (auto status = hsa_amd_memory_pool_free(kernel.insts.data); status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: hsa_amd_memory_pool_free error (%d)\n", __func__, status);
+        GGML_LOG_ERROR("%s: error freeing memory (%s)\n", __func__,
+                       ggml_hsa_get_status_string(status));
     }
     kernel = {};
 }

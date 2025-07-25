@@ -160,7 +160,7 @@ ggml_status ggml_hsa_dispatch(F && f, const ggml_tensor * src, ggml_tensor * dst
                 std::forward<F>(f).template operator()<GGML_TYPE_BF16>(src, dst);
                 return GGML_STATUS_SUCCESS;
             default:
-                GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, src->name,
+                GGML_LOG_ERROR("%s: unsupported type for tensor \"%s\" (%s)\n", __func__, src->name,
                                ggml_type_name(src->type));
                 return GGML_STATUS_FAILED;
         }
@@ -189,8 +189,8 @@ ggml_status ggml_hsa_dispatch(F && f, const ggml_tensor * src, ggml_tensor * dst
                                                                                               dst);
                         return GGML_STATUS_SUCCESS;
                     default:
-                        GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, dst->name,
-                                       ggml_type_name(dst->type));
+                        GGML_LOG_ERROR("%s: unsupported type for tensor \"%s\" (%s)\n", __func__,
+                                       dst->name, ggml_type_name(dst->type));
                         return GGML_STATUS_FAILED;
                 }
             case GGML_TYPE_F16:
@@ -204,8 +204,8 @@ ggml_status ggml_hsa_dispatch(F && f, const ggml_tensor * src, ggml_tensor * dst
                                                                                               dst);
                         return GGML_STATUS_SUCCESS;
                     default:
-                        GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, dst->name,
-                                       ggml_type_name(dst->type));
+                        GGML_LOG_ERROR("%s: unsupported type for tensor \"%s\" (%s)\n", __func__,
+                                       dst->name, ggml_type_name(dst->type));
                         return GGML_STATUS_FAILED;
                 }
             case GGML_TYPE_BF16:
@@ -215,12 +215,12 @@ ggml_status ggml_hsa_dispatch(F && f, const ggml_tensor * src, ggml_tensor * dst
                                                                                               dst);
                         return GGML_STATUS_SUCCESS;
                     default:
-                        GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, dst->name,
-                                       ggml_type_name(dst->type));
+                        GGML_LOG_ERROR("%s: unsupported type for tensor \"%s\" (%s)\n", __func__,
+                                       dst->name, ggml_type_name(dst->type));
                         return GGML_STATUS_FAILED;
                 }
             default:
-                GGML_LOG_ERROR("%s: type not supported %s (%s)\n", __func__, src->name,
+                GGML_LOG_ERROR("%s: unsupported type for tensor \"%s\" (%s)\n", __func__, src->name,
                                ggml_type_name(src->type));
                 return GGML_STATUS_FAILED;
         }
@@ -236,8 +236,9 @@ ggml_status ggml_hsa_copy_tensor(const ggml_tensor * src, ggml_tensor * dst) {
         return ggml_hsa_dispatch(gggml_hsa_copy_same_shape_tensors_f{}, src, dst);
     }
 
-    GGML_LOG_ERROR("%s: unsupported tensor combination between source %s and destination %s\n",
-                   __func__, src->name, dst->name);
+    GGML_LOG_ERROR("%s: unsupported tensor combination between source \"%s\" (%s) and destination "
+                   "tensor \"%s\" (%s)\n",
+                   __func__, src->name, ggml_op_desc(src), dst->name, ggml_op_desc(dst));
     return GGML_STATUS_FAILED;
 }
 
