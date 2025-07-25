@@ -38,7 +38,6 @@ ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
 /**
  * @brief Destroys the kernel.
  *
- * @param[in] ctx backend context
  * @param[in] kernel kernel to destroy
  */
-void ggml_hsa_destroy_aie_kernel(ggml_backend_hsa_context & ctx, ggml_hsa_aie_kernel & kernel);
+void ggml_hsa_destroy_aie_kernel(ggml_hsa_aie_kernel & kernel);
