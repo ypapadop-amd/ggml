@@ -45,7 +45,6 @@ const char * ggml_hsa_get_status_string(hsa_status_t status) {
 [[noreturn]]
 void ggml_hsa_error(
     const char * stmt, const char * func, const char * file, int line, hsa_status_t status) {
-    const char * msg = ggml_hsa_get_status_string(status);
     GGML_LOG_ERROR("HSA error (%s) in function %s at %s:%d: %s\n",
                    ggml_hsa_get_status_string(status), func, file, line, stmt);
     // abort with GGML_ABORT to get a stack trace
