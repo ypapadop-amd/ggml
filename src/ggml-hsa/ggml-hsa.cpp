@@ -343,6 +343,9 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     std::array<bool, GGML_MAX_SRC> update_src_nb{};
     update_src_nb.fill(false);
 
+    // operation to compile the kernel for
+    const ggml_tensor * op_to_compile = nullptr;
+
     switch (parent_tensor->op) {
         case GGML_OP_NONE:
             // noop; nothing to be done
@@ -374,6 +377,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 total_src_size = src_sizes[1];
 
                 assert(ggml_hsa_nsrcs(&tensor) == nsrcs);
+
+                op_to_compile = &tensor;
             }
             break;
         case GGML_OP_CPY:
@@ -398,6 +403,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                         ggml_hsa_flatten_tensor(src[src_idx]);
                         tensor.src[src_idx] = &src[src_idx];
                     }
+
+                    op_to_compile = &tensor;
                 } else {
                     tensor = *parent_tensor;
 
@@ -414,6 +421,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                         }
                         tensor.src[src_idx] = &src[src_idx];
                     }
+
+                    op_to_compile = parent_tensor;
                 }
                 assert(ggml_hsa_nsrcs(&tensor) == nsrcs);
             }
@@ -432,9 +441,15 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             }
         }
     }
-}
 
-ggml_backend_hsa_tensor_extra::~ggml_backend_hsa_tensor_extra() {
+    if ((op_to_compile != nullptr) &&
+        (ggml_hsa_create_aie_kernel(dev_info, op_to_compile, kernel) != GGML_STATUS_SUCCESS)) {
+        throw std::runtime_error{std::string{"Failed to create kernel for tensor \""}
+                                     .append(op_to_compile->name)
+                                     .append("\" (")
+                                     .append(ggml_op_desc(op_to_compile))
+                                     .append(")")};
+    }
 }
 
 ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
@@ -512,7 +527,6 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
 }
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
-    destroy_kernels();
     GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
     GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
 #ifdef GGML_HSA_CPU_FALLBACK
@@ -521,29 +535,22 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
 #endif
 }
 
-void ggml_backend_hsa_context::destroy_kernels() {
-    for (auto & t : aie_kernels) {
-        ggml_hsa_destroy_aie_kernel(t.second);
-    }
-    aie_kernels.clear();
-}
-
 void ggml_backend_hsa_context::free_pending_payloads() { pending_payloads.clear(); }
 
 /**
  * @brief Dispatches an HSA packet.
  *
- * @note This function assumes ownership of @p payload.
+ * @todo @p dispatch_signal is not used yet.
  *
- * @param[in] ctx backend context
+ * @param[in] queue queue to enqueue the packet
+ * @param[in] signal signal for packet completion
  * @param[in] payload packet payload
  * @param[in] payload_size payload size in dwords
  */
-static void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
+static void ggml_hsa_dispatch_packet(hsa_queue_t * queue,
+                                     hsa_signal_t /* dispatch_signal */,
                                      hsa_amd_aie_ert_start_kernel_data_t * payload,
                                      std::size_t payload_size) {
-    auto * queue = ctx.queue;
-
     hsa_amd_aie_ert_packet_t pkt{};
     pkt.header.header = HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE;
     pkt.header.AmdFormat = HSA_AMD_PACKET_TYPE_AIE_ERT;
@@ -551,15 +558,22 @@ static void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
     pkt.count = payload_size;
     pkt.opcode = HSA_AMD_AIE_ERT_START_CU;
     pkt.payload_data = reinterpret_cast<std::uint64_t>(payload);
-    // TODO add pkt->completion_signal = ctx.dispatch_signal
+    // TODO add pkt->completion_signal = dispatch_signal
 
     const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
     const std::uint64_t packet_id = wr_idx % queue->size;
     *(static_cast<hsa_amd_aie_ert_packet_t *>(queue->base_address) + packet_id) = pkt;
 
-    ctx.pending_payloads.push_back(ggml_hsa_unique_ptr(reinterpret_cast<std::byte *>(payload)));
-
     hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
+}
+
+/**
+ * @brief Decomposes a 64-bit address to two @c std::uint32_t.
+ */
+inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(const void * address) {
+    static_assert(sizeof(void *) == 2 * sizeof(std::uint32_t));
+    return {reinterpret_cast<uint64_t>(address) >> 32,
+            reinterpret_cast<uint64_t>(address) & 0xFFFFFFFF};
 }
 
 ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
@@ -571,15 +585,19 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
     auto & dev_info = info.devices[ctx.device];
     const std::size_t packet_dwords =
         3 /* instructions */ + (num_src_tensors + 1) * 3 /* source and destination tensors */;
-    hsa_amd_aie_ert_start_kernel_data_t * cmd_payload = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0,
-                                                   reinterpret_cast<void **>(&cmd_payload));
+    void * ptr = nullptr;
+    if (auto status =
+            hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0, &ptr);
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: failed to allocate hsa_queue packet storage (%s)\n", __func__,
                        ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
-    cmd_payload->pdi_addr = kernel.pdi.data; // PDI to use with this command
+    ctx.pending_payloads.emplace_back(ptr);
+
+    auto cmd_payload = static_cast<hsa_amd_aie_ert_start_kernel_data_t *>(ptr);
+    cmd_payload->pdi_addr = const_cast<void *>(
+        static_cast<const void *>(kernel.pdi.data())); // PDI to use with this command
 
     // transaction opcode; not counted in packet_dwords
     cmd_payload->data[0] = 0x3;
@@ -589,8 +607,8 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
 
     // instructions; 3 dwords
     std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
-        ggml_hsa_addr_to_hilo(kernel.insts.data);
-    cmd_payload->data[dword_idx + 2] = static_cast<std::uint32_t>(kernel.insts.size);
+        ggml_hsa_addr_to_hilo(kernel.insts.data());
+    cmd_payload->data[dword_idx + 2] = static_cast<std::uint32_t>(kernel.insts.size());
 
     dword_idx += 3;
 
@@ -614,7 +632,7 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
 
     assert(dword_idx == packet_dwords + 1); // 2 extra uncounted dwords
 
-    ggml_hsa_dispatch_packet(ctx, cmd_payload, packet_dwords);
+    ggml_hsa_dispatch_packet(ctx.queue, ctx.dispatch_signal, cmd_payload, packet_dwords);
 
     return GGML_STATUS_SUCCESS;
 }
@@ -635,8 +653,8 @@ void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
  * @brief Context for managing a HSA buffer associated with a specific device.
  */
 struct ggml_backend_hsa_buffer_context {
-    std::int32_t device{};       ///< Device ID associated with this buffer context.
-    ggml_hsa_unique_ptr dev_ptr; ///< Pointer to the device memory.
+    std::int32_t device{};             ///< Device ID associated with this buffer context.
+    ggml_hsa_unique_ptr<void> dev_ptr; ///< Pointer to the device memory.
     std::vector<std::unique_ptr<ggml_backend_hsa_tensor_extra>> tensor_extras;
 
     ggml_backend_hsa_buffer_context(std::int32_t device, void * dev_ptr) :
@@ -1249,6 +1267,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     auto & tensor_extra =
                         *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
 
+                    assert(tensor_extra.is_tensor_valid());
+
                     // MUL_MAT is implemented as C' = A * B' The IRON kernel implements
                     // C = A * B, so we transpose A to implement the operation as B' * A' = C'
 
@@ -1258,14 +1278,12 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     auto transposed_A = ggml_hsa_transpose(node->src[0]);
                     ggml_hsa_wait_dispatches(ctx);
                     status = ggml_hsa_copy_tensor(&transposed_A, n->src[1]);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        break;
+                    }
 
-                    if ((status == GGML_STATUS_SUCCESS) && !tensor_extra.kernel.is_valid()) {
-                        status = ggml_hsa_create_aie_kernel(ctx, n, tensor_extra.kernel);
-                    }
-                    if (status == GGML_STATUS_SUCCESS) {
-                        status = ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, n->src,
-                                                          tensor_extra.nsrcs, n);
-                    }
+                    status = ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, n->src,
+                                                      tensor_extra.nsrcs, n);
                 }
                 break;
             case GGML_OP_CPY:
@@ -1292,7 +1310,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                         n = node;
                     } else {
                         n = &tensor_extra.tensor;
-                        if (tensor_extra.needs_sync()) {
+                        if (tensor_extra.has_input_tensor_copies()) {
                             ggml_hsa_wait_dispatches(ctx);
                             for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
                                 if (tensor_extra.src_sizes[src_idx] == 0) {
@@ -1306,13 +1324,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                         }
                     }
 
-                    if ((status == GGML_STATUS_SUCCESS) && !tensor_extra.kernel.is_valid()) {
-                        status = ggml_hsa_create_aie_kernel(ctx, n, tensor_extra.kernel);
-                    }
-                    if (status == GGML_STATUS_SUCCESS) {
-                        status = ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, n->src,
-                                                          tensor_extra.nsrcs, n);
-                    }
+                    status = ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, n->src,
+                                                      tensor_extra.nsrcs, n);
                 }
                 break;
         }
@@ -1559,8 +1572,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
                 // exist or if it can be compiled
                 const auto & dev_info = ggml_hsa_get_device_info(dev);
                 ggml_backend_hsa_tensor_extra tensor_extra{dev_info, op};
-                supported = ggml_hsa_kernel_is_supported(
-                    dev_info, (tensor_extra.is_tensor_valid() ? &tensor_extra.tensor : op));
+                supported = tensor_extra.kernel.is_valid();
             }
             break;
     }
@@ -1574,8 +1586,8 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
 
     return supported;
 } catch (const std::exception & ex) {
-    GGML_LOG_ERROR("%s: failed to verify support for operation %s of tensor \"%s\": %s\n", __func__,
-                   ggml_op_desc(op), op->name, ex.what());
+    GGML_LOG_WARN("%s: failed to verify support for operation %s of tensor \"%s\": %s\n", __func__,
+                  ggml_op_desc(op), op->name, ex.what());
     return false;
 }
 
