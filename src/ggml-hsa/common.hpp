@@ -15,8 +15,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
-#include <unordered_map>
-#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <hsa/hsa.h>
@@ -68,15 +67,6 @@ void ggml_hsa_error(
     } while (false)
 
 /**
- * @brief Decomposes a 64-bit address to two @c std::uint32_t.
- */
-inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * address) {
-    static_assert(sizeof(void *) == 2 * sizeof(std::uint32_t));
-    return {reinterpret_cast<uint64_t>(address) >> 32,
-            reinterpret_cast<uint64_t>(address) & 0xFFFFFFFF};
-}
-
-/**
  * @brief Returns the number of sources of @p tensor.
  */
 std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
@@ -84,16 +74,23 @@ std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
 /**
  * @brief Frees memory allocated using HSA.
  */
+template <typename T>
 struct ggml_hsa_delete {
-    void operator()(void * ptr) const {
+    static_assert(!std::is_array_v<T>, "ggml_hsa_delete does not support arrays");
+
+    void operator()(T * ptr) const {
         if (ptr) {
+            if constexpr (!std::is_void_v<T>) {
+                std::destroy_at(ptr);
+            }
             GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(ptr));
         }
     }
 };
 
 /// @brief HSA allocated managed memory.
-using ggml_hsa_unique_ptr = std::unique_ptr<std::byte, ggml_hsa_delete>;
+template <typename T>
+using ggml_hsa_unique_ptr = std::unique_ptr<T, ggml_hsa_delete<T>>;
 
 /**
  * @brief Device information.
@@ -142,21 +139,44 @@ const ggml_hsa_device_info & ggml_hsa_info();
 /**
  * @brief PDI buffer.
  */
-struct ggml_hsa_pdi_buffer {
-    std::uint64_t * data{};
-    std::size_t size{};
+class ggml_hsa_pdi_buffer {
+    ggml_hsa_unique_ptr<std::uint64_t> m_data;
 
-    bool is_valid() const { return data != nullptr; }
+  public:
+    constexpr ggml_hsa_pdi_buffer() = default;
+    explicit ggml_hsa_pdi_buffer(std::uint64_t * data) : m_data(data) {}
+
+    std::uint64_t * data() { return m_data.get(); }
+    const std::uint64_t * data() const { return m_data.get(); }
+    bool is_valid() const { return m_data != nullptr; }
 };
 
 /**
  * @brief Instructions buffer.
  */
-struct ggml_hsa_insts_buffer {
-    std::uint32_t * data{};
-    std::size_t size{};
+class ggml_hsa_insts_buffer {
+    ggml_hsa_unique_ptr<std::uint32_t> m_data;
+    std::size_t m_size{};
 
-    bool is_valid() const { return data != nullptr; }
+  public:
+    constexpr ggml_hsa_insts_buffer() = default;
+    ggml_hsa_insts_buffer(std::uint32_t * data, std::size_t size) : m_data(data), m_size(size) {}
+    ggml_hsa_insts_buffer(const ggml_hsa_insts_buffer &) = delete;
+    ggml_hsa_insts_buffer(ggml_hsa_insts_buffer &&) = default;
+
+    ~ggml_hsa_insts_buffer() = default;
+
+    ggml_hsa_insts_buffer & operator=(const ggml_hsa_insts_buffer &) = delete;
+    ggml_hsa_insts_buffer & operator=(ggml_hsa_insts_buffer && other) {
+        m_data = std::exchange(other.m_data, nullptr);
+        m_size = std::exchange(other.m_size, 0);
+        return *this;
+    }
+
+    std::size_t size() const { return m_size; }
+    std::uint32_t * data() { return m_data.get(); }
+    const std::uint32_t * data() const { return m_data.get(); }
+    bool is_valid() const { return m_data != nullptr; }
 };
 
 /**
@@ -188,16 +208,16 @@ struct ggml_backend_hsa_tensor_extra {
     ggml_tensor tensor{};                        ///< Transformed operation tensor.
     std::array<ggml_tensor, GGML_MAX_SRC> src{}; ///< Source tensors for the operation.
     std::array<std::size_t, GGML_MAX_SRC>
-        src_sizes{};              ///< Sizes of the source tensors in bytes. 0 for no copy.
-    std::size_t total_src_size{}; ///< Total size of the source tensors in bytes.
-    ggml_hsa_unique_ptr buffer;   ///< Temporary buffer for the tensor data.
+        src_sizes{};                       ///< Sizes of the source tensors in bytes. 0 for no copy.
+    std::size_t total_src_size{};          ///< Total size of the source tensors in bytes.
+    ggml_hsa_unique_ptr<std::byte> buffer; ///< Temporary buffer for the tensor data.
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor * parent_tensor);
     ggml_backend_hsa_tensor_extra(const ggml_backend_hsa_tensor_extra &) = delete;
     ggml_backend_hsa_tensor_extra(ggml_backend_hsa_tensor_extra &&) = delete;
 
-    ~ggml_backend_hsa_tensor_extra();
+    ~ggml_backend_hsa_tensor_extra() = default;
 
     ggml_backend_hsa_tensor_extra & operator=(const ggml_backend_hsa_tensor_extra &) = delete;
     ggml_backend_hsa_tensor_extra & operator=(ggml_backend_hsa_tensor_extra &&) = delete;
@@ -213,9 +233,9 @@ struct ggml_backend_hsa_tensor_extra {
     bool is_tensor_valid() const { return tensor.op != GGML_OP_NONE; }
 
     /**
-     * @brief Returns if a sync is required before invoking the operation.
+     * @brief Returns if one or more input tensors need to be copied..
      */
-    bool needs_sync() const { return total_src_size > 0; }
+    bool has_input_tensor_copies() const { return total_src_size > 0; }
 };
 
 /**
@@ -225,10 +245,8 @@ struct ggml_backend_hsa_context {
     std::int32_t device{};          ///< Device ID.
     std::string name;               ///< Device name.
     hsa_queue_t * queue{};          ///< HSA queue.
-    hsa_signal_t dispatch_signal{}; ///< Signal to wait dispatches.
-    std::unordered_map<std::string, ggml_hsa_aie_kernel> aie_kernels; ///< AIE agent kernels.
-    std::unordered_set<std::string> blocked_aie_kernels; ///< Blocked AIE agent kernels.
-    std::vector<ggml_hsa_unique_ptr>
+    hsa_signal_t dispatch_signal{}; ///< Signal for packet completion.
+    std::vector<ggml_hsa_unique_ptr<void>>
         pending_payloads; ///< Packet payloads since last synchronization.
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
@@ -245,11 +263,6 @@ struct ggml_backend_hsa_context {
 
     ggml_backend_hsa_context & operator=(const ggml_backend_hsa_context &) = delete;
     ggml_backend_hsa_context & operator=(ggml_backend_hsa_context &&) = delete;
-
-    /**
-     * @brief Destroys all loaded kernels and frees the used memory.
-     */
-    void destroy_kernels();
 
     /**
      * @brief Frees all memory associated with pending packets.
