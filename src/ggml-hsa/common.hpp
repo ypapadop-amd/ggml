@@ -82,6 +82,20 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * add
 std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
 
 /**
+ * @brief Frees memory allocated using HSA.
+ */
+struct ggml_hsa_delete {
+    void operator()(void * ptr) const {
+        if (ptr) {
+            GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(ptr));
+        }
+    }
+};
+
+/// @brief HSA allocated managed memory.
+using ggml_hsa_unique_ptr = std::unique_ptr<std::byte, ggml_hsa_delete>;
+
+/**
  * @brief Device information.
  */
 struct ggml_hsa_device_info {
@@ -176,7 +190,7 @@ struct ggml_backend_hsa_tensor_extra {
     std::array<std::size_t, GGML_MAX_SRC>
         src_sizes{};              ///< Sizes of the source tensors in bytes. 0 for no copy.
     std::size_t total_src_size{}; ///< Total size of the source tensors in bytes.
-    void * buffer{};              ///< Temporary buffer for the tensor data.
+    ggml_hsa_unique_ptr buffer;   ///< Temporary buffer for the tensor data.
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor * parent_tensor);
@@ -214,7 +228,8 @@ struct ggml_backend_hsa_context {
     hsa_signal_t dispatch_signal{}; ///< Signal to wait dispatches.
     std::unordered_map<std::string, ggml_hsa_aie_kernel> aie_kernels; ///< AIE agent kernels.
     std::unordered_set<std::string> blocked_aie_kernels; ///< Blocked AIE agent kernels.
-    std::vector<void *> pending_payloads; ///< Packet payloads since last synchronization.
+    std::vector<ggml_hsa_unique_ptr>
+        pending_payloads; ///< Packet payloads since last synchronization.
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
     ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.

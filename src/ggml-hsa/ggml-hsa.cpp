@@ -435,9 +435,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
 }
 
 ggml_backend_hsa_tensor_extra::~ggml_backend_hsa_tensor_extra() {
-    if (buffer != nullptr) {
-        GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(buffer));
-    }
 }
 
 ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
@@ -453,16 +450,18 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     }
 
     // allocate storage for all tensors
+    void * ptr = nullptr;
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, total_src_size,
-                                                   /* flags = */ 0, &buffer);
+                                                   /* flags = */ 0, &ptr);
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)\n", __func__,
                        (total_src_size / 1024.0 / 1024.0), dev_info.name.c_str(),
                        ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
+    buffer.reset(static_cast<std::byte *>(ptr));
 
-    auto buffer_ptr = static_cast<std::byte *>(buffer);
+    auto buffer_ptr = buffer.get();
     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
         if (src_sizes[src_idx] > 0) {
             assert(src[src_idx].data == nullptr);
@@ -529,12 +528,7 @@ void ggml_backend_hsa_context::destroy_kernels() {
     aie_kernels.clear();
 }
 
-void ggml_backend_hsa_context::free_pending_payloads() {
-    for (auto ptr : pending_payloads) {
-        hsa_amd_memory_pool_free(ptr);
-    }
-    pending_payloads.clear();
-}
+void ggml_backend_hsa_context::free_pending_payloads() { pending_payloads.clear(); }
 
 /**
  * @brief Dispatches an HSA packet.
@@ -563,7 +557,7 @@ static void ggml_hsa_dispatch_packet(ggml_backend_hsa_context & ctx,
     const std::uint64_t packet_id = wr_idx % queue->size;
     *(static_cast<hsa_amd_aie_ert_packet_t *>(queue->base_address) + packet_id) = pkt;
 
-    ctx.pending_payloads.push_back(payload);
+    ctx.pending_payloads.push_back(ggml_hsa_unique_ptr(reinterpret_cast<std::byte *>(payload)));
 
     hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
 }
@@ -641,20 +635,12 @@ void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
  * @brief Context for managing a HSA buffer associated with a specific device.
  */
 struct ggml_backend_hsa_buffer_context {
-    std::int32_t device{}; ///< Device ID associated with this buffer context.
-    void * dev_ptr{};      ///< Pointer to the device memory.
+    std::int32_t device{};       ///< Device ID associated with this buffer context.
+    ggml_hsa_unique_ptr dev_ptr; ///< Pointer to the device memory.
     std::vector<std::unique_ptr<ggml_backend_hsa_tensor_extra>> tensor_extras;
 
     ggml_backend_hsa_buffer_context(std::int32_t device, void * dev_ptr) :
-        device(device), dev_ptr(dev_ptr) {}
-
-    ggml_backend_hsa_buffer_context(const ggml_backend_hsa_buffer_context &) = delete;
-    ggml_backend_hsa_buffer_context(ggml_backend_hsa_buffer_context &&) = delete;
-
-    ~ggml_backend_hsa_buffer_context() { GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(dev_ptr)); }
-
-    ggml_backend_hsa_buffer_context & operator=(const ggml_backend_hsa_buffer_context &) = delete;
-    ggml_backend_hsa_buffer_context & operator=(ggml_backend_hsa_buffer_context &&) = delete;
+        device(device), dev_ptr(static_cast<std::byte *>(dev_ptr)) {}
 };
 
 /**
@@ -677,7 +663,7 @@ static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
  */
 static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
-    return buf_ctx.dev_ptr;
+    return buf_ctx.dev_ptr.get();
 }
 
 /**
@@ -790,7 +776,7 @@ static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t /* buffer *
  */
 static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
-    std::memset(buf_ctx.dev_ptr, value, buffer->size);
+    std::memset(buf_ctx.dev_ptr.get(), value, buffer->size);
 }
 
 /**
