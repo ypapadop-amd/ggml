@@ -4,7 +4,6 @@
 __all__ = [
     "CoreFunctionInfo",
     "core_function",
-    "dtype_to_str",
     "TensorDesc",
     "tensordesc",
     "compile_kernel",
@@ -12,13 +11,6 @@ __all__ = [
 
 from .build import compile_kernel
 
-from .core_function import (
-    CoreFunctionInfo,
-    core_function,
-)
+from .core_function import CoreFunctionInfo, core_function
 
-from .tensor_desc import (
-    dtype_to_str,
-    TensorDesc,
-    tensordesc,
-)
+from .tensor_desc import TensorDesc, tensordesc
