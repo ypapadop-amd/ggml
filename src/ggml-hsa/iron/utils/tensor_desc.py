@@ -2,26 +2,8 @@
 #  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
 import numpy as np
-from ml_dtypes import bfloat16
 
-
-supported_dtypes = {
-    "bf16": bfloat16,
-    "i8": np.int8,
-    "i16": np.int16,
-    "i32": np.int32,
-    "f32": np.float32,
-}
-
-
-def dtype_to_str(dtype):
-    """Returns the datatype as a string."""
-    if isinstance(dtype, str):
-        return dtype
-    for key, value in supported_dtypes.items():
-        if value == dtype:
-            return key
-    return None
+from aie.iron import str_to_dtype
 
 
 class TensorDesc:
@@ -92,5 +74,5 @@ def tensordesc(dtype, shape, stride=None, contiguous=True) -> TensorDesc:
         TensorDesc: A new TensorDesc instance.
     """
     if isinstance(dtype, str):
-        dtype = supported_dtypes[dtype]
+        dtype = str_to_dtype(dtype)
     return TensorDesc(dtype=dtype, shape=shape, stride=stride, contiguous=contiguous)
