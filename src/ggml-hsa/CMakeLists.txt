@@ -33,12 +33,19 @@ set(GGML_SOURCES_HSA
     )
 
 if (GGML_HSA_JIT_COMPILE)
+    include(FetchContent)
+
     find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+
+    FetchContent_Declare(
+        pybind11
+        GIT_REPOSITORY https://github.com/pybind/pybind11.git
+        GIT_TAG        v3.0
+        )
+
     set(PYBIND11_FINDPYTHON OFF)
-    find_package(pybind11 REQUIRED CONFIG
-        PATHS ${Python3_SITELIB}/pybind11
-        NO_DEFAULT_PATH
-    )
+    FetchContent_MakeAvailable(pybind11)
+
     set(GGML_SOURCES_HSA kernel-compiler.cpp ${GGML_SOURCES_HSA})
 endif ()
 
