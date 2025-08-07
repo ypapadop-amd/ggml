@@ -3,8 +3,8 @@
 
 SCRIPT_DIR_NAME=$(dirname -- "${BASH_SOURCE[0]}")
 
-python3 -m venv temp_venv
-source temp_venv/bin/activate
+python3 -m venv ggml_hsa_env
+source ggml_hsa_env/bin/activate
 python3 -m pip install --upgrade pip
 python3 -m pip install -r ${SCRIPT_DIR_NAME}/requirements.txt
 HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie python3 -m pip install -r ${SCRIPT_DIR_NAME}/requirements_extras.txt
