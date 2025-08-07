@@ -1,0 +1,7 @@
+# Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+
+--extra-index-url=https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2/
+mlir-aie
+
+--extra-index-url=https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+llvm-aie
