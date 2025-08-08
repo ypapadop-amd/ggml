@@ -10,11 +10,19 @@ from os import path
 from functools import partial
 import numpy as np
 
-from aie.iron import ObjectFifo, Kernel, Program, Runtime, Worker, get_current_device
+from aie.iron import (
+    ObjectFifo,
+    Kernel,
+    Program,
+    Runtime,
+    Worker,
+    get_current_device,
+    dtype_to_str,
+)
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from utils import core_function, CoreFunctionInfo, dtype_to_str
+from utils import core_function, CoreFunctionInfo
 
 
 def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
