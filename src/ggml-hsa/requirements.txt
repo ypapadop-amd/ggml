@@ -5,3 +5,5 @@ mlir-aie
 
 --extra-index-url=https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 llvm-aie
+
+pytest
