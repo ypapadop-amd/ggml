@@ -38,10 +38,9 @@ int main(int argc, char* argv[]) {
     // create data
     using value_type = float;
     constexpr auto ggml_type = GGML_TYPE_F32;
-    const std::vector<value_type> A = create_data<value_type>(N, 10);
-    const std::vector<value_type> B = create_data<value_type>(N, 11);
-    const std::vector<value_type> C = create_data<value_type>(N, 12);
-    const std::vector<value_type> D = create_data<value_type>(N, 12);
+    const std::vector<value_type> A = create_data<value_type>(N, 11);
+    const std::vector<value_type> B = create_data<value_type>(N, 12);
+    const std::vector<value_type> C = create_data<value_type>(N, 10);
 
     // create HIP graph
     ggml_backend_t hip_backend = ggml_backend_cuda_init(0);
@@ -100,14 +99,14 @@ int main(int argc, char* argv[]) {
         /*.mem_buffer =*/ nullptr,
         /*.no_alloc   =*/ true };
     ggml_context * hsa_ctx = ggml_init(hsa_params);
+    ggml_tensor * tensor_hip_result = ggml_new_tensor_1d(hsa_ctx, ggml_type, N);
     ggml_tensor * tensor_c = ggml_new_tensor_1d(hsa_ctx, ggml_type, N);
-    ggml_tensor * tensor_d = ggml_new_tensor_1d(hsa_ctx, ggml_type, N);
 
     // create graph
     ggml_cgraph * hsa_gf = ggml_new_graph_custom(hsa_ctx, hsa_tensor_count, /*grads*/ false);
 
     // add operation
-    ggml_tensor * hsa_result = ggml_add(hsa_ctx, tensor_c, tensor_d);
+    ggml_tensor * hsa_result = ggml_sub(hsa_ctx, tensor_hip_result, tensor_c);
 
     ggml_backend_buffer_t hsa_buffer = ggml_backend_alloc_ctx_tensors(hsa_ctx, hsa_backend);
     if (hsa_buffer == nullptr) {
@@ -125,13 +124,17 @@ int main(int argc, char* argv[]) {
     ggml_backend_tensor_set(tensor_a, std::data(A), 0, ggml_nbytes(tensor_a));
     ggml_backend_tensor_set(tensor_b, std::data(B), 0, ggml_nbytes(tensor_b));
     ggml_backend_tensor_set(tensor_c, std::data(C), 0, ggml_nbytes(tensor_c));
-    ggml_backend_tensor_set(tensor_d, std::data(D), 0, ggml_nbytes(tensor_d));
 
-    // execute
+    // execute HIP graph
     if (ggml_backend_graph_compute(hip_backend, hip_gf) != GGML_STATUS_SUCCESS) {
         std::cerr << "Execution failed\n";
         return EXIT_FAILURE;
     }
+
+    // copy data from HIP to HSA graph
+    ggml_backend_tensor_copy(hip_result, tensor_hip_result);
+
+    // execute HSA graph
     if (ggml_backend_graph_compute(hsa_backend, hsa_gf) != GGML_STATUS_SUCCESS) {
         std::cerr << "Execution failed\n";
         return EXIT_FAILURE;
@@ -140,16 +143,15 @@ int main(int argc, char* argv[]) {
     // copy data out and print
     std::vector<value_type> hip_result_data(N);
     ggml_backend_tensor_get(hip_result, std::data(hip_result_data), 0, ggml_nbytes(hip_result));
-    std::cout << "A =     " << A << '\n'
-              << "B =     " << B << '\n'
-              << "A + B = " << hip_result_data << '\n';
 
     // copy data out and print
     std::vector<value_type> hsa_result_data(N);
     ggml_backend_tensor_get(hsa_result, std::data(hsa_result_data), 0, ggml_nbytes(hsa_result));
-    std::cout << "C =     " << C << '\n'
-              << "D =     " << D << '\n'
-              << "C + D = " << hsa_result_data << '\n';
+    std::cout << "A           = " << A << '\n'
+              << "B           = " << B << '\n'
+              << "A + B       = " << hip_result_data << '\n'
+              << "C           = " << C << '\n'
+              << "(A + B) - C = " << hsa_result_data << '\n';
 
     // free resources
     ggml_gallocr_free(hsa_galloc);
