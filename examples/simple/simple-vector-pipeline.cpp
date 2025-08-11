@@ -29,6 +29,8 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& v) {
     return os << " ]";
 }
 
+#define ZERO_COPY
+
 int main(int argc, char* argv[]) {
     std::size_t N = 32;
     if (argc > 1) {
@@ -61,13 +63,16 @@ int main(int argc, char* argv[]) {
         /*.no_alloc   =*/ true };
     ggml_context * hip_ctx = ggml_init(hip_params);
     ggml_tensor * tensor_a = ggml_new_tensor_1d(hip_ctx, ggml_type, N);
+    ggml_set_name(tensor_a, "A");
     ggml_tensor * tensor_b = ggml_new_tensor_1d(hip_ctx, ggml_type, N);
+    ggml_set_name(tensor_b, "B");
 
     // create graph
     ggml_cgraph * hip_gf = ggml_new_graph_custom(hip_ctx, hip_tensor_count, /*grads*/ false);
 
     // add operation
     ggml_tensor * hip_result = ggml_add(hip_ctx, tensor_a, tensor_b);
+    ggml_set_name(hip_result, "A + B");
 
     ggml_backend_buffer_t hip_buffer = ggml_backend_alloc_ctx_tensors(hip_ctx, hip_backend);
     if (hip_buffer == nullptr) {
@@ -99,14 +104,22 @@ int main(int argc, char* argv[]) {
         /*.mem_buffer =*/ nullptr,
         /*.no_alloc   =*/ true };
     ggml_context * hsa_ctx = ggml_init(hsa_params);
+#ifdef ZERO_COPY
+    ggml_tensor * tensor_hip_result = ggml_backend_hsa_tensor_alias(hsa_ctx, hip_result);
+    ggml_set_name(tensor_hip_result, "A + B (alias)");
+#else
     ggml_tensor * tensor_hip_result = ggml_new_tensor_1d(hsa_ctx, ggml_type, N);
+    ggml_set_name(tensor_hip_result, "A + B (copy)");
+#endif
     ggml_tensor * tensor_c = ggml_new_tensor_1d(hsa_ctx, ggml_type, N);
+    ggml_set_name(tensor_c, "C");
 
     // create graph
     ggml_cgraph * hsa_gf = ggml_new_graph_custom(hsa_ctx, hsa_tensor_count, /*grads*/ false);
 
     // add operation
     ggml_tensor * hsa_result = ggml_sub(hsa_ctx, tensor_hip_result, tensor_c);
+    ggml_set_name(hsa_result, "(A + B) - C");
 
     ggml_backend_buffer_t hsa_buffer = ggml_backend_alloc_ctx_tensors(hsa_ctx, hsa_backend);
     if (hsa_buffer == nullptr) {
@@ -131,8 +144,10 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
+#ifndef ZERO_COPY
     // copy data from HIP to HSA graph
     ggml_backend_tensor_copy(hip_result, tensor_hip_result);
+#endif
 
     // execute HSA graph
     if (ggml_backend_graph_compute(hsa_backend, hsa_gf) != GGML_STATUS_SUCCESS) {

@@ -103,6 +103,8 @@ GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert(
 
 /** @} */
 
+GGML_BACKEND_API ggml_tensor * ggml_backend_hsa_tensor_alias(ggml_context * ctx, ggml_tensor * tensor);
+
 #ifdef  __cplusplus
 }
 #endif
