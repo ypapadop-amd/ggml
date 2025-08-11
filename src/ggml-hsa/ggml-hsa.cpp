@@ -1768,3 +1768,13 @@ ggml_backend_t ggml_backend_hsa_init(std::int32_t device) try {
 }
 
 GGML_BACKEND_DL_IMPL(ggml_backend_hsa_reg)
+
+ggml_tensor * ggml_backend_hsa_tensor_alias(ggml_context * ctx, ggml_tensor * tensor) {
+    auto new_tensor = ggml_new_tensor(ctx, tensor->type, GGML_MAX_DIMS, tensor->ne);
+    std::copy_n(tensor->nb, GGML_MAX_DIMS, new_tensor->nb); // copy stride
+    new_tensor->data = tensor->data;                        // alias data
+
+    // TODO needs to import memory
+
+    return new_tensor;
+}

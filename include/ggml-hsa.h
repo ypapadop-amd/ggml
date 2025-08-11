@@ -33,6 +33,8 @@ GGML_BACKEND_API void ggml_backend_hsa_unregister_host_buffer(void * buffer);
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
 
+GGML_BACKEND_API ggml_tensor * ggml_backend_hsa_tensor_alias(ggml_context * ctx, ggml_tensor * tensor);
+
 #ifdef  __cplusplus
 }
 #endif
