@@ -115,12 +115,14 @@ def compile_kernel(
     # generate PDI and insts files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
-    aie.iron.compile.compile_mlir_module_to_pdi(
+    work_dir = os.path.join(output_directory, "tmp")
+    aie.iron.compile.compile_mlir_module(
         mlir_module=mlir_module,
         options=["--alloc-scheme=basic-sequential"],
         insts_path=insts_path,
         pdi_path=pdi_path,
         verbose=verbose,
+        work_dir=work_dir,
     )
     logger.info("Finished compilation for kernel %s in %s", kernel_name, mlir_path)
 
