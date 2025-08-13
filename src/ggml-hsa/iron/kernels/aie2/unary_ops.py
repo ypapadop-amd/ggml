@@ -16,16 +16,16 @@ from aie.iron import (
     Program,
     Runtime,
     Worker,
-    get_current_device,
     dtype_to_str,
+    ExternalFunction,
 )
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from utils import core_function, CoreFunctionInfo
+from utils import core_function, CoreFunctionInfo, arch_to_device
 
 
-def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
+def unary_op(device, input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
     """Implements output = op(input)."""
 
     tile_size = 16
@@ -88,7 +88,69 @@ def unary_op(input_tensor, output_tensor, core_function_info: CoreFunctionInfo):
         rt.drain(of_out.cons(), b_out, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(get_current_device(), rt).resolve_program(SequentialPlacer())
+    return Program(device, rt).resolve_program(SequentialPlacer())
+
+
+def unary_op_external_function(device, input_tensor, output_tensor, func):
+    """Implements output = op(input)."""
+
+    if not input_tensor.contiguous or not output_tensor.contiguous:
+        raise ValueError("Input and output tensors must be contiguous in memory.")
+
+    if input_tensor.shape != output_tensor.shape:
+        raise ValueError(
+            f"Incompatible input and output shapes ({input_tensor.shape} != {output_tensor.shape})."
+        )
+
+    if func.tile_size(0) != func.tile_size(1):
+        raise ValueError(
+            f"Input and output tile sizes do not match ({func.tile_size(0)} != {func.tile_size(1)})."
+        )
+
+    tile_size = func.tile_size(0)
+    num_elements = np.size(input_tensor)
+    if num_elements % tile_size != 0:
+        raise ValueError(
+            f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
+        )
+    num_tiles = num_elements // tile_size
+
+    if input_tensor.dtype != output_tensor.dtype:
+        raise ValueError(
+            f"Incompatible input and output data types ({input_tensor.dtype} != {output_tensor.dtype})."
+        )
+
+    # Input / output data movement
+    input_tile_ty = np.ndarray[(func.tile_size(0),), np.dtype[input_tensor.dtype]]
+    output_tile_ty = np.ndarray[(func.tile_size(1),), np.dtype[output_tensor.dtype]]
+    of_in = ObjectFifo(input_tile_ty, name="in")
+    of_out = ObjectFifo(output_tile_ty, name="out")
+
+    # Task for the core to perform
+    def core_fn(of_in, of_out, func):
+        tile_size = func.tile_size(0)
+        # Number of sub-vector "tile" iterations
+        for _ in range_(num_tiles):
+            elem_in = of_in.acquire(1)
+            elem_out = of_out.acquire(1)
+            func(elem_in, elem_out, tile_size)
+            of_in.release(1)
+            of_out.release(1)
+
+    # Create a worker to perform the task
+    worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod(), func])
+
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
+    output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
+    with rt.sequence(input_tensor_ty, output_tensor_ty) as (a_in, b_out):
+        rt.start(worker)
+        rt.fill(of_in.prod(), a_in)
+        rt.drain(of_out.cons(), b_out, wait=True)
+
+    # Place program components (assign them resources on the device) and generate an MLIR module
+    return Program(device, rt).resolve_program(SequentialPlacer())
 
 
 def unary_op_core_function_info(
@@ -114,18 +176,28 @@ def unary_op_core_function_info(
 
 @core_function(partial(unary_op_core_function_info, op_name="sqr"))
 def ggml_op_sqr(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_OP_SQR implementation."""
-    return unary_op(*input_tensors, output_tensor, core_function_info)
+    return unary_op(
+        arch_to_device(device), *input_tensors, output_tensor, core_function_info
+    )
 
 
 @core_function(partial(unary_op_core_function_info, op_name="sqrt"))
 def ggml_op_sqrt(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_OP_SQRT implementation."""
-    return unary_op(*input_tensors, output_tensor, core_function_info)
+    return unary_op(
+        arch_to_device(device), *input_tensors, output_tensor, core_function_info
+    )
 
 
 def ggml_op_log(
@@ -136,14 +208,20 @@ def ggml_op_log(
 
 
 def ggml_op_sin(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_OP_SIN implementation."""
     raise NotImplementedError
 
 
 def ggml_op_cos(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_OP_COS implementation."""
     raise NotImplementedError
@@ -151,45 +229,82 @@ def ggml_op_cos(
 
 @core_function(partial(unary_op_core_function_info, op_name="abs"))
 def ggml_unary_op_abs(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_ABS implementation."""
-    return unary_op(*input_tensors, output_tensor, core_function_info)
+    return unary_op(
+        arch_to_device(device), *input_tensors, output_tensor, core_function_info
+    )
 
 
-@core_function(partial(unary_op_core_function_info, op_name="sgn"))
-def ggml_unary_op_sgn(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
-):
+def ggml_unary_op_sgn(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_SGN implementation."""
-    return unary_op(*input_tensors, output_tensor, core_function_info)
+    tile_size = 16
+    current_dir = path.dirname(path.realpath(__file__))
+    func = ExternalFunction(
+        name="ggml_op_sgn",
+        object_file_name="sgn_core_function.o",
+        source_file=path.join(current_dir, "unary_ops.cc"),
+        arg_types=[
+            np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
+            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
+            np.int32,
+        ],
+        compile_flags=[
+            "-DCOMPILE_SGN=1",
+            f"-DINPUT_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
+            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        ],
+    )
+    return unary_op_external_function(
+        arch_to_device(device), *input_tensors, output_tensor, func
+    )
 
 
 @core_function(partial(unary_op_core_function_info, op_name="neg"))
 def ggml_unary_op_neg(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_NEG implementation."""
-    return unary_op(*input_tensors, output_tensor, core_function_info)
+    return unary_op(
+        arch_to_device(device), *input_tensors, output_tensor, core_function_info
+    )
 
 
 @core_function(partial(unary_op_core_function_info, op_name="step"))
 def ggml_unary_op_step(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_STEP implementation."""
-    return unary_op(*input_tensors, output_tensor, core_function_info)
+    return unary_op(
+        arch_to_device(device), *input_tensors, output_tensor, core_function_info
+    )
 
 
 def ggml_unary_op_tanh(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_TANH implementation."""
     raise NotImplementedError
 
 
 def ggml_unary_op_elu(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_ELU implementation."""
     raise NotImplementedError
@@ -197,35 +312,52 @@ def ggml_unary_op_elu(
 
 @core_function(partial(unary_op_core_function_info, op_name="relu"))
 def ggml_unary_op_relu(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_RELU implementation."""
-    return unary_op(*input_tensors, output_tensor, core_function_info)
+    return unary_op(
+        arch_to_device(device), *input_tensors, output_tensor, core_function_info
+    )
 
 
 def ggml_unary_op_sigmoid(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_SIGMOID implementation."""
     raise NotImplementedError
 
 
 def ggml_unary_op_gelu(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_GELU implementation."""
     raise NotImplementedError
 
 
 def ggml_unary_op_gelu_quick(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_GELU_QUICK implementation."""
     raise NotImplementedError
 
 
 def ggml_unary_op_silu(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_SILU implementation."""
     raise NotImplementedError
@@ -233,29 +365,45 @@ def ggml_unary_op_silu(
 
 @core_function(partial(unary_op_core_function_info, op_name="hardswish"))
 def ggml_unary_op_hardswish(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_HARDSWISH implementation."""
-    return unary_op(*input_tensors, output_tensor, core_function_info)
+    return unary_op(
+        arch_to_device(device), *input_tensors, output_tensor, core_function_info
+    )
 
 
 @core_function(partial(unary_op_core_function_info, op_name="hardsigmoid"))
 def ggml_unary_op_hardsigmoid(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_HARDSIGMOID implementation."""
-    return unary_op(*input_tensors, output_tensor, core_function_info)
+    return unary_op(
+        arch_to_device(device), *input_tensors, output_tensor, core_function_info
+    )
 
 
 def ggml_unary_op_exp(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_EXP implementation."""
     raise NotImplementedError
 
 
 def ggml_unary_op_gelu_erf(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
     """GGML_UNARY_OP_GELU_ERF implementation."""
     raise NotImplementedError

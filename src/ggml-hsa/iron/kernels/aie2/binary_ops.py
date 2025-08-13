@@ -10,14 +10,14 @@ import operator
 import numpy as np
 import pytest
 
-import aie.iron as iron
 from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
-from aie.iron.device import NPU1
 from aie.iron.controlflow import range_
 
+from utils import arch_to_device
 
-def binary_op(input_tensor0, input_tensor1, op, output):
+
+def binary_op(device, input_tensor0, input_tensor1, op, output):
     """Implements output = input_tensor0 op input_tensor1"""
 
     if (
@@ -92,27 +92,35 @@ def binary_op(input_tensor0, input_tensor1, op, output):
         rt.drain(of_out.cons(), C, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(iron.get_current_device(), rt).resolve_program(SequentialPlacer())
+    return Program(device, rt).resolve_program(SequentialPlacer())
 
 
-def ggml_op_add(input_tensors: list, output_tensor):
+def ggml_op_add(device: str, input_tensors: list, output_tensor):
     """GGML_OP_ADD implementation."""
-    return binary_op(*input_tensors, lambda x, y: x + y, output_tensor)
+    return binary_op(
+        arch_to_device(device), *input_tensors, lambda x, y: x + y, output_tensor
+    )
 
 
-def ggml_op_sub(input_tensors: list, output_tensor):
+def ggml_op_sub(device: str, input_tensors: list, output_tensor):
     """GGML_OP_SUB implementation."""
-    return binary_op(*input_tensors, lambda x, y: x - y, output_tensor)
+    return binary_op(
+        arch_to_device(device), *input_tensors, lambda x, y: x - y, output_tensor
+    )
 
 
-def ggml_op_mul(input_tensors: list, output_tensor):
+def ggml_op_mul(device: str, input_tensors: list, output_tensor):
     """GGML_OP_MUL implementation."""
-    return binary_op(*input_tensors, lambda x, y: x * y, output_tensor)
+    return binary_op(
+        arch_to_device(device), *input_tensors, lambda x, y: x * y, output_tensor
+    )
 
 
-def ggml_op_div(input_tensors: list, output_tensor):
+def ggml_op_div(device: str, input_tensors: list, output_tensor):
     """GGML_OP_DIV implementation."""
-    return binary_op(*input_tensors, lambda x, y: x / y, output_tensor)
+    return binary_op(
+        arch_to_device(device), *input_tensors, lambda x, y: x / y, output_tensor
+    )
 
 
 @pytest.mark.parametrize("num_elements", [16, 256, 4096])
@@ -127,6 +135,8 @@ def ggml_op_div(input_tensors: list, output_tensor):
     ],
 )
 def test_ggml_op_binary(function, op, dtype, num_elements):
+    import aie.iron as iron
+
     # Construct two input random tensors and an output zeroed tensor
     input_tensor0 = iron.randint(
         1, 100, (num_elements, 1, 1, 1), dtype=dtype, device="npu"
@@ -139,10 +149,23 @@ def test_ggml_op_binary(function, op, dtype, num_elements):
     input_tensor1.contiguous = True
     output_tensor.contiguous = True
 
+    dev = None
+    device = iron.get_current_device()
+    if device == aie.iron.Device.NPU1:
+        dev = "npu"
+    elif device == aie.iron.Device.NPU2:
+        dev = "npu2"
+    else:
+        raise ValueError(f"Unsupported device: {device}")
+
     # JIT-compile the kernel then launch the kernel with the given arguments
     @iron.jit(is_placed=False)
     def jit_wrapper(input_tensor0, input_tensor1, output_tensor):
-        return function([input_tensor0, input_tensor1], output_tensor)
+        return function(
+            iron.get_current_device(),
+            [input_tensor0, input_tensor1],
+            output_tensor,
+        )
 
     jit_wrapper(input_tensor0, input_tensor1, output_tensor)
 

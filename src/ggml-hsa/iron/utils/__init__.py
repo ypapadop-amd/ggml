@@ -2,14 +2,15 @@
 # (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
 __all__ = [
+    "arch_to_device",
+    "compile_kernel",
     "CoreFunctionInfo",
     "core_function",
     "TensorDesc",
     "tensordesc",
-    "compile_kernel",
 ]
 
-from .build import compile_kernel
+from .build import arch_to_device, compile_kernel
 
 from .core_function import CoreFunctionInfo, core_function
 
