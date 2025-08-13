@@ -115,47 +115,36 @@ def ggml_op_div(input_tensors: list, output_tensor):
     return binary_op(*input_tensors, lambda x, y: x / y, output_tensor)
 
 
-@iron.jit(is_placed=False)
-def ggml_op_add_jit(input_tensor0, input_tensor1, output_tensor):
-    return ggml_op_add([input_tensor0, input_tensor1], output_tensor)
-
-
-@iron.jit(is_placed=False)
-def ggml_op_sub_jit(input_tensor0, input_tensor1, output_tensor):
-    return ggml_op_sub([input_tensor0, input_tensor1], output_tensor)
-
-
-@iron.jit(is_placed=False)
-def ggml_op_mul_jit(input_tensor0, input_tensor1, output_tensor):
-    return ggml_op_mul([input_tensor0, input_tensor1], output_tensor)
-
-
-@iron.jit(is_placed=False)
-def ggml_op_div_jit(input_tensor0, input_tensor1, output_tensor):
-    return ggml_op_div([input_tensor0, input_tensor1], output_tensor)
-
-
 @pytest.mark.parametrize("num_elements", [16, 256, 4096])
 @pytest.mark.parametrize("dtype", [np.int32])
 @pytest.mark.parametrize(
     "function, op",
     [
-        (ggml_op_add_jit, operator.add),
-        (ggml_op_sub_jit, operator.sub),
-        (ggml_op_mul_jit, operator.mul),
-        (ggml_op_div_jit, operator.floordiv),
+        (ggml_op_add, operator.add),
+        (ggml_op_sub, operator.sub),
+        (ggml_op_mul, operator.mul),
+        (ggml_op_div, operator.floordiv),
     ],
 )
 def test_ggml_op_binary(function, op, dtype, num_elements):
-    iron.set_current_device(NPU1())
-
     # Construct two input random tensors and an output zeroed tensor
-    input_tensor0 = iron.randint(1, 100, (num_elements,), dtype=dtype, device="npu")
-    input_tensor1 = iron.randint(1, 100, (num_elements,), dtype=dtype, device="npu")
+    input_tensor0 = iron.randint(
+        1, 100, (num_elements, 1, 1, 1), dtype=dtype, device="npu"
+    )
+    input_tensor1 = iron.randint(
+        1, 100, (num_elements, 1, 1, 1), dtype=dtype, device="npu"
+    )
     output_tensor = iron.zeros_like(input_tensor0)
+    input_tensor0.contiguous = True
+    input_tensor1.contiguous = True
+    output_tensor.contiguous = True
 
     # JIT-compile the kernel then launch the kernel with the given arguments
-    function(input_tensor0, input_tensor1, output_tensor)
+    @iron.jit(is_placed=False)
+    def jit_wrapper(input_tensor0, input_tensor1, output_tensor):
+        return function([input_tensor0, input_tensor1], output_tensor)
+
+    jit_wrapper(input_tensor0, input_tensor1, output_tensor)
 
     assert np.array_equal(
         op(input_tensor0.numpy(), input_tensor1.numpy()), output_tensor.numpy()
