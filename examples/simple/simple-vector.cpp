@@ -64,7 +64,7 @@ int main(int argc, char* argv[]) {
 #ifdef GGML_USE_CUDA
     if (!backend) {
         std::cout << "Using CUDA backend\n";
-        backend = ggml_backend_cuda_init(0); // init device 0
+        backend = ggml_backend_cuda_init(1); // init device 0
     }
 #endif
 

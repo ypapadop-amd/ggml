@@ -1,0 +1,2 @@
+/opt/rocm-6.3.2/lib/llvm/bin/llvm-ar qc libcommon.a CMakeFiles/common.dir/common.cpp.o
+/opt/rocm-6.3.2/lib/llvm/bin/llvm-ranlib libcommon.a

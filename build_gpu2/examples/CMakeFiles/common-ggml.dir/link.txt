@@ -1,0 +1,2 @@
+/opt/rocm-6.3.2/lib/llvm/bin/llvm-ar qc libcommon-ggml.a "CMakeFiles/common-ggml.dir/common-ggml.cpp.o"
+/opt/rocm-6.3.2/lib/llvm/bin/llvm-ranlib libcommon-ggml.a

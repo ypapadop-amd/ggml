@@ -32,3 +32,6 @@ endif()
 if (GGML_METAL)
     add_subdirectory(perf-metal)
 endif()
+
+add_subdirectory(demo)
+

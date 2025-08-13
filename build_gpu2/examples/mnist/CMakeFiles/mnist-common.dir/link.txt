@@ -1,0 +1,2 @@
+/opt/rocm-6.3.2/lib/llvm/bin/llvm-ar qc libmnist-common.a "CMakeFiles/mnist-common.dir/mnist-common.cpp.o"
+/opt/rocm-6.3.2/lib/llvm/bin/llvm-ranlib libmnist-common.a
