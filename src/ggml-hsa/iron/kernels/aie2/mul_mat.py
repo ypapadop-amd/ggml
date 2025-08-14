@@ -638,10 +638,17 @@ def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
 
 @core_function(mul_mat_core_function_info)
 def ggml_op_mul_mat(
-    input_tensors: list, output_tensor, core_function_info: CoreFunctionInfo
+    device: str,
+    input_tensors: list,
+    output_tensor,
+    core_function_info: CoreFunctionInfo,
 ):
-    # TODO
-    dev = "npu"
+    if device == "aie2":
+        dev = "npu"
+    elif device == "aie2p":
+        dev = "npu2"
+    else:
+        raise ValueError(f"Unsupported device: {device}")
 
     A = input_tensors[0]  # MxK = A.shape(1) x A.shape(0)
     B = input_tensors[1]  # KxN = B.shape(1) x B.shape(0)
