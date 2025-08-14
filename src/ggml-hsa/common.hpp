@@ -129,9 +129,9 @@ void ggml_hsa_output_tensor(const ggml_tensor & tensor, OutputStream & os) {
 }
 
 /**
- * @brief Creates a kernel name for @p tensor.
+ * @brief Returns a kernel name for @p tensor.
  */
-ggml_status ggml_hsa_create_kernel_name(const ggml_tensor & tensor, std::string & kernel_name);
+std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor);
 
 /**
  * @brief Frees memory allocated using HSA.

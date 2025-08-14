@@ -59,11 +59,13 @@ std::int64_t ggml_hsa_nsrcs(const ggml_tensor & tensor) {
     return nsrcs;
 }
 
-ggml_status ggml_hsa_create_kernel_name(const ggml_tensor & tensor, std::string & kernel_name) {
+std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor) {
     if ((tensor.op < GGML_OP_NONE) || (tensor.op >= GGML_OP_COUNT)) {
-        GGML_LOG_ERROR("%s: tensor \"%s\" operation index out of bounds (%d >= GGML_OP_COUNT)\n",
-                       __func__, ggml_get_name(&tensor), tensor.op);
-        return GGML_STATUS_FAILED;
+        throw std::runtime_error{std::string("Tensor \"")
+                                     .append(ggml_get_name(&tensor))
+                                     .append("\" operation index out of bounds: ")
+                                     .append(std::to_string(tensor.op))
+                                     .append(" not in [0, GGML_OP_COUNT)")};
     }
 
     std::ostringstream oss;
@@ -86,8 +88,7 @@ ggml_status ggml_hsa_create_kernel_name(const ggml_tensor & tensor, std::string 
         ggml_hsa_output_tensor(*(tensor.src[i]), oss);
     }
 
-    kernel_name = oss.str();
-    return GGML_STATUS_SUCCESS;
+    return oss.str();
 }
 
 /**
@@ -402,6 +403,17 @@ static bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor) {
 }
 
 /**
+ * @brief Updates the strides of @p tensor so that it has a trivial layout.
+ */
+static void ggml_hsa_force_unpermuted(ggml_tensor & tensor) {
+    tensor.nb[0] = ggml_type_size(tensor.type);
+    tensor.nb[1] = tensor.nb[0] * (tensor.ne[0] / ggml_blck_size(tensor.type));
+    for (std::int32_t i = 2; i < GGML_MAX_DIMS; ++i) {
+        tensor.nb[i] = tensor.nb[i - 1] * tensor.ne[i - 1];
+    }
+}
+
+/**
  * @brief Flattens @p tensor.
  */
 static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
@@ -432,10 +444,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         throw std::runtime_error{"Output tensor does not have trivial layout."};
     }
 
-    // array that marks which ggml_backend_hsa_tensor_extra::src strides need to be updated
-    std::array<bool, GGML_MAX_SRC> update_src_nb{};
-    update_src_nb.fill(false);
-
     // flag to create the kernel based on the tensor; a kernel may not be created, e.g., if the
     // operation is a noop or if it is not supported on the device
     bool create_kernel = false;
@@ -455,6 +463,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 assert(nsrcs == 2);
 
                 tensor = *parent_tensor;
+                create_kernel = true;
 
                 // B' matrix
                 src[0] = *parent_tensor->src[1];
@@ -464,15 +473,13 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 src[1] = *parent_tensor->src[0];
                 src[1].data = nullptr;
                 std::swap(src[1].ne[0], src[1].ne[1]);
-                update_src_nb[1] = true;
+                ggml_hsa_force_unpermuted(src[1]);
                 src_sizes[1] = GGML_PAD(ggml_nbytes(parent_tensor->src[0]), dev_info.alignment);
                 tensor.src[1] = &src[1];
 
                 total_src_size = src_sizes[1];
 
                 assert(ggml_hsa_nsrcs(tensor) == nsrcs);
-
-                create_kernel = true;
             }
             break;
         case GGML_OP_CPY:
@@ -488,64 +495,52 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         default:
             {
                 tensor = *parent_tensor;
+                create_kernel = true;
 
-                if (ggml_hsa_can_flatten(*parent_tensor) && !ggml_is_vector(parent_tensor)) {
-                    // operation can be flattened, flatten tensors but reuse tensor storage
+                for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+                    // source tensors that do not have a trivial layout will be copied to temporary
+                    // storage
+                    src[src_idx] = *parent_tensor->src[src_idx];
+                    if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
+                        src[src_idx].data = nullptr;
+                        ggml_hsa_force_unpermuted(src[src_idx]);
+                        src_sizes[src_idx] =
+                            GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
+                        total_src_size += src_sizes[src_idx];
+                    }
+                    tensor.src[src_idx] = &src[src_idx];
+                }
+
+                if (ggml_hsa_can_flatten(tensor) && !ggml_is_vector(&tensor)) {
+                    // flatten tensors but reuse tensor storage
                     ggml_hsa_flatten_tensor(tensor);
                     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-                        src[src_idx] = *parent_tensor->src[src_idx];
                         ggml_hsa_flatten_tensor(src[src_idx]);
-                        tensor.src[src_idx] = &src[src_idx];
-                    }
-                } else {
-                    // any source tensors that do not have a trivial layout will be copied to
-                    // temporary storage
-                    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-                        src[src_idx] = *parent_tensor->src[src_idx];
-                        if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
-                            src[src_idx].data = nullptr;
-                            update_src_nb[src_idx] = true;
-                            src_sizes[src_idx] =
-                                GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
-                            total_src_size += src_sizes[src_idx];
-                        }
-                        tensor.src[src_idx] = &src[src_idx];
                     }
                 }
-                assert(ggml_hsa_nsrcs(tensor) == nsrcs);
 
-                create_kernel = true;
+                assert(ggml_hsa_nsrcs(tensor) == nsrcs);
             }
             break;
     }
 
-    // update source tensor strides
-    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-        if (update_src_nb[src_idx]) {
-            auto * src_tensor = tensor.src[src_idx];
-            src_tensor->nb[0] = ggml_type_size(src_tensor->type);
-            src_tensor->nb[1] =
-                src_tensor->nb[0] * (src_tensor->ne[0] / ggml_blck_size(src_tensor->type));
-            for (std::int32_t i = 2; i < GGML_MAX_DIMS; ++i) {
-                src_tensor->nb[i] = src_tensor->nb[i - 1] * src_tensor->ne[i - 1];
-            }
-        }
-    }
-
+    // create a kernel for the operation
     if (create_kernel) {
-        std::string kernel_name = tensor.name; // TODO create kernel name
+        auto kernel_name = ggml_hsa_create_kernel_name(tensor);
         kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info.device);
+        // retrieve a cached kernel or create a new one
         if (kernel == nullptr) {
-            // create a new kernel for this tensor
-            ggml_hsa_aie_kernel new_kernel;
-            if (ggml_hsa_create_aie_kernel(dev_info, &tensor, new_kernel) != GGML_STATUS_SUCCESS) {
+            ggml_hsa_aie_kernel aie_kernel;
+            if (ggml_hsa_create_aie_kernel(dev_info, kernel_name, tensor, aie_kernel) !=
+                GGML_STATUS_SUCCESS) {
                 throw std::runtime_error{std::string{"Failed to create kernel for tensor \""}
                                              .append(tensor.name)
                                              .append("\" (")
                                              .append(ggml_op_desc(&tensor))
                                              .append(")")};
             }
-            kernel = ggml_hsa_cache_kernel(kernel_name, dev_info.device, std::move(new_kernel));
+            kernel = ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device,
+                                           std::move(aie_kernel));
         }
     }
 }
