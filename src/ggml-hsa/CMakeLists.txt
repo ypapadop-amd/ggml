@@ -1,4 +1,4 @@
-#  Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+# Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
 

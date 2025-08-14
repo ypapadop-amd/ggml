@@ -2,13 +2,11 @@
 
 #include "ggml-hsa/kernel-discovery.hpp"
 
-#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
 #include <string_view>
 
 #include "ggml-impl.h"
@@ -69,41 +67,6 @@ static const fs::path cached_kernel_dir = [] {
 }();
 
 /**
- * @brief Creates a kernel name for the operation in tensor @p tensor.
- */
-static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
-                                               std::string & kernel_name) {
-    if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
-        GGML_LOG_ERROR("%s: tensor \"%s\" operation index out of bounds (%d >= GGML_OP_COUNT)\n",
-                       __func__, ggml_get_name(tensor), tensor->op);
-        return GGML_STATUS_FAILED;
-    }
-
-    std::ostringstream oss;
-
-    // name in lowercase
-    std::string_view op_name = ggml_op_desc(tensor);
-    std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss),
-                   [&](char c) { return std::tolower(c); });
-
-    // output tensor
-    oss << '-';
-    ggml_hsa_output_tensor(tensor, oss);
-
-    // input tensors
-    for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
-        if (tensor->src[i] == nullptr) {
-            break;
-        }
-        oss << '-';
-        ggml_hsa_output_tensor(tensor->src[i], oss);
-    }
-
-    kernel_name = oss.str();
-    return GGML_STATUS_SUCCESS;
-}
-
-/**
  * @brief Returns if @p p is a file.
  */
 static bool ggml_hsa_is_file(const fs::path & p) {
@@ -146,38 +109,6 @@ static bool ggml_hsa_find_kernel_files(const std::string & device_name,
 }
 
 /**
- * @brief Tries to finds and if not found, tries to compile the kernel.
- */
-static ggml_status
-ggml_hsa_find_or_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                const ggml_tensor * tensor,
-                                const std::string & kernel_name,
-                                fs::path & pdi_path,
-                                fs::path & insts_path) {
-    // search for kernel files
-    if (ggml_hsa_find_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
-        return GGML_STATUS_SUCCESS;
-    }
-
-#ifdef GGML_HSA_JIT_COMPILE
-    // kernel files not found, compile kernel
-    if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, cached_kernel_dir);
-        status != GGML_STATUS_SUCCESS) {
-        return status;
-    }
-
-    // search for kernel files after compilation
-    if (ggml_hsa_find_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
-        return GGML_STATUS_SUCCESS;
-    }
-#else
-    GGML_UNUSED(tensor);
-#endif
-
-    return GGML_STATUS_ABORTED;
-}
-
-/**
  * @brief Reads a PDI file from @p path and returns its contents and size in bytes in @p buffer.
  */
 static ggml_status
@@ -193,16 +124,18 @@ ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & path, ggml_hsa_pd
         GGML_LOG_ERROR("%s: could not get file size for %s\n", __func__, path.c_str());
         return GGML_STATUS_FAILED;
     }
-    if (auto status =
-            hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer.data));
+
+    void * ptr = nullptr;
+    if (auto status = hsa_amd_memory_pool_allocate(pool, size, 0, &ptr);
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: failed to allocate %zu bytes (%s)\n", __func__, size,
                        ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
 
-    is.read(reinterpret_cast<char *>(buffer.data), size);
-    buffer.size = size;
+    buffer = ggml_hsa_pdi_buffer{reinterpret_cast<std::uint64_t *>(ptr)};
+
+    is.read(reinterpret_cast<char *>(buffer.data()), size);
 
     return GGML_STATUS_SUCCESS;
 }
@@ -232,98 +165,58 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
         return GGML_STATUS_FAILED;
     }
 
-    if (auto status =
-            hsa_amd_memory_pool_allocate(pool, size, 0, reinterpret_cast<void **>(&buffer.data));
+    void * ptr = nullptr;
+    if (auto status = hsa_amd_memory_pool_allocate(pool, size, 0, &ptr);
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: failed to allocate %zu bytes (%s)\n", __func__, size,
                        ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
 
-    is.read(reinterpret_cast<char *>(buffer.data), size);
-    buffer.size = size / sizeof(std::uint32_t);
+    buffer = ggml_hsa_insts_buffer{reinterpret_cast<std::uint32_t *>(ptr),
+                                   (size / sizeof(std::uint32_t))};
+
+    is.read(reinterpret_cast<char *>(buffer.data()), size);
 
     return GGML_STATUS_SUCCESS;
 }
 
-bool ggml_hsa_kernel_is_supported(const ggml_hsa_device_info::device_info & dev_info,
-                                  const ggml_tensor * tensor) {
-    std::string kernel_name;
-    if (ggml_hsa_create_kernel_name(tensor, kernel_name) != GGML_STATUS_SUCCESS) {
-        return false;
-    }
-
-    // check if the kernel exists; it will generate the kernel if JIT compilation is enabled
-    fs::path pdi_path;
-    fs::path insts_path;
-    return ggml_hsa_find_or_compile_kernel(dev_info, tensor, kernel_name, pdi_path, insts_path) ==
-           GGML_STATUS_SUCCESS;
-}
-
-ggml_status ggml_hsa_create_aie_kernel(ggml_backend_hsa_context & ctx,
-                                       const ggml_tensor * tensor,
+ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                       const std::string & kernel_name,
+                                       const ggml_tensor & tensor,
                                        ggml_hsa_aie_kernel & kernel) {
-    std::string kernel_name;
-    if (auto status = ggml_hsa_create_kernel_name(tensor, kernel_name);
-        status != GGML_STATUS_SUCCESS) {
-        return status;
-    }
-
-    // check if kernel is blocked
-    if (ctx.blocked_aie_kernels.find(kernel_name) != ctx.blocked_aie_kernels.end()) {
-        // kernel is blocked from being loaded
-        GGML_LOG_WARN("%s: kernel %s is blocked\n", __func__, kernel_name.c_str());
-        return GGML_STATUS_ABORTED;
-    }
-
-    // find kernel in already loaded kernels
-    if (auto it = ctx.aie_kernels.find(kernel_name); it != ctx.aie_kernels.end()) {
-        kernel = it->second;
-        return GGML_STATUS_SUCCESS;
-    }
-
-    const auto & info = ggml_hsa_info();
-    const auto & dev_info = info.devices[ctx.device];
-
-    // kernel not found, search the kernel directories
     fs::path pdi_path;
     fs::path insts_path;
-    if (auto status =
-            ggml_hsa_find_or_compile_kernel(dev_info, tensor, kernel_name, pdi_path, insts_path);
-        status != GGML_STATUS_SUCCESS) {
-        // kernel not found and could not be compiled; block to avoid further compilation attempts
-        ctx.blocked_aie_kernels.insert(kernel_name);
-        return status;
+
+    // search for kernel files
+    if (!ggml_hsa_find_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
+#ifdef GGML_HSA_JIT_COMPILE
+        // kernel files not found, compile kernel
+        if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, cached_kernel_dir);
+            status != GGML_STATUS_SUCCESS) {
+            return status;
+        }
+
+        // search for kernel files after compilation
+        if (!ggml_hsa_find_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
+            return GGML_STATUS_FAILED;
+        }
+#else
+        return GGML_STATUS_FAILED;
+#endif
     }
 
     // load PDI and instructions
-    ggml_hsa_aie_kernel tmp_kernel;
-    if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, tmp_kernel.pdi);
+    if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, kernel.pdi);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
     if (auto status =
-            ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, insts_path, tmp_kernel.insts);
+            ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, insts_path, kernel.insts);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
-    ctx.aie_kernels.emplace(std::move(kernel_name), tmp_kernel);
-
-    kernel = tmp_kernel;
-
     return GGML_STATUS_SUCCESS;
-}
-
-void ggml_hsa_destroy_aie_kernel(ggml_hsa_aie_kernel & kernel) {
-    if (auto status = hsa_amd_memory_pool_free(kernel.pdi.data); status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: error freeing memory (%s)\n", __func__,
-                       ggml_hsa_get_status_string(status));
-    }
-    if (auto status = hsa_amd_memory_pool_free(kernel.insts.data); status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: error freeing memory (%s)\n", __func__,
-                       ggml_hsa_get_status_string(status));
-    }
-    kernel = {};
 }

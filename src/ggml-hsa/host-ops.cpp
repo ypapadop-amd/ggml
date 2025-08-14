@@ -243,7 +243,7 @@ ggml_status ggml_hsa_copy_tensor(const ggml_tensor * src, ggml_tensor * dst) {
 }
 
 ggml_status ggml_hsa_compute_dup(ggml_backend_hsa_context & ctx, ggml_tensor * t) {
-    assert((ggml_hsa_nsrcs(t) == 1) && (t->type == t->src[0]->type) &&
+    assert((ggml_hsa_nsrcs(*t) == 1) && (t->type == t->src[0]->type) &&
            ggml_are_same_shape(t, t->src[0]));
 
     auto * src = t->src[0];
@@ -264,7 +264,7 @@ ggml_status ggml_hsa_compute_dup(ggml_backend_hsa_context & ctx, ggml_tensor * t
 }
 
 ggml_status ggml_hsa_compute_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * t) {
-    assert((ggml_hsa_nsrcs(t) == 2) && (ggml_nelements(t->src[0]) == ggml_nelements(t->src[1])));
+    assert((ggml_hsa_nsrcs(*t) == 2) && (ggml_nelements(t->src[0]) == ggml_nelements(t->src[1])));
 
     auto * src = t->src[0];
     auto * dst = t->src[1];
@@ -275,7 +275,7 @@ ggml_status ggml_hsa_compute_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * t
 }
 
 ggml_status ggml_hsa_compute_cont(ggml_backend_hsa_context & ctx, ggml_tensor * t) {
-    assert((ggml_hsa_nsrcs(t) == 1) && (t->type == t->src[0]->type) &&
+    assert((ggml_hsa_nsrcs(*t) == 1) && (t->type == t->src[0]->type) &&
            (ggml_nelements(t) == ggml_nelements(t->src[0])) && ggml_is_contiguous(t));
 
     auto * src = t->src[0];

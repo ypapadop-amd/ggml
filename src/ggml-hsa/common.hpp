@@ -6,7 +6,6 @@
 #include "ggml.h"
 
 #include <array>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -16,7 +15,7 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
-#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <hsa/hsa.h>
@@ -68,18 +67,141 @@ void ggml_hsa_error(
     } while (false)
 
 /**
- * @brief Decomposes a 64-bit address to two @c std::uint32_t.
+ * @brief Returns the number of sources of @p tensor.
  */
-inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(void * address) {
-    static_assert(sizeof(void *) == 2 * sizeof(std::uint32_t));
-    return {reinterpret_cast<uint64_t>(address) >> 32,
-            reinterpret_cast<uint64_t>(address) & 0xFFFFFFFF};
+std::int64_t ggml_hsa_nsrcs(const ggml_tensor & tensor);
+
+/**
+ * @brief Creates a string representation of the tensor shape.
+ *
+ * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `3x3x4`.
+ *
+ * @param[in] tensor tensor to output shape for
+ * @param[out] os output stream
+ * @param[in] delim delimiter
+ */
+template <typename OutputStream>
+void ggml_hsa_output_tensor_shape(const ggml_tensor & tensor, OutputStream & os, char delim = 'x') {
+    const auto ndims = ggml_n_dims(&tensor);
+    os << tensor.ne[0];
+    for (std::int32_t i = 1; i < ndims; ++i) {
+        os << delim << tensor.ne[i];
+    }
 }
 
 /**
- * @brief Returns the number of sources of @p tensor.
+ * @brief Creates a string representation of the tensor stride.
+ *
+ * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `X,Y,Z`,
+ * where X, Y, Z are the stride in bytes in the first, second, and third dimensions, respectively.
+ *
+ * @param[in] tensor tensor to output stride for
+ * @param[out] os output stream
+ * @param[in] delim delimiter
  */
-std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
+template <typename OutputStream>
+void ggml_hsa_output_tensor_stride(const ggml_tensor & tensor,
+                                   OutputStream & os,
+                                   char delim = ',') {
+    const auto ndims = ggml_n_dims(&tensor);
+    os << tensor.nb[0];
+    for (std::int32_t i = 1; i < ndims; ++i) {
+        os << delim << tensor.nb[i];
+    }
+}
+
+/**
+ * @brief Creates a string representation of the tensor.
+ *
+ * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32` for a contiguous 3D
+ * tensor with dimensions `[3,3,4]`.
+ *
+ * @param[in] tensor tensor to output
+ * @param[out] os output stream
+ */
+template <typename OutputStream>
+void ggml_hsa_output_tensor(const ggml_tensor & tensor, OutputStream & os) {
+    ggml_hsa_output_tensor_shape(tensor, os);
+    os << ggml_type_name(tensor.type);
+    if (!ggml_is_contiguous(&tensor)) {
+        os << 'n';
+    }
+}
+
+/**
+ * @brief Returns a kernel name for @p tensor.
+ */
+std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor);
+
+/**
+ * @brief Frees memory allocated using HSA.
+ */
+template <typename T>
+struct ggml_hsa_delete {
+    static_assert(!std::is_array_v<T>, "ggml_hsa_delete does not support arrays");
+
+    void operator()(T * ptr) const {
+        if (ptr) {
+            if constexpr (!std::is_void_v<T>) {
+                std::destroy_at(ptr);
+            }
+            GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(ptr));
+        }
+    }
+};
+
+/// @brief HSA allocated managed memory.
+template <typename T>
+using ggml_hsa_unique_ptr = std::unique_ptr<T, ggml_hsa_delete<T>>;
+
+/**
+ * @brief PDI buffer.
+ */
+class ggml_hsa_pdi_buffer {
+    ggml_hsa_unique_ptr<std::uint64_t> m_data;
+
+  public:
+    constexpr ggml_hsa_pdi_buffer() = default;
+    explicit ggml_hsa_pdi_buffer(std::uint64_t * data) : m_data{data} {}
+
+    std::uint64_t * data() { return m_data.get(); }
+    const std::uint64_t * data() const { return m_data.get(); }
+};
+
+/**
+ * @brief Instructions buffer.
+ */
+class ggml_hsa_insts_buffer {
+    ggml_hsa_unique_ptr<std::uint32_t> m_data;
+    std::size_t m_size{};
+
+  public:
+    constexpr ggml_hsa_insts_buffer() = default;
+    ggml_hsa_insts_buffer(std::uint32_t * data, std::size_t size) : m_data{data}, m_size{size} {}
+
+    ggml_hsa_insts_buffer(ggml_hsa_insts_buffer && other) :
+        m_data{std::exchange(other.m_data, nullptr)}, m_size{std::exchange(other.m_size, 0)} {}
+
+    ~ggml_hsa_insts_buffer() = default;
+
+    ggml_hsa_insts_buffer & operator=(ggml_hsa_insts_buffer && other) {
+        m_data = std::exchange(other.m_data, nullptr);
+        m_size = std::exchange(other.m_size, 0);
+        return *this;
+    }
+
+    std::size_t size() const { return m_size; }
+    std::uint32_t * data() { return m_data.get(); }
+    const std::uint32_t * data() const { return m_data.get(); }
+};
+
+/**
+ * @brief AIE kernel.
+ */
+struct ggml_hsa_aie_kernel {
+    ggml_hsa_pdi_buffer pdi;
+    ggml_hsa_insts_buffer insts;
+};
 
 /**
  * @brief Device information.
@@ -101,6 +223,7 @@ struct ggml_hsa_device_info {
      * @brief Information about a single HSA device.
      */
     struct device_info {
+        std::int32_t device{};                  ///< Device ID.
         hsa_agent_t agent{};                    ///< HSA agent associated with the device.
         hsa_device_type_t type{};               ///< Agent type.
         std::string name;                       ///< Agent name.
@@ -109,6 +232,8 @@ struct ggml_hsa_device_info {
         memory_pool_info kernarg_memory{};      ///< Kernel arguments memory pool.
         memory_pool_info data_memory{};         ///< Data memory pool.
         std::size_t alignment{256};             ///< Memory alignment requirement for buffers.
+        std::unordered_map<std::string, std::shared_ptr<ggml_hsa_aie_kernel>>
+            kernels; ///< Cached device kernels.
     };
 
     std::array<device_info, GGML_HSA_MAX_DEVICES> devices = {};
@@ -125,39 +250,6 @@ struct ggml_hsa_device_info {
  */
 const ggml_hsa_device_info & ggml_hsa_info();
 
-/**
- * @brief PDI buffer.
- */
-struct ggml_hsa_pdi_buffer {
-    std::uint64_t * data{};
-    std::size_t size{};
-
-    bool is_valid() const { return data != nullptr; }
-};
-
-/**
- * @brief Instructions buffer.
- */
-struct ggml_hsa_insts_buffer {
-    std::uint32_t * data{};
-    std::size_t size{};
-
-    bool is_valid() const { return data != nullptr; }
-};
-
-/**
- * @brief AIE agent kernel.
- */
-struct ggml_hsa_aie_kernel {
-    ggml_hsa_pdi_buffer pdi;
-    ggml_hsa_insts_buffer insts;
-
-    bool is_valid() const {
-        assert(pdi.is_valid() == insts.is_valid());
-        return pdi.is_valid();
-    }
-};
-
 #ifdef GGML_HSA_CPU_FALLBACK
 struct ggml_backend_hsa_emulated_tensor;
 #endif
@@ -166,7 +258,7 @@ struct ggml_backend_hsa_emulated_tensor;
  * @brief Tensor extra information.
  */
 struct ggml_backend_hsa_tensor_extra {
-    ggml_hsa_aie_kernel kernel; ///< Kernel associated with the tensor.
+    std::shared_ptr<ggml_hsa_aie_kernel> kernel; ///< Kernel associated with the tensor.
 #ifdef GGML_HSA_CPU_FALLBACK
     std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
 #endif
@@ -174,16 +266,16 @@ struct ggml_backend_hsa_tensor_extra {
     ggml_tensor tensor{};                        ///< Transformed operation tensor.
     std::array<ggml_tensor, GGML_MAX_SRC> src{}; ///< Source tensors for the operation.
     std::array<std::size_t, GGML_MAX_SRC>
-        src_sizes{};              ///< Sizes of the source tensors in bytes. 0 for no copy.
-    std::size_t total_src_size{}; ///< Total size of the source tensors in bytes.
-    void * buffer{};              ///< Temporary buffer for the tensor data.
+        src_sizes{};                       ///< Sizes of the source tensors in bytes. 0 for no copy.
+    std::size_t total_src_size{};          ///< Total size of the source tensors in bytes.
+    ggml_hsa_unique_ptr<std::byte> buffer; ///< Temporary buffer for the tensor data.
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor * parent_tensor);
     ggml_backend_hsa_tensor_extra(const ggml_backend_hsa_tensor_extra &) = delete;
     ggml_backend_hsa_tensor_extra(ggml_backend_hsa_tensor_extra &&) = delete;
 
-    ~ggml_backend_hsa_tensor_extra();
+    ~ggml_backend_hsa_tensor_extra() = default;
 
     ggml_backend_hsa_tensor_extra & operator=(const ggml_backend_hsa_tensor_extra &) = delete;
     ggml_backend_hsa_tensor_extra & operator=(ggml_backend_hsa_tensor_extra &&) = delete;
@@ -194,14 +286,9 @@ struct ggml_backend_hsa_tensor_extra {
     ggml_status allocate_internal_storage(const ggml_hsa_device_info::device_info & dev_info);
 
     /**
-     * @brief Returns if the tensor is valid.
+     * @brief Returns if one or more input tensors need to be copied..
      */
-    bool is_tensor_valid() const { return tensor.op != GGML_OP_NONE; }
-
-    /**
-     * @brief Returns if a sync is required before invoking the operation.
-     */
-    bool needs_sync() const { return total_src_size > 0; }
+    bool has_input_tensor_copies() const { return total_src_size > 0; }
 };
 
 /**
@@ -211,17 +298,15 @@ struct ggml_backend_hsa_context {
     std::int32_t device{};          ///< Device ID.
     std::string name;               ///< Device name.
     hsa_queue_t * queue{};          ///< HSA queue.
-    hsa_signal_t dispatch_signal{}; ///< Signal to wait dispatches.
-    std::unordered_map<std::string, ggml_hsa_aie_kernel> aie_kernels; ///< AIE agent kernels.
-    std::unordered_set<std::string> blocked_aie_kernels; ///< Blocked AIE agent kernels.
-    std::vector<void *> pending_payloads; ///< Packet payloads since last synchronization.
+    hsa_signal_t dispatch_signal{}; ///< Signal for packet completion.
+    std::vector<ggml_hsa_unique_ptr<void>>
+        pending_payloads; ///< Packet payloads since last synchronization.
 #ifdef GGML_HSA_CPU_FALLBACK
     ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
     ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
 #endif
 
-    ggml_backend_hsa_context(std::int32_t device,
-                             const ggml_hsa_device_info::device_info & dev_info);
+    explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 
     ggml_backend_hsa_context(const ggml_backend_hsa_context &) = delete;
     ggml_backend_hsa_context(ggml_backend_hsa_context &&) = delete;
@@ -230,11 +315,6 @@ struct ggml_backend_hsa_context {
 
     ggml_backend_hsa_context & operator=(const ggml_backend_hsa_context &) = delete;
     ggml_backend_hsa_context & operator=(ggml_backend_hsa_context &&) = delete;
-
-    /**
-     * @brief Destroys all loaded kernels and frees the used memory.
-     */
-    void destroy_kernels();
 
     /**
      * @brief Frees all memory associated with pending packets.
@@ -265,60 +345,3 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
  * @param[in] ctx backend context
  */
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
-
-/**
- * @brief Creates a string representation of the tensor shape.
- *
- * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `3x3x4`.
- *
- * @param[in] tensor tensor to output shape for
- * @param[out] os output stream
- * @param[in] delim delimiter
- */
-template <typename OutputStream>
-void ggml_hsa_output_tensor_shape(const ggml_tensor * tensor, OutputStream & os, char delim = 'x') {
-    const auto ndims = ggml_n_dims(tensor);
-    os << tensor->ne[0];
-    for (std::int32_t i = 1; i < ndims; ++i) {
-        os << delim << tensor->ne[i];
-    }
-}
-
-/**
- * @brief Creates a string representation of the tensor stride.
- *
- * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `X,Y,Z`,
- * where X, Y, Z are the stride in bytes in the first, second, and third dimensions, respectively.
- *
- * @param[in] tensor tensor to output stride for
- * @param[out] os output stream
- * @param[in] delim delimiter
- */
-template <typename OutputStream>
-void ggml_hsa_output_tensor_stride(const ggml_tensor * tensor,
-                                   OutputStream & os,
-                                   char delim = ',') {
-    const auto ndims = ggml_n_dims(tensor);
-    os << tensor->nb[0];
-    for (std::int32_t i = 1; i < ndims; ++i) {
-        os << delim << tensor->nb[i];
-    }
-}
-
-/**
- * @brief Creates a string representation of the tensor.
- *
- * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32` for a contiguous 3D
- * tensor with dimensions `[3,3,4]`.
- *
- * @param[in] tensor tensor to output
- * @param[out] os output stream
- */
-template <typename OutputStream>
-void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os) {
-    ggml_hsa_output_tensor_shape(tensor, os);
-    os << ggml_type_name(tensor->type);
-    if (!ggml_is_contiguous(tensor)) {
-        os << 'n';
-    }
-}
