@@ -1,4 +1,4 @@
-#  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+# Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
 # Creates a target with name TARGET_NAME which copies files to build directory
 #
