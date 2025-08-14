@@ -13,7 +13,7 @@ import aie.iron.device
 from tensor_desc import tensordesc, TensorDesc
 
 
-def to_device(device):
+def arch_to_device(device):
     """Returns the device from the string."""
     if isinstance(device, str):
         if device == "aie2":
@@ -44,7 +44,18 @@ def compile_kernel(
     output_directory: str,
     verbose: bool = False,
 ):
-    """Compiles the kernel code to PDI and instruction files."""
+    """
+    Compiles the kernel code to PDI and instruction files.
+    Parameters:
+        kernel_name (str): Name of the IRON kernel.
+        kernel_source (str): Path to the IRON kernel source file.
+        device (str): Target device for compilation.
+        input_tensors (list[TensorDesc]): List of input tensor descriptions.
+        output_tensor (TensorDesc): Output tensor description.
+        exported_name (str): Name to export the compiled kernel as.
+        output_directory (str): Directory to save the compiled files.
+        verbose (bool): If True, enables verbose logging.
+    """
 
     logger = logging.getLogger(__name__)
     if verbose:
@@ -66,9 +77,12 @@ def compile_kernel(
         output_directory,
     )
 
+    # create output and work directories
     os.makedirs(output_directory, exist_ok=True)
+    work_dir = os.path.join(output_directory, f"{exported_name}-artifacts")
+    os.makedirs(work_dir, exist_ok=True)
 
-    # import IRON kernel
+    # find IRON kernel
     module = import_from_path(kernel_name, kernel_source)
     kernel = getattr(module, kernel_name)
 
@@ -79,13 +93,13 @@ def compile_kernel(
         core_function_info = core_function_info_func(
             device=device, input_tensors=input_tensors, output_tensor=output_tensor
         )
-        output_path = os.path.join(output_directory, exported_name + ".o")
+        output_path = os.path.join(work_dir, kernel_name + ".o")
         aie.iron.compile.compile_cxx_core_function(
             source_path=core_function_info.source_file,
             target_arch=device,
             output_path=output_path,
             compile_args=core_function_info.compile_args,
-            cwd=output_directory,
+            cwd=work_dir,
             verbose=verbose,
         )
         core_function_info.object_file = output_path
@@ -96,33 +110,60 @@ def compile_kernel(
         # ignore missing attribute
         logger.info("No core function found for kernel %s", kernel_name)
 
-    # generate MLIR and write to file for debugging
-    dev = to_device(device)
-    aie.iron.set_current_device(dev)
-    if core_function_info:
+    # remove any existing external functions
+    aie.iron.ExternalFunction._instances.clear()
+
+    # generate MLIR module
+    if core_function_info:  # probably not needed
         mlir_module = kernel(
+            device=device,
             input_tensors=input_tensors,
             output_tensor=output_tensor,
             core_function_info=core_function_info,
         )
     else:
-        mlir_module = kernel(input_tensors=input_tensors, output_tensor=output_tensor)
-    mlir_path = os.path.join(output_directory, f"{exported_name}.mlir")
+        mlir_module = kernel(
+            device=device,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+        )
+
+    # compile any external functions
+    for func in aie.iron.kernel.ExternalFunction._instances:
+        output_path = os.path.join(work_dir, func._object_file_name)
+        aie.iron.compile.compile_cxx_core_function(
+            source_path=func._source_file,
+            target_arch=device,
+            output_path=output_path,
+            include_dirs=func._include_dirs,
+            compile_args=func._compile_flags,
+            cwd=work_dir,
+            verbose=verbose,
+        )
+
+    # remove generated external functions
+    aie.iron.ExternalFunction._instances.clear()
+
+    # write MLIR module to file
+    mlir_path = os.path.join(work_dir, f"{exported_name}.mlir")
     logger.info("Writing MLIR module for kernel %s in %s", kernel_name, mlir_path)
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
 
-    # generate PDI and insts files
+    # generate PDI and instructions files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
-    aie.iron.compile.compile_mlir_module_to_pdi(
+    aie.iron.compile.compile_mlir_module(
         mlir_module=mlir_module,
         options=["--alloc-scheme=basic-sequential"],
         insts_path=insts_path,
         pdi_path=pdi_path,
         verbose=verbose,
+        work_dir=work_dir,
     )
-    logger.info("Finished compilation for kernel %s in %s", kernel_name, mlir_path)
+    logger.info(
+        "Finished compilation for kernel %s in %s", kernel_name, output_directory
+    )
 
 
 def to_tuple_of_ints(string: str):
@@ -139,7 +180,6 @@ def to_tensordesc(string: str) -> TensorDesc:
     Parameters:
         string (str): string of the form (shape)/dtype.
 
-    Returns:
     Returns:
         TensorDesc: A new TensorDesc instance.
     """
