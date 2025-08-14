@@ -116,25 +116,25 @@ static auto ggml_backend_hsa_unary_kernel_jit_info = []() {
  * @brief Returns the JIT compilation information for the given operation.
  */
 static const ggml_hsa_aie_jit_kernel_info &
-ggml_hsa_get_kernel_jit_info(const ggml_tensor * tensor) {
-    assert((tensor->op > GGML_OP_NONE) && (tensor->op < GGML_OP_COUNT) &&
+ggml_hsa_get_kernel_jit_info(const ggml_tensor & tensor) {
+    assert((tensor.op > GGML_OP_NONE) && (tensor.op < GGML_OP_COUNT) &&
            "Tensor operation index out of bounds");
 
-    if (tensor->op == GGML_OP_UNARY) {
+    if (tensor.op == GGML_OP_UNARY) {
         // for unary operations, we need to get the specific unary operation type
-        return ggml_backend_hsa_unary_kernel_jit_info[ggml_get_unary_op(tensor)];
+        return ggml_backend_hsa_unary_kernel_jit_info[ggml_get_unary_op(&tensor)];
     }
 
-    return ggml_backend_hsa_kernel_jit_info[tensor->op];
+    return ggml_backend_hsa_kernel_jit_info[tensor.op];
 }
 
 /**
  * @brief Creates a @p py::tuple from the tensor shape.
  */
-static py::tuple ggml_hsa_tensor_ne_as_pytuple(const ggml_tensor * tensor) {
+static py::tuple ggml_hsa_tensor_ne_as_pytuple(const ggml_tensor & tensor) {
     auto shape = py::tuple(GGML_MAX_DIMS);
     for (auto i = 0; i < GGML_MAX_DIMS; ++i) {
-        shape[i] = py::int_(tensor->ne[i]);
+        shape[i] = py::int_(tensor.ne[i]);
     }
     return shape;
 }
@@ -142,16 +142,16 @@ static py::tuple ggml_hsa_tensor_ne_as_pytuple(const ggml_tensor * tensor) {
 /**
  * @brief Creates a @p py::tuple from the tensor strides.
  */
-static py::tuple ggml_hsa_tensor_nb_as_pytuple(const ggml_tensor * tensor) {
+static py::tuple ggml_hsa_tensor_nb_as_pytuple(const ggml_tensor & tensor) {
     auto stride = py::tuple(GGML_MAX_DIMS);
     for (auto i = 0; i < GGML_MAX_DIMS; ++i) {
-        stride[i] = py::int_(tensor->nb[i]);
+        stride[i] = py::int_(tensor.nb[i]);
     }
     return stride;
 }
 
 ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                    const ggml_tensor * tensor,
+                                    const ggml_tensor & tensor,
                                     const std::string & exported_name,
                                     const std::filesystem::path & output_path) {
     using namespace pybind11::literals;
@@ -176,17 +176,17 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto input_tensors = py::list(src_tensor_count);
         for (auto i = 0; i < src_tensor_count; ++i) {
-            const auto src_tensor = tensor->src[i];
+            const auto src_tensor = tensor.src[i];
             input_tensors[i] =
                 tensor_desc_ctor("dtype"_a = ggml_type_name(src_tensor->type),
-                                 "shape"_a = ggml_hsa_tensor_ne_as_pytuple(src_tensor),
-                                 "stride"_a = ggml_hsa_tensor_nb_as_pytuple(src_tensor),
+                                 "shape"_a = ggml_hsa_tensor_ne_as_pytuple(*src_tensor),
+                                 "stride"_a = ggml_hsa_tensor_nb_as_pytuple(*src_tensor),
                                  "contiguous"_a = ggml_is_contiguous(src_tensor));
         }
-        auto output_tensor = tensor_desc_ctor("dtype"_a = ggml_type_name(tensor->type),
+        auto output_tensor = tensor_desc_ctor("dtype"_a = ggml_type_name(tensor.type),
                                               "shape"_a = ggml_hsa_tensor_ne_as_pytuple(tensor),
                                               "stride"_a = ggml_hsa_tensor_nb_as_pytuple(tensor),
-                                              "contiguous"_a = ggml_is_contiguous(tensor));
+                                              "contiguous"_a = ggml_is_contiguous(&tensor));
 
         // compile the kernel
         auto iron_compiler = py::module_::import("build");
@@ -198,13 +198,13 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
             "output_directory"_a = output_directory.string(), "verbose"_a = verbose_compilation);
     } catch (const pybind11::error_already_set & ex) {
         GGML_LOG_ERROR("%s: failed to compile kernel %s for tensor \"%s\" (%s): %s\n", __func__,
-                       exported_name.c_str(), tensor->name, ggml_op_desc(tensor), ex.what());
+                       exported_name.c_str(), tensor.name, ggml_op_desc(&tensor), ex.what());
         return GGML_STATUS_FAILED;
     }
 
     GGML_LOG_INFO("%s: generated kernel %s in %s for tensor \"%s\" (%s)\n", __func__,
-                  exported_name.c_str(), output_directory.c_str(), tensor->name,
-                  ggml_op_desc(tensor));
+                  exported_name.c_str(), output_directory.c_str(), tensor.name,
+                  ggml_op_desc(&tensor));
 
     return GGML_STATUS_SUCCESS;
 }
