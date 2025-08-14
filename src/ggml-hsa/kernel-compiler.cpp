@@ -173,7 +173,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         // convert a GGML tensor to input and output TensorDesc objects
         auto utils = py::module_::import("utils");
         auto tensor_desc_ctor = utils.attr("tensordesc");
-        const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
+        const auto src_tensor_count = ggml_hsa_nsrcs(*tensor);
         auto input_tensors = py::list(src_tensor_count);
         for (auto i = 0; i < src_tensor_count; ++i) {
             const auto src_tensor = tensor->src[i];

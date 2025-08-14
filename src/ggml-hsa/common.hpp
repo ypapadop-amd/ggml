@@ -69,7 +69,7 @@ void ggml_hsa_error(
 /**
  * @brief Returns the number of sources of @p tensor.
  */
-std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
+std::int64_t ggml_hsa_nsrcs(const ggml_tensor & tensor);
 
 /**
  * @brief Creates a string representation of the tensor shape.

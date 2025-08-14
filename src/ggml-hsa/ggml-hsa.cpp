@@ -52,9 +52,9 @@ void ggml_hsa_error(
     GGML_ABORT("HSA error");
 }
 
-std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor) {
+std::int64_t ggml_hsa_nsrcs(const ggml_tensor & tensor) {
     std::int64_t nsrcs = 0;
-    for (; (nsrcs < GGML_MAX_SRC) && (tensor->src[nsrcs] != nullptr); ++nsrcs)
+    for (; (nsrcs < GGML_MAX_SRC) && (tensor.src[nsrcs] != nullptr); ++nsrcs)
         ;
     return nsrcs;
 }
@@ -419,7 +419,7 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
 
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * parent_tensor) :
-    nsrcs{ggml_hsa_nsrcs(parent_tensor)} {
+    nsrcs{ggml_hsa_nsrcs(*parent_tensor)} {
 
     // check tensor data type
     if (std::find(dev_info.supported_types.begin(), dev_info.supported_types.end(),
@@ -470,7 +470,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
 
                 total_src_size = src_sizes[1];
 
-                assert(ggml_hsa_nsrcs(&tensor) == nsrcs);
+                assert(ggml_hsa_nsrcs(tensor) == nsrcs);
 
                 create_kernel = true;
             }
@@ -512,7 +512,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                         tensor.src[src_idx] = &src[src_idx];
                     }
                 }
-                assert(ggml_hsa_nsrcs(&tensor) == nsrcs);
+                assert(ggml_hsa_nsrcs(tensor) == nsrcs);
 
                 create_kernel = true;
             }
