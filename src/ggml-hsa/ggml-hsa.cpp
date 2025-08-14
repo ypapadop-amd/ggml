@@ -13,6 +13,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -56,6 +57,37 @@ std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor) {
     for (; (nsrcs < GGML_MAX_SRC) && (tensor->src[nsrcs] != nullptr); ++nsrcs)
         ;
     return nsrcs;
+}
+
+ggml_status ggml_hsa_create_kernel_name(const ggml_tensor & tensor, std::string & kernel_name) {
+    if ((tensor.op < GGML_OP_NONE) || (tensor.op >= GGML_OP_COUNT)) {
+        GGML_LOG_ERROR("%s: tensor \"%s\" operation index out of bounds (%d >= GGML_OP_COUNT)\n",
+                       __func__, ggml_get_name(&tensor), tensor.op);
+        return GGML_STATUS_FAILED;
+    }
+
+    std::ostringstream oss;
+
+    // name in lowercase
+    std::string_view op_name = ggml_op_desc(&tensor);
+    std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss),
+                   [&](char c) { return std::tolower(c); });
+
+    // output tensor
+    oss << '-';
+    ggml_hsa_output_tensor(tensor, oss);
+
+    // input tensors
+    for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
+        if (tensor.src[i] == nullptr) {
+            break;
+        }
+        oss << '-';
+        ggml_hsa_output_tensor(*(tensor.src[i]), oss);
+    }
+
+    kernel_name = oss.str();
+    return GGML_STATUS_SUCCESS;
 }
 
 /**

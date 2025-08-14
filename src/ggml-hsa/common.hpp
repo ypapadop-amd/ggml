@@ -72,6 +72,68 @@ void ggml_hsa_error(
 std::int64_t ggml_hsa_nsrcs(const ggml_tensor * tensor);
 
 /**
+ * @brief Creates a string representation of the tensor shape.
+ *
+ * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `3x3x4`.
+ *
+ * @param[in] tensor tensor to output shape for
+ * @param[out] os output stream
+ * @param[in] delim delimiter
+ */
+template <typename OutputStream>
+void ggml_hsa_output_tensor_shape(const ggml_tensor & tensor, OutputStream & os, char delim = 'x') {
+    const auto ndims = ggml_n_dims(&tensor);
+    os << tensor.ne[0];
+    for (std::int32_t i = 1; i < ndims; ++i) {
+        os << delim << tensor.ne[i];
+    }
+}
+
+/**
+ * @brief Creates a string representation of the tensor stride.
+ *
+ * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `X,Y,Z`,
+ * where X, Y, Z are the stride in bytes in the first, second, and third dimensions, respectively.
+ *
+ * @param[in] tensor tensor to output stride for
+ * @param[out] os output stream
+ * @param[in] delim delimiter
+ */
+template <typename OutputStream>
+void ggml_hsa_output_tensor_stride(const ggml_tensor & tensor,
+                                   OutputStream & os,
+                                   char delim = ',') {
+    const auto ndims = ggml_n_dims(&tensor);
+    os << tensor.nb[0];
+    for (std::int32_t i = 1; i < ndims; ++i) {
+        os << delim << tensor.nb[i];
+    }
+}
+
+/**
+ * @brief Creates a string representation of the tensor.
+ *
+ * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32` for a contiguous 3D
+ * tensor with dimensions `[3,3,4]`.
+ *
+ * @param[in] tensor tensor to output
+ * @param[out] os output stream
+ */
+template <typename OutputStream>
+void ggml_hsa_output_tensor(const ggml_tensor & tensor, OutputStream & os) {
+    ggml_hsa_output_tensor_shape(tensor, os);
+    os << ggml_type_name(tensor.type);
+    if (!ggml_is_contiguous(&tensor)) {
+        os << 'n';
+    }
+}
+
+/**
+ * @brief Creates a kernel name for @p tensor.
+ */
+ggml_status ggml_hsa_create_kernel_name(const ggml_tensor & tensor, std::string & kernel_name);
+
+/**
  * @brief Frees memory allocated using HSA.
  */
 template <typename T>
@@ -283,60 +345,3 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
  * @param[in] ctx backend context
  */
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
-
-/**
- * @brief Creates a string representation of the tensor shape.
- *
- * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `3x3x4`.
- *
- * @param[in] tensor tensor to output shape for
- * @param[out] os output stream
- * @param[in] delim delimiter
- */
-template <typename OutputStream>
-void ggml_hsa_output_tensor_shape(const ggml_tensor * tensor, OutputStream & os, char delim = 'x') {
-    const auto ndims = ggml_n_dims(tensor);
-    os << tensor->ne[0];
-    for (std::int32_t i = 1; i < ndims; ++i) {
-        os << delim << tensor->ne[i];
-    }
-}
-
-/**
- * @brief Creates a string representation of the tensor stride.
- *
- * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `X,Y,Z`,
- * where X, Y, Z are the stride in bytes in the first, second, and third dimensions, respectively.
- *
- * @param[in] tensor tensor to output stride for
- * @param[out] os output stream
- * @param[in] delim delimiter
- */
-template <typename OutputStream>
-void ggml_hsa_output_tensor_stride(const ggml_tensor * tensor,
-                                   OutputStream & os,
-                                   char delim = ',') {
-    const auto ndims = ggml_n_dims(tensor);
-    os << tensor->nb[0];
-    for (std::int32_t i = 1; i < ndims; ++i) {
-        os << delim << tensor->nb[i];
-    }
-}
-
-/**
- * @brief Creates a string representation of the tensor.
- *
- * The representation is of the form `DimsDatatypeModifiers`, e.g., `3x3x4f32` for a contiguous 3D
- * tensor with dimensions `[3,3,4]`.
- *
- * @param[in] tensor tensor to output
- * @param[out] os output stream
- */
-template <typename OutputStream>
-void ggml_hsa_output_tensor(const ggml_tensor * tensor, OutputStream & os) {
-    ggml_hsa_output_tensor_shape(tensor, os);
-    os << ggml_type_name(tensor->type);
-    if (!ggml_is_contiguous(tensor)) {
-        os << 'n';
-    }
-}

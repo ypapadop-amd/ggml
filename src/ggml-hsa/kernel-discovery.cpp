@@ -2,13 +2,11 @@
 
 #include "ggml-hsa/kernel-discovery.hpp"
 
-#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
 #include <string_view>
 
 #include "ggml-impl.h"
@@ -67,41 +65,6 @@ static const fs::path cached_kernel_dir = [] {
 
     return cache_dir;
 }();
-
-/**
- * @brief Creates a kernel name for the operation in tensor @p tensor.
- */
-static ggml_status ggml_hsa_create_kernel_name(const ggml_tensor * tensor,
-                                               std::string & kernel_name) {
-    if ((tensor->op < GGML_OP_NONE) || (tensor->op >= GGML_OP_COUNT)) {
-        GGML_LOG_ERROR("%s: tensor \"%s\" operation index out of bounds (%d >= GGML_OP_COUNT)\n",
-                       __func__, ggml_get_name(tensor), tensor->op);
-        return GGML_STATUS_FAILED;
-    }
-
-    std::ostringstream oss;
-
-    // name in lowercase
-    std::string_view op_name = ggml_op_desc(tensor);
-    std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss),
-                   [&](char c) { return std::tolower(c); });
-
-    // output tensor
-    oss << '-';
-    ggml_hsa_output_tensor(tensor, oss);
-
-    // input tensors
-    for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
-        if (tensor->src[i] == nullptr) {
-            break;
-        }
-        oss << '-';
-        ggml_hsa_output_tensor(tensor->src[i], oss);
-    }
-
-    kernel_name = oss.str();
-    return GGML_STATUS_SUCCESS;
-}
 
 /**
  * @brief Returns if @p p is a file.
@@ -222,7 +185,7 @@ ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device_info &
                                        const ggml_tensor * tensor,
                                        ggml_hsa_aie_kernel & kernel) {
     std::string kernel_name;
-    if (auto status = ggml_hsa_create_kernel_name(tensor, kernel_name);
+    if (auto status = ggml_hsa_create_kernel_name(*tensor, kernel_name);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
