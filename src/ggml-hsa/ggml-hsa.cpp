@@ -250,6 +250,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
 
     // create device information (agent, type, name, memory pools, etc.)
     auto & dev_info = info.devices[info.device_count];
+    dev_info.device = info.device_count;
     dev_info.agent = agent;
     dev_info.type = type;
 
@@ -294,10 +295,13 @@ static ggml_hsa_device_info ggml_hsa_init() {
     return info;
 }
 
-const ggml_hsa_device_info & ggml_hsa_info() {
+/// @copydoc ggml_hsa_info
+static ggml_hsa_device_info & ggml_hsa_info_mut() {
     static ggml_hsa_device_info info = ggml_hsa_init();
     return info;
 }
+
+const ggml_hsa_device_info & ggml_hsa_info() { return ggml_hsa_info_mut(); }
 
 /**
  * @brief Returns the device info associated with @p device_id.
@@ -306,6 +310,54 @@ static const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::i
     const auto & info = ggml_hsa_info();
     const auto & dev_info = info.devices[device_id];
     return dev_info;
+}
+
+/**
+ * @brief Caches the @p new_kernel for the tensor @p tensor.name on the device @p device_id.
+ */
+static std::shared_ptr<ggml_hsa_aie_kernel>
+ggml_hsa_cache_kernel(std::string kernel_name, std::int32_t device_id, ggml_hsa_aie_kernel kernel) {
+    auto & info = ggml_hsa_info_mut();
+    auto & dev_info = info.devices[device_id];
+    auto & kernels = dev_info.kernels;
+    auto result = kernels.emplace(std::move(kernel_name),
+                                  std::make_shared<ggml_hsa_aie_kernel>(std::move(kernel)));
+    if (!result.second) {
+        GGML_ABORT("%s: kernel %s already exists on device %d\n", __func__, kernel_name.c_str(),
+                   device_id);
+    }
+    return result.first->second;
+}
+
+/**
+ * @brief Returns the cached kernel for @p kernel_name for the device @p device_id if it exists.
+ */
+static std::shared_ptr<ggml_hsa_aie_kernel>
+ggml_hsa_get_cached_kernel(const std::string & kernel_name, std::int32_t device_id) {
+    auto & info = ggml_hsa_info_mut();
+    auto & dev_info = info.devices[device_id];
+    auto & kernels = dev_info.kernels;
+    auto it = kernels.find(kernel_name);
+    if (it != kernels.end()) {
+        return it->second;
+    }
+    return nullptr;
+}
+
+/**
+ * @brief Deletes all unused cached kernels.
+ */
+static void ggml_hsa_purge_unused_cached_kernels(std::int32_t device_id) {
+    auto & info = ggml_hsa_info_mut();
+    auto & dev_info = info.devices[device_id];
+    auto & kernels = dev_info.kernels;
+    for (auto it = kernels.begin(); it != kernels.end();) {
+        if (it->second.use_count() == 1) {
+            it = kernels.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 /**
@@ -335,7 +387,7 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
 
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * parent_tensor) :
-    nsrcs(ggml_hsa_nsrcs(parent_tensor)) {
+    nsrcs{ggml_hsa_nsrcs(parent_tensor)} {
 
     // check tensor data type
     if (std::find(dev_info.supported_types.begin(), dev_info.supported_types.end(),
@@ -352,8 +404,9 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     std::array<bool, GGML_MAX_SRC> update_src_nb{};
     update_src_nb.fill(false);
 
-    // operation to compile the kernel for
-    const ggml_tensor * op_to_compile = nullptr;
+    // flag to create the kernel based on the tensor; a kernel may not be created, e.g., if the
+    // operation is a noop or if it is not supported on the device
+    bool create_kernel = false;
 
     switch (parent_tensor->op) {
         case GGML_OP_NONE:
@@ -387,7 +440,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
 
                 assert(ggml_hsa_nsrcs(&tensor) == nsrcs);
 
-                op_to_compile = &tensor;
+                create_kernel = true;
             }
             break;
         case GGML_OP_CPY:
@@ -402,9 +455,9 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             break;
         default:
             {
-                if (ggml_hsa_can_flatten(*parent_tensor) && !ggml_is_vector(parent_tensor)) {
-                    tensor = *parent_tensor;
+                tensor = *parent_tensor;
 
+                if (ggml_hsa_can_flatten(*parent_tensor) && !ggml_is_vector(parent_tensor)) {
                     // operation can be flattened, flatten tensors but reuse tensor storage
                     ggml_hsa_flatten_tensor(tensor);
                     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
@@ -412,11 +465,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                         ggml_hsa_flatten_tensor(src[src_idx]);
                         tensor.src[src_idx] = &src[src_idx];
                     }
-
-                    op_to_compile = &tensor;
                 } else {
-                    tensor = *parent_tensor;
-
                     // any source tensors that do not have a trivial layout will be copied to
                     // temporary storage
                     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
@@ -430,10 +479,10 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                         }
                         tensor.src[src_idx] = &src[src_idx];
                     }
-
-                    op_to_compile = parent_tensor;
                 }
                 assert(ggml_hsa_nsrcs(&tensor) == nsrcs);
+
+                create_kernel = true;
             }
             break;
     }
@@ -451,13 +500,21 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         }
     }
 
-    if ((op_to_compile != nullptr) &&
-        (ggml_hsa_create_aie_kernel(dev_info, op_to_compile, kernel) != GGML_STATUS_SUCCESS)) {
-        throw std::runtime_error{std::string{"Failed to create kernel for tensor \""}
-                                     .append(op_to_compile->name)
-                                     .append("\" (")
-                                     .append(ggml_op_desc(op_to_compile))
-                                     .append(")")};
+    if (create_kernel) {
+        std::string kernel_name = tensor.name; // TODO create kernel name
+        kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info.device);
+        if (kernel == nullptr) {
+            // create a new kernel for this tensor
+            ggml_hsa_aie_kernel new_kernel;
+            if (ggml_hsa_create_aie_kernel(dev_info, &tensor, new_kernel) != GGML_STATUS_SUCCESS) {
+                throw std::runtime_error{std::string{"Failed to create kernel for tensor \""}
+                                             .append(tensor.name)
+                                             .append("\" (")
+                                             .append(ggml_op_desc(&tensor))
+                                             .append(")")};
+            }
+            kernel = ggml_hsa_cache_kernel(kernel_name, dev_info.device, std::move(new_kernel));
+        }
     }
 }
 
@@ -501,8 +558,8 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
 }
 
 ggml_backend_hsa_context::ggml_backend_hsa_context(
-    std::int32_t device, const ggml_hsa_device_info::device_info & dev_info) :
-    device(device), name(ggml_hsa_format_name(device)) {
+    const ggml_hsa_device_info::device_info & dev_info) :
+    device{dev_info.device}, name{ggml_hsa_format_name(device)} {
     hsa_agent_t agent = dev_info.agent;
 
     // create queue
@@ -536,6 +593,7 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
 }
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
+    ggml_hsa_purge_unused_cached_kernels(device);
     GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
     GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
 #ifdef GGML_HSA_CPU_FALLBACK
@@ -666,7 +724,7 @@ struct ggml_backend_hsa_buffer_context {
     std::vector<std::unique_ptr<ggml_backend_hsa_tensor_extra>> tensor_extras;
 
     ggml_backend_hsa_buffer_context(std::int32_t device, void * dev_ptr) :
-        device(device), dev_ptr(static_cast<std::byte *>(dev_ptr)) {}
+        device{device}, dev_ptr{static_cast<std::byte *>(dev_ptr)} {}
 };
 
 /**
@@ -1270,8 +1328,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     auto & tensor_extra =
                         *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
 
-                    assert(tensor_extra.is_tensor_valid());
-
                     // MUL_MAT is implemented as C' = A * B' The IRON kernel implements
                     // C = A * B, so we transpose A to implement the operation as B' * A' = C'
 
@@ -1285,7 +1341,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                         break;
                     }
 
-                    status = ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, n->src,
+                    status = ggml_hsa_dispatch_kernel(ctx, *tensor_extra.kernel, n->src,
                                                       tensor_extra.nsrcs, n);
                 }
                 break;
@@ -1306,28 +1362,26 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     auto & tensor_extra =
                         *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
 
-                    ggml_tensor * n = nullptr;
+                    ggml_tensor * n = &tensor_extra.tensor;
 
-                    if (!tensor_extra.is_tensor_valid()) {
-                        // no shadow operation, use the existing node
-                        n = node;
-                    } else {
-                        n = &tensor_extra.tensor;
-                        if (tensor_extra.has_input_tensor_copies()) {
-                            ggml_hsa_wait_dispatches(ctx);
-                            for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
-                                if (tensor_extra.src_sizes[src_idx] == 0) {
-                                    continue;
-                                }
-                                status = ggml_hsa_copy_tensor(node->src[src_idx], n->src[src_idx]);
-                                if (status != GGML_STATUS_SUCCESS) {
-                                    break;
-                                }
+                    n = &tensor_extra.tensor;
+                    if (tensor_extra.has_input_tensor_copies()) {
+                        ggml_hsa_wait_dispatches(ctx);
+                        for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
+                            if (tensor_extra.src_sizes[src_idx] == 0) {
+                                continue;
                             }
+                            status = ggml_hsa_copy_tensor(node->src[src_idx], n->src[src_idx]);
+                            if (status != GGML_STATUS_SUCCESS) {
+                                break;
+                            }
+                        }
+                        if (status != GGML_STATUS_SUCCESS) {
+                            break;
                         }
                     }
 
-                    status = ggml_hsa_dispatch_kernel(ctx, tensor_extra.kernel, n->src,
+                    status = ggml_hsa_dispatch_kernel(ctx, *tensor_extra.kernel, n->src,
                                                       tensor_extra.nsrcs, n);
                 }
                 break;
@@ -1532,7 +1586,7 @@ ggml_backend_hsa_device_get_host_buffer_type(ggml_backend_dev_t /*dev*/) {
 static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
                                                 const ggml_tensor * op) try {
     if ((op->extra != nullptr) &&
-        static_cast<ggml_backend_hsa_tensor_extra *>(op->extra)->kernel.is_valid()) {
+        static_cast<ggml_backend_hsa_tensor_extra *>(op->extra)->kernel != nullptr) {
         // tensor that is already initialized with a valid kernel
         return true;
     }
@@ -1563,10 +1617,11 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             {
                 // check if the kernel is cached at the tensor level, if the compilation artifacts
                 // exist or if it can be compiled
-                const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
+                const auto & dev_ctx =
+                    *static_cast<ggml_backend_hsa_device_context *>(dev->context);
                 const auto & dev_info = ggml_hsa_get_device_info(dev_ctx.device);
                 ggml_backend_hsa_tensor_extra tensor_extra{dev_info, op};
-                supported = tensor_extra.kernel.is_valid();
+                supported = (tensor_extra.kernel != nullptr);
             }
             break;
     }
@@ -1744,7 +1799,7 @@ ggml_backend_t ggml_backend_hsa_init(std::int32_t device) try {
         return nullptr;
     }
 
-    auto * ctx = new ggml_backend_hsa_context{device, info.devices[device]};
+    auto * ctx = new ggml_backend_hsa_context{info.devices[device]};
 
     ggml_backend_t hsa_backend = new ggml_backend{
         /* .guid      = */ ggml_backend_hsa_guid(),

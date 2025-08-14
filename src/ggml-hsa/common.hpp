@@ -6,7 +6,6 @@
 #include "ggml.h"
 
 #include <array>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -15,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -93,6 +93,55 @@ template <typename T>
 using ggml_hsa_unique_ptr = std::unique_ptr<T, ggml_hsa_delete<T>>;
 
 /**
+ * @brief PDI buffer.
+ */
+class ggml_hsa_pdi_buffer {
+    ggml_hsa_unique_ptr<std::uint64_t> m_data;
+
+  public:
+    constexpr ggml_hsa_pdi_buffer() = default;
+    explicit ggml_hsa_pdi_buffer(std::uint64_t * data) : m_data{data} {}
+
+    std::uint64_t * data() { return m_data.get(); }
+    const std::uint64_t * data() const { return m_data.get(); }
+};
+
+/**
+ * @brief Instructions buffer.
+ */
+class ggml_hsa_insts_buffer {
+    ggml_hsa_unique_ptr<std::uint32_t> m_data;
+    std::size_t m_size{};
+
+  public:
+    constexpr ggml_hsa_insts_buffer() = default;
+    ggml_hsa_insts_buffer(std::uint32_t * data, std::size_t size) : m_data{data}, m_size{size} {}
+
+    ggml_hsa_insts_buffer(ggml_hsa_insts_buffer && other) :
+        m_data{std::exchange(other.m_data, nullptr)}, m_size{std::exchange(other.m_size, 0)} {}
+
+    ~ggml_hsa_insts_buffer() = default;
+
+    ggml_hsa_insts_buffer & operator=(ggml_hsa_insts_buffer && other) {
+        m_data = std::exchange(other.m_data, nullptr);
+        m_size = std::exchange(other.m_size, 0);
+        return *this;
+    }
+
+    std::size_t size() const { return m_size; }
+    std::uint32_t * data() { return m_data.get(); }
+    const std::uint32_t * data() const { return m_data.get(); }
+};
+
+/**
+ * @brief AIE kernel.
+ */
+struct ggml_hsa_aie_kernel {
+    ggml_hsa_pdi_buffer pdi;
+    ggml_hsa_insts_buffer insts;
+};
+
+/**
  * @brief Device information.
  */
 struct ggml_hsa_device_info {
@@ -112,6 +161,7 @@ struct ggml_hsa_device_info {
      * @brief Information about a single HSA device.
      */
     struct device_info {
+        std::int32_t device{};                  ///< Device ID.
         hsa_agent_t agent{};                    ///< HSA agent associated with the device.
         hsa_device_type_t type{};               ///< Agent type.
         std::string name;                       ///< Agent name.
@@ -120,6 +170,8 @@ struct ggml_hsa_device_info {
         memory_pool_info kernarg_memory{};      ///< Kernel arguments memory pool.
         memory_pool_info data_memory{};         ///< Data memory pool.
         std::size_t alignment{256};             ///< Memory alignment requirement for buffers.
+        std::unordered_map<std::string, std::shared_ptr<ggml_hsa_aie_kernel>>
+            kernels; ///< Cached device kernels.
     };
 
     std::array<device_info, GGML_HSA_MAX_DEVICES> devices = {};
@@ -136,62 +188,6 @@ struct ggml_hsa_device_info {
  */
 const ggml_hsa_device_info & ggml_hsa_info();
 
-/**
- * @brief PDI buffer.
- */
-class ggml_hsa_pdi_buffer {
-    ggml_hsa_unique_ptr<std::uint64_t> m_data;
-
-  public:
-    constexpr ggml_hsa_pdi_buffer() = default;
-    explicit ggml_hsa_pdi_buffer(std::uint64_t * data) : m_data(data) {}
-
-    std::uint64_t * data() { return m_data.get(); }
-    const std::uint64_t * data() const { return m_data.get(); }
-    bool is_valid() const { return m_data != nullptr; }
-};
-
-/**
- * @brief Instructions buffer.
- */
-class ggml_hsa_insts_buffer {
-    ggml_hsa_unique_ptr<std::uint32_t> m_data;
-    std::size_t m_size{};
-
-  public:
-    constexpr ggml_hsa_insts_buffer() = default;
-    ggml_hsa_insts_buffer(std::uint32_t * data, std::size_t size) : m_data(data), m_size(size) {}
-    ggml_hsa_insts_buffer(const ggml_hsa_insts_buffer &) = delete;
-    ggml_hsa_insts_buffer(ggml_hsa_insts_buffer &&) = default;
-
-    ~ggml_hsa_insts_buffer() = default;
-
-    ggml_hsa_insts_buffer & operator=(const ggml_hsa_insts_buffer &) = delete;
-    ggml_hsa_insts_buffer & operator=(ggml_hsa_insts_buffer && other) {
-        m_data = std::exchange(other.m_data, nullptr);
-        m_size = std::exchange(other.m_size, 0);
-        return *this;
-    }
-
-    std::size_t size() const { return m_size; }
-    std::uint32_t * data() { return m_data.get(); }
-    const std::uint32_t * data() const { return m_data.get(); }
-    bool is_valid() const { return m_data != nullptr; }
-};
-
-/**
- * @brief AIE agent kernel.
- */
-struct ggml_hsa_aie_kernel {
-    ggml_hsa_pdi_buffer pdi;
-    ggml_hsa_insts_buffer insts;
-
-    bool is_valid() const {
-        assert(pdi.is_valid() == insts.is_valid());
-        return pdi.is_valid();
-    }
-};
-
 #ifdef GGML_HSA_CPU_FALLBACK
 struct ggml_backend_hsa_emulated_tensor;
 #endif
@@ -200,7 +196,7 @@ struct ggml_backend_hsa_emulated_tensor;
  * @brief Tensor extra information.
  */
 struct ggml_backend_hsa_tensor_extra {
-    ggml_hsa_aie_kernel kernel; ///< Kernel associated with the tensor.
+    std::shared_ptr<ggml_hsa_aie_kernel> kernel; ///< Kernel associated with the tensor.
 #ifdef GGML_HSA_CPU_FALLBACK
     std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
 #endif
@@ -228,11 +224,6 @@ struct ggml_backend_hsa_tensor_extra {
     ggml_status allocate_internal_storage(const ggml_hsa_device_info::device_info & dev_info);
 
     /**
-     * @brief Returns if the tensor is valid.
-     */
-    bool is_tensor_valid() const { return tensor.op != GGML_OP_NONE; }
-
-    /**
      * @brief Returns if one or more input tensors need to be copied..
      */
     bool has_input_tensor_copies() const { return total_src_size > 0; }
@@ -253,8 +244,7 @@ struct ggml_backend_hsa_context {
     ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
 #endif
 
-    ggml_backend_hsa_context(std::int32_t device,
-                             const ggml_hsa_device_info::device_info & dev_info);
+    explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 
     ggml_backend_hsa_context(const ggml_backend_hsa_context &) = delete;
     ggml_backend_hsa_context(ggml_backend_hsa_context &&) = delete;
