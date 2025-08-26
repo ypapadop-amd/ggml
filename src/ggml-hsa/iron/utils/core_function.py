@@ -20,7 +20,7 @@ class CoreFunctionInfo:
     def __init__(
         self,
         source_file: str,
-        exported_function: str,
+        exported_function: str | dict[str, str],
         compile_args: list[str],
         additional_args=None,
     ):
