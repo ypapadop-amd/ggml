@@ -27,6 +27,7 @@ option(GGML_HSA_CPU_FALLBACK "ggml-hsa: use fallback to CPU if HSA kernel not im
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
+    aie-kernel.cpp
     ggml-hsa.cpp
     host-ops.cpp
     kernel-discovery.cpp
@@ -59,6 +60,7 @@ target_include_directories(ggml-hsa PRIVATE . ..)
 
 target_sources(ggml-hsa
     PRIVATE
+        aie-kernel.hpp
         common.hpp
         host-ops.hpp
         kernel-discovery.hpp
@@ -72,7 +74,6 @@ if (GGML_HSA_JIT_COMPILE)
 
     add_subdirectory(iron)
 endif ()
-
 
 if (GGML_HSA_CPU_FALLBACK)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_CPU_FALLBACK)
