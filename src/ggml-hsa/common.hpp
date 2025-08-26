@@ -13,9 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include <hsa/hsa.h>
@@ -154,53 +152,27 @@ struct ggml_hsa_delete {
 template <typename T>
 using ggml_hsa_unique_ptr = std::unique_ptr<T, ggml_hsa_delete<T>>;
 
-/**
- * @brief PDI buffer.
- */
-class ggml_hsa_pdi_buffer {
-    ggml_hsa_unique_ptr<std::uint64_t> m_data;
+struct ggml_backend_hsa_context;
 
+/**
+ * @brief Base class for HSA kernels.
+ */
+class ggml_hsa_kernel {
   public:
-    constexpr ggml_hsa_pdi_buffer() = default;
-    explicit ggml_hsa_pdi_buffer(std::uint64_t * data) : m_data{data} {}
+    virtual ~ggml_hsa_kernel() = default;
 
-    std::uint64_t * data() { return m_data.get(); }
-    const std::uint64_t * data() const { return m_data.get(); }
-};
-
-/**
- * @brief Instructions buffer.
- */
-class ggml_hsa_insts_buffer {
-    ggml_hsa_unique_ptr<std::uint32_t> m_data;
-    std::size_t m_size{};
-
-  public:
-    constexpr ggml_hsa_insts_buffer() = default;
-    ggml_hsa_insts_buffer(std::uint32_t * data, std::size_t size) : m_data{data}, m_size{size} {}
-
-    ggml_hsa_insts_buffer(ggml_hsa_insts_buffer && other) :
-        m_data{std::exchange(other.m_data, nullptr)}, m_size{std::exchange(other.m_size, 0)} {}
-
-    ~ggml_hsa_insts_buffer() = default;
-
-    ggml_hsa_insts_buffer & operator=(ggml_hsa_insts_buffer && other) {
-        m_data = std::exchange(other.m_data, nullptr);
-        m_size = std::exchange(other.m_size, 0);
-        return *this;
-    }
-
-    std::size_t size() const { return m_size; }
-    std::uint32_t * data() { return m_data.get(); }
-    const std::uint32_t * data() const { return m_data.get(); }
-};
-
-/**
- * @brief AIE kernel.
- */
-struct ggml_hsa_aie_kernel {
-    ggml_hsa_pdi_buffer pdi;
-    ggml_hsa_insts_buffer insts;
+    /**
+     * @brief Dispatches the kernel.
+     *
+     * @param[in] ctx backend context
+     * @param[in] src_tensors source tensors
+     * @param[in] num_src_tensors number of source tensors
+     * @param[out] dst_tensor destination tensor
+     */
+    virtual ggml_status dispatch(ggml_backend_hsa_context & ctx,
+                                 ggml_tensor * src_tensors[],
+                                 std::size_t num_src_tensors,
+                                 ggml_tensor * dst_tensor) const = 0;
 };
 
 /**
@@ -232,7 +204,7 @@ struct ggml_hsa_device_info {
         memory_pool_info kernarg_memory{};      ///< Kernel arguments memory pool.
         memory_pool_info data_memory{};         ///< Data memory pool.
         std::size_t alignment{256};             ///< Memory alignment requirement for buffers.
-        std::unordered_map<std::string, std::shared_ptr<ggml_hsa_aie_kernel>>
+        std::unordered_map<std::string, std::shared_ptr<ggml_hsa_kernel>>
             kernels; ///< Cached device kernels.
     };
 
@@ -250,6 +222,11 @@ struct ggml_hsa_device_info {
  */
 const ggml_hsa_device_info & ggml_hsa_info();
 
+/**
+ * @brief Returns the device info associated with @p device_id.
+ */
+const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t device_id);
+
 #ifdef GGML_HSA_CPU_FALLBACK
 struct ggml_backend_hsa_emulated_tensor;
 #endif
@@ -258,7 +235,7 @@ struct ggml_backend_hsa_emulated_tensor;
  * @brief Tensor extra information.
  */
 struct ggml_backend_hsa_tensor_extra {
-    std::shared_ptr<ggml_hsa_aie_kernel> kernel; ///< Kernel associated with the tensor.
+    std::shared_ptr<ggml_hsa_kernel> kernel; ///< Kernel associated with the tensor.
 #ifdef GGML_HSA_CPU_FALLBACK
     std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
 #endif
@@ -323,21 +300,6 @@ struct ggml_backend_hsa_context {
      */
     void free_pending_payloads();
 };
-
-/**
- * @brief Dispatches a kernel that implements for the tensor operation.
- *
- * @param[in] ctx backend context
- * @param[in] kernel kernel to dispatch
- * @param[in] src_tensors source tensors
- * @param[in] num_src_tensors number of source tensors
- * @param[out] dst_tensor destination tensor
- */
-ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
-                                     const ggml_hsa_aie_kernel & kernel,
-                                     ggml_tensor * src_tensors[],
-                                     std::size_t num_src_tensors,
-                                     ggml_tensor * dst_tensor);
 
 /**
  * @brief Waits for all dispatched kernels to finish.
