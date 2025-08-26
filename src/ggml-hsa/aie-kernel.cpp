@@ -3,8 +3,6 @@
 #include "ggml-hsa/aie-kernel.hpp"
 #include "ggml-impl.h"
 
-#include <tuple>
-
 /**
  * @brief Dispatches a packet to an AIE agent queue.
  *
@@ -35,15 +33,6 @@ static void ggml_hsa_aie_dispatch_packet(hsa_queue_t * queue,
     hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
 }
 
-/**
- * @brief Decomposes a 64-bit address to two @c std::uint32_t.
- */
-static std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(const void * address) {
-    static_assert(sizeof(void *) == 2 * sizeof(std::uint32_t));
-    return {reinterpret_cast<uint64_t>(address) >> 32,
-            reinterpret_cast<uint64_t>(address) & 0xFFFFFFFF};
-}
-
 ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor * src_tensors[],
                                           std::size_t num_src_tensors,
@@ -65,29 +54,29 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     cmd_payload->pdi_addr =
         const_cast<void *>(static_cast<const void *>(pdi.data())); // PDI to use with this command
 
-    // transaction opcode; not counted in packet_dwords
+    // transaction opcode; not counted in packet_dwords (see assert below)
     cmd_payload->data[0] = 0x3;
     cmd_payload->data[1] = 0x0;
 
     std::size_t dword_idx = 2;
 
     // instructions; 3 dwords
-    std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
-        ggml_hsa_addr_to_hilo(insts.data());
+    cmd_payload->data[dword_idx] = reinterpret_cast<std::uintptr_t>(insts.data()) & 0xFFFFFFFF;
+    cmd_payload->data[dword_idx + 1] = reinterpret_cast<std::uintptr_t>(insts.data()) >> 32;
     cmd_payload->data[dword_idx + 2] = static_cast<std::uint32_t>(insts.size());
-
     dword_idx += 3;
 
     // sources; 2 dwords each
     for (std::size_t src_idx = 0; src_idx < num_src_tensors; ++src_idx, dword_idx += 2) {
-        std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
-            ggml_hsa_addr_to_hilo(src_tensors[src_idx]->data);
+        cmd_payload->data[dword_idx] =
+            reinterpret_cast<std::uintptr_t>(src_tensors[src_idx]->data) & 0xFFFFFFFF;
+        cmd_payload->data[dword_idx + 1] =
+            reinterpret_cast<std::uintptr_t>(src_tensors[src_idx]->data) >> 32;
     }
 
     // destination; 2 dwords
-    std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
-        ggml_hsa_addr_to_hilo(dst_tensor->data);
-
+    cmd_payload->data[dword_idx] = reinterpret_cast<std::uintptr_t>(dst_tensor->data) & 0xFFFFFFFF;
+    cmd_payload->data[dword_idx + 1] = reinterpret_cast<std::uintptr_t>(dst_tensor->data) >> 32;
     dword_idx += 2;
 
     // sizes; 1 dword per tensor
@@ -96,7 +85,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     }
     cmd_payload->data[dword_idx] = ggml_nbytes(dst_tensor);
 
-    assert(dword_idx == packet_dwords + 1); // 2 extra uncounted dwords
+    assert(dword_idx == packet_dwords + 1); // 2 extra uncounted dwords (transaction opcode)
 
     ggml_hsa_aie_dispatch_packet(ctx.queue, ctx.dispatch_signal, cmd_payload, packet_dwords);
 
