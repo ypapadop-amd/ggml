@@ -15,7 +15,6 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include <hsa/hsa.h>
@@ -154,47 +153,6 @@ struct ggml_hsa_delete {
 template <typename T>
 using ggml_hsa_unique_ptr = std::unique_ptr<T, ggml_hsa_delete<T>>;
 
-/**
- * @brief PDI buffer.
- */
-class ggml_hsa_pdi_buffer {
-    ggml_hsa_unique_ptr<std::uint64_t> m_data;
-
-  public:
-    constexpr ggml_hsa_pdi_buffer() = default;
-    explicit ggml_hsa_pdi_buffer(std::uint64_t * data) : m_data{data} {}
-
-    std::uint64_t * data() { return m_data.get(); }
-    const std::uint64_t * data() const { return m_data.get(); }
-};
-
-/**
- * @brief Instructions buffer.
- */
-class ggml_hsa_insts_buffer {
-    ggml_hsa_unique_ptr<std::uint32_t> m_data;
-    std::size_t m_size{};
-
-  public:
-    constexpr ggml_hsa_insts_buffer() = default;
-    ggml_hsa_insts_buffer(std::uint32_t * data, std::size_t size) : m_data{data}, m_size{size} {}
-
-    ggml_hsa_insts_buffer(ggml_hsa_insts_buffer && other) :
-        m_data{std::exchange(other.m_data, nullptr)}, m_size{std::exchange(other.m_size, 0)} {}
-
-    ~ggml_hsa_insts_buffer() = default;
-
-    ggml_hsa_insts_buffer & operator=(ggml_hsa_insts_buffer && other) {
-        m_data = std::exchange(other.m_data, nullptr);
-        m_size = std::exchange(other.m_size, 0);
-        return *this;
-    }
-
-    std::size_t size() const { return m_size; }
-    std::uint32_t * data() { return m_data.get(); }
-    const std::uint32_t * data() const { return m_data.get(); }
-};
-
 struct ggml_backend_hsa_context;
 
 /**
@@ -264,6 +222,11 @@ struct ggml_hsa_device_info {
  * @return structure with device information
  */
 const ggml_hsa_device_info & ggml_hsa_info();
+
+/**
+ * @brief Returns the device info associated with @p device_id.
+ */
+const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t device_id);
 
 #ifdef GGML_HSA_CPU_FALLBACK
 struct ggml_backend_hsa_emulated_tensor;
@@ -345,17 +308,3 @@ struct ggml_backend_hsa_context {
  * @param[in] ctx backend context
  */
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
-
-/**
- * @brief Kernel for AIE agents.
- */
-class ggml_hsa_aie_kernel : public ggml_hsa_kernel {
-  public:
-    ggml_hsa_pdi_buffer pdi;
-    ggml_hsa_insts_buffer insts;
-
-    ggml_status dispatch(ggml_backend_hsa_context & ctx,
-                         ggml_tensor * src_tensors[],
-                         std::size_t num_src_tensors,
-                         ggml_tensor * dst_tensor) override;
-};
