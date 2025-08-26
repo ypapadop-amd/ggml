@@ -348,13 +348,14 @@ static const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::i
 /**
  * @brief Caches the @p new_kernel for the tensor @p tensor.name on the device @p device_id.
  */
-static std::shared_ptr<ggml_hsa_aie_kernel>
+static std::shared_ptr<ggml_hsa_kernel>
 ggml_hsa_cache_kernel(std::string kernel_name, std::int32_t device_id, ggml_hsa_aie_kernel kernel) {
     auto & info = ggml_hsa_info_mut();
     auto & dev_info = info.devices[device_id];
     auto & kernels = dev_info.kernels;
     auto result = kernels.emplace(std::move(kernel_name),
-                                  std::make_shared<ggml_hsa_aie_kernel>(std::move(kernel)));
+                                  std::static_pointer_cast<ggml_hsa_kernel>(
+                                      std::make_shared<ggml_hsa_aie_kernel>(std::move(kernel))));
     if (!result.second) {
         GGML_ABORT("%s: kernel %s already exists on device %d\n", __func__, kernel_name.c_str(),
                    device_id);
@@ -365,8 +366,8 @@ ggml_hsa_cache_kernel(std::string kernel_name, std::int32_t device_id, ggml_hsa_
 /**
  * @brief Returns the cached kernel for @p kernel_name for the device @p device_id if it exists.
  */
-static std::shared_ptr<ggml_hsa_aie_kernel>
-ggml_hsa_get_cached_kernel(const std::string & kernel_name, std::int32_t device_id) {
+static std::shared_ptr<ggml_hsa_kernel> ggml_hsa_get_cached_kernel(const std::string & kernel_name,
+                                                                   std::int32_t device_id) {
     auto & info = ggml_hsa_info_mut();
     auto & dev_info = info.devices[device_id];
     auto & kernels = dev_info.kernels;
@@ -670,11 +671,10 @@ inline std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(const void
             reinterpret_cast<uint64_t>(address) & 0xFFFFFFFF};
 }
 
-ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
-                                     const ggml_hsa_aie_kernel & kernel,
-                                     ggml_tensor * src_tensors[],
-                                     std::size_t num_src_tensors,
-                                     ggml_tensor * dst_tensor) {
+ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
+                                          ggml_tensor * src_tensors[],
+                                          std::size_t num_src_tensors,
+                                          ggml_tensor * dst_tensor) {
     const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
     const std::size_t packet_dwords =
         3 /* instructions */ + (num_src_tensors + 1) * 3 /* source and destination tensors */;
@@ -689,8 +689,8 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
     ctx.pending_payloads.emplace_back(ptr);
 
     auto cmd_payload = static_cast<hsa_amd_aie_ert_start_kernel_data_t *>(ptr);
-    cmd_payload->pdi_addr = const_cast<void *>(
-        static_cast<const void *>(kernel.pdi.data())); // PDI to use with this command
+    cmd_payload->pdi_addr =
+        const_cast<void *>(static_cast<const void *>(pdi.data())); // PDI to use with this command
 
     // transaction opcode; not counted in packet_dwords
     cmd_payload->data[0] = 0x3;
@@ -700,8 +700,8 @@ ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
 
     // instructions; 3 dwords
     std::tie(cmd_payload->data[dword_idx + 1], cmd_payload->data[dword_idx]) =
-        ggml_hsa_addr_to_hilo(kernel.insts.data());
-    cmd_payload->data[dword_idx + 2] = static_cast<std::uint32_t>(kernel.insts.size());
+        ggml_hsa_addr_to_hilo(insts.data());
+    cmd_payload->data[dword_idx + 2] = static_cast<std::uint32_t>(insts.size());
 
     dword_idx += 3;
 
@@ -1368,8 +1368,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                         break;
                     }
 
-                    status = ggml_hsa_dispatch_kernel(ctx, *tensor_extra.kernel, n->src,
-                                                      tensor_extra.nsrcs, n);
+                    status = tensor_extra.kernel->dispatch(ctx, n->src, tensor_extra.nsrcs, n);
                 }
                 break;
             case GGML_OP_CPY:
@@ -1408,8 +1407,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                         }
                     }
 
-                    status = ggml_hsa_dispatch_kernel(ctx, *tensor_extra.kernel, n->src,
-                                                      tensor_extra.nsrcs, n);
+                    status = tensor_extra.kernel->dispatch(ctx, n->src, tensor_extra.nsrcs, n);
                 }
                 break;
         }

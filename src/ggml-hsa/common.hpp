@@ -195,12 +195,27 @@ class ggml_hsa_insts_buffer {
     const std::uint32_t * data() const { return m_data.get(); }
 };
 
+struct ggml_backend_hsa_context;
+
 /**
- * @brief AIE kernel.
+ * @brief Base class for HSA kernels.
  */
-struct ggml_hsa_aie_kernel {
-    ggml_hsa_pdi_buffer pdi;
-    ggml_hsa_insts_buffer insts;
+class ggml_hsa_kernel {
+  public:
+    virtual ~ggml_hsa_kernel() = default;
+
+    /**
+     * @brief Dispatches the kernel.
+     *
+     * @param[in] ctx backend context
+     * @param[in] src_tensors source tensors
+     * @param[in] num_src_tensors number of source tensors
+     * @param[out] dst_tensor destination tensor
+     */
+    virtual ggml_status dispatch(ggml_backend_hsa_context & ctx,
+                                 ggml_tensor * src_tensors[],
+                                 std::size_t num_src_tensors,
+                                 ggml_tensor * dst_tensor) = 0;
 };
 
 /**
@@ -232,7 +247,7 @@ struct ggml_hsa_device_info {
         memory_pool_info kernarg_memory{};      ///< Kernel arguments memory pool.
         memory_pool_info data_memory{};         ///< Data memory pool.
         std::size_t alignment{256};             ///< Memory alignment requirement for buffers.
-        std::unordered_map<std::string, std::shared_ptr<ggml_hsa_aie_kernel>>
+        std::unordered_map<std::string, std::shared_ptr<ggml_hsa_kernel>>
             kernels; ///< Cached device kernels.
     };
 
@@ -258,7 +273,7 @@ struct ggml_backend_hsa_emulated_tensor;
  * @brief Tensor extra information.
  */
 struct ggml_backend_hsa_tensor_extra {
-    std::shared_ptr<ggml_hsa_aie_kernel> kernel; ///< Kernel associated with the tensor.
+    std::shared_ptr<ggml_hsa_kernel> kernel; ///< Kernel associated with the tensor.
 #ifdef GGML_HSA_CPU_FALLBACK
     std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
 #endif
@@ -325,23 +340,22 @@ struct ggml_backend_hsa_context {
 };
 
 /**
- * @brief Dispatches a kernel that implements for the tensor operation.
- *
- * @param[in] ctx backend context
- * @param[in] kernel kernel to dispatch
- * @param[in] src_tensors source tensors
- * @param[in] num_src_tensors number of source tensors
- * @param[out] dst_tensor destination tensor
- */
-ggml_status ggml_hsa_dispatch_kernel(ggml_backend_hsa_context & ctx,
-                                     const ggml_hsa_aie_kernel & kernel,
-                                     ggml_tensor * src_tensors[],
-                                     std::size_t num_src_tensors,
-                                     ggml_tensor * dst_tensor);
-
-/**
  * @brief Waits for all dispatched kernels to finish.
  *
  * @param[in] ctx backend context
  */
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
+
+/**
+ * @brief Kernel for AIE agents.
+ */
+class ggml_hsa_aie_kernel : public ggml_hsa_kernel {
+  public:
+    ggml_hsa_pdi_buffer pdi;
+    ggml_hsa_insts_buffer insts;
+
+    ggml_status dispatch(ggml_backend_hsa_context & ctx,
+                         ggml_tensor * src_tensors[],
+                         std::size_t num_src_tensors,
+                         ggml_tensor * dst_tensor) override;
+};
