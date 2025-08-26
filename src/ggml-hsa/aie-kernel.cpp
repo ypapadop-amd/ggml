@@ -6,7 +6,7 @@
 #include <tuple>
 
 /**
- * @brief Dispatches an HSA packet.
+ * @brief Dispatches a packet to an AIE agent queue.
  *
  * @todo @p dispatch_signal is not used yet.
  *
