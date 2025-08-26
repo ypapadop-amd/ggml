@@ -25,8 +25,14 @@ def arch_to_device(device):
     return device
 
 
-def import_from_path(module_name, path):
-    """Imports the module with name module_name from path."""
+def import_from_path(module_name: str, path: os.PathLike):
+    """
+    Imports the module with name module_name from path.
+
+    Parameters:
+        module_name (str): Name of the module.
+        path (os.PathLike): Path to the module file.
+    """
     spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
@@ -36,12 +42,12 @@ def import_from_path(module_name, path):
 
 def compile_kernel(
     kernel_name: str,
-    kernel_source: str,
+    kernel_source: os.PathLike,
     device: str,
     input_tensors: list[TensorDesc],
     output_tensor: TensorDesc,
     exported_name: str,
-    output_directory: str,
+    output_directory: os.PathLike,
     verbose: bool = False,
 ):
     """
