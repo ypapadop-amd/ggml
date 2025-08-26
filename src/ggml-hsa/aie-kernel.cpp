@@ -47,7 +47,7 @@ static std::tuple<std::uint32_t, std::uint32_t> ggml_hsa_addr_to_hilo(const void
 ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor * src_tensors[],
                                           std::size_t num_src_tensors,
-                                          ggml_tensor * dst_tensor) {
+                                          ggml_tensor * dst_tensor) const {
     const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
     const std::size_t packet_dwords =
         3 /* instructions */ + (num_src_tensors + 1) * 3 /* source and destination tensors */;

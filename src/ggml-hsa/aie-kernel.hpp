@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "ggml.h"
 #include "ggml-hsa/common.hpp"
+#include "ggml.h"
 
 #include <cstddef>
 #include <utility>
@@ -60,5 +60,5 @@ class ggml_hsa_aie_kernel : public ggml_hsa_kernel {
     ggml_status dispatch(ggml_backend_hsa_context & ctx,
                          ggml_tensor * src_tensors[],
                          std::size_t num_src_tensors,
-                         ggml_tensor * dst_tensor) override;
+                         ggml_tensor * dst_tensor) const override;
 };
