@@ -8,7 +8,7 @@
 #include <string>
 
 /**
- * @brief Creates the AIE kernel for the tensor's operation.
+ * @brief Creates the kernel for the tensor's operation.
  *
  * This function will try the following until one succeeds:
  *   -# load the kernel from the precompiled kernel directory,
@@ -21,7 +21,7 @@
  * @param[in] tensor tensor to find the kernel for
  * @param[out] kernel kernel for the operation of @p tensor
  */
-ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                       const std::string & kernel_name,
-                                       const ggml_tensor & tensor,
-                                       ggml_hsa_aie_kernel & kernel);
+ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                   const std::string & kernel_name,
+                                   const ggml_tensor & tensor,
+                                   std::shared_ptr<ggml_hsa_kernel> & kernel);
