@@ -9,6 +9,7 @@
 #include <fstream>
 #include <string_view>
 
+#include "ggml-hsa/aie-kernel.hpp"
 #include "ggml-impl.h"
 #ifdef GGML_HSA_JIT_COMPILE
 #include "ggml-hsa/kernel-compiler.hpp"
@@ -181,10 +182,20 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
     return GGML_STATUS_SUCCESS;
 }
 
-ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                       const std::string & kernel_name,
-                                       const ggml_tensor & tensor,
-                                       ggml_hsa_aie_kernel & kernel) {
+ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                   const std::string & kernel_name,
+                                   const ggml_tensor & tensor,
+                                   std::shared_ptr<ggml_hsa_kernel> & kernel) {
+    switch (dev_info.type) {
+        case HSA_DEVICE_TYPE_AIE:
+            break;
+
+        // unsupported device types
+        default:
+            GGML_LOG_ERROR("%s: device %s is not supported.\n", __func__, dev_info.name.c_str());
+            return GGML_STATUS_FAILED;
+    }
+
     fs::path pdi_path;
     fs::path insts_path;
 
@@ -206,17 +217,21 @@ ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device_info &
 #endif
     }
 
+    ggml_hsa_aie_kernel aie_kernel;
+
     // load PDI and instructions
-    if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, kernel.pdi);
+    if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, aie_kernel.pdi);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
     if (auto status =
-            ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, insts_path, kernel.insts);
+            ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, insts_path, aie_kernel.insts);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
+
+    kernel = std::make_shared<ggml_hsa_aie_kernel>(std::move(aie_kernel));
 
     return GGML_STATUS_SUCCESS;
 }
