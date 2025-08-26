@@ -345,8 +345,9 @@ const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t 
 /**
  * @brief Caches the @p new_kernel for the tensor @p tensor.name on the device @p device_id.
  */
-static std::shared_ptr<ggml_hsa_kernel> ggml_hsa_cache_kernel(
-    std::string kernel_name, std::int32_t device_id, std::shared_ptr<ggml_hsa_kernel> kernel) {
+static void ggml_hsa_cache_kernel(std::string kernel_name,
+                                  std::int32_t device_id,
+                                  std::shared_ptr<ggml_hsa_kernel> kernel) {
     auto & info = ggml_hsa_info_mut();
     auto & dev_info = info.devices[device_id];
     auto & kernels = dev_info.kernels;
@@ -355,17 +356,15 @@ static std::shared_ptr<ggml_hsa_kernel> ggml_hsa_cache_kernel(
         GGML_ABORT("%s: kernel %s already exists on device %d\n", __func__, kernel_name.c_str(),
                    device_id);
     }
-    return result.first->second;
 }
 
 /**
  * @brief Returns the cached kernel for @p kernel_name for the device @p device_id if it exists.
  */
-static std::shared_ptr<ggml_hsa_kernel> ggml_hsa_get_cached_kernel(const std::string & kernel_name,
-                                                                   std::int32_t device_id) {
-    auto & info = ggml_hsa_info_mut();
-    auto & dev_info = info.devices[device_id];
-    auto & kernels = dev_info.kernels;
+static std::shared_ptr<ggml_hsa_kernel>
+ggml_hsa_get_cached_kernel(const std::string & kernel_name,
+                           const ggml_hsa_device_info::device_info & dev_info) {
+    const auto & kernels = dev_info.kernels;
     auto it = kernels.find(kernel_name);
     if (it != kernels.end()) {
         return it->second;
@@ -523,9 +522,9 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // create a kernel for the operation
     if (create_kernel) {
         auto kernel_name = ggml_hsa_create_kernel_name(tensor);
-        kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info.device);
-        // retrieve a cached kernel or create a new one
+        kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
         if (kernel == nullptr) {
+            // kernel not cached; create a new one
             if (ggml_hsa_create_kernel(dev_info, kernel_name, tensor, kernel) !=
                 GGML_STATUS_SUCCESS) {
                 throw std::runtime_error{std::string{"Failed to create kernel for tensor \""}
@@ -534,8 +533,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                                              .append(ggml_op_desc(&tensor))
                                              .append(")")};
             }
-            kernel =
-                ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, std::move(kernel));
+            ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
         }
     }
 }
