@@ -450,33 +450,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         case GGML_OP_DUP:
             // implemented as host kernels; nothing to be done
             break;
-        case GGML_OP_MUL_MAT:
-            {
-                // MUL_MAT is implemented as C' = A * B' The IRON kernel implements C = A * B,
-                // so we transpose A to implement the operation as B' * A' = C'
-
-                assert(nsrcs == 2);
-
-                tensor = *parent_tensor;
-                create_kernel = true;
-
-                // B' matrix
-                src[0] = *parent_tensor->src[1];
-                tensor.src[0] = &src[0];
-
-                // A' matrix
-                src[1] = *parent_tensor->src[0];
-                src[1].data = nullptr;
-                std::swap(src[1].ne[0], src[1].ne[1]);
-                ggml_hsa_force_unpermuted(src[1]);
-                src_sizes[1] = GGML_PAD(ggml_nbytes(parent_tensor->src[0]), dev_info.alignment);
-                tensor.src[1] = &src[1];
-
-                total_src_size = src_sizes[1];
-
-                assert(ggml_hsa_nsrcs(tensor) == nsrcs);
-            }
-            break;
         case GGML_OP_CPY:
         case GGML_OP_CONT:
             // implemented as host kernels; nothing to be done
@@ -497,6 +470,10 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                     // storage
                     src[src_idx] = *parent_tensor->src[src_idx];
                     if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
+                        GGML_LOG_INFO(
+                            "%s: creating temporary for source tensor [%i] \"%s\" of \"%s\" (%s)\n",
+                            __func__, src_idx, src[src_idx].name, parent_tensor->name,
+                            ggml_op_desc(parent_tensor));
                         src[src_idx].data = nullptr;
                         ggml_hsa_force_unpermuted(src[src_idx]);
                         src_sizes[src_idx] =
@@ -1243,27 +1220,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
             case GGML_OP_DUP:
                 status = ggml_hsa_compute_dup(ctx, node);
-                break;
-            case GGML_OP_MUL_MAT:
-                {
-                    auto & tensor_extra =
-                        *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-
-                    // MUL_MAT is implemented as C' = A * B' The IRON kernel implements
-                    // C = A * B, so we transpose A to implement the operation as B' * A' = C'
-
-                    ggml_tensor * n = &tensor_extra.tensor;
-
-                    // copy A'
-                    auto transposed_A = ggml_hsa_transpose(node->src[0]);
-                    ggml_hsa_wait_dispatches(ctx);
-                    status = ggml_hsa_copy_tensor(&transposed_A, n->src[1]);
-                    if (status != GGML_STATUS_SUCCESS) {
-                        break;
-                    }
-
-                    status = tensor_extra.kernel->dispatch(ctx, n->src, tensor_extra.nsrcs, n);
-                }
                 break;
             case GGML_OP_CPY:
                 status = ggml_hsa_compute_cpy(ctx, node);
