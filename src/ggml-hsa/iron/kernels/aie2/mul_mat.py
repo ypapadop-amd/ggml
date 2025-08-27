@@ -637,38 +637,26 @@ def my_matmul(
 def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
     """Returns a compilation specification for matrix multiplication."""
 
-    if len(input_tensors) != 2:
-        raise ValueError("mul_mat requires exactly two input tensors")
-
-    A = input_tensors[0]  # MxK = A.shape(1) x A.shape(0)
-    B = input_tensors[1]  # KxN = B.shape(1) x B.shape(0)
-    C = output_tensor  # MxN = C.shape(1) x C.shape(0)
-
-    if A.dtype != B.dtype or A.dtype != C.dtype:
-        raise ValueError(
-            "mul_mat requires input and output tensors to have the same datatype"
-        )
-
-    if not A.contiguous or not B.contiguous or not C.contiguous:
-        raise ValueError("mul_mat tensors must be contiguous")
-
-    m = 32
+    m = 8
     n = 8
     k = 8
     use_scalar = False
+
     scalar_suffix = "_scalar" if use_scalar else ""
     current_dir = path.dirname(path.realpath(__file__))
     return CoreFunctionInfo(
         source_file=path.join(current_dir, "mm.cc"),
         exported_function={
-            "matmul": f"matmul{scalar_suffix}_{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}",
-            "zero": f"zero{scalar_suffix}_{dtype_to_str(C.dtype)}",
+            "matmul": f"matmul{scalar_suffix}_{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}",
+            "zero": f"zero{scalar_suffix}_{dtype_to_str(output_tensor.dtype)}",
         },
         compile_args=[
             f"-DDIM_M={m}",
             f"-DDIM_N={n}",
             f"-DDIM_K={k}",
-            f"-D{dtype_to_str(A.dtype)}_{dtype_to_str(C.dtype)}_ONLY",
+            f"-D{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}_ONLY",
+            "-DB_COL_MAJ",
+            "-DC_COL_MAJ",
         ],
         additional_args={"m": m, "n": n, "k": k, "use_scalar": use_scalar},
     )
@@ -688,30 +676,30 @@ def ggml_op_mul_mat(
     else:
         raise ValueError(f"Unsupported device: {device}")
 
+    if len(input_tensors) != 2:
+        raise ValueError("Requires two input tensors")
+
     A = input_tensors[0]  # MxK = A.shape(1) x A.shape(0)
-    B = input_tensors[1]  # KxN = B.shape(1) x B.shape(0)
-    C = output_tensor  # MxN = C.shape(1) x C.shape(0)
+    B = input_tensors[1]  # KxN = B.shape(0) x B.shape(1)
+    C = output_tensor  # MxN = C.shape(0) x C.shape(1)
 
-    # M
-    assert (
-        A.shape[1] == C.shape[1]
-    ), f"mul_mat matrices must have compatible M ({A.shape[1]} != {C.shape[1]})"
+    if not A.contiguous or not B.contiguous or not C.contiguous:
+        raise ValueError("Tensors must be contiguous")
 
-    # N
-    assert (
-        B.shape[0] == C.shape[0]
-    ), f"mul_mat matrices must have compatible N ({B.shape[0]} != {C.shape[0]})"
+    if A.shape[1] != C.shape[0]:
+        raise ValueError(f"Incompatible M for A and C ({A.shape[1]} != {C.shape[0]})")
 
-    # K
-    assert (
-        A.shape[0] == B.shape[1]
-    ), f"mul_mat matrices must have compatible K ({A.shape[0]} != {B.shape[1]})"
+    if B.shape[1] != C.shape[1]:
+        raise ValueError(f"Incompatible N for B and C ({B.shape[1]} != {C.shape[1]})")
+
+    if A.shape[0] != B.shape[0]:
+        raise ValueError(f"Incompatible K for A and B ({A.shape[0]} != {B.shape[0]})")
 
     with mlir_mod_ctx() as ctx:
         my_matmul(
             dev=dev,
             M=A.shape[1],
-            N=B.shape[0],
+            N=B.shape[1],
             K=A.shape[0],
             m=core_function_info.additional_args["m"],
             n=core_function_info.additional_args["n"],
@@ -719,8 +707,8 @@ def ggml_op_mul_mat(
             n_aie_cols=4,
             dtype_in_str=dtype_to_str(A.dtype),
             dtype_out_str=dtype_to_str(C.dtype),
-            b_col_maj=0,
-            c_col_maj=0,
+            b_col_maj=True,
+            c_col_maj=True,
             use_scalar=core_function_info.additional_args["use_scalar"],
             emulate_bf16_mmul_with_bfp16=False,
             trace_size=0,
