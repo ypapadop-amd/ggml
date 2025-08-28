@@ -14,7 +14,7 @@ from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from utils import arch_to_device
+from utils import arch_to_device, max_tile_size
 
 
 def binary_op(device, input_tensor0, input_tensor1, op, output_tensor):
@@ -54,17 +54,17 @@ def binary_op(device, input_tensor0, input_tensor1, op, output_tensor):
         raise ValueError(f"Unsupported shape ({input_tensor0.shape}).")
 
     num_elements = np.size(input_tensor0)
-    n = 16
-    if num_elements % n != 0:
+    tile_size = max_tile_size(device, input_tensor0.dtype, num_elements)
+    if num_elements % tile_size != 0:
         raise ValueError(
-            f"Number of elements ({num_elements}) must be a multiple of {n}."
+            f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
         )
-    num_elements_div_n = num_elements // n
+    num_elements_div_n = num_elements // tile_size
 
     # AIE-array data movement with object fifos
-    input0_tile_ty = np.ndarray[(n,), np.dtype[input_tensor0.dtype]]
-    input1_tile_ty = np.ndarray[(n,), np.dtype[input_tensor1.dtype]]
-    output_tile_ty = np.ndarray[(n,), np.dtype[output_tensor.dtype]]
+    input0_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor0.dtype]]
+    input1_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor1.dtype]]
+    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
     of_in0 = ObjectFifo(input0_tile_ty, name="in1")
     of_in1 = ObjectFifo(input1_tile_ty, name="in2")
     of_out = ObjectFifo(output_tile_ty, name="out")
@@ -76,7 +76,7 @@ def binary_op(device, input_tensor0, input_tensor1, op, output_tensor):
             elem_in0 = of_in0.acquire(1)
             elem_in1 = of_in1.acquire(1)
             elem_out = of_out.acquire(1)
-            for i in range_(n):
+            for i in range_(tile_size):
                 elem_out[i] = op(elem_in0[i], elem_in1[i])
             of_in0.release(1)
             of_in1.release(1)
@@ -97,35 +97,27 @@ def binary_op(device, input_tensor0, input_tensor1, op, output_tensor):
         rt.drain(of_out.cons(), C, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(device, rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(device), rt).resolve_program(SequentialPlacer())
 
 
 def ggml_op_add(device: str, input_tensors: list, output_tensor):
     """GGML_OP_ADD implementation."""
-    return binary_op(
-        arch_to_device(device), *input_tensors, lambda x, y: x + y, output_tensor
-    )
+    return binary_op(device, *input_tensors, lambda x, y: x + y, output_tensor)
 
 
 def ggml_op_sub(device: str, input_tensors: list, output_tensor):
     """GGML_OP_SUB implementation."""
-    return binary_op(
-        arch_to_device(device), *input_tensors, lambda x, y: x - y, output_tensor
-    )
+    return binary_op(device, *input_tensors, lambda x, y: x - y, output_tensor)
 
 
 def ggml_op_mul(device: str, input_tensors: list, output_tensor):
     """GGML_OP_MUL implementation."""
-    return binary_op(
-        arch_to_device(device), *input_tensors, lambda x, y: x * y, output_tensor
-    )
+    return binary_op(device, *input_tensors, lambda x, y: x * y, output_tensor)
 
 
 def ggml_op_div(device: str, input_tensors: list, output_tensor):
     """GGML_OP_DIV implementation."""
-    return binary_op(
-        arch_to_device(device), *input_tensors, lambda x, y: x / y, output_tensor
-    )
+    return binary_op(device, *input_tensors, lambda x, y: x / y, output_tensor)
 
 
 @pytest.mark.parametrize("num_elements", [16, 256, 4096])
@@ -154,23 +146,19 @@ def test_ggml_op_binary(function, op, dtype, num_elements):
     input_tensor1.contiguous = True
     output_tensor.contiguous = True
 
-    dev = None
+    device = None
     device = iron.get_current_device()
     if device == aie.iron.Device.NPU1:
-        dev = "npu"
+        device = "npu"
     elif device == aie.iron.Device.NPU2:
-        dev = "npu2"
+        device = "npu2"
     else:
         raise ValueError(f"Unsupported device: {device}")
 
     # JIT-compile the kernel then launch the kernel with the given arguments
     @iron.jit(is_placed=False)
     def jit_wrapper(input_tensor0, input_tensor1, output_tensor):
-        return function(
-            iron.get_current_device(),
-            [input_tensor0, input_tensor1],
-            output_tensor,
-        )
+        return function(device, [input_tensor0, input_tensor1], output_tensor)
 
     jit_wrapper(input_tensor0, input_tensor1, output_tensor)
 

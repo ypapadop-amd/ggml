@@ -20,10 +20,10 @@ from aie.iron import (
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from utils import arch_to_device
+from utils import arch_to_device, max_tile_size
 
 
-def unary_op(device, input_tensor, output_tensor, op):
+def unary_op(device: str, input_tensor, output_tensor, op):
     """
     Implements output = op(input).
 
@@ -84,15 +84,15 @@ def unary_op(device, input_tensor, output_tensor, op):
         rt.drain(of_out.cons(), b_out, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(device, rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(device), rt).resolve_program(SequentialPlacer())
 
 
 def create_external_function(
-    op_name: str, input_tensors: list, output_tensor
+    device: str, op_name: str, input_tensors: list, output_tensor
 ) -> ExternalFunction:
     """Returns an ExternalFunction specification for unary ops."""
 
-    tile_size = 16
+    tile_size = max_tile_size(device, input_tensors[0].dtype, np.size(input_tensors[0]))
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
         name="ggml_op_" + op_name,
@@ -115,17 +115,23 @@ def create_external_function(
 def ggml_op_sqr(device: str, input_tensors: list, output_tensor):
     """GGML_OP_SQR implementation."""
     func = create_external_function(
-        op_name="sqr", input_tensors=input_tensors, output_tensor=output_tensor
+        device=device,
+        op_name="sqr",
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_op_sqrt(device: str, input_tensors: list, output_tensor):
     """GGML_OP_SQRT implementation."""
     func = create_external_function(
-        op_name="sqrt", input_tensors=input_tensors, output_tensor=output_tensor
+        device=device,
+        op_name="sqrt",
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_op_log(device: str, input_tensors: list, output_tensor):
@@ -146,33 +152,45 @@ def ggml_op_cos(device: str, input_tensors: list, output_tensor):
 def ggml_unary_op_abs(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_ABS implementation."""
     func = create_external_function(
-        op_name="abs", input_tensors=input_tensors, output_tensor=output_tensor
+        device=device,
+        op_name="abs",
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_sgn(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_SGN implementation."""
     func = create_external_function(
-        op_name="sgn", input_tensors=input_tensors, output_tensor=output_tensor
+        device=device,
+        op_name="sgn",
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_neg(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_NEG implementation."""
     func = create_external_function(
-        op_name="neg", input_tensors=input_tensors, output_tensor=output_tensor
+        device=device,
+        op_name="neg",
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_step(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_STEP implementation."""
     func = create_external_function(
-        op_name="step", input_tensors=input_tensors, output_tensor=output_tensor
+        device=device,
+        op_name="step",
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_tanh(device: str, input_tensors: list, output_tensor):
@@ -188,9 +206,12 @@ def ggml_unary_op_elu(device: str, input_tensors: list, output_tensor):
 def ggml_unary_op_relu(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_RELU implementation."""
     func = create_external_function(
-        op_name="relu", input_tensors=input_tensors, output_tensor=output_tensor
+        device=device,
+        op_name="relu",
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_sigmoid(device: str, input_tensors: list, output_tensor):
@@ -216,17 +237,23 @@ def ggml_unary_op_silu(device: str, input_tensors: list, output_tensor):
 def ggml_unary_op_hardswish(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_HARDSWISH implementation."""
     func = create_external_function(
-        op_name="hardswish", input_tensors=input_tensors, output_tensor=output_tensor
+        device=device,
+        op_name="hardswish",
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_hardsigmoid(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_HARDSIGMOID implementation."""
     func = create_external_function(
-        op_name="hardsigmoid", input_tensors=input_tensors, output_tensor=output_tensor
+        device=device,
+        op_name="hardsigmoid",
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_exp(device: str, input_tensors: list, output_tensor):
