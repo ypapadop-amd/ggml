@@ -22,7 +22,7 @@ def binary_op(device, input_tensor0, input_tensor1, op, output):
     Implements output = input_tensor0 op input_tensor1
 
     Parameters:
-        device: Target device string.
+        device (str): Target device.
         input_tensor0: First input tensor.
         input_tensor1: Second input tensor.
         op: Binary operator.

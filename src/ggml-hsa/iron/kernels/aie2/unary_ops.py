@@ -28,7 +28,7 @@ def unary_op(device, input_tensor, output_tensor, op):
     Implements output = op(input).
 
     Parameters:
-        device: Target device string.
+        device (str): Target device.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
         op: Unary operator.
