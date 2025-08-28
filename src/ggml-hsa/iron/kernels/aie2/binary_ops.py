@@ -17,7 +17,7 @@ from aie.iron.controlflow import range_
 from utils import arch_to_device
 
 
-def binary_op(device, input_tensor0, input_tensor1, op, output):
+def binary_op(device, input_tensor0, input_tensor1, op, output_tensor):
     """
     Implements output = input_tensor0 op input_tensor1
 
@@ -32,7 +32,7 @@ def binary_op(device, input_tensor0, input_tensor1, op, output):
     if (
         not input_tensor0.contiguous
         or not input_tensor1.contiguous
-        or not output.contiguous
+        or not output_tensor.contiguous
     ):
         raise ValueError("Input and output tensors must be contiguous in memory.")
 
@@ -41,9 +41,9 @@ def binary_op(device, input_tensor0, input_tensor1, op, output):
             f"Incompatible input shapes ({input_tensor0.shape} != {input_tensor1.shape})."
         )
 
-    if input_tensor0.shape != output.shape:
+    if input_tensor0.shape != output_tensor.shape:
         raise ValueError(
-            f"Incompatible input and output shapes ({input_tensor0.shape} != {output.shape})."
+            f"Incompatible input and output shapes ({input_tensor0.shape} != {output_tensor.shape})."
         )
 
     if (
@@ -64,7 +64,7 @@ def binary_op(device, input_tensor0, input_tensor1, op, output):
     # AIE-array data movement with object fifos
     input0_tile_ty = np.ndarray[(n,), np.dtype[input_tensor0.dtype]]
     input1_tile_ty = np.ndarray[(n,), np.dtype[input_tensor1.dtype]]
-    output_tile_ty = np.ndarray[(n,), np.dtype[output.dtype]]
+    output_tile_ty = np.ndarray[(n,), np.dtype[output_tensor.dtype]]
     of_in0 = ObjectFifo(input0_tile_ty, name="in1")
     of_in1 = ObjectFifo(input1_tile_ty, name="in2")
     of_out = ObjectFifo(output_tile_ty, name="out")
@@ -88,7 +88,7 @@ def binary_op(device, input_tensor0, input_tensor1, op, output):
     # Runtime operations to move data to/from the AIE-array
     input0_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor0.dtype]]
     input1_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor1.dtype]]
-    output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output.dtype]]
+    output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
     rt = Runtime()
     with rt.sequence(input0_tensor_ty, input1_tensor_ty, output_tensor_ty) as (A, B, C):
         rt.start(worker)
