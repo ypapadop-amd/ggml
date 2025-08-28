@@ -23,7 +23,7 @@ from aie.iron.controlflow import range_
 from utils import arch_to_device
 
 
-def unary_op(device, input_tensor, output_tensor, func):
+def unary_op(device, input_tensor, output_tensor, op):
     """
     Implements output = op(input).
 
@@ -31,7 +31,7 @@ def unary_op(device, input_tensor, output_tensor, func):
         device: Target device string.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
-        func: Unary operation.
+        op: Unary operator.
     """
 
     if not input_tensor.contiguous or not output_tensor.contiguous:
@@ -42,12 +42,12 @@ def unary_op(device, input_tensor, output_tensor, func):
             f"Incompatible input and output shapes ({input_tensor.shape} != {output_tensor.shape})."
         )
 
-    if func.tile_size(0) != func.tile_size(1):
+    if op.tile_size(0) != op.tile_size(1):
         raise ValueError(
-            f"Input and output tile sizes do not match ({func.tile_size(0)} != {func.tile_size(1)})."
+            f"Input and output tile sizes do not match ({op.tile_size(0)} != {op.tile_size(1)})."
         )
 
-    tile_size = func.tile_size(0)
+    tile_size = op.tile_size(0)
     num_elements = np.size(input_tensor)
     if num_elements % tile_size != 0:
         raise ValueError(
@@ -62,17 +62,17 @@ def unary_op(device, input_tensor, output_tensor, func):
     of_out = ObjectFifo(output_tile_ty, name="out")
 
     # Task for the core to perform
-    def core_fn(of_in, of_out, func):
+    def core_fn(of_in, of_out, op):
         # Number of sub-vector "tile" iterations
         for _ in range_(num_tiles):
             elem_in = of_in.acquire(1)
             elem_out = of_out.acquire(1)
-            func(elem_in, elem_out, tile_size)
+            op(elem_in, elem_out, tile_size)
             of_in.release(1)
             of_out.release(1)
 
     # Create a worker to perform the task
-    worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod(), func])
+    worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod(), op])
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
