@@ -52,6 +52,7 @@ def compile_kernel(
 ):
     """
     Compiles the kernel code to PDI and instruction files.
+
     Parameters:
         kernel_name (str): Name of the IRON kernel.
         kernel_source (str): Path to the IRON kernel source file.
