@@ -33,7 +33,7 @@ def max_tile_size(device: str, dtype: np.dtype, num_elements: int) -> int:
         raise ValueError(f"Unsupported device: {device}")
     max_tile_size = int(vector_register_size / dtype.itemsize)
 
-    while num_elements % max_tile_size != 0:
+    while num_elements % max_tile_size != 0 and max_tile_size > 1:
         max_tile_size //= 2
 
     return max_tile_size
