@@ -24,7 +24,15 @@ from utils import arch_to_device
 
 
 def unary_op(device, input_tensor, output_tensor, func):
-    """Implements output = op(input)."""
+    """
+    Implements output = op(input).
+
+    Parameters:
+        device: Target device string.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
+        func: Unary operation.
+    """
 
     if not input_tensor.contiguous or not output_tensor.contiguous:
         raise ValueError("Input and output tensors must be contiguous in memory.")
@@ -47,20 +55,14 @@ def unary_op(device, input_tensor, output_tensor, func):
         )
     num_tiles = num_elements // tile_size
 
-    if input_tensor.dtype != output_tensor.dtype:
-        raise ValueError(
-            f"Incompatible input and output data types ({input_tensor.dtype} != {output_tensor.dtype})."
-        )
-
     # Input / output data movement
-    input_tile_ty = np.ndarray[(func.tile_size(0),), np.dtype[input_tensor.dtype]]
-    output_tile_ty = np.ndarray[(func.tile_size(1),), np.dtype[output_tensor.dtype]]
+    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
+    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
     of_in = ObjectFifo(input_tile_ty, name="in")
     of_out = ObjectFifo(output_tile_ty, name="out")
 
     # Task for the core to perform
     def core_fn(of_in, of_out, func):
-        tile_size = func.tile_size(0)
         # Number of sub-vector "tile" iterations
         for _ in range_(num_tiles):
             elem_in = of_in.acquire(1)
@@ -89,10 +91,6 @@ def create_external_function(
     op_name: str, input_tensors: list, output_tensor
 ) -> ExternalFunction:
     """Returns an ExternalFunction specification for unary ops."""
-
-    assert len(input_tensors) == 1
-    assert input_tensors[0].dtype == output_tensor.dtype
-    assert input_tensors[0].shape == output_tensor.shape
 
     tile_size = 16
     current_dir = path.dirname(path.realpath(__file__))
