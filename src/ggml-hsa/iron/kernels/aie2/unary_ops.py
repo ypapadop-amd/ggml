@@ -20,10 +20,10 @@ from aie.iron import (
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from utils import arch_to_device
+from utils import arch_to_device, max_tile_size
 
 
-def unary_op(device, input_tensor, output_tensor, op):
+def unary_op(device: str, input_tensor, output_tensor, op):
     """
     Implements output = op(input).
 
@@ -84,32 +84,7 @@ def unary_op(device, input_tensor, output_tensor, op):
         rt.drain(of_out.cons(), b_out, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(device, rt).resolve_program(SequentialPlacer())
-
-
-def max_tile_size(device: str, dtype: np.dtype, num_elements: int) -> int:
-    """
-    Returns the maximum tile size for unary ops based on device, data type and number of elements.
-
-    Parameters:
-        device (str): Target device.
-        dtype (np.dtype): Data type of the tensor elements.
-        num_elements (int): Total number of elements in the tensor.
-
-    Returns:
-        int: Maximum tile size.
-    """
-    vector_register_size = 0
-    if device == "aie2" or device == "aie2p":
-        vector_register_size = 512  # bits
-    else:
-        raise ValueError(f"Unsupported device: {device}")
-    max_tile_size = int(vector_register_size / np.finfo(dtype).bits)
-
-    while num_elements % max_tile_size != 0:
-        max_tile_size //= 2
-
-    return max_tile_size
+    return Program(arch_to_device(device), rt).resolve_program(SequentialPlacer())
 
 
 def create_external_function(
@@ -145,7 +120,7 @@ def ggml_op_sqr(device: str, input_tensors: list, output_tensor):
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_op_sqrt(device: str, input_tensors: list, output_tensor):
@@ -156,7 +131,7 @@ def ggml_op_sqrt(device: str, input_tensors: list, output_tensor):
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_op_log(device: str, input_tensors: list, output_tensor):
@@ -182,7 +157,7 @@ def ggml_unary_op_abs(device: str, input_tensors: list, output_tensor):
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_sgn(device: str, input_tensors: list, output_tensor):
@@ -193,7 +168,7 @@ def ggml_unary_op_sgn(device: str, input_tensors: list, output_tensor):
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_neg(device: str, input_tensors: list, output_tensor):
@@ -204,7 +179,7 @@ def ggml_unary_op_neg(device: str, input_tensors: list, output_tensor):
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_step(device: str, input_tensors: list, output_tensor):
@@ -215,7 +190,7 @@ def ggml_unary_op_step(device: str, input_tensors: list, output_tensor):
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_tanh(device: str, input_tensors: list, output_tensor):
@@ -236,7 +211,7 @@ def ggml_unary_op_relu(device: str, input_tensors: list, output_tensor):
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_sigmoid(device: str, input_tensors: list, output_tensor):
@@ -267,7 +242,7 @@ def ggml_unary_op_hardswish(device: str, input_tensors: list, output_tensor):
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_hardsigmoid(device: str, input_tensors: list, output_tensor):
@@ -278,7 +253,7 @@ def ggml_unary_op_hardsigmoid(device: str, input_tensors: list, output_tensor):
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
-    return unary_op(arch_to_device(device), *input_tensors, output_tensor, func)
+    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_unary_op_exp(device: str, input_tensors: list, output_tensor):
