@@ -173,9 +173,9 @@ def compile_kernel(
             verbose=verbose,
             work_dir=work_dir,
         )
-    except (FileNotFoundError, PermissionError, OSError) as e:
+    except (FileNotFoundError, PermissionError, OSError):
         logger.error("Failed to change working directory to %s", work_dir)
-        raise e
+        raise
     finally:
         os.chdir(current_directory)
     logger.info(
