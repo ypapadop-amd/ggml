@@ -5,12 +5,38 @@ import importlib.util
 import os
 import sys
 import logging
+import numpy as np
 
 import aie.iron
 import aie.iron.compile
 import aie.iron.device
 
 from tensor_desc import tensordesc, TensorDesc
+
+
+def max_tile_size(device: str, dtype: np.dtype, num_elements: int) -> int:
+    """
+    Returns the maximum tile size based on device, data type and number of elements.
+
+    Parameters:
+        device (str): Target device.
+        dtype (np.dtype): Data type of the tensor elements.
+        num_elements (int): Total number of elements in the tensor.
+
+    Returns:
+        int: Maximum tile size.
+    """
+    vector_register_size = 0
+    if device == "aie2" or device == "aie2p":
+        vector_register_size = 512  # bits
+    else:
+        raise ValueError(f"Unsupported device: {device}")
+    max_tile_size = int(vector_register_size / dtype.itemsize)
+
+    while num_elements % max_tile_size != 0 and max_tile_size > 1:
+        max_tile_size //= 2
+
+    return max_tile_size
 
 
 def arch_to_device(device):

@@ -470,10 +470,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                     // storage
                     src[src_idx] = *parent_tensor->src[src_idx];
                     if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
-                        GGML_LOG_INFO(
-                            "%s: creating temporary for source tensor [%i] \"%s\" of \"%s\" (%s)\n",
-                            __func__, src_idx, src[src_idx].name, parent_tensor->name,
-                            ggml_op_desc(parent_tensor));
                         src[src_idx].data = nullptr;
                         ggml_hsa_force_unpermuted(src[src_idx]);
                         src_sizes[src_idx] =
