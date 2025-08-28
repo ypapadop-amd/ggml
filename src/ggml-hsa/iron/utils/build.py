@@ -160,22 +160,24 @@ def compile_kernel(
     # generate PDI and instructions files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
-    current_directory = os.getcwd() # change directory to avoid core files in current path
+    current_directory = os.getcwd()
     try:
         logger.info("Changing working directory to %s", work_dir)
+        # change directory to avoid core files in current path
         os.chdir(work_dir)
+        aie.iron.compile.compile_mlir_module(
+            mlir_module=mlir_module,
+            options=["--alloc-scheme=basic-sequential"],
+            insts_path=insts_path,
+            pdi_path=pdi_path,
+            verbose=verbose,
+            work_dir=work_dir,
+        )
     except (FileNotFoundError, PermissionError, OSError) as e:
         logger.error("Failed to change working directory to %s", work_dir)
         raise e
-    aie.iron.compile.compile_mlir_module(
-        mlir_module=mlir_module,
-        options=["--alloc-scheme=basic-sequential"],
-        insts_path=insts_path,
-        pdi_path=pdi_path,
-        verbose=verbose,
-        work_dir=work_dir,
-    )
-    os.chdir(current_directory)
+    finally:
+        os.chdir(current_directory)
     logger.info(
         "Finished compilation for kernel %s in %s", kernel_name, output_directory
     )
