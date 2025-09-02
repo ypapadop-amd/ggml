@@ -227,18 +227,11 @@ const ggml_hsa_device_info & ggml_hsa_info();
  */
 const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t device_id);
 
-#ifdef GGML_HSA_CPU_FALLBACK
-struct ggml_backend_hsa_emulated_tensor;
-#endif
-
 /**
  * @brief Tensor extra information.
  */
 struct ggml_backend_hsa_tensor_extra {
-    std::shared_ptr<ggml_hsa_kernel> kernel; ///< Kernel associated with the tensor.
-#ifdef GGML_HSA_CPU_FALLBACK
-    std::unique_ptr<ggml_backend_hsa_emulated_tensor> emulated_tensor;
-#endif
+    std::shared_ptr<ggml_hsa_kernel> kernel;     ///< Kernel associated with the tensor.
     std::int64_t nsrcs{};                        ///< Number of source tensors.
     ggml_tensor tensor{};                        ///< Transformed operation tensor.
     std::array<ggml_tensor, GGML_MAX_SRC> src{}; ///< Source tensors for the operation.
@@ -278,10 +271,6 @@ struct ggml_backend_hsa_context {
     hsa_signal_t dispatch_signal{}; ///< Signal for packet completion.
     std::vector<ggml_hsa_unique_ptr<void>>
         pending_payloads; ///< Packet payloads since last synchronization.
-#ifdef GGML_HSA_CPU_FALLBACK
-    ggml_backend_t fallback_backend{}; ///< Fallback backend for operations not supported by HSA.
-    ggml_gallocr_t fallback_galloc{};  ///< Fallback graph allocator.
-#endif
 
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 
