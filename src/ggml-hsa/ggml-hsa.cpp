@@ -18,10 +18,6 @@
 #include <string>
 #include <vector>
 
-#ifdef GGML_HSA_CPU_FALLBACK
-#include "ggml-cpu.h"
-#endif
-
 /// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
 #define MATRIX_ROW_PADDING 512
 
@@ -572,27 +568,12 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
                                      .append(ggml_hsa_get_status_string(status))
                                      .append(")")};
     }
-
-#ifdef GGML_HSA_CPU_FALLBACK
-    // create fallback backend
-    if (fallback_backend = ggml_backend_cpu_init(); fallback_backend == nullptr) {
-        throw std::runtime_error("ggml_backend_cpu_init failed");
-    }
-    auto buft = ggml_backend_get_default_buffer_type(fallback_backend);
-    if (fallback_galloc = ggml_gallocr_new(buft); fallback_galloc == nullptr) {
-        throw std::runtime_error("ggml_gallocr_new failed");
-    }
-#endif
 }
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     ggml_hsa_purge_unused_cached_kernels(device);
     GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
     GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
-#ifdef GGML_HSA_CPU_FALLBACK
-    ggml_gallocr_free(fallback_galloc);
-    ggml_backend_free(fallback_backend);
-#endif
 }
 
 void ggml_backend_hsa_context::free_pending_payloads() { pending_payloads.clear(); }
@@ -1078,112 +1059,6 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
     ggml_hsa_wait_dispatches(ctx);
 }
 
-#ifdef GGML_HSA_CPU_FALLBACK
-
-struct ggml_backend_hsa_emulated_tensor {
-    ggml_tensor * tensor{};
-    ggml_context * ggml_ctx{};
-    ggml_cgraph * ggml_graph{};
-
-    ggml_backend_hsa_emulated_tensor(ggml_backend_hsa_context & ctx, ggml_tensor * t) : tensor{t} {
-        // create tensor allocator
-        std::size_t buffer_size = ggml_nbytes_pad(tensor) + 4096;
-        std::int32_t tensor_src_count = 0;
-        for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
-            if (tensor->src[i] == nullptr) {
-                continue;
-            }
-            ++tensor_src_count;
-            buffer_size += ggml_nbytes_pad(tensor->src[i]);
-        }
-        auto buffer = ggml_backend_alloc_buffer(ctx.fallback_backend, buffer_size);
-        auto talloc = ggml_tallocr_new(buffer);
-
-        // create context
-        const auto tensor_count = tensor_src_count + 1;
-        const ggml_init_params params = {
-            /*.mem_size   =*/(tensor_count * ggml_tensor_overhead() +
-                              ggml_graph_overhead_custom(tensor_count, false) + 8 * 4096),
-            /*.mem_buffer =*/nullptr,
-            /*.no_alloc   =*/true,
-        };
-
-        ggml_ctx = ggml_init(params);
-        if (ggml_ctx == nullptr) {
-            throw std::runtime_error("Failed to initialize context");
-        }
-
-        // create tensor
-        auto new_tensor = ggml_dup_tensor(ggml_ctx, tensor);
-        GGML_ASSERT(ggml_are_same_shape(tensor, new_tensor));
-        GGML_ASSERT(ggml_are_same_stride(tensor, new_tensor));
-        new_tensor->op = tensor->op;
-        std::copy_n(tensor->op_params, GGML_MAX_OP_PARAMS / sizeof(int32_t), new_tensor->op_params);
-        if (ggml_tallocr_alloc(&talloc, new_tensor) != GGML_STATUS_SUCCESS) {
-            throw std::runtime_error("Failed to allocate tensor");
-        }
-        ggml_set_name(new_tensor, tensor->name);
-
-        // create source tensors
-        for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
-            auto * src = tensor->src[i];
-            if (src == nullptr) {
-                continue;
-            }
-            const auto tensor_src_dims = ggml_n_dims(src);
-            auto * new_src = ggml_new_tensor(ggml_ctx, src->type, tensor_src_dims, src->ne);
-            GGML_ASSERT(ggml_are_same_shape(src, new_src));
-            ggml_set_name(new_src, src->name);
-
-            new_tensor->src[i] = new_src;
-        }
-
-        // create graph
-        ggml_graph = ggml_new_graph_custom(ggml_ctx, tensor_count, false);
-        ggml_build_forward_expand(ggml_graph, new_tensor);
-
-        if (!ggml_gallocr_alloc_graph(ctx.fallback_galloc, ggml_graph)) {
-            throw std::runtime_error("Failed to allocate graph");
-        }
-    }
-
-    ggml_backend_hsa_emulated_tensor(const ggml_backend_hsa_emulated_tensor &) = delete;
-    ggml_backend_hsa_emulated_tensor(ggml_backend_hsa_emulated_tensor &&) = delete;
-
-    ~ggml_backend_hsa_emulated_tensor() { ggml_free(ggml_ctx); }
-
-    ggml_backend_hsa_emulated_tensor & operator=(const ggml_backend_hsa_emulated_tensor &) = delete;
-    ggml_backend_hsa_emulated_tensor & operator=(ggml_backend_hsa_emulated_tensor &&) = delete;
-
-    ggml_status operator()() {
-        auto new_tensor = ggml_graph_node(ggml_graph, 0);
-
-        // copy input tensors
-        for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
-            if (tensor->src[i] == nullptr) {
-                break;
-            }
-            ggml_hsa_copy_tensor(tensor->src[i], new_tensor->src[i]);
-        }
-
-        // execute
-        const auto num_threads = 4;
-        ggml_status status = GGML_STATUS_SUCCESS;
-        if (status = ggml_graph_compute_with_ctx(ggml_ctx, ggml_graph, num_threads);
-            status != GGML_STATUS_SUCCESS) {
-            GGML_LOG_ERROR("ggml_graph_compute_with_ctx(): failed to compute graph");
-            return status;
-        }
-
-        // copy output tensor
-        ggml_hsa_copy_tensor(new_tensor, tensor);
-
-        return GGML_STATUS_SUCCESS;
-    }
-};
-
-#endif
-
 /**
  * @brief Creates a temporary transposed view of @p @p tensor.
  */
@@ -1258,20 +1133,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
         }
 
-#ifdef GGML_HSA_CPU_FALLBACK
-        if (status != GGML_STATUS_SUCCESS) {
-            auto tensor_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-            if (!tensor_extra->emulated_tensor) {
-                GGML_LOG_INFO("%s: emulating op %s for tensor \"%s\"\n", __func__,
-                              ggml_op_desc(node), node->name);
-                tensor_extra->emulated_tensor =
-                    std::make_unique<ggml_backend_hsa_emulated_tensor>(ctx, node);
-            }
-            ggml_hsa_wait_dispatches(ctx);
-            status = (*tensor_extra->emulated_tensor)();
-        }
-#endif
-
         if (status != GGML_STATUS_SUCCESS) {
             GGML_LOG_ERROR("%s: failed to dispatch operation %s for tensor \"%s\"\n", __func__,
                            ggml_op_desc(node), node->name);
@@ -1280,7 +1141,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 
     return status;
 } catch (const std::exception & ex) {
-    GGML_LOG_ERROR("%s: failed to execute graph: %s\n", __func__, ex.what());
+    GGML_LOG_ERROR("%s: exception during graph execution: %s\n", __func__, ex.what());
     return GGML_STATUS_FAILED;
 }
 
@@ -1497,17 +1358,10 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
             break;
     }
 
-#ifdef GGML_HSA_CPU_FALLBACK
-    if (!supported) {
-        auto cpu_dev = ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0);
-        supported = ggml_backend_dev_supports_op(cpu_dev, op);
-    }
-#endif
-
     return supported;
 } catch (const std::exception & ex) {
-    GGML_LOG_WARN("%s: failed to verify support for operation %s of tensor \"%s\": %s\n", __func__,
-                  ggml_op_desc(op), op->name, ex.what());
+    GGML_LOG_WARN("%s: exception during support check for tensor \"%s\" (%s): %s\n", __func__,
+                  op->name, ggml_op_desc(op), ex.what());
     return false;
 }
 

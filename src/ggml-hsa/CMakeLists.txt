@@ -23,8 +23,6 @@ find_package(hsa-runtime64 1.0 REQUIRED)
 
 option(GGML_HSA_JIT_COMPILE "ggml-hsa: enable JIT compilation of kernels" ON)
 
-option(GGML_HSA_CPU_FALLBACK "ggml-hsa: use fallback to CPU if HSA kernel not implemented" OFF)
-
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
     aie-kernel.cpp
@@ -73,11 +71,6 @@ if (GGML_HSA_JIT_COMPILE)
     target_link_libraries(ggml-hsa PRIVATE pybind11::embed)
 
     add_subdirectory(iron)
-endif ()
-
-if (GGML_HSA_CPU_FALLBACK)
-    target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_CPU_FALLBACK)
-    target_link_libraries(ggml-hsa PRIVATE ${GGML_CPU_NAME})
 endif ()
 
 add_compile_definitions(GGML_USE_HSA)
