@@ -2,12 +2,25 @@
 
 ## JIT Compilation
 
-The HSA backend supports JIT compilation of kernels. This requires an IRON environment to be active which can be set up using
+The HSA backend supports JIT compilation of kernels. This allows for the generation of optimized kernels for the target architecture at runtime.
+
+JIT compilation requires additional dependencies, such as the (IRON framework)[https://github.com/Xilinx/mlir-aie] which must be installed and consume considerable storage space. If kernels are already generated, they can be placed in a directory specified by the environment variable `GGML_HSA_KERNEL_DIR` and JIT can be disabled at compile time.
+
+### Setting up an IRON Environment
+
+For JIT compilation support, an IRON environment must be created to compile GGML in:
 ```bash
-$ source env_setup.sh
+source env_setup.sh
 ```
 
-The JIT compilation process generates kernels on-the-fly from the installed IRON kernel sources. If `GGML_HSA_KERNEL_DIR` is set, any kernels found there take precedence over JIT compiled kernels.
+This will create a Python virtual environment, activate it, and install the necessary dependencies. The environment can be deactivated with:
+```bash
+deactivate
+```
+
+### JIT Compilation Process
+
+The JIT compilation process generates kernels on-the-fly from the installed kernel sources. If `GGML_HSA_KERNEL_DIR` is set, any kernels found there take precedence over JIT compiled kernels.
 
 JIT generated kernels are cached in a directory in the following order of precedence:
 1. The directory specified by the environment variable `GGML_HSA_KERNEL_CACHE_DIR`, or
