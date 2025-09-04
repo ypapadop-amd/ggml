@@ -228,20 +228,38 @@ const ggml_hsa_device_info & ggml_hsa_info();
 const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t device_id);
 
 /**
- * @brief Tensor extra information.
+ * @brief Tensor metadata.
+ *
+ * This class contains metadata about a tensor, called a parent tensor, that is used by the HSA
+ * backend. A copy of the parent tensor is made, along with a copy for all the parent's source
+ * tensors.
+ *
+ * Those copies have a number of transformations applied to them, such as making them contiguous,
+ * flattening them etc.
  */
 struct ggml_backend_hsa_tensor_extra {
-    std::shared_ptr<ggml_hsa_kernel> kernel;     ///< Kernel associated with the tensor.
-    std::int64_t nsrcs{};                        ///< Number of source tensors.
-    ggml_tensor tensor{};                        ///< Transformed operation tensor.
+    /// @brief Metadata for a transformed tensor.
+    struct tensor_metadata_t {
+        std::size_t size{};          ///< Size of the tensor in bytes.
+        bool convert_fp16_to_bf16{}; ///< Convert FP16 to BF16.
+    };
+
+    // Parent tensor copy
+    ggml_tensor tensor{};                ///< Transformed operation tensor.
+    std::int64_t nsrcs{};                ///< Number of source tensors.
+    tensor_metadata_t tensor_metadata{}; ///< Transformed tensor metadata.
+
+    // Source tensor copies
     std::array<ggml_tensor, GGML_MAX_SRC> src{}; ///< Source tensors for the operation.
-    std::array<std::size_t, GGML_MAX_SRC>
-        src_sizes{};                       ///< Sizes of the source tensors in bytes. 0 for no copy.
-    std::size_t total_src_size{};          ///< Total size of the source tensors in bytes.
-    ggml_hsa_unique_ptr<std::byte> buffer; ///< Temporary buffer for the tensor data.
+    std::array<tensor_metadata_t, GGML_MAX_SRC>
+        src_metadata{}; ///< Sizes of the source tensors in bytes. 0 for no copy.
+
+    std::size_t total_src_size{};            ///< Total size of the source tensors in bytes.
+    ggml_hsa_unique_ptr<std::byte> buffer;   ///< Temporary buffer for the tensor data.
+    std::shared_ptr<ggml_hsa_kernel> kernel; ///< Kernel associated with the tensor.
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
-                                  const ggml_tensor * parent_tensor);
+                                  const ggml_tensor & parent_tensor);
     ggml_backend_hsa_tensor_extra(const ggml_backend_hsa_tensor_extra &) = delete;
     ggml_backend_hsa_tensor_extra(ggml_backend_hsa_tensor_extra &&) = delete;
 

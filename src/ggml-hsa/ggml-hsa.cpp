@@ -420,14 +420,14 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
 }
 
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
-    const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * parent_tensor) :
-    nsrcs{ggml_hsa_nsrcs(*parent_tensor)} {
+    const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) :
+    tensor{parent_tensor}, nsrcs{ggml_hsa_nsrcs(parent_tensor)} {
 
-    if (!ggml_hsa_has_trivial_layout(*parent_tensor)) {
+    if (!ggml_hsa_has_trivial_layout(tensor)) {
         throw std::runtime_error{"Output tensor does not have trivial layout."};
     }
 
-    switch (parent_tensor->op) {
+    switch (tensor.op) {
         case GGML_OP_NONE:
             // noop; nothing to be done
             break;
@@ -446,21 +446,19 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             break;
         default:
             {
-                tensor = *parent_tensor;
-
                 // make non-contiguously allocated source tensors contiguous;
                 // source tensors that do not have a trivial layout will be copied to temporary
                 // storage
                 for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-                    src[src_idx] = *parent_tensor->src[src_idx];
+                    src[src_idx] = *parent_tensor.src[src_idx];
+                    tensor.src[src_idx] = &src[src_idx];
                     if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
                         src[src_idx].data = nullptr;
                         ggml_hsa_force_unpermuted(src[src_idx]);
-                        src_sizes[src_idx] =
-                            GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
-                        total_src_size += src_sizes[src_idx];
+                        auto size = GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
+                        src_metadata[src_idx].size = size;
+                        total_src_size += size;
                     }
-                    tensor.src[src_idx] = &src[src_idx];
                 }
 
                 // flatten tensors if possible to reuse kernels
@@ -520,10 +518,10 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
 
     auto buffer_ptr = buffer.get();
     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-        if (src_sizes[src_idx] > 0) {
+        if (src_metadata[src_idx].size > 0) {
             assert(src[src_idx].data == nullptr);
             src[src_idx].data = buffer_ptr;
-            buffer_ptr += src_sizes[src_idx];
+            buffer_ptr += src_metadata[src_idx].size;
         }
     }
 
@@ -628,7 +626,7 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
 
     // initialize tensor extra
     assert(tensor->extra == nullptr);
-    auto tensor_extra = std::make_unique<ggml_backend_hsa_tensor_extra>(dev_info, tensor);
+    auto tensor_extra = std::make_unique<ggml_backend_hsa_tensor_extra>(dev_info, *tensor);
     if (auto status = tensor_extra->allocate_internal_storage(dev_info);
         status != GGML_STATUS_SUCCESS) {
         return status;
@@ -1102,7 +1100,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     if (tensor_extra.has_input_tensor_copies()) {
                         ggml_hsa_wait_dispatches(ctx);
                         for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
-                            if (tensor_extra.src_sizes[src_idx] == 0) {
+                            if (tensor_extra.src_metadata[src_idx].size == 0) {
                                 continue;
                             }
                             status = ggml_hsa_copy_tensor(node->src[src_idx], n->src[src_idx]);
@@ -1339,7 +1337,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
                 const auto & dev_ctx =
                     *static_cast<ggml_backend_hsa_device_context *>(dev->context);
                 const auto & dev_info = ggml_hsa_get_device_info(dev_ctx.device);
-                ggml_backend_hsa_tensor_extra tensor_extra{dev_info, op};
+                ggml_backend_hsa_tensor_extra tensor_extra{dev_info, *op};
                 supported = (tensor_extra.kernel != nullptr);
             }
             break;
