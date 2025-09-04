@@ -423,6 +423,13 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) :
     tensor{parent_tensor}, nsrcs{ggml_hsa_nsrcs(parent_tensor)} {
 
+    // initialize source tensor copies
+    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+        src[src_idx] = *parent_tensor.src[src_idx];
+        tensor.src[src_idx] = &src[src_idx];
+    }
+    assert(ggml_hsa_nsrcs(tensor) == nsrcs);
+
     if (!ggml_hsa_has_trivial_layout(tensor)) {
         throw std::runtime_error{"Output tensor does not have trivial layout."};
     }
@@ -446,12 +453,9 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             break;
         default:
             {
-                // make non-contiguously allocated source tensors contiguous;
-                // source tensors that do not have a trivial layout will be copied to temporary
-                // storage
+                // make source tensor layouts trivial; source tensors that do not have a trivial
+                // layout will be copied to temporary storage
                 for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-                    src[src_idx] = *parent_tensor.src[src_idx];
-                    tensor.src[src_idx] = &src[src_idx];
                     if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
                         src[src_idx].data = nullptr;
                         ggml_hsa_force_unpermuted(src[src_idx]);
@@ -473,7 +477,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 auto kernel_name = ggml_hsa_create_kernel_name(tensor);
                 kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
                 if (kernel == nullptr) {
-                    // kernel not cached; create a new one
+                    // kernel not in cache; create a new one and store it in the cache
                     if (ggml_hsa_create_kernel(dev_info, kernel_name, tensor, kernel) !=
                         GGML_STATUS_SUCCESS) {
                         throw std::runtime_error{
@@ -485,8 +489,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                     }
                     ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
                 }
-
-                assert(ggml_hsa_nsrcs(tensor) == nsrcs);
             }
             break;
     }
