@@ -435,10 +435,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         throw std::runtime_error{"Output tensor does not have trivial layout."};
     }
 
-    // flag to create the kernel based on the tensor; a kernel may not be created, e.g., if the
-    // operation is a noop or if it is not supported on the device
-    bool create_kernel = false;
-
     switch (parent_tensor->op) {
         case GGML_OP_NONE:
             // noop; nothing to be done
@@ -459,11 +455,11 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         default:
             {
                 tensor = *parent_tensor;
-                create_kernel = true;
 
+                // make non-contiguously allocated source tensors contiguous;
+                // source tensors that do not have a trivial layout will be copied to temporary
+                // storage
                 for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-                    // source tensors that do not have a trivial layout will be copied to temporary
-                    // storage
                     src[src_idx] = *parent_tensor->src[src_idx];
                     if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
                         src[src_idx].data = nullptr;
@@ -475,35 +471,34 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                     tensor.src[src_idx] = &src[src_idx];
                 }
 
+                // flatten tensors if possible to reuse kernels
                 if (ggml_hsa_can_flatten(tensor) && !ggml_is_vector(&tensor)) {
-                    // flatten tensors but reuse tensor storage
                     ggml_hsa_flatten_tensor(tensor);
                     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
                         ggml_hsa_flatten_tensor(src[src_idx]);
                     }
                 }
 
+                // create a kernel for the operation
+                auto kernel_name = ggml_hsa_create_kernel_name(tensor);
+                kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
+                if (kernel == nullptr) {
+                    // kernel not cached; create a new one
+                    if (ggml_hsa_create_kernel(dev_info, kernel_name, tensor, kernel) !=
+                        GGML_STATUS_SUCCESS) {
+                        throw std::runtime_error{
+                            std::string{"Failed to create kernel for tensor \""}
+                                .append(tensor.name)
+                                .append("\" (")
+                                .append(ggml_op_desc(&tensor))
+                                .append(")")};
+                    }
+                    ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
+                }
+
                 assert(ggml_hsa_nsrcs(tensor) == nsrcs);
             }
             break;
-    }
-
-    // create a kernel for the operation
-    if (create_kernel) {
-        auto kernel_name = ggml_hsa_create_kernel_name(tensor);
-        kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
-        if (kernel == nullptr) {
-            // kernel not cached; create a new one
-            if (ggml_hsa_create_kernel(dev_info, kernel_name, tensor, kernel) !=
-                GGML_STATUS_SUCCESS) {
-                throw std::runtime_error{std::string{"Failed to create kernel for tensor \""}
-                                             .append(tensor.name)
-                                             .append("\" (")
-                                             .append(ggml_op_desc(&tensor))
-                                             .append(")")};
-            }
-            ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
-        }
     }
 }
 
