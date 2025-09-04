@@ -291,8 +291,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     dev_info.name = std::string(name);
 
     if (dev_info.name == "aie2" || dev_info.name == "aie2p") {
-        dev_info.supported_types = {GGML_TYPE_F32, GGML_TYPE_I8, GGML_TYPE_I16, GGML_TYPE_I32,
-                                    GGML_TYPE_BF16};
+        dev_info.substitute_fp16_bf16 = true;
     } else {
         GGML_ABORT("%s: Unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
     }
@@ -423,13 +422,6 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * parent_tensor) :
     nsrcs{ggml_hsa_nsrcs(*parent_tensor)} {
-
-    // check tensor data type
-    if (std::find(dev_info.supported_types.begin(), dev_info.supported_types.end(),
-                  parent_tensor->type) == dev_info.supported_types.end()) {
-        throw std::runtime_error{
-            std::string{"Unsupported tensor type "}.append(ggml_type_name(parent_tensor->type))};
-    }
 
     if (!ggml_hsa_has_trivial_layout(*parent_tensor)) {
         throw std::runtime_error{"Output tensor does not have trivial layout."};

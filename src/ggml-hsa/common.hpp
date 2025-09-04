@@ -195,15 +195,15 @@ struct ggml_hsa_device_info {
      * @brief Information about a single HSA device.
      */
     struct device_info {
-        std::int32_t device{};                  ///< Device ID.
-        hsa_agent_t agent{};                    ///< HSA agent associated with the device.
-        hsa_device_type_t type{};               ///< Agent type.
-        std::string name;                       ///< Agent name.
-        std::vector<ggml_type> supported_types; ///< Device natively supported tensor types.
-        memory_pool_info dev_memory{};          ///< Kernel memory pool.
-        memory_pool_info kernarg_memory{};      ///< Kernel arguments memory pool.
-        memory_pool_info data_memory{};         ///< Data memory pool.
-        std::size_t alignment{256};             ///< Memory alignment requirement for buffers.
+        std::int32_t device{};             ///< Device ID.
+        hsa_agent_t agent{};               ///< HSA agent associated with the device.
+        hsa_device_type_t type{};          ///< Agent type.
+        std::string name;                  ///< Agent name.
+        memory_pool_info dev_memory{};     ///< Kernel memory pool.
+        memory_pool_info kernarg_memory{}; ///< Kernel arguments memory pool.
+        memory_pool_info data_memory{};    ///< Data memory pool.
+        std::size_t alignment{256};        ///< Memory alignment requirement for buffers.
+        bool substitute_fp16_bf16{false};  ///< Use BF16 when FP16 is requested.
         std::unordered_map<std::string, std::shared_ptr<ggml_hsa_kernel>>
             kernels; ///< Cached device kernels.
     };
