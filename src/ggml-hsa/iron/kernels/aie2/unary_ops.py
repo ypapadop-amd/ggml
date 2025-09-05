@@ -85,7 +85,7 @@ def apply(
             external_core_fn, fn_args=[of_in.cons(), of_out.prod(), function]
         )
     else:
-        tile_size = max_tile_size(device, input_tensor.dtype, np.size(num_elements))
+        tile_size = max_tile_size(device, input_tensor.dtype, num_elements)
         num_tiles = num_elements // tile_size
 
         # Input / output data movement
@@ -129,7 +129,7 @@ def create_external_function(
     Parameters:
         device (str): Target device.
         op_name (str): Name of the operation.
-        input_tensors (list): List of input tensors.
+        input_tensor: Input tensor.
         output_tensor: Output tensor.
     """
 
@@ -163,7 +163,7 @@ def ggml_op_sqr(device: str, input_tensors: list, output_tensor):
     # function = create_external_function(
     #    device=device,
     #    op_name="sqr",
-    #    input_tensors=input_tensors,
+    #    input_tensor=input_tensors[0],
     #    output_tensor=output_tensor,
     # )
 
