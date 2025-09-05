@@ -38,7 +38,8 @@ void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
 #ifdef COMPILE_ABS
 
 void ggml_op_abs(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return abs(v); });
+    transform_n(in, N, out,
+                [](auto v) -> OUTPUT_DTYPE { return v < static_cast<INPUT_DTYPE>(0) ? -v : v; });
 }
 
 #endif // COMPILE_ABS
@@ -48,9 +49,9 @@ void ggml_op_abs(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict ou
 void ggml_op_sgn(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         return (v > static_cast<INPUT_DTYPE>(0))
-                   ? static_cast<INPUT_DTYPE>(1)
-                   : ((v < static_cast<INPUT_DTYPE>(0)) ? static_cast<INPUT_DTYPE>(-1)
-                                                        : static_cast<INPUT_DTYPE>(0));
+                   ? static_cast<OUTPUT_DTYPE>(1)
+                   : ((v < static_cast<INPUT_DTYPE>(0)) ? static_cast<OUTPUT_DTYPE>(-1)
+                                                        : static_cast<OUTPUT_DTYPE>(0));
     });
 }
 

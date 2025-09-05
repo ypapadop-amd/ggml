@@ -7,6 +7,7 @@
 # (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
 from os import path
+from typing import Callable
 import numpy as np
 
 from aie.iron import (
@@ -23,15 +24,20 @@ from aie.iron.controlflow import range_
 from utils import arch_to_device, max_tile_size
 
 
-def unary_op(device: str, input_tensor, output_tensor, op):
+def apply(
+    device: str,
+    function: Callable | ExternalFunction,
+    input_tensor,
+    output_tensor,
+):
     """
-    Implements output = op(input).
+    Implements output_tensor = op(input_tensor).
 
     Parameters:
         device (str): Target device.
+        function (Callable | ExternalFunction): Unary operator.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
-        op: Unary operator.
     """
 
     if not input_tensor.contiguous or not output_tensor.contiguous:
@@ -42,37 +48,64 @@ def unary_op(device: str, input_tensor, output_tensor, op):
             f"Incompatible input and output shapes ({input_tensor.shape} != {output_tensor.shape})."
         )
 
-    if op.tile_size(0) != op.tile_size(1):
-        raise ValueError(
-            f"Input and output tile sizes do not match ({op.tile_size(0)} != {op.tile_size(1)})."
-        )
-
-    tile_size = op.tile_size(0)
     num_elements = np.size(input_tensor)
-    if num_elements % tile_size != 0:
-        raise ValueError(
-            f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
-        )
-    num_tiles = num_elements // tile_size
-
-    # Input / output data movement
-    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
-    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-    of_in = ObjectFifo(input_tile_ty, name="in")
-    of_out = ObjectFifo(output_tile_ty, name="out")
 
     # Task for the core to perform
-    def core_fn(of_in, of_out, op):
-        # Number of sub-vector "tile" iterations
-        for _ in range_(num_tiles):
-            elem_in = of_in.acquire(1)
-            elem_out = of_out.acquire(1)
-            op(elem_in, elem_out, tile_size)
-            of_in.release(1)
-            of_out.release(1)
+    worker = None
+    if isinstance(function, ExternalFunction):
+        if function.tile_size(0) != function.tile_size(1):
+            raise ValueError(
+                f"Input and output tile sizes do not match ({function.tile_size(0)} != {function.tile_size(1)})."
+            )
+        tile_size = function.tile_size(0)
 
-    # Create a worker to perform the task
-    worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod(), op])
+        if num_elements % tile_size != 0:
+            raise ValueError(
+                f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
+            )
+        num_tiles = num_elements // tile_size
+
+        # Input / output data movement
+        input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
+        output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+        of_in = ObjectFifo(input_tile_ty, name="in")
+        of_out = ObjectFifo(output_tile_ty, name="out")
+
+        # Task for the core to perform with an external function
+        def external_core_fn(of_in, of_out, function):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(num_tiles):
+                elem_in = of_in.acquire(1)
+                elem_out = of_out.acquire(1)
+                function(elem_in, elem_out, tile_size)
+                of_in.release(1)
+                of_out.release(1)
+
+        worker = Worker(
+            external_core_fn, fn_args=[of_in.cons(), of_out.prod(), function]
+        )
+    else:
+        tile_size = max_tile_size(device, input_tensor.dtype, num_elements)
+        num_tiles = num_elements // tile_size
+
+        # Input / output data movement
+        input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
+        output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+        of_in = ObjectFifo(input_tile_ty, name="in")
+        of_out = ObjectFifo(output_tile_ty, name="out")
+
+        # Task for the core to perform without an external function
+        def core_fn(of_in, of_out):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(num_tiles):
+                elem_in = of_in.acquire(1)
+                elem_out = of_out.acquire(1)
+                for i in range_(tile_size):
+                    elem_out[i] = function(elem_in[i])
+                of_in.release(1)
+                of_out.release(1)
+
+        worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod()])
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
@@ -88,24 +121,32 @@ def unary_op(device: str, input_tensor, output_tensor, op):
 
 
 def create_external_function(
-    device: str, op_name: str, input_tensors: list, output_tensor
+    device: str, op_name: str, input_tensor, output_tensor
 ) -> ExternalFunction:
-    """Returns an ExternalFunction specification for unary ops."""
+    """
+    Creates an ExternalFunction specification for unary ops.
 
-    tile_size = max_tile_size(device, input_tensors[0].dtype, np.size(input_tensors[0]))
+    Parameters:
+        device (str): Target device.
+        op_name (str): Name of the operation.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
+    """
+
+    tile_size = max_tile_size(device, input_tensor.dtype, np.size(input_tensor))
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
         name="ggml_op_" + op_name,
         object_file_name=f"{op_name}_core_function.o",
         source_file=path.join(current_dir, "unary_ops.cc"),
         arg_types=[
-            np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
+            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
             np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
             np.int32,
         ],
         compile_flags=[
             f"-DCOMPILE_{op_name.upper()}=1",
-            f"-DINPUT_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
+            f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
         ],
     )
@@ -114,24 +155,44 @@ def create_external_function(
 
 def ggml_op_sqr(device: str, input_tensors: list, output_tensor):
     """GGML_OP_SQR implementation."""
-    func = create_external_function(
+
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    # Using a lambda function instead of an external function due to https://github.com/Xilinx/llvm-aie/issues/641
+    # function = create_external_function(
+    #    device=device,
+    #    op_name="sqr",
+    #    input_tensor=input_tensors[0],
+    #    output_tensor=output_tensor,
+    # )
+
+    return apply(
         device=device,
-        op_name="sqr",
-        input_tensors=input_tensors,
+        function=lambda x: x * x,
+        input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return unary_op(device, *input_tensors, output_tensor, func)
 
 
 def ggml_op_sqrt(device: str, input_tensors: list, output_tensor):
     """GGML_OP_SQRT implementation."""
-    func = create_external_function(
+
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    core_function = create_external_function(
         device=device,
         op_name="sqrt",
-        input_tensors=input_tensors,
+        input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return unary_op(device, *input_tensors, output_tensor, func)
+    return apply(
+        device=device,
+        function=core_function,
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_op_log(device: str, input_tensors: list, output_tensor):
@@ -151,46 +212,82 @@ def ggml_op_cos(device: str, input_tensors: list, output_tensor):
 
 def ggml_unary_op_abs(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_ABS implementation."""
-    func = create_external_function(
+
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    core_function = create_external_function(
         device=device,
         op_name="abs",
-        input_tensors=input_tensors,
+        input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return unary_op(device, *input_tensors, output_tensor, func)
+    return apply(
+        device=device,
+        function=core_function,
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_unary_op_sgn(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_SGN implementation."""
-    func = create_external_function(
+
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    core_function = create_external_function(
         device=device,
         op_name="sgn",
-        input_tensors=input_tensors,
+        input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return unary_op(device, *input_tensors, output_tensor, func)
+    return apply(
+        device=device,
+        function=core_function,
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_unary_op_neg(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_NEG implementation."""
-    func = create_external_function(
+
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    core_function = create_external_function(
         device=device,
         op_name="neg",
-        input_tensors=input_tensors,
+        input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return unary_op(device, *input_tensors, output_tensor, func)
+    return apply(
+        device=device,
+        function=core_function,
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_unary_op_step(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_STEP implementation."""
-    func = create_external_function(
+
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    core_function = create_external_function(
         device=device,
         op_name="step",
-        input_tensors=input_tensors,
+        input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return unary_op(device, *input_tensors, output_tensor, func)
+    return apply(
+        device=device,
+        function=core_function,
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_unary_op_tanh(device: str, input_tensors: list, output_tensor):
@@ -205,13 +302,22 @@ def ggml_unary_op_elu(device: str, input_tensors: list, output_tensor):
 
 def ggml_unary_op_relu(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_RELU implementation."""
-    func = create_external_function(
+
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    core_function = create_external_function(
         device=device,
         op_name="relu",
-        input_tensors=input_tensors,
+        input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return unary_op(device, *input_tensors, output_tensor, func)
+    return apply(
+        device=device,
+        function=core_function,
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_unary_op_sigmoid(device: str, input_tensors: list, output_tensor):
@@ -236,24 +342,42 @@ def ggml_unary_op_silu(device: str, input_tensors: list, output_tensor):
 
 def ggml_unary_op_hardswish(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_HARDSWISH implementation."""
-    func = create_external_function(
+
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    core_function = create_external_function(
         device=device,
         op_name="hardswish",
-        input_tensors=input_tensors,
+        input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return unary_op(device, *input_tensors, output_tensor, func)
+    return apply(
+        device=device,
+        function=core_function,
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_unary_op_hardsigmoid(device: str, input_tensors: list, output_tensor):
     """GGML_UNARY_OP_HARDSIGMOID implementation."""
-    func = create_external_function(
+
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    core_function = create_external_function(
         device=device,
         op_name="hardsigmoid",
-        input_tensors=input_tensors,
+        input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return unary_op(device, *input_tensors, output_tensor, func)
+    return apply(
+        device=device,
+        function=core_function,
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_unary_op_exp(device: str, input_tensors: list, output_tensor):

@@ -291,8 +291,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     dev_info.name = std::string(name);
 
     if (dev_info.name == "aie2" || dev_info.name == "aie2p") {
-        dev_info.supported_types = {GGML_TYPE_F32, GGML_TYPE_I8, GGML_TYPE_I16, GGML_TYPE_I32,
-                                    GGML_TYPE_BF16};
+        dev_info.substitute_fp16_bf16 = true;
     } else {
         GGML_ABORT("%s: Unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
     }
@@ -421,25 +420,17 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
 }
 
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
-    const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor * parent_tensor) :
-    nsrcs{ggml_hsa_nsrcs(*parent_tensor)} {
+    const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) :
+    tensor{parent_tensor}, nsrcs{ggml_hsa_nsrcs(parent_tensor)} {
 
-    // check tensor data type
-    if (std::find(dev_info.supported_types.begin(), dev_info.supported_types.end(),
-                  parent_tensor->type) == dev_info.supported_types.end()) {
-        throw std::runtime_error{
-            std::string{"Unsupported tensor type "}.append(ggml_type_name(parent_tensor->type))};
+    // initialize source tensor copies
+    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+        src[src_idx] = *parent_tensor.src[src_idx];
+        tensor.src[src_idx] = &src[src_idx];
     }
+    assert(ggml_hsa_nsrcs(tensor) == nsrcs);
 
-    if (!ggml_hsa_has_trivial_layout(*parent_tensor)) {
-        throw std::runtime_error{"Output tensor does not have trivial layout."};
-    }
-
-    // flag to create the kernel based on the tensor; a kernel may not be created, e.g., if the
-    // operation is a noop or if it is not supported on the device
-    bool create_kernel = false;
-
-    switch (parent_tensor->op) {
+    switch (tensor.op) {
         case GGML_OP_NONE:
             // noop; nothing to be done
             break;
@@ -458,52 +449,65 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             break;
         default:
             {
-                tensor = *parent_tensor;
-                create_kernel = true;
+                // change tensor data types if needed; it performs in-place conversion, so no
+                // temporary storage is needed
+                if (dev_info.substitute_fp16_bf16) {
+                    if (tensor.type == GGML_TYPE_F16) {
+                        tensor.type = GGML_TYPE_BF16;
+                        tensor_metadata.convert_dtype = true;
+                        requires_sync = true;
+                    }
 
+                    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+                        if (src[src_idx].type == GGML_TYPE_F16) {
+                            src[src_idx].type = GGML_TYPE_BF16;
+                            src_metadata[src_idx].convert_dtype = true;
+                            requires_sync = true;
+                        }
+                    }
+                }
+
+                // make tensor layouts trivial; tensors that do not have a trivial layout will be
+                // copied to temporary storage
+                if (!ggml_hsa_has_trivial_layout(tensor)) {
+                    throw std::runtime_error{"Output tensor does not have trivial layout."};
+                }
                 for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-                    // source tensors that do not have a trivial layout will be copied to temporary
-                    // storage
-                    src[src_idx] = *parent_tensor->src[src_idx];
                     if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
                         src[src_idx].data = nullptr;
                         ggml_hsa_force_unpermuted(src[src_idx]);
-                        src_sizes[src_idx] =
-                            GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
-                        total_src_size += src_sizes[src_idx];
+                        auto size = GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
+                        src_metadata[src_idx].size = size;
+                        requires_sync = true;
                     }
-                    tensor.src[src_idx] = &src[src_idx];
                 }
 
+                // flatten tensors if possible to reuse kernels
                 if (ggml_hsa_can_flatten(tensor) && !ggml_is_vector(&tensor)) {
-                    // flatten tensors but reuse tensor storage
                     ggml_hsa_flatten_tensor(tensor);
                     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
                         ggml_hsa_flatten_tensor(src[src_idx]);
                     }
                 }
 
-                assert(ggml_hsa_nsrcs(tensor) == nsrcs);
+                // create a kernel for the operation
+                auto kernel_name = ggml_hsa_create_kernel_name(tensor);
+                kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
+                if (kernel == nullptr) {
+                    // kernel not in cache; create a new one and store it in the cache
+                    if (ggml_hsa_create_kernel(dev_info, kernel_name, tensor, kernel) !=
+                        GGML_STATUS_SUCCESS) {
+                        throw std::runtime_error{
+                            std::string{"Failed to create kernel for tensor \""}
+                                .append(tensor.name)
+                                .append("\" (")
+                                .append(ggml_op_desc(&tensor))
+                                .append(")")};
+                    }
+                    ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
+                }
             }
             break;
-    }
-
-    // create a kernel for the operation
-    if (create_kernel) {
-        auto kernel_name = ggml_hsa_create_kernel_name(tensor);
-        kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
-        if (kernel == nullptr) {
-            // kernel not cached; create a new one
-            if (ggml_hsa_create_kernel(dev_info, kernel_name, tensor, kernel) !=
-                GGML_STATUS_SUCCESS) {
-                throw std::runtime_error{std::string{"Failed to create kernel for tensor \""}
-                                             .append(tensor.name)
-                                             .append("\" (")
-                                             .append(ggml_op_desc(&tensor))
-                                             .append(")")};
-            }
-            ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
-        }
     }
 }
 
@@ -514,18 +518,23 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
         return GGML_STATUS_ABORTED;
     }
 
-    if (total_src_size == 0) {
+    std::size_t buffer_size = 0;
+    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+        buffer_size += src_metadata[src_idx].size;
+    }
+
+    if (buffer_size == 0) {
         // no temporary storage needed
         return GGML_STATUS_SUCCESS;
     }
 
     // allocate storage for all tensors
     void * ptr = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, total_src_size,
+    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, buffer_size,
                                                    /* flags = */ 0, &ptr);
         status != HSA_STATUS_SUCCESS) {
         GGML_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)\n", __func__,
-                       (total_src_size / 1024.0 / 1024.0), dev_info.name.c_str(),
+                       (buffer_size / 1024.0 / 1024.0), dev_info.name.c_str(),
                        ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
@@ -533,10 +542,10 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
 
     auto buffer_ptr = buffer.get();
     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-        if (src_sizes[src_idx] > 0) {
+        if (src_metadata[src_idx].size > 0) {
             assert(src[src_idx].data == nullptr);
             src[src_idx].data = buffer_ptr;
-            buffer_ptr += src_sizes[src_idx];
+            buffer_ptr += src_metadata[src_idx].size;
         }
     }
 
@@ -641,7 +650,7 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
 
     // initialize tensor extra
     assert(tensor->extra == nullptr);
-    auto tensor_extra = std::make_unique<ggml_backend_hsa_tensor_extra>(dev_info, tensor);
+    auto tensor_extra = std::make_unique<ggml_backend_hsa_tensor_extra>(dev_info, *tensor);
     if (auto status = tensor_extra->allocate_internal_storage(dev_info);
         status != GGML_STATUS_SUCCESS) {
         return status;
@@ -1112,14 +1121,19 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     ggml_tensor * n = &tensor_extra.tensor;
 
                     n = &tensor_extra.tensor;
-                    if (tensor_extra.has_input_tensor_copies()) {
+                    if (tensor_extra.requires_sync) {
                         ggml_hsa_wait_dispatches(ctx);
                         for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
-                            if (tensor_extra.src_sizes[src_idx] == 0) {
+                            if ((tensor_extra.src_metadata[src_idx].size == 0) &&
+                                !tensor_extra.src_metadata[src_idx].convert_dtype) {
                                 continue;
                             }
-                            status = ggml_hsa_copy_tensor(node->src[src_idx], n->src[src_idx]);
-                            if (status != GGML_STATUS_SUCCESS) {
+                            // change layout and/or convert datatypes
+                            if (status = ggml_hsa_copy_tensor(node->src[src_idx], n->src[src_idx]);
+                                status != GGML_STATUS_SUCCESS) {
+                                GGML_LOG_ERROR(
+                                    "%s: failed to copy source %i for tensor \"%s (%s)\"\n",
+                                    __func__, src_idx, node->name, ggml_op_desc(node));
                                 break;
                             }
                         }
@@ -1128,14 +1142,24 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                         }
                     }
 
-                    status = tensor_extra.kernel->dispatch(ctx, n->src, tensor_extra.nsrcs, n);
+                    if (status = tensor_extra.kernel->dispatch(ctx, n->src, tensor_extra.nsrcs, n);
+                        status != GGML_STATUS_SUCCESS) {
+                        GGML_LOG_ERROR("%s: failed to dispatch kernel for tensor \"%s\" (%s)\n",
+                                       __func__, node->name, ggml_op_desc(node));
+                        break;
+                    }
+
+                    if (tensor_extra.tensor_metadata.convert_dtype) {
+                        // change layout and/or convert datatypes
+                        ggml_hsa_wait_dispatches(ctx);
+                        if (status = ggml_hsa_copy_tensor(n, node); status != GGML_STATUS_SUCCESS) {
+                            GGML_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)\n",
+                                           __func__, node->name, ggml_op_desc(node));
+                            break;
+                        }
+                    }
                 }
                 break;
-        }
-
-        if (status != GGML_STATUS_SUCCESS) {
-            GGML_LOG_ERROR("%s: failed to dispatch operation %s for tensor \"%s\"\n", __func__,
-                           ggml_op_desc(node), node->name);
         }
     }
 
@@ -1352,7 +1376,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev,
                 const auto & dev_ctx =
                     *static_cast<ggml_backend_hsa_device_context *>(dev->context);
                 const auto & dev_info = ggml_hsa_get_device_info(dev_ctx.device);
-                ggml_backend_hsa_tensor_extra tensor_extra{dev_info, op};
+                ggml_backend_hsa_tensor_extra tensor_extra{dev_info, *op};
                 supported = (tensor_extra.kernel != nullptr);
             }
             break;

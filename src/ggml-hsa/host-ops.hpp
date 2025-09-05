@@ -9,6 +9,8 @@
 /**
  * @brief Copy the contents of tensor @p src to tensor @p dst.
  *
+ * @warning This function does not synchronize with any device.
+ *
  * @param[in] src tensor to copy from
  * @param[in] dst tensor to copy to
  */
