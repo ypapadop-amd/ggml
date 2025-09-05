@@ -3,6 +3,8 @@
 #include "ggml-hsa/host-ops.hpp"
 
 #include <cassert>
+#include <new>
+#include <utility>
 
 #include "ggml-hsa/common.hpp"
 #include "ggml-hsa/type-traits.hpp"
@@ -28,14 +30,14 @@ struct ggml_hsa_copy_same_shape_tensors_f {
             for (std::int64_t i02 = 0; i02 < src->ne[2]; ++i02) {
                 for (std::int64_t i01 = 0; i01 < src->ne[1]; ++i01) {
                     for (std::int64_t i00 = 0; i00 < src->ne[0]; ++i00) {
-                        auto src_ptr = reinterpret_cast<const src_type *>(
+                        auto src_ptr = std::launder(reinterpret_cast<const src_type *>(
                             static_cast<const std::byte *>(src->data) +
                             (i00 * src->nb[0] + i01 * src->nb[1] + i02 * src->nb[2] +
-                             i03 * src->nb[3]));
-                        auto dst_ptr =
+                             i03 * src->nb[3])));
+                        auto dst_ptr = std::launder(
                             reinterpret_cast<dst_type *>(static_cast<std::byte *>(dst->data) +
                                                          (i00 * dst->nb[0] + i01 * dst->nb[1] +
-                                                          i02 * dst->nb[2] + i03 * dst->nb[3]));
+                                                          i02 * dst->nb[2] + i03 * dst->nb[3])));
 
                         if constexpr (SrcT == DstT) {
                             // no conversion needed
@@ -81,17 +83,17 @@ struct ggml_hsa_copy_tensor_to_cont_tensor_f {
         using src_type = typename src_traits::type;
         using dst_type = typename dst_traits::type;
 
-        auto dst_ptr = static_cast<dst_type *>(dst->data);
+        auto dst_ptr = std::launder(static_cast<dst_type *>(dst->data));
 
         std::int64_t id = 0;
         for (std::int64_t i03 = 0; i03 < src->ne[3]; ++i03) {
             for (std::int64_t i02 = 0; i02 < src->ne[2]; ++i02) {
                 for (std::int64_t i01 = 0; i01 < src->ne[1]; ++i01) {
                     for (std::int64_t i00 = 0; i00 < src->ne[0]; ++i00) {
-                        auto src_ptr = reinterpret_cast<const src_type *>(
+                        auto src_ptr = std::launder(reinterpret_cast<const src_type *>(
                             static_cast<const std::byte *>(src->data) +
                             (i00 * src->nb[0] + i01 * src->nb[1] + i02 * src->nb[2] +
-                             i03 * src->nb[3]));
+                             i03 * src->nb[3])));
                         if constexpr (SrcT == DstT) {
                             // no conversion needed
                             dst_ptr[id] = *src_ptr;
