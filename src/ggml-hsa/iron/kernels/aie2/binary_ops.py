@@ -59,7 +59,7 @@ def binary_op(device, input_tensor0, input_tensor1, op, output_tensor):
         raise ValueError(
             f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
         )
-    num_elements_div_n = num_elements // tile_size
+    num_tiles = num_elements // tile_size
 
     # AIE-array data movement with object fifos
     input0_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor0.dtype]]
@@ -72,7 +72,7 @@ def binary_op(device, input_tensor0, input_tensor1, op, output_tensor):
     # Define a task that will run on a compute tile
     def core_body(of_in0, of_in1, of_out):
         # Number of sub-vector "tile" iterations
-        for _ in range_(num_elements_div_n):
+        for _ in range_(num_tiles):
             elem_in0 = of_in0.acquire(1)
             elem_in1 = of_in1.acquire(1)
             elem_out = of_out.acquire(1)
