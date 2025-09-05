@@ -240,8 +240,8 @@ const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t 
 struct ggml_backend_hsa_tensor_extra {
     /// @brief Metadata for a transformed tensor.
     struct tensor_metadata_t {
-        std::size_t size{};          ///< Size of the tensor in bytes.
-        bool convert_fp16_to_bf16{}; ///< Convert FP16 to BF16.
+        std::size_t size{};   ///< Size of the tensor in bytes.
+        bool convert_dtype{}; ///< Convert datatype.
     };
 
     // Parent tensor copy
@@ -254,9 +254,9 @@ struct ggml_backend_hsa_tensor_extra {
     std::array<tensor_metadata_t, GGML_MAX_SRC>
         src_metadata{}; ///< Sizes of the source tensors in bytes. 0 for no copy.
 
-    std::size_t total_src_size{};            ///< Total size of the source tensors in bytes.
-    ggml_hsa_unique_ptr<std::byte> buffer;   ///< Temporary buffer for the tensor data.
     std::shared_ptr<ggml_hsa_kernel> kernel; ///< Kernel associated with the tensor.
+    ggml_hsa_unique_ptr<std::byte> buffer;   ///< Temporary buffer for the tensor data.
+    bool requires_sync{false}; ///< If synchronization is needed due to CPU tensor transformations.
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);
@@ -272,11 +272,6 @@ struct ggml_backend_hsa_tensor_extra {
      * @brief Allocates storage for the internal tensor.
      */
     ggml_status allocate_internal_storage(const ggml_hsa_device_info::device_info & dev_info);
-
-    /**
-     * @brief Returns if one or more input tensors need to be copied..
-     */
-    bool has_input_tensor_copies() const { return total_src_size > 0; }
 };
 
 /**
