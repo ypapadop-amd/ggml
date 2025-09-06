@@ -1,7 +1,15 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
---extra-index-url=https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2/
-mlir-aie
-
---extra-index-url=https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+# MLIR-AIE and LLVM-AIE (Peano) packages are not on the official PyPI, so they are
+# added as additional indices here.
+--extra-index-url https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2
+--extra-index-url https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+mlir_aie
 llvm-aie
+
+# MLIR-extras (Python bindings/helpers for MLIR)
+# The following environment variables must be set:
+# MLIR_PYTHON_EXTRAS_SET_VERSION="0.0.8.3"
+# HOST_MLIR_PYTHON_PACKAGE_PREFIX="aie"
+git+https://github.com/makslevental/mlir-python-extras@ba2e6fe
+-f https://github.com/llvm/eudsl/releases/expanded_assets/latest
