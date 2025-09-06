@@ -8,7 +8,7 @@ JIT compilation requires additional dependencies, such as the [IRON framework](h
 
 ### Setting up an IRON Environment
 
-For JIT compilation support, an IRON environment must be created to compile GGML in by installing the necessary dependecies:
+For JIT compilation support, an IRON environment must be created to compile GGML in by installing the necessary dependencies:
 ```bash
 MLIR_PYTHON_EXTRAS_SET_VERSION="0.0.8.3" HOST_MLIR_PYTHON_PACKAGE_PREFIX="aie" \
 python3 -m pip install -r ${SCRIPT_DIR_NAME}/requirements.txt
