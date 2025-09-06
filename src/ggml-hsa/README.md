@@ -4,18 +4,19 @@
 
 The HSA backend supports JIT compilation of kernels. This allows for the generation of optimized kernels for the target architecture at runtime.
 
-JIT compilation requires additional dependencies, such as the (IRON framework)[https://github.com/Xilinx/mlir-aie] which must be installed and consume considerable storage space. If kernels are already generated, they can be placed in a directory specified by the environment variable `GGML_HSA_KERNEL_DIR` and JIT can be disabled at compile time.
+JIT compilation requires additional dependencies, such as the [IRON framework](https://github.com/Xilinx/mlir-aie) which must be installed and consume considerable storage space. If kernels are already generated, they can be placed in a directory specified by the environment variable `GGML_HSA_KERNEL_DIR` and JIT can be disabled at compile time.
 
 ### Setting up an IRON Environment
 
-For JIT compilation support, an IRON environment must be created to compile GGML in:
+For JIT compilation support, an IRON environment must be created to compile GGML in by installing the necessary dependecies:
 ```bash
-source env_setup.sh
+MLIR_PYTHON_EXTRAS_SET_VERSION="0.0.8.3" HOST_MLIR_PYTHON_PACKAGE_PREFIX="aie" \
+python3 -m pip install -r ${SCRIPT_DIR_NAME}/requirements.txt
 ```
 
-This will create a Python virtual environment, activate it, and install the necessary dependencies. The environment can be deactivated with:
+Alternatively, one can use the provided script to set up a Python virtual environment. The [env_setup.sh](./env_setup.sh) script will create a Python virtual environment, activate it, and install the necessary dependencies.
 ```bash
-deactivate
+source ./env_setup.sh
 ```
 
 ### JIT Compilation Process
