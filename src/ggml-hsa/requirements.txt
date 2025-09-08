@@ -1,5 +1,7 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
+pytest
+
 # MLIR-AIE and LLVM-AIE (Peano) packages are not on the official PyPI, so they are
 # added as additional indices here.
 --extra-index-url=https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2
