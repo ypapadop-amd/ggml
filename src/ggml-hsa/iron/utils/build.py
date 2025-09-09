@@ -69,7 +69,7 @@ def import_from_path(module_name: str, path: os.PathLike):
 def compile_kernel(
     kernel_name: str,
     kernel_source: os.PathLike,
-    device: str,
+    arch: str,
     input_tensors: list[TensorDesc],
     output_tensor: TensorDesc,
     exported_name: str,
@@ -82,7 +82,7 @@ def compile_kernel(
     Parameters:
         kernel_name (str): Name of the IRON kernel.
         kernel_source (str): Path to the IRON kernel source file.
-        device (str): Target device for compilation.
+        arch (str): Target architecture.
         input_tensors (list[TensorDesc]): List of input tensor descriptions.
         output_tensor (TensorDesc): Output tensor description.
         exported_name (str): Name to export the compiled kernel as.
@@ -100,10 +100,10 @@ def compile_kernel(
         logger.addHandler(ch)
 
     logger.info(
-        "Compiling kernel: %s\n\tKernel source: %s\n\tDevice: %s\n\tInput tensors: %s\n\tOutput tensor: %s\n\tExported name: %s\n\tOutput directory: %s",
+        "Compiling kernel: %s\n\tKernel source: %s\n\tArch: %s\n\tInput tensors: %s\n\tOutput tensor: %s\n\tExported name: %s\n\tOutput directory: %s",
         kernel_name,
         kernel_source,
-        device,
+        arch,
         input_tensors,
         output_tensor,
         exported_name,
@@ -124,12 +124,12 @@ def compile_kernel(
     try:
         core_function_info_func = getattr(kernel, "core_function_info")
         core_function_info = core_function_info_func(
-            device=device, input_tensors=input_tensors, output_tensor=output_tensor
+            arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
         )
         output_path = os.path.join(work_dir, kernel_name + ".o")
         aie.iron.compile.compile_cxx_core_function(
             source_path=core_function_info.source_file,
-            target_arch=device,
+            target_arch=arch,
             output_path=output_path,
             compile_args=core_function_info.compile_args,
             cwd=work_dir,
@@ -166,7 +166,7 @@ def compile_kernel(
         output_path = os.path.join(work_dir, func._object_file_name)
         aie.iron.compile.compile_cxx_core_function(
             source_path=func._source_file,
-            target_arch=device,
+            target_arch=arch,
             output_path=output_path,
             include_dirs=func._include_dirs,
             compile_args=func._compile_flags,
@@ -260,10 +260,10 @@ def main():
         help="Kernel source file",
     )
     parser.add_argument(
-        "--device",
+        "--arch",
         type=str,
         required=True,
-        help="Target device",
+        help="Target architecture",
     )
     parser.add_argument(
         "--input_tensors",
@@ -301,7 +301,7 @@ def main():
     compile_kernel(
         kernel_name=args.kernel_name,
         kernel_source=args.kernel_source,
-        device=args.device,
+        arch=args.arch,
         input_tensors=args.input_tensors,
         output_tensor=args.output_tensor,
         exported_name=args.exported_name,
