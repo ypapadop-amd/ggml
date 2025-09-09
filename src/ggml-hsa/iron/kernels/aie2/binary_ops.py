@@ -1,4 +1,3 @@
-# binary_ops.py -*- Python -*-
 #
 # This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -8,6 +7,7 @@
 
 import operator
 import numpy as np
+from typing import Callable
 import pytest
 
 from aie.iron import ObjectFifo, Program, Runtime, Worker
@@ -17,44 +17,20 @@ from aie.iron.controlflow import range_
 from utils import arch_to_device, max_tile_size
 
 
-def binary_op(device, input_tensor0, input_tensor1, op, output_tensor):
+def binary_op(arch: str, input_tensor0, input_tensor1, op: Callable, output_tensor):
     """
     Implements output = input_tensor0 op input_tensor1
 
     Parameters:
-        device (str): Target device.
+        arch (str): Target architecture.
         input_tensor0: First input tensor.
         input_tensor1: Second input tensor.
-        op: Binary operator.
+        op (Callable): Binary operator.
         output: Output tensor.
     """
 
-    if (
-        not input_tensor0.contiguous
-        or not input_tensor1.contiguous
-        or not output_tensor.contiguous
-    ):
-        raise ValueError("Input and output tensors must be contiguous in memory.")
-
-    if input_tensor0.shape != input_tensor1.shape:
-        raise ValueError(
-            f"Incompatible input shapes ({input_tensor0.shape} != {input_tensor1.shape})."
-        )
-
-    if input_tensor0.shape != output_tensor.shape:
-        raise ValueError(
-            f"Incompatible input and output shapes ({input_tensor0.shape} != {output_tensor.shape})."
-        )
-
-    if (
-        input_tensor0.shape[2] != 1
-        or input_tensor0.shape[2] != 1
-        or input_tensor0.shape[3] != 1
-    ):
-        raise ValueError(f"Unsupported shape ({input_tensor0.shape}).")
-
     num_elements = np.size(input_tensor0)
-    tile_size = max_tile_size(device, input_tensor0.dtype, num_elements)
+    tile_size = max_tile_size(arch, input_tensor0.dtype, num_elements)
     if num_elements % tile_size != 0:
         raise ValueError(
             f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
@@ -97,27 +73,106 @@ def binary_op(device, input_tensor0, input_tensor1, op, output_tensor):
         rt.drain(of_out.cons(), C, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(arch_to_device(device), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
-def ggml_op_add(device: str, input_tensors: list, output_tensor):
-    """GGML_OP_ADD implementation."""
-    return binary_op(device, *input_tensors, lambda x, y: x + y, output_tensor)
+def ggml_op_binary_op_check(input_tensors: list, output_tensor):
+    """
+    Common checks for binary operations.
+
+    Parameters:
+        input_tensors (list): Input tensors.
+        output_tensor: Output tensor.
+    """
+
+    if len(input_tensors) != 2:
+        raise ValueError("Operation requires exactly two input tensors.")
+
+    if any(t.contiguous is False for t in input_tensors):
+        raise ValueError("Input and output tensors must be contiguous in memory.")
+
+    if any(t.shape != output_tensor.shape for t in input_tensors):
+        raise ValueError("Input and output tensors must have the same shape.")
+
+    if output_tensor.shape[1:4] != (1, 1, 1):
+        raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
 
 
-def ggml_op_sub(device: str, input_tensors: list, output_tensor):
-    """GGML_OP_SUB implementation."""
-    return binary_op(device, *input_tensors, lambda x, y: x - y, output_tensor)
+def ggml_op_add(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_OP_ADD implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor: Output tensor.
+    """
+    ggml_op_binary_op_check(input_tensors=input_tensors, output_tensor=output_tensor)
+    return binary_op(
+        arch=arch,
+        input_tensor0=input_tensors[0],
+        input_tensor1=input_tensors[1],
+        op=lambda x, y: x + y,
+        output_tensor=output_tensor,
+    )
 
 
-def ggml_op_mul(device: str, input_tensors: list, output_tensor):
-    """GGML_OP_MUL implementation."""
-    return binary_op(device, *input_tensors, lambda x, y: x * y, output_tensor)
+def ggml_op_sub(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_OP_SUB implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor: Output tensor.
+    """
+    ggml_op_binary_op_check(input_tensors=input_tensors, output_tensor=output_tensor)
+    return binary_op(
+        arch=arch,
+        input_tensor0=input_tensors[0],
+        input_tensor1=input_tensors[1],
+        op=lambda x, y: x - y,
+        output_tensor=output_tensor,
+    )
 
 
-def ggml_op_div(device: str, input_tensors: list, output_tensor):
-    """GGML_OP_DIV implementation."""
-    return binary_op(device, *input_tensors, lambda x, y: x / y, output_tensor)
+def ggml_op_mul(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_OP_MUL implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor: Output tensor.
+    """
+    ggml_op_binary_op_check(input_tensors=input_tensors, output_tensor=output_tensor)
+    return binary_op(
+        arch=arch,
+        input_tensor0=input_tensors[0],
+        input_tensor1=input_tensors[1],
+        op=lambda x, y: x * y,
+        output_tensor=output_tensor,
+    )
+
+
+def ggml_op_div(arch: str, input_tensors: list, output_tensor):
+    """
+
+    GGML_OP_DIV implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor: Output tensor.
+    """
+    ggml_op_binary_op_check(input_tensors=input_tensors, output_tensor=output_tensor)
+    return binary_op(
+        arch=arch,
+        input_tensor0=input_tensors[0],
+        input_tensor1=input_tensors[1],
+        op=lambda x, y: x / y,
+        output_tensor=output_tensor,
+    )
 
 
 @pytest.mark.parametrize("num_elements", [16, 256, 4096])
@@ -146,19 +201,19 @@ def test_ggml_op_binary(function, op, dtype, num_elements):
     input_tensor1.contiguous = True
     output_tensor.contiguous = True
 
-    device = None
+    arch = None
     device = iron.get_current_device()
     if device == aie.iron.Device.NPU1:
-        device = "npu"
+        arch = "aie2"
     elif device == aie.iron.Device.NPU2:
-        device = "npu2"
+        arch = "aie2p"
     else:
         raise ValueError(f"Unsupported device: {device}")
 
     # JIT-compile the kernel then launch the kernel with the given arguments
     @iron.jit(is_placed=False)
     def jit_wrapper(input_tensor0, input_tensor1, output_tensor):
-        return function(device, [input_tensor0, input_tensor1], output_tensor)
+        return function(arch, [input_tensor0, input_tensor1], output_tensor)
 
     jit_wrapper(input_tensor0, input_tensor1, output_tensor)
 
