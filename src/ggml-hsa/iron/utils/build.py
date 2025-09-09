@@ -14,12 +14,12 @@ import aie.iron.device
 from tensor_desc import tensordesc, TensorDesc
 
 
-def max_tile_size(device: str, dtype: np.dtype, num_elements: int) -> int:
+def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """
     Returns the maximum tile size based on device, data type and number of elements.
 
     Parameters:
-        device (str): Target device.
+        arch (str): Target architecture.
         dtype (np.dtype): Data type of the tensor elements.
         num_elements (int): Total number of elements in the tensor.
 
@@ -27,10 +27,10 @@ def max_tile_size(device: str, dtype: np.dtype, num_elements: int) -> int:
         int: Maximum tile size.
     """
     vector_register_size = 0
-    if device == "aie2" or device == "aie2p":
+    if arch == "aie2" or arch == "aie2p":
         vector_register_size = 512  # bits
     else:
-        raise ValueError(f"Unsupported device: {device}")
+        raise ValueError(f"Unsupported architecture: {arch}")
     max_tile_size = int(vector_register_size / dtype.itemsize)
 
     while num_elements % max_tile_size != 0 and max_tile_size > 1:
@@ -149,14 +149,14 @@ def compile_kernel(
     # generate MLIR module
     if core_function_info:  # probably not needed
         mlir_module = kernel(
-            device=device,
+            arch=arch,
             input_tensors=input_tensors,
             output_tensor=output_tensor,
             core_function_info=core_function_info,
         )
     else:
         mlir_module = kernel(
-            device=device,
+            arch=arch,
             input_tensors=input_tensors,
             output_tensor=output_tensor,
         )
