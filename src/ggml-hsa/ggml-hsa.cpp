@@ -549,8 +549,10 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
         }
     }
 
+#ifndef NDEBUG
     GGML_LOG_INFO("%s: created temporary storage for tensor %s (%s)\n", __func__, tensor.name,
                   ggml_op_desc(&tensor));
+#endif
 
     return GGML_STATUS_SUCCESS;
 }

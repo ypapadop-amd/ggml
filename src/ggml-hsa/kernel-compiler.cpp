@@ -202,9 +202,11 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         return GGML_STATUS_FAILED;
     }
 
+#ifndef NDEBUG
     GGML_LOG_INFO("%s: generated kernel %s in %s for tensor \"%s\" (%s)\n", __func__,
                   exported_name.c_str(), output_directory.c_str(), tensor.name,
                   ggml_op_desc(&tensor));
+#endif
 
     return GGML_STATUS_SUCCESS;
 }
