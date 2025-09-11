@@ -17,33 +17,24 @@ from aie.iron.controlflow import range_
 from utils import arch_to_device, max_tile_size
 
 
-def binary_op(arch: str, input_tensor0, input_tensor1, op: Callable, output_tensor):
+def apply_binary_op(arch: str, input_tensors: list, op: Callable, output_tensor):
     """
-    Implements output = input_tensor0 op input_tensor1
+    Implements output_tensor = op(*input_tensors)
 
     Parameters:
         arch (str): Target architecture.
-        input_tensor0: First input tensor.
-        input_tensor1: Second input tensor.
+        input_tensors (list): Input tensors.
         op (Callable): Binary operator.
-        output: Output tensor.
+        output_tensor: Output tensor.
     """
 
-    num_elements = np.size(input_tensor0)
-    tile_size = max_tile_size(arch, input_tensor0.dtype, num_elements)
+    num_elements = np.size(output_tensor)
+    tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
     if num_elements % tile_size != 0:
         raise ValueError(
             f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
         )
     num_tiles = num_elements // tile_size
-
-    # AIE-array data movement with object fifos
-    input0_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor0.dtype]]
-    input1_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor1.dtype]]
-    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-    of_in0 = ObjectFifo(input0_tile_ty, name="in1")
-    of_in1 = ObjectFifo(input1_tile_ty, name="in2")
-    of_out = ObjectFifo(output_tile_ty, name="out")
 
     # Define a task that will run on a compute tile
     def core_body(of_in0, of_in1, of_out):
@@ -58,30 +49,47 @@ def binary_op(arch: str, input_tensor0, input_tensor1, op: Callable, output_tens
             of_in1.release(1)
             of_out.release(1)
 
+    # AIE-array data movement with object fifos
+    input_tile_tys = [
+        (np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]])
+        for input_tensor in input_tensors
+    ]
+    of_ins = [
+        ObjectFifo(input_tile_ty, name=f"in{index}")
+        for index, input_tile_ty in enumerate(input_tile_tys)
+    ]
+    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+    of_out = ObjectFifo(output_tile_ty, name="out")
+
     # Create a worker to run the task on a compute tile
-    worker = Worker(core_body, fn_args=[of_in0.cons(), of_in1.cons(), of_out.prod()])
+    worker = Worker(core_body, fn_args=[x.cons() for x in of_ins] + [of_out.prod()])
 
     # Runtime operations to move data to/from the AIE-array
-    input0_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor0.dtype]]
-    input1_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor1.dtype]]
-    output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
+    input_tensor_tys = [
+        np.ndarray[(np.size(input_tensor),), np.dtype[input_tensor.dtype]]
+        for input_tensor in input_tensors
+    ]
+    output_tensor_ty = np.ndarray[
+        (np.size(output_tensor),), np.dtype[output_tensor.dtype]
+    ]
     rt = Runtime()
-    with rt.sequence(input0_tensor_ty, input1_tensor_ty, output_tensor_ty) as (A, B, C):
+    with rt.sequence(*input_tensor_tys, output_tensor_ty) as t:
         rt.start(worker)
-        rt.fill(of_in0.prod(), A)
-        rt.fill(of_in1.prod(), B)
-        rt.drain(of_out.cons(), C, wait=True)
+        [rt.fill(of_in.prod(), t[i]) for i, of_in in enumerate(of_ins)]
+        rt.drain(of_out.cons(), t[-1], wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
-def ggml_op_binary_op_check(input_tensors: list, output_tensor):
+def ggml_op_binary(arch: str, input_tensors: list, op: Callable, output_tensor):
     """
-    Common checks for binary operations.
+    Binary operation implementation.
 
     Parameters:
-        input_tensors (list): Input tensors.
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        op (Callable): Binary operator.
         output_tensor: Output tensor.
     """
 
@@ -97,6 +105,10 @@ def ggml_op_binary_op_check(input_tensors: list, output_tensor):
     if output_tensor.shape[1:4] != (1, 1, 1):
         raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
 
+    return apply_binary_op(
+        arch=arch, input_tensors=input_tensors, op=op, output_tensor=output_tensor
+    )
+
 
 def ggml_op_add(arch: str, input_tensors: list, output_tensor):
     """
@@ -107,11 +119,9 @@ def ggml_op_add(arch: str, input_tensors: list, output_tensor):
         input_tensors (list): List of two input tensors.
         output_tensor: Output tensor.
     """
-    ggml_op_binary_op_check(input_tensors=input_tensors, output_tensor=output_tensor)
-    return binary_op(
+    return ggml_op_binary(
         arch=arch,
-        input_tensor0=input_tensors[0],
-        input_tensor1=input_tensors[1],
+        input_tensors=input_tensors,
         op=lambda x, y: x + y,
         output_tensor=output_tensor,
     )
@@ -126,11 +136,9 @@ def ggml_op_sub(arch: str, input_tensors: list, output_tensor):
         input_tensors (list): List of two input tensors.
         output_tensor: Output tensor.
     """
-    ggml_op_binary_op_check(input_tensors=input_tensors, output_tensor=output_tensor)
-    return binary_op(
+    return ggml_op_binary(
         arch=arch,
-        input_tensor0=input_tensors[0],
-        input_tensor1=input_tensors[1],
+        input_tensors=input_tensors,
         op=lambda x, y: x - y,
         output_tensor=output_tensor,
     )
@@ -145,11 +153,9 @@ def ggml_op_mul(arch: str, input_tensors: list, output_tensor):
         input_tensors (list): List of two input tensors.
         output_tensor: Output tensor.
     """
-    ggml_op_binary_op_check(input_tensors=input_tensors, output_tensor=output_tensor)
-    return binary_op(
+    return ggml_op_binary(
         arch=arch,
-        input_tensor0=input_tensors[0],
-        input_tensor1=input_tensors[1],
+        input_tensors=input_tensors,
         op=lambda x, y: x * y,
         output_tensor=output_tensor,
     )
@@ -157,7 +163,6 @@ def ggml_op_mul(arch: str, input_tensors: list, output_tensor):
 
 def ggml_op_div(arch: str, input_tensors: list, output_tensor):
     """
-
     GGML_OP_DIV implementation.
 
     Parameters:
@@ -165,11 +170,9 @@ def ggml_op_div(arch: str, input_tensors: list, output_tensor):
         input_tensors (list): List of two input tensors.
         output_tensor: Output tensor.
     """
-    ggml_op_binary_op_check(input_tensors=input_tensors, output_tensor=output_tensor)
-    return binary_op(
+    return ggml_op_binary(
         arch=arch,
-        input_tensor0=input_tensors[0],
-        input_tensor1=input_tensors[1],
+        input_tensors=input_tensors,
         op=lambda x, y: x / y,
         output_tensor=output_tensor,
     )
