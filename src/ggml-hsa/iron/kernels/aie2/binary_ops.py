@@ -17,14 +17,14 @@ from aie.iron.controlflow import range_
 from utils import arch_to_device, max_tile_size
 
 
-def apply_binary_op(arch: str, input_tensors: list, op: Callable, output_tensor):
+def apply_binary_op(arch: str, input_tensors: list, function: Callable, output_tensor):
     """
     Implements output_tensor = op(*input_tensors)
 
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): Input tensors.
-        op (Callable): Binary operator.
+        function (Callable): Binary operator.
         output_tensor: Output tensor.
     """
 
@@ -44,7 +44,7 @@ def apply_binary_op(arch: str, input_tensors: list, op: Callable, output_tensor)
             elem_in1 = of_in1.acquire(1)
             elem_out = of_out.acquire(1)
             for i in range_(tile_size):
-                elem_out[i] = op(elem_in0[i], elem_in1[i])
+                elem_out[i] = function(elem_in0[i], elem_in1[i])
             of_in0.release(1)
             of_in1.release(1)
             of_out.release(1)
@@ -82,31 +82,40 @@ def apply_binary_op(arch: str, input_tensors: list, op: Callable, output_tensor)
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
-def ggml_op_binary(arch: str, input_tensors: list, op: Callable, output_tensor):
+def ggml_op_binary(arch: str, input_tensors: list, function: Callable, output_tensor):
     """
     Binary operation implementation.
 
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        op (Callable): Binary operator.
+        function (Callable): Binary operator.
         output_tensor: Output tensor.
     """
 
     if len(input_tensors) != 2:
         raise ValueError("Operation requires exactly two input tensors.")
 
-    if any(t.contiguous is False for t in input_tensors):
+    if (
+        any(t.contiguous is False for t in input_tensors)
+        or output_tensor.contiguous is False
+    ):
         raise ValueError("Input and output tensors must be contiguous in memory.")
 
-    if any(t.shape != output_tensor.shape for t in input_tensors):
-        raise ValueError("Input and output tensors must have the same shape.")
+    for input_tensor in input_tensors:
+        if input_tensor.shape != output_tensor.shape:
+            raise ValueError(
+                f"Input and output tensors must have the same shape ({input_tensor.shape} != {output_tensor.shape})."
+            )
 
     if output_tensor.shape[1:4] != (1, 1, 1):
         raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
 
     return apply_binary_op(
-        arch=arch, input_tensors=input_tensors, op=op, output_tensor=output_tensor
+        arch=arch,
+        input_tensors=input_tensors,
+        function=function,
+        output_tensor=output_tensor,
     )
 
 
@@ -122,7 +131,7 @@ def ggml_op_add(arch: str, input_tensors: list, output_tensor):
     return ggml_op_binary(
         arch=arch,
         input_tensors=input_tensors,
-        op=lambda x, y: x + y,
+        function=lambda x, y: x + y,
         output_tensor=output_tensor,
     )
 
@@ -139,7 +148,7 @@ def ggml_op_sub(arch: str, input_tensors: list, output_tensor):
     return ggml_op_binary(
         arch=arch,
         input_tensors=input_tensors,
-        op=lambda x, y: x - y,
+        function=lambda x, y: x - y,
         output_tensor=output_tensor,
     )
 
@@ -156,7 +165,7 @@ def ggml_op_mul(arch: str, input_tensors: list, output_tensor):
     return ggml_op_binary(
         arch=arch,
         input_tensors=input_tensors,
-        op=lambda x, y: x * y,
+        function=lambda x, y: x * y,
         output_tensor=output_tensor,
     )
 
@@ -173,7 +182,7 @@ def ggml_op_div(arch: str, input_tensors: list, output_tensor):
     return ggml_op_binary(
         arch=arch,
         input_tensors=input_tensors,
-        op=lambda x, y: x / y,
+        function=lambda x, y: x / y,
         output_tensor=output_tensor,
     )
 
