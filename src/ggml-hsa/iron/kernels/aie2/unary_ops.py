@@ -39,29 +39,31 @@ def apply(
         output_tensor: Output tensor.
     """
 
+    # Find tile size and number of tiles
     num_elements = np.size(input_tensor)
+    tile_size = None
+    num_tiles = None
+    if isinstance(function, ExternalFunction):
+        tile_size = function.tile_size(0)
+    else:
+        tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
+    if num_elements % tile_size != 0:
+        raise ValueError(
+            f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
+        )
+    num_tiles = num_elements // tile_size
+
+    # AIE-array data movement with object fifos
+    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
+    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+    of_in = ObjectFifo(input_tile_ty, name="in")
+    of_out = ObjectFifo(output_tile_ty, name="out")
 
     # Task for the core to perform
     worker = None
+    worker_fn = None
+    worker_fn_args = None
     if isinstance(function, ExternalFunction):
-        if function.tile_size(0) != function.tile_size(1):
-            raise ValueError(
-                f"Input and output tile sizes do not match ({function.tile_size(0)} != {function.tile_size(1)})."
-            )
-        tile_size = function.tile_size(0)
-
-        if num_elements % tile_size != 0:
-            raise ValueError(
-                f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
-            )
-        num_tiles = num_elements // tile_size
-
-        # Input / output data movement
-        input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
-        output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-        of_in = ObjectFifo(input_tile_ty, name="in")
-        of_out = ObjectFifo(output_tile_ty, name="out")
-
         # Task for the core to perform with an external function
         def external_core_fn(of_in, of_out, function):
             # Number of sub-vector "tile" iterations
@@ -72,19 +74,9 @@ def apply(
                 of_in.release(1)
                 of_out.release(1)
 
-        worker = Worker(
-            external_core_fn, fn_args=[of_in.cons(), of_out.prod(), function]
-        )
+        worker_fn = external_core_fn
+        worker_fn_args = [of_in.cons(), of_out.prod(), function]
     else:
-        tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
-        num_tiles = num_elements // tile_size
-
-        # Input / output data movement
-        input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
-        output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-        of_in = ObjectFifo(input_tile_ty, name="in")
-        of_out = ObjectFifo(output_tile_ty, name="out")
-
         # Task for the core to perform without an external function
         def core_fn(of_in, of_out):
             # Number of sub-vector "tile" iterations
@@ -96,7 +88,11 @@ def apply(
                 of_in.release(1)
                 of_out.release(1)
 
-        worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod()])
+        worker_fn = core_fn
+        worker_fn_args = [of_in.cons(), of_out.prod()]
+
+    # Create a worker to run the task on a compute tile
+    worker = Worker(worker_fn, fn_args=worker_fn_args)
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
@@ -185,17 +181,15 @@ def ggml_op_sqr(arch: str, input_tensors: list, output_tensor):
         output_tensor: Output tensor.
     """
 
-    # Using a lambda function instead of an external function due to https://github.com/Xilinx/llvm-aie/issues/641
-    # function = create_external_function(
-    #     arch=arch,
-    #     op_name="sqr",
-    #     input_tensor=input_tensors[0],
-    #     output_tensor=output_tensor,
-    #)
-
+    core_function = create_external_function(
+        arch=arch,
+        op_name="sqr",
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
     return ggml_op_unary(
         arch=arch,
-        function=lambda x: x * x,
+        function=core_function,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
@@ -210,33 +204,42 @@ def ggml_op_sqrt(arch: str, input_tensors: list, output_tensor):
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
     """
-
-    core_function = create_external_function(
-        arch=arch,
-        op_name="sqrt",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
-    return ggml_op_unary(
-        arch=arch,
-        function=core_function,
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-    )
+    raise NotImplementedError
 
 
 def ggml_op_log(arch: str, input_tensors: list, output_tensor):
-    """GGML_OP_LOG implementation."""
+    """
+    GGML_OP_LOG implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
 def ggml_op_sin(arch: str, input_tensors: list, output_tensor):
-    """GGML_OP_SIN implementation."""
+    """
+    GGML_OP_SIN implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
 def ggml_op_cos(arch: str, input_tensors: list, output_tensor):
-    """GGML_OP_COS implementation."""
+    """
+    GGML_OP_COS implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
@@ -337,12 +340,26 @@ def ggml_unary_op_step(arch: str, input_tensors: list, output_tensor):
 
 
 def ggml_unary_op_tanh(arch: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_TANH implementation."""
+    """
+    GGML_UNARY_OP_TANH implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
 def ggml_unary_op_elu(arch: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_ELU implementation."""
+    """
+    GGML_UNARY_OP_ELU implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
@@ -371,22 +388,50 @@ def ggml_unary_op_relu(arch: str, input_tensors: list, output_tensor):
 
 
 def ggml_unary_op_sigmoid(arch: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_SIGMOID implementation."""
+    """
+    GGML_UNARY_OP_SIGMOID implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
 def ggml_unary_op_gelu(arch: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_GELU implementation."""
+    """
+    GGML_UNARY_OP_GELU implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
 def ggml_unary_op_gelu_quick(arch: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_GELU_QUICK implementation."""
+    """
+    GGML_UNARY_OP_GELU_QUICK implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
 def ggml_unary_op_silu(arch: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_SILU implementation."""
+    """
+    GGML_UNARY_OP_SILU implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
@@ -439,10 +484,24 @@ def ggml_unary_op_hardsigmoid(arch: str, input_tensors: list, output_tensor):
 
 
 def ggml_unary_op_exp(arch: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_EXP implementation."""
+    """
+    GGML_UNARY_OP_EXP implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
 def ggml_unary_op_gelu_erf(arch: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_GELU_ERF implementation."""
+    """
+    GGML_UNARY_OP_GELU_ERF implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
