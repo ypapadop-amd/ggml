@@ -202,7 +202,7 @@ struct ggml_hsa_device_info {
         memory_pool_info dev_memory{};     ///< Kernel memory pool.
         memory_pool_info kernarg_memory{}; ///< Kernel arguments memory pool.
         memory_pool_info data_memory{};    ///< Data memory pool.
-        std::size_t alignment{256};        ///< Memory alignment requirement for buffers.
+        std::size_t alignment{64};         ///< Memory alignment requirement for buffers.
         bool substitute_fp16_bf16{false};  ///< Use BF16 when FP16 is requested.
         std::unordered_map<std::string, std::shared_ptr<ggml_hsa_kernel>>
             kernels; ///< Cached device kernels.
