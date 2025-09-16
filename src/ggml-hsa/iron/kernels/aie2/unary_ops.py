@@ -114,7 +114,7 @@ def create_external_function(
     Creates an ExternalFunction specification for unary ops.
 
     Parameters:
-        arch (str): Target architectur.
+        arch (str): Target architecture.
         op_name (str): Name of the operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
@@ -152,7 +152,7 @@ def ggml_op_unary(arch: str, input_tensors: list, function: Callable, output_ten
     """
 
     if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensors.")
+        raise ValueError("Operation requires exactly one input tensor.")
 
     if input_tensors[0].contiguous is False or output_tensor.contiguous is False:
         raise ValueError("Input and output tensors must be contiguous in memory.")
