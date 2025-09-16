@@ -23,124 +23,12 @@ from aie.iron.controlflow import range_
 from utils import arch_to_device, max_tile_size
 
 
-def apply(
+def ggml_op_unary(
     arch: str,
+    input_tensors: list,
     function: Callable | ExternalFunction,
-    input_tensor,
     output_tensor,
 ):
-    """
-    Implements output_tensor = op(input_tensor).
-
-    Parameters:
-        arch (str): Target architecture.
-        function (Callable | ExternalFunction): Unary operator.
-        input_tensor: Input tensor.
-        output_tensor: Output tensor.
-    """
-
-    # Find tile size and number of tiles
-    num_elements = np.size(input_tensor)
-    tile_size = None
-    num_tiles = None
-    if isinstance(function, ExternalFunction):
-        tile_size = function.tile_size(0)
-    else:
-        tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
-    if num_elements % tile_size != 0:
-        raise ValueError(
-            f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
-        )
-    num_tiles = num_elements // tile_size
-
-    # AIE-array data movement with object fifos
-    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
-    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-    of_in = ObjectFifo(input_tile_ty, name="in")
-    of_out = ObjectFifo(output_tile_ty, name="out")
-
-    # Task for the core to perform
-    worker = None
-    worker_fn = None
-    worker_fn_args = None
-    if isinstance(function, ExternalFunction):
-        # Task for the core to perform with an external function
-        def external_core_fn(of_in, of_out, function):
-            # Number of sub-vector "tile" iterations
-            for _ in range_(num_tiles):
-                elem_in = of_in.acquire(1)
-                elem_out = of_out.acquire(1)
-                function(elem_in, elem_out, tile_size)
-                of_in.release(1)
-                of_out.release(1)
-
-        worker_fn = external_core_fn
-        worker_fn_args = [of_in.cons(), of_out.prod(), function]
-    else:
-        # Task for the core to perform without an external function
-        def core_fn(of_in, of_out):
-            # Number of sub-vector "tile" iterations
-            for _ in range_(num_tiles):
-                elem_in = of_in.acquire(1)
-                elem_out = of_out.acquire(1)
-                for i in range_(tile_size):
-                    elem_out[i] = function(elem_in[i])
-                of_in.release(1)
-                of_out.release(1)
-
-        worker_fn = core_fn
-        worker_fn_args = [of_in.cons(), of_out.prod()]
-
-    # Create a worker to run the task on a compute tile
-    worker = Worker(worker_fn, fn_args=worker_fn_args)
-
-    # Runtime operations to move data to/from the AIE-array
-    rt = Runtime()
-    input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
-    output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
-    with rt.sequence(input_tensor_ty, output_tensor_ty) as (a_in, b_out):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.drain(of_out.cons(), b_out, wait=True)
-
-    # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
-
-
-def create_external_function(
-    arch: str, op_name: str, input_tensor, output_tensor
-) -> ExternalFunction:
-    """
-    Creates an ExternalFunction specification for unary ops.
-
-    Parameters:
-        arch (str): Target architecture.
-        op_name (str): Name of the operation.
-        input_tensor: Input tensor.
-        output_tensor: Output tensor.
-    """
-
-    tile_size = max_tile_size(arch, input_tensor.dtype, np.size(input_tensor))
-    current_dir = path.dirname(path.realpath(__file__))
-    func = ExternalFunction(
-        name="ggml_op_" + op_name,
-        object_file_name=f"{op_name}_core_function.o",
-        source_file=path.join(current_dir, "unary_ops.cc"),
-        arg_types=[
-            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
-            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
-            np.int32,
-        ],
-        compile_flags=[
-            f"-DCOMPILE_{op_name.upper()}=1",
-            f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
-            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-        ],
-    )
-    return func
-
-
-def ggml_op_unary(arch: str, input_tensors: list, function: Callable, output_tensor):
     """
     Implements output_tensor = function(input_tensors[0])
 
@@ -163,12 +51,106 @@ def ggml_op_unary(arch: str, input_tensors: list, function: Callable, output_ten
     if output_tensor.shape[1:4] != (1, 1, 1):
         raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
 
-    return apply(
-        arch=arch,
-        function=function,
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
+    input_tensor = input_tensors[0]
+
+    # Find tile size and number of tiles
+    num_elements = np.size(input_tensor)
+    tile_size = None
+    num_tiles = None
+    if isinstance(function, ExternalFunction):
+        tile_size = function.tile_size(0)
+    else:
+        tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
+    num_tiles = num_elements // tile_size
+    assert num_elements % tile_size == 0
+
+    # AIE-array data movement with object fifos
+    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
+    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+    of_in = ObjectFifo(input_tile_ty, name="in")
+    of_out = ObjectFifo(output_tile_ty, name="out")
+
+    # Create a worker to run the task on a compute tile
+    worker = None
+    if isinstance(function, ExternalFunction):
+        # Task for the core to perform with an external function
+        def ext_core_fn(of_in, of_out, function):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(num_tiles):
+                elem_in = of_in.acquire(1)
+                elem_out = of_out.acquire(1)
+                function(elem_in, elem_out, tile_size)
+                of_in.release(1)
+                of_out.release(1)
+
+        worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+    else:
+
+        def core_fn(of_in, of_out):
+            # Number of sub-vector "tile" iterations
+            for _ in range_(num_tiles):
+                elem_in = of_in.acquire(1)
+                elem_out = of_out.acquire(1)
+                for i in range_(tile_size):
+                    elem_out[i] = function(elem_in[i])
+                of_in.release(1)
+                of_out.release(1)
+
+        worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod()])
+
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
+    output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
+    with rt.sequence(input_tensor_ty, output_tensor_ty) as (a_in, b_out):
+        rt.start(worker)
+        rt.fill(of_in.prod(), a_in)
+        rt.drain(of_out.cons(), b_out, wait=True)
+
+    # Place program components (assign them resources on the device) and generate an MLIR module
+    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+
+
+def create_external_function(
+    arch: str,
+    op_name: str,
+    input_tensor,
+    output_tensor,
+) -> ExternalFunction:
+    """
+    Creates an ExternalFunction specification for unary ops.
+
+    Parameters:
+        arch (str): Target architecture.
+        op_name (str): Name of the operation.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
+    """
+
+    num_elements = np.size(input_tensor)
+    tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
+    if num_elements % tile_size != 0:
+        raise ValueError(
+            f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
+        )
+
+    current_dir = path.dirname(path.realpath(__file__))
+    func = ExternalFunction(
+        name="ggml_op_" + op_name,
+        object_file_name=f"{op_name}_core_function.o",
+        source_file=path.join(current_dir, "unary_ops.cc"),
+        arg_types=[
+            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
+            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
+            np.int32,
+        ],
+        compile_flags=[
+            f"-DCOMPILE_{op_name.upper()}=1",
+            f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
+            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        ],
     )
+    return func
 
 
 def ggml_op_sqr(arch: str, input_tensors: list, output_tensor):
