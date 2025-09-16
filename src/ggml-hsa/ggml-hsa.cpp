@@ -449,19 +449,23 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             break;
         default:
             {
-                // change tensor data types if needed; it performs in-place conversion, so no
-                // temporary storage is needed
+                // convert tensor data types if needed
                 if (dev_info.substitute_fp16_bf16) {
                     if (tensor.type == GGML_TYPE_F16) {
+                        // for the output we convert in-place
                         tensor.type = GGML_TYPE_BF16;
                         tensor_metadata.convert_dtype = true;
-                        requires_sync = true;
                     }
 
+                    // inputs require temporary storage as they may be shared as inputs to multiple
+                    // tensors
                     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
                         if (src[src_idx].type == GGML_TYPE_F16) {
+                            src[src_idx].data = nullptr;
                             src[src_idx].type = GGML_TYPE_BF16;
                             src_metadata[src_idx].convert_dtype = true;
+                            src_metadata[src_idx].size =
+                                GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
                             requires_sync = true;
                         }
                     }
@@ -476,14 +480,14 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                     if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
                         src[src_idx].data = nullptr;
                         ggml_hsa_force_unpermuted(src[src_idx]);
-                        auto size = GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
-                        src_metadata[src_idx].size = size;
+                        src_metadata[src_idx].size =
+                            GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
                         requires_sync = true;
                     }
                 }
 
-                // flatten tensors if possible to reuse kernels
-                if (ggml_hsa_can_flatten(tensor) && !ggml_is_vector(&tensor)) {
+                // flatten tensors if possible to reuse kernels and avoid temporary storage
+                if (ggml_hsa_can_flatten(tensor)) {
                     ggml_hsa_flatten_tensor(tensor);
                     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
                         ggml_hsa_flatten_tensor(src[src_idx]);
@@ -1126,8 +1130,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     if (tensor_extra.requires_sync) {
                         ggml_hsa_wait_dispatches(ctx);
                         for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
-                            if ((tensor_extra.src_metadata[src_idx].size == 0) &&
-                                !tensor_extra.src_metadata[src_idx].convert_dtype) {
+                            if (tensor_extra.src_metadata[src_idx].size == 0) {
                                 continue;
                             }
                             // change layout and/or convert datatypes
