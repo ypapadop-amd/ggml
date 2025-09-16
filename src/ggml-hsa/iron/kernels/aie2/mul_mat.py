@@ -635,7 +635,7 @@ def my_matmul(
         )
 
 
-def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
+def mul_mat_core_function_info(arch, input_tensors: list, output_tensor):
     """Returns a compilation specification for matrix multiplication."""
 
     m = 8
@@ -665,17 +665,17 @@ def mul_mat_core_function_info(device, input_tensors: list, output_tensor):
 
 @core_function(mul_mat_core_function_info)
 def ggml_op_mul_mat(
-    device: str,
+    arch: str,
     input_tensors: list,
     output_tensor,
     core_function_info: CoreFunctionInfo,
 ):
-    if device == "aie2":
+    if arch == "aie2":
         dev = "npu"
-    elif device == "aie2p":
+    elif arch == "aie2p":
         dev = "npu2"
     else:
-        raise ValueError(f"Unsupported device: {device}")
+        raise ValueError(f"Unsupported architecture: {arch}")
 
     if len(input_tensors) != 2:
         raise ValueError("Requires two input tensors")
