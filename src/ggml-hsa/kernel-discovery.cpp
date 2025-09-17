@@ -34,7 +34,9 @@ static const fs::path kernel_dir = [] {
         }
         return dir;
     }
+#ifndef NDEBUG
     GGML_LOG_INFO("ggml_hsa_backend: no pregenerated kernel directory defined.\n");
+#endif
     return fs::path{};
 }();
 
@@ -56,11 +58,15 @@ static const fs::path cached_kernel_dir = [] {
     } else {
         cache_dir = fs::path("/tmp/ggml/ggml-hsa");
     }
+#ifndef NDEBUG
     GGML_LOG_INFO("ggml_hsa_backend: cached kernels in %s\n", cache_dir.c_str());
+#endif
 
     if (const char * clear_cache = std::getenv("GGML_HSA_KERNEL_CACHE_CLEAR");
         clear_cache != nullptr && ggml_hsa_string_to_bool(clear_cache)) {
+#ifndef NDEBUG
         GGML_LOG_INFO("ggml_hsa_backend: clearing kernel cache in %s\n", cache_dir.c_str());
+#endif
         fs::remove_all(cache_dir);
     }
 
