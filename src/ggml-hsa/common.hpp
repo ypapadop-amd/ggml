@@ -172,7 +172,7 @@ class ggml_hsa_kernel {
     virtual ggml_status dispatch(ggml_backend_hsa_context & ctx,
                                  ggml_tensor * src_tensors[],
                                  std::size_t num_src_tensors,
-                                 ggml_tensor * dst_tensor) const = 0;
+                                 ggml_tensor & dst_tensor) const = 0;
 };
 
 /**
@@ -202,7 +202,7 @@ struct ggml_hsa_device_info {
         memory_pool_info dev_memory{};     ///< Kernel memory pool.
         memory_pool_info kernarg_memory{}; ///< Kernel arguments memory pool.
         memory_pool_info data_memory{};    ///< Data memory pool.
-        std::size_t alignment{256};        ///< Memory alignment requirement for buffers.
+        std::size_t alignment{64};         ///< Memory alignment requirement for buffers.
         bool substitute_fp16_bf16{false};  ///< Use BF16 when FP16 is requested.
         std::unordered_map<std::string, std::shared_ptr<ggml_hsa_kernel>>
             kernels; ///< Cached device kernels.
@@ -230,33 +230,29 @@ const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t 
 /**
  * @brief Tensor metadata.
  *
- * This class contains metadata about a tensor, called a parent tensor, that is used by the HSA
- * backend. A copy of the parent tensor is made, along with a copy for all the parent's source
- * tensors.
+ * This class contains metadata about a ggml_tensor, called a parent tensor, that is used by the HSA
+ * backend to create an alternative graph representation that will be used at run-time.
+ *
+ * A copy of the parent tensor metadata is made, along with a copy for all the parent's source
+ * tensors' metadata.
  *
  * Those copies have a number of transformations applied to them, such as making them contiguous,
  * flattening them etc.
  */
 struct ggml_backend_hsa_tensor_extra {
-    /// @brief Metadata for a transformed tensor.
-    struct tensor_metadata_t {
-        std::size_t size{};   ///< Size of the tensor in bytes.
-        bool convert_dtype{}; ///< Convert datatype.
+    /// @brief Internal graph node.
+    struct node_t {
+        ggml_tensor tensor{};      ///< Transformed tensor.
+        std::size_t buffer_size{}; ///< Temporary storage size in bytes.
+        bool convert_dtype{};      ///< True if data conversion is necessary.
     };
 
-    // Parent tensor copy
-    ggml_tensor tensor{};                ///< Transformed operation tensor.
-    std::int64_t nsrcs{};                ///< Number of source tensors.
-    tensor_metadata_t tensor_metadata{}; ///< Transformed tensor metadata.
-
-    // Source tensor copies
-    std::array<ggml_tensor, GGML_MAX_SRC> src{}; ///< Source tensors for the operation.
-    std::array<tensor_metadata_t, GGML_MAX_SRC>
-        src_metadata{}; ///< Sizes of the source tensors in bytes. 0 for no copy.
-
-    std::shared_ptr<ggml_hsa_kernel> kernel; ///< Kernel associated with the tensor.
-    ggml_hsa_unique_ptr<std::byte> buffer;   ///< Temporary buffer for the tensor data.
-    bool requires_sync{false}; ///< If synchronization is needed due to CPU tensor transformations.
+    std::int64_t nsrcs{};                         ///< Number of source tensors.
+    node_t node{};                                ///< Internal graph node.
+    std::array<node_t, GGML_MAX_SRC> src_nodes{}; ///< Internal graph node sources.
+    std::shared_ptr<ggml_hsa_kernel> kernel;      ///< Kernel associated with the tensor.
+    ggml_hsa_unique_ptr<std::byte> buffer;        ///< Temporary storage for tensor data.
+    bool requires_sync{false}; ///< True if CPU tensor transformations are necessary.
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);
