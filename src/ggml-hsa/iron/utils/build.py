@@ -9,7 +9,6 @@ import numpy as np
 import aie.iron
 import aie.iron.compile
 import aie.iron.device
-from ml_dtypes import bfloat16
 
 from tensor_desc import tensordesc, TensorDesc
 
@@ -26,10 +25,15 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
     num_elements = np.size(tensor)
     if arch in ["aie2", "aie2p"]:
         # align to 4 bytes for data types with size < 4
+        ALIGNMENT_BYTES = 4
         dtype_size = tensor.dtype.itemsize
         data_size = num_elements * dtype_size
-        if data_size % 4 != 0:
-            num_elements = 4 * ((data_size + 3) // 4) // dtype_size
+        if data_size % ALIGNMENT_BYTES != 0:
+            num_elements = (
+                ALIGNMENT_BYTES
+                * ((data_size + (ALIGNMENT_BYTES - 1)) // ALIGNMENT_BYTES)
+                // dtype_size
+            )
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
 
