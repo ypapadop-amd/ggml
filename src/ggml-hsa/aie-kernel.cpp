@@ -36,7 +36,7 @@ static void ggml_hsa_aie_dispatch_packet(hsa_queue_t * queue,
 ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor * src_tensors[],
                                           std::size_t num_src_tensors,
-                                          ggml_tensor * dst_tensor) const {
+                                          ggml_tensor & dst_tensor) const {
     const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
     const std::size_t packet_dwords =
         3 /* instructions */ + (num_src_tensors + 1) * 3 /* source and destination tensors */;
@@ -75,15 +75,15 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     }
 
     // destination; 2 dwords
-    cmd_payload->data[dword_idx] = reinterpret_cast<std::uintptr_t>(dst_tensor->data) & 0xFFFFFFFF;
-    cmd_payload->data[dword_idx + 1] = reinterpret_cast<std::uintptr_t>(dst_tensor->data) >> 32;
+    cmd_payload->data[dword_idx] = reinterpret_cast<std::uintptr_t>(dst_tensor.data) & 0xFFFFFFFF;
+    cmd_payload->data[dword_idx + 1] = reinterpret_cast<std::uintptr_t>(dst_tensor.data) >> 32;
     dword_idx += 2;
 
     // sizes; 1 dword per tensor
     for (std::size_t src_idx = 0; src_idx < num_src_tensors; ++src_idx, ++dword_idx) {
         cmd_payload->data[dword_idx] = ggml_nbytes(src_tensors[src_idx]);
     }
-    cmd_payload->data[dword_idx] = ggml_nbytes(dst_tensor);
+    cmd_payload->data[dword_idx] = ggml_nbytes(&dst_tensor);
 
     assert(dword_idx == packet_dwords + 1); // 2 extra uncounted dwords (transaction opcode)
 

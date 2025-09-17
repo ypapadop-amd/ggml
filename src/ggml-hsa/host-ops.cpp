@@ -17,7 +17,7 @@
  */
 struct ggml_hsa_copy_same_shape_tensors_f {
     template <ggml_type SrcT, ggml_type DstT = SrcT>
-    void operator()(const ggml_tensor * src, ggml_tensor * dst) {
+    ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
         assert(ggml_are_same_shape(src, dst));
 
         using src_traits = ggml_hsa_type_traits<SrcT>;
@@ -63,6 +63,7 @@ struct ggml_hsa_copy_same_shape_tensors_f {
                 }
             }
         }
+        return GGML_STATUS_SUCCESS;
     }
 };
 
@@ -74,7 +75,7 @@ struct ggml_hsa_copy_same_shape_tensors_f {
  */
 struct ggml_hsa_copy_tensor_to_cont_tensor_f {
     template <ggml_type SrcT, ggml_type DstT = SrcT>
-    void operator()(const ggml_tensor * src, ggml_tensor * dst) {
+    ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
         assert((ggml_nelements(src) == ggml_nelements(dst)) && ggml_is_contiguous(dst));
 
         using src_traits = ggml_hsa_type_traits<SrcT>;
@@ -119,6 +120,7 @@ struct ggml_hsa_copy_tensor_to_cont_tensor_f {
                 }
             }
         }
+        return GGML_STATUS_SUCCESS;
     }
 };
 
@@ -131,14 +133,13 @@ ggml_status ggml_hsa_assign(F && f, const ggml_tensor * src, ggml_tensor * dst) 
         case GGML_TYPE_F32:
             switch (dst->type) {
                 case GGML_TYPE_F32:
-                    std::forward<F>(f).template operator()<GGML_TYPE_F32>(src, dst);
-                    return GGML_STATUS_SUCCESS;
+                    return std::forward<F>(f).template operator()<GGML_TYPE_F32>(src, dst);
                 case GGML_TYPE_F16:
-                    std::forward<F>(f).template operator()<GGML_TYPE_F32, GGML_TYPE_F16>(src, dst);
-                    return GGML_STATUS_SUCCESS;
+                    return std::forward<F>(f).template operator()<GGML_TYPE_F32, GGML_TYPE_F16>(
+                        src, dst);
                 case GGML_TYPE_BF16:
-                    std::forward<F>(f).template operator()<GGML_TYPE_F32, GGML_TYPE_BF16>(src, dst);
-                    return GGML_STATUS_SUCCESS;
+                    return std::forward<F>(f).template operator()<GGML_TYPE_F32, GGML_TYPE_BF16>(
+                        src, dst);
                 default:
                     GGML_LOG_ERROR("%s: unsupported type for destination tensor \"%s\" (%s)\n",
                                    __func__, dst->name, ggml_type_name(dst->type));
@@ -147,14 +148,28 @@ ggml_status ggml_hsa_assign(F && f, const ggml_tensor * src, ggml_tensor * dst) 
         case GGML_TYPE_F16:
             switch (dst->type) {
                 case GGML_TYPE_F32:
-                    std::forward<F>(f).template operator()<GGML_TYPE_F16, GGML_TYPE_F32>(src, dst);
-                    return GGML_STATUS_SUCCESS;
+                    return std::forward<F>(f).template operator()<GGML_TYPE_F16, GGML_TYPE_F32>(
+                        src, dst);
                 case GGML_TYPE_F16:
-                    std::forward<F>(f).template operator()<GGML_TYPE_F16>(src, dst);
-                    return GGML_STATUS_SUCCESS;
+                    return std::forward<F>(f).template operator()<GGML_TYPE_F16>(src, dst);
                 case GGML_TYPE_BF16:
-                    std::forward<F>(f).template operator()<GGML_TYPE_F16, GGML_TYPE_BF16>(src, dst);
-                    return GGML_STATUS_SUCCESS;
+                    return std::forward<F>(f).template operator()<GGML_TYPE_F16, GGML_TYPE_BF16>(
+                        src, dst);
+                default:
+                    GGML_LOG_ERROR("%s: unsupported type for destination tensor \"%s\" (%s)\n",
+                                   __func__, dst->name, ggml_type_name(dst->type));
+                    return GGML_STATUS_FAILED;
+            }
+        case GGML_TYPE_I16:
+            switch (dst->type) {
+                case GGML_TYPE_I8:
+                    return std::forward<F>(f).template operator()<GGML_TYPE_I16, GGML_TYPE_I8>(src,
+                                                                                               dst);
+                case GGML_TYPE_I16:
+                    return std::forward<F>(f).template operator()<GGML_TYPE_I16>(src, dst);
+                case GGML_TYPE_I32:
+                    return std::forward<F>(f).template operator()<GGML_TYPE_I16, GGML_TYPE_I32>(
+                        src, dst);
                 default:
                     GGML_LOG_ERROR("%s: unsupported type for destination tensor \"%s\" (%s)\n",
                                    __func__, dst->name, ggml_type_name(dst->type));
@@ -163,14 +178,13 @@ ggml_status ggml_hsa_assign(F && f, const ggml_tensor * src, ggml_tensor * dst) 
         case GGML_TYPE_BF16:
             switch (dst->type) {
                 case GGML_TYPE_F32:
-                    std::forward<F>(f).template operator()<GGML_TYPE_BF16, GGML_TYPE_F32>(src, dst);
-                    return GGML_STATUS_SUCCESS;
+                    return std::forward<F>(f).template operator()<GGML_TYPE_BF16, GGML_TYPE_F32>(
+                        src, dst);
                 case GGML_TYPE_F16:
-                    std::forward<F>(f).template operator()<GGML_TYPE_BF16, GGML_TYPE_F16>(src, dst);
-                    return GGML_STATUS_SUCCESS;
+                    return std::forward<F>(f).template operator()<GGML_TYPE_BF16, GGML_TYPE_F16>(
+                        src, dst);
                 case GGML_TYPE_BF16:
-                    std::forward<F>(f).template operator()<GGML_TYPE_BF16>(src, dst);
-                    return GGML_STATUS_SUCCESS;
+                    return std::forward<F>(f).template operator()<GGML_TYPE_BF16>(src, dst);
                 default:
                     GGML_LOG_ERROR("%s: unsupported type for destination tensor \"%s\" (%s)\n",
                                    __func__, dst->name, ggml_type_name(dst->type));
