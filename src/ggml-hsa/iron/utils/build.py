@@ -9,8 +9,31 @@ import numpy as np
 import aie.iron
 import aie.iron.compile
 import aie.iron.device
+from ml_dtypes import bfloat16
 
 from tensor_desc import tensordesc, TensorDesc
+
+
+def arch_aligned_num_elements(arch: str, tensor) -> int:
+    """
+    Returns the number of elements in the tensor aligned to what the architecture expects for the data type of the tensor.
+
+    Parameters:
+        arch (str): Target architecture.
+        tensor: Tensor.
+    """
+
+    num_elements = np.size(tensor)
+    if arch in ["aie2", "aie2p"]:
+        # align to 4 bytes for data types with size < 4
+        dtype_size = tensor.dtype.itemsize
+        data_size = num_elements * dtype_size
+        if data_size % 4 != 0:
+            num_elements = 4 * ((data_size + 3) // 4) // dtype_size
+    else:
+        raise ValueError(f"Unsupported architecture: {arch}")
+
+    return num_elements
 
 
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
