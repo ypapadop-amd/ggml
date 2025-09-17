@@ -1,4 +1,3 @@
-# unary_ops.py -*- Python -*-
 #
 # This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -24,55 +23,58 @@ from aie.iron.controlflow import range_
 from utils import arch_to_device, max_tile_size
 
 
-def apply(
-    device: str,
+def ggml_op_unary(
+    arch: str,
+    input_tensors: list,
     function: Callable | ExternalFunction,
-    input_tensor,
     output_tensor,
 ):
     """
-    Implements output_tensor = op(input_tensor).
+    Implements output_tensor = function(input_tensors[0])
 
     Parameters:
-        device (str): Target device.
-        function (Callable | ExternalFunction): Unary operator.
-        input_tensor: Input tensor.
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        function (Callable): Unary operator.
         output_tensor: Output tensor.
     """
 
-    if not input_tensor.contiguous or not output_tensor.contiguous:
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    if input_tensors[0].contiguous is False or output_tensor.contiguous is False:
         raise ValueError("Input and output tensors must be contiguous in memory.")
 
-    if input_tensor.shape != output_tensor.shape:
-        raise ValueError(
-            f"Incompatible input and output shapes ({input_tensor.shape} != {output_tensor.shape})."
-        )
+    if input_tensors[0].shape != output_tensor.shape:
+        raise ValueError("Input and output tensors must have the same shape.")
 
+    if output_tensor.shape[1:4] != (1, 1, 1):
+        raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
+
+    input_tensor = input_tensors[0]
+
+    # Find tile size and number of tiles
     num_elements = np.size(input_tensor)
+    tile_size = None
+    num_tiles = None
+    if isinstance(function, ExternalFunction):
+        tile_size = function.tile_size(0)
+    else:
+        tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
+    num_tiles = num_elements // tile_size
+    assert num_elements % tile_size == 0
 
-    # Task for the core to perform
+    # AIE-array data movement with object fifos
+    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
+    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+    of_in = ObjectFifo(input_tile_ty, name="in")
+    of_out = ObjectFifo(output_tile_ty, name="out")
+
+    # Create a worker to run the task on a compute tile
     worker = None
     if isinstance(function, ExternalFunction):
-        if function.tile_size(0) != function.tile_size(1):
-            raise ValueError(
-                f"Input and output tile sizes do not match ({function.tile_size(0)} != {function.tile_size(1)})."
-            )
-        tile_size = function.tile_size(0)
-
-        if num_elements % tile_size != 0:
-            raise ValueError(
-                f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
-            )
-        num_tiles = num_elements // tile_size
-
-        # Input / output data movement
-        input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
-        output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-        of_in = ObjectFifo(input_tile_ty, name="in")
-        of_out = ObjectFifo(output_tile_ty, name="out")
-
         # Task for the core to perform with an external function
-        def external_core_fn(of_in, of_out, function):
+        def ext_core_fn(of_in, of_out, function):
             # Number of sub-vector "tile" iterations
             for _ in range_(num_tiles):
                 elem_in = of_in.acquire(1)
@@ -81,20 +83,9 @@ def apply(
                 of_in.release(1)
                 of_out.release(1)
 
-        worker = Worker(
-            external_core_fn, fn_args=[of_in.cons(), of_out.prod(), function]
-        )
+        worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
     else:
-        tile_size = max_tile_size(device, input_tensor.dtype, num_elements)
-        num_tiles = num_elements // tile_size
 
-        # Input / output data movement
-        input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
-        output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-        of_in = ObjectFifo(input_tile_ty, name="in")
-        of_out = ObjectFifo(output_tile_ty, name="out")
-
-        # Task for the core to perform without an external function
         def core_fn(of_in, of_out):
             # Number of sub-vector "tile" iterations
             for _ in range_(num_tiles):
@@ -117,23 +108,32 @@ def apply(
         rt.drain(of_out.cons(), b_out, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(arch_to_device(device), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
 def create_external_function(
-    device: str, op_name: str, input_tensor, output_tensor
+    arch: str,
+    op_name: str,
+    input_tensor,
+    output_tensor,
 ) -> ExternalFunction:
     """
     Creates an ExternalFunction specification for unary ops.
 
     Parameters:
-        device (str): Target device.
+        arch (str): Target architecture.
         op_name (str): Name of the operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
     """
 
-    tile_size = max_tile_size(device, input_tensor.dtype, np.size(input_tensor))
+    num_elements = np.size(input_tensor)
+    tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
+    if num_elements % tile_size != 0:
+        raise ValueError(
+            f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
+        )
+
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
         name="ggml_op_" + op_name,
@@ -153,238 +153,337 @@ def create_external_function(
     return func
 
 
-def ggml_op_sqr(device: str, input_tensors: list, output_tensor):
-    """GGML_OP_SQR implementation."""
+def ggml_op_sqr(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_OP_SQR implementation.
 
-    if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
-
-    # Using a lambda function instead of an external function due to https://github.com/Xilinx/llvm-aie/issues/641
-    # function = create_external_function(
-    #    device=device,
-    #    op_name="sqr",
-    #    input_tensor=input_tensors[0],
-    #    output_tensor=output_tensor,
-    # )
-
-    return apply(
-        device=device,
-        function=lambda x: x * x,
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
-
-
-def ggml_op_sqrt(device: str, input_tensors: list, output_tensor):
-    """GGML_OP_SQRT implementation."""
-
-    if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
 
     core_function = create_external_function(
-        device=device,
-        op_name="sqrt",
+        arch=arch,
+        op_name="sqr",
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return apply(
-        device=device,
+    return ggml_op_unary(
+        arch=arch,
         function=core_function,
-        input_tensor=input_tensors[0],
+        input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
 
 
-def ggml_op_log(device: str, input_tensors: list, output_tensor):
-    """GGML_OP_LOG implementation."""
+def ggml_op_sqrt(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_OP_SQRT implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
-def ggml_op_sin(device: str, input_tensors: list, output_tensor):
-    """GGML_OP_SIN implementation."""
+def ggml_op_log(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_OP_LOG implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
-def ggml_op_cos(device: str, input_tensors: list, output_tensor):
-    """GGML_OP_COS implementation."""
+def ggml_op_sin(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_OP_SIN implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
-def ggml_unary_op_abs(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_ABS implementation."""
+def ggml_op_cos(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_OP_COS implementation.
 
-    if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
+    raise NotImplementedError
+
+
+def ggml_unary_op_abs(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_ABS implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
 
     core_function = create_external_function(
-        device=device,
+        arch=arch,
         op_name="abs",
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return apply(
-        device=device,
+    return ggml_op_unary(
+        arch=arch,
         function=core_function,
-        input_tensor=input_tensors[0],
+        input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
 
 
-def ggml_unary_op_sgn(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_SGN implementation."""
+def ggml_unary_op_sgn(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_SGN implementation.
 
-    if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
 
     core_function = create_external_function(
-        device=device,
+        arch=arch,
         op_name="sgn",
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return apply(
-        device=device,
+    return ggml_op_unary(
+        arch=arch,
         function=core_function,
-        input_tensor=input_tensors[0],
+        input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
 
 
-def ggml_unary_op_neg(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_NEG implementation."""
+def ggml_unary_op_neg(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_NEG implementation.
 
-    if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
 
     core_function = create_external_function(
-        device=device,
+        arch=arch,
         op_name="neg",
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return apply(
-        device=device,
+    return ggml_op_unary(
+        arch=arch,
         function=core_function,
-        input_tensor=input_tensors[0],
+        input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
 
 
-def ggml_unary_op_step(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_STEP implementation."""
+def ggml_unary_op_step(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_STEP implementation.
 
-    if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
 
     core_function = create_external_function(
-        device=device,
+        arch=arch,
         op_name="step",
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return apply(
-        device=device,
+    return ggml_op_unary(
+        arch=arch,
         function=core_function,
-        input_tensor=input_tensors[0],
+        input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
 
 
-def ggml_unary_op_tanh(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_TANH implementation."""
+def ggml_unary_op_tanh(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_TANH implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
-def ggml_unary_op_elu(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_ELU implementation."""
+def ggml_unary_op_elu(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_ELU implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
-def ggml_unary_op_relu(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_RELU implementation."""
+def ggml_unary_op_relu(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_RELU implementation.
 
-    if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
 
     core_function = create_external_function(
-        device=device,
+        arch=arch,
         op_name="relu",
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return apply(
-        device=device,
+    return ggml_op_unary(
+        arch=arch,
         function=core_function,
-        input_tensor=input_tensors[0],
+        input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
 
 
-def ggml_unary_op_sigmoid(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_SIGMOID implementation."""
+def ggml_unary_op_sigmoid(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_SIGMOID implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
-def ggml_unary_op_gelu(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_GELU implementation."""
+def ggml_unary_op_gelu(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_GELU implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
-def ggml_unary_op_gelu_quick(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_GELU_QUICK implementation."""
+def ggml_unary_op_gelu_quick(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_GELU_QUICK implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
-def ggml_unary_op_silu(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_SILU implementation."""
+def ggml_unary_op_silu(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_SILU implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
-def ggml_unary_op_hardswish(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_HARDSWISH implementation."""
+def ggml_unary_op_hardswish(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_HARDSWISH implementation.
 
-    if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
 
     core_function = create_external_function(
-        device=device,
+        arch=arch,
         op_name="hardswish",
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return apply(
-        device=device,
+    return ggml_op_unary(
+        arch=arch,
         function=core_function,
-        input_tensor=input_tensors[0],
+        input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
 
 
-def ggml_unary_op_hardsigmoid(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_HARDSIGMOID implementation."""
+def ggml_unary_op_hardsigmoid(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_HARDSIGMOID implementation.
 
-    if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
 
     core_function = create_external_function(
-        device=device,
+        arch=arch,
         op_name="hardsigmoid",
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
     )
-    return apply(
-        device=device,
+    return ggml_op_unary(
+        arch=arch,
         function=core_function,
-        input_tensor=input_tensors[0],
+        input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
 
 
-def ggml_unary_op_exp(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_EXP implementation."""
+def ggml_unary_op_exp(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_EXP implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
 
 
-def ggml_unary_op_gelu_erf(device: str, input_tensors: list, output_tensor):
-    """GGML_UNARY_OP_GELU_ERF implementation."""
+def ggml_unary_op_gelu_erf(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_GELU_ERF implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
     raise NotImplementedError
