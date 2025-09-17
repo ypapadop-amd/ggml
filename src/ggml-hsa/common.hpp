@@ -172,7 +172,7 @@ class ggml_hsa_kernel {
     virtual ggml_status dispatch(ggml_backend_hsa_context & ctx,
                                  ggml_tensor * src_tensors[],
                                  std::size_t num_src_tensors,
-                                 ggml_tensor * dst_tensor) const = 0;
+                                 ggml_tensor & dst_tensor) const = 0;
 };
 
 /**

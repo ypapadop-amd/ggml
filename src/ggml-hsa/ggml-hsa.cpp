@@ -292,6 +292,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
 
     if (dev_info.name == "aie2" || dev_info.name == "aie2p") {
         dev_info.substitute_fp16_bf16 = true;
+        GGML_ASSERT(dev_info.alignment % 4 == 0);
     } else {
         GGML_ABORT("%s: Unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
     }
@@ -433,85 +434,97 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     switch (tensor.op) {
         case GGML_OP_NONE:
             // noop; nothing to be done
-            break;
+            return;
         case GGML_OP_DUP:
-            // implemented as host kernels; nothing to be done
-            break;
         case GGML_OP_CPY:
         case GGML_OP_CONT:
             // implemented as host kernels; nothing to be done
-            break;
+            return;
         case GGML_OP_RESHAPE:
         case GGML_OP_VIEW:
         case GGML_OP_PERMUTE:
         case GGML_OP_TRANSPOSE:
             // implemented as views; nothing to be done
-            break;
+            return;
         default:
-            {
-                // convert tensor data types if needed
-                if (dev_info.substitute_fp16_bf16) {
-                    if (tensor.type == GGML_TYPE_F16) {
-                        // for the output we convert in-place
-                        tensor.type = GGML_TYPE_BF16;
-                        tensor_metadata.convert_dtype = true;
-                    }
-
-                    // inputs require temporary storage as they may be shared as inputs to multiple
-                    // tensors
-                    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-                        if (src[src_idx].type == GGML_TYPE_F16) {
-                            src[src_idx].data = nullptr;
-                            src[src_idx].type = GGML_TYPE_BF16;
-                            src_metadata[src_idx].convert_dtype = true;
-                            src_metadata[src_idx].size =
-                                GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
-                            requires_sync = true;
-                        }
-                    }
-                }
-
-                // make tensor layouts trivial; tensors that do not have a trivial layout will be
-                // copied to temporary storage
-                if (!ggml_hsa_has_trivial_layout(tensor)) {
-                    throw std::runtime_error{"Output tensor does not have trivial layout."};
-                }
-                for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-                    if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
-                        src[src_idx].data = nullptr;
-                        ggml_hsa_force_unpermuted(src[src_idx]);
-                        src_metadata[src_idx].size =
-                            GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
-                        requires_sync = true;
-                    }
-                }
-
-                // flatten tensors if possible to reuse kernels and avoid temporary storage
-                if (ggml_hsa_can_flatten(tensor)) {
-                    ggml_hsa_flatten_tensor(tensor);
-                    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-                        ggml_hsa_flatten_tensor(src[src_idx]);
-                    }
-                }
-
-                // create a kernel for the operation
-                auto kernel_name = ggml_hsa_create_kernel_name(tensor);
-                kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
-                if (kernel == nullptr) {
-                    // kernel not in cache; create a new one and store it in the cache
-                    if (ggml_hsa_create_kernel(dev_info, kernel_name, tensor, kernel) !=
-                        GGML_STATUS_SUCCESS) {
-                        throw std::runtime_error{
-                            std::string{"Failed to create kernel for tensor \""}
-                                .append(tensor.name)
-                                .append("\" (")
-                                .append(ggml_op_desc(&tensor))
-                                .append(")")};
-                    }
-                    ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
-                }
-            }
             break;
+    }
+
+    std::array<bool, GGML_MAX_SRC> update_src_tensor_size = {};
+
+    // convert tensor data types if needed
+    if (dev_info.substitute_fp16_bf16) {
+        if (tensor.type == GGML_TYPE_F16) {
+            // for the output we can convert in-place
+            tensor.type = GGML_TYPE_BF16;
+            tensor_metadata.convert_dtype = true;
+        }
+
+        // inputs require temporary storage as they may be shared as inputs to multiple
+        // tensors
+        for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+            if (src[src_idx].type == GGML_TYPE_F16) {
+                update_src_tensor_size[src_idx] = true;
+                src[src_idx].type = GGML_TYPE_BF16;
+                src_metadata[src_idx].convert_dtype = true;
+            }
+        }
+    }
+
+    // make tensor layouts trivial; tensors that do not have a trivial layout will allocate
+    // temporary storage
+    if (!ggml_hsa_has_trivial_layout(tensor)) {
+        throw std::runtime_error{"Output tensor does not have trivial layout."};
+    }
+    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+        if (!ggml_hsa_has_trivial_layout(src[src_idx])) {
+            update_src_tensor_size[src_idx] = true;
+            ggml_hsa_force_unpermuted(src[src_idx]);
+        }
+    }
+
+    // flatten tensors to reuse kernels
+    if (ggml_hsa_can_flatten(tensor)) {
+        ggml_hsa_flatten_tensor(tensor);
+        for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+            ggml_hsa_flatten_tensor(src[src_idx]);
+        }
+    }
+
+    // guarantee alignment
+    if (ggml_nbytes(&tensor) % dev_info.alignment != 0) {
+        throw std::runtime_error{"Output tensor is not properly aligned."};
+    }
+    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+        if (ggml_nbytes(&src[src_idx]) % dev_info.alignment != 0) {
+            throw std::runtime_error{std::string{"Input tensor "}
+                                         .append(std::to_string(src_idx))
+                                         .append(" is not properly aligned.")};
+        }
+    }
+
+    // update required tensor sizes
+    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+        if (update_src_tensor_size[src_idx]) {
+            src[src_idx].data = nullptr;
+            src_metadata[src_idx].size = GGML_PAD(ggml_nbytes(&src[src_idx]), dev_info.alignment);
+            requires_sync = true;
+        }
+    }
+
+    // create a kernel for the operation
+    auto kernel_name = ggml_hsa_create_kernel_name(tensor);
+    kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
+    if (kernel == nullptr) {
+        // kernel not in cache; create a new one and store it in the cache
+        if (ggml_hsa_create_kernel(dev_info, kernel_name, tensor, kernel) != GGML_STATUS_SUCCESS) {
+            throw std::runtime_error{std::string{"Failed to create kernel for tensor \""}
+                                         .append(tensor.name)
+                                         .append("\" (")
+                                         .append(ggml_op_desc(&tensor))
+                                         .append(")")};
+        }
+        ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
     }
 }
 
@@ -1124,9 +1137,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     auto & tensor_extra =
                         *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
 
-                    ggml_tensor * n = &tensor_extra.tensor;
+                    ggml_tensor & n = tensor_extra.tensor;
 
-                    n = &tensor_extra.tensor;
                     if (tensor_extra.requires_sync) {
                         ggml_hsa_wait_dispatches(ctx);
                         for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
@@ -1134,7 +1146,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                                 continue;
                             }
                             // change layout and/or convert datatypes
-                            if (status = ggml_hsa_copy_tensor(node->src[src_idx], n->src[src_idx]);
+                            if (status = ggml_hsa_copy_tensor(node->src[src_idx], n.src[src_idx]);
                                 status != GGML_STATUS_SUCCESS) {
                                 GGML_LOG_ERROR(
                                     "%s: failed to copy source %i for tensor \"%s (%s)\"\n",
@@ -1147,7 +1159,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                         }
                     }
 
-                    if (status = tensor_extra.kernel->dispatch(ctx, n->src, tensor_extra.nsrcs, n);
+                    if (status = tensor_extra.kernel->dispatch(ctx, n.src, tensor_extra.nsrcs, n);
                         status != GGML_STATUS_SUCCESS) {
                         GGML_LOG_ERROR("%s: failed to dispatch kernel for tensor \"%s\" (%s)\n",
                                        __func__, node->name, ggml_op_desc(node));
@@ -1157,7 +1169,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     if (tensor_extra.tensor_metadata.convert_dtype) {
                         // change layout and/or convert datatypes
                         ggml_hsa_wait_dispatches(ctx);
-                        if (status = ggml_hsa_copy_tensor(n, node); status != GGML_STATUS_SUCCESS) {
+                        if (status = ggml_hsa_copy_tensor(&n, node); status != GGML_STATUS_SUCCESS) {
                             GGML_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)\n",
                                            __func__, node->name, ggml_op_desc(node));
                             break;
