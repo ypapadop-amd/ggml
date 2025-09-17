@@ -193,7 +193,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         auto compile_kernel = iron_compiler.attr("compile_kernel");
         compile_kernel(
             "kernel_name"_a = kernel_jit_info.name, "kernel_source"_a = kernel_source_path.string(),
-            "device"_a = dev_info.name, "input_tensors"_a = std::move(input_tensors),
+            "arch"_a = dev_info.name, "input_tensors"_a = std::move(input_tensors),
             "output_tensor"_a = std::move(output_tensor), "exported_name"_a = exported_name,
             "output_directory"_a = output_directory.string(), "verbose"_a = verbose_compilation);
     } catch (const pybind11::error_already_set & ex) {
@@ -202,9 +202,11 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         return GGML_STATUS_FAILED;
     }
 
+#ifndef NDEBUG
     GGML_LOG_INFO("%s: generated kernel %s in %s for tensor \"%s\" (%s)\n", __func__,
                   exported_name.c_str(), output_directory.c_str(), tensor.name,
                   ggml_op_desc(&tensor));
+#endif
 
     return GGML_STATUS_SUCCESS;
 }
