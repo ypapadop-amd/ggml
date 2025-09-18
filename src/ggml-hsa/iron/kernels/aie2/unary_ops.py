@@ -20,7 +20,7 @@ from aie.iron import (
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from utils import arch_to_device, max_tile_size
+from utils import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
 def ggml_op_unary(
@@ -54,7 +54,7 @@ def ggml_op_unary(
     input_tensor = input_tensors[0]
 
     # Find tile size and number of tiles
-    num_elements = np.size(input_tensor)
+    num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
     tile_size = None
     num_tiles = None
     if isinstance(function, ExternalFunction):
@@ -127,7 +127,7 @@ def create_external_function(
         output_tensor: Output tensor.
     """
 
-    num_elements = np.size(input_tensor)
+    num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
     tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
     if num_elements % tile_size != 0:
         raise ValueError(
