@@ -13,6 +13,36 @@ import aie.iron.device
 from tensor_desc import tensordesc, TensorDesc
 
 
+def arch_aligned_num_elements(arch: str, tensor) -> int:
+    """
+    Returns the number of elements in the tensor aligned to what the architecture expects for the data type of the tensor.
+
+    Parameters:
+        arch (str): Target architecture.
+        tensor: Tensor.
+
+    Returns:
+        int: Number of elements aligned to architecture requirements.
+    """
+
+    num_elements = np.size(tensor)
+    if arch in ["aie2", "aie2p"]:
+        # align to 4 bytes for data types with size < 4
+        ALIGNMENT_BYTES = 4
+        dtype_size = tensor.dtype.itemsize
+        data_size = num_elements * dtype_size
+        if data_size % ALIGNMENT_BYTES != 0:
+            num_elements = (
+                ALIGNMENT_BYTES
+                * ((data_size + (ALIGNMENT_BYTES - 1)) // ALIGNMENT_BYTES)
+                // dtype_size
+            )
+    else:
+        raise ValueError(f"Unsupported architecture: {arch}")
+
+    return num_elements
+
+
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """
     Returns the maximum tile size based on device, data type and number of elements.
