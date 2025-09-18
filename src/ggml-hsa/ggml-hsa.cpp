@@ -410,9 +410,7 @@ static void ggml_hsa_force_unpermuted(ggml_tensor & tensor) {
 static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
     const auto nelements = ggml_nelements(&tensor);
     tensor.ne[0] = nelements;
-    for (std::int32_t i = 1; i < GGML_MAX_DIMS; ++i) {
-        tensor.ne[i] = 1;
-    }
+    std::fill_n(std::next(tensor.ne), GGML_MAX_DIMS - 1, 1);
     tensor.nb[0] = ggml_type_size(tensor.type);
     tensor.nb[1] = tensor.nb[0] * (tensor.ne[0] / ggml_blck_size(tensor.type));
     for (std::int32_t i = 2; i < GGML_MAX_DIMS; ++i) {
@@ -491,19 +489,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         ggml_hsa_flatten_tensor(node.tensor);
         for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
             ggml_hsa_flatten_tensor(src_nodes[src_idx].tensor);
-        }
-    }
-
-    // guarantee alignment
-    if (ggml_nbytes(&node.tensor) % dev_info.alignment != 0) {
-        throw std::runtime_error{"Output tensor is not properly aligned."};
-    }
-    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-        auto & src_node = src_nodes[src_idx];
-        if (ggml_nbytes(&src_node.tensor) % dev_info.alignment != 0) {
-            throw std::runtime_error{std::string{"Input tensor "}
-                                         .append(std::to_string(src_idx))
-                                         .append(" is not properly aligned.")};
         }
     }
 
