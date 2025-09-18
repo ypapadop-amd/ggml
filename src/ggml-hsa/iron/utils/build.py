@@ -20,6 +20,9 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
     Parameters:
         arch (str): Target architecture.
         tensor: Tensor.
+
+    Returns:
+        int: Number of elements aligned to architecture requirements.
     """
 
     num_elements = np.size(tensor)
