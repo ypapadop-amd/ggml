@@ -14,7 +14,7 @@ from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from utils import arch_to_device, max_tile_size
+from utils import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
 def apply_binary_op(arch: str, input_tensors: list, function: Callable, output_tensor):
@@ -28,7 +28,7 @@ def apply_binary_op(arch: str, input_tensors: list, function: Callable, output_t
         output_tensor: Output tensor.
     """
 
-    num_elements = np.size(output_tensor)
+    num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
     tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
     if num_elements % tile_size != 0:
         raise ValueError(
@@ -66,12 +66,10 @@ def apply_binary_op(arch: str, input_tensors: list, function: Callable, output_t
 
     # Runtime operations to move data to/from the AIE-array
     input_tensor_tys = [
-        np.ndarray[(np.size(input_tensor),), np.dtype[input_tensor.dtype]]
+        np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
         for input_tensor in input_tensors
     ]
-    output_tensor_ty = np.ndarray[
-        (np.size(output_tensor),), np.dtype[output_tensor.dtype]
-    ]
+    output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
     rt = Runtime()
     with rt.sequence(*input_tensor_tys, output_tensor_ty) as t:
         rt.start(worker)
