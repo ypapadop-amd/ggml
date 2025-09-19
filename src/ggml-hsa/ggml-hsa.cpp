@@ -1372,7 +1372,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         ggml_backend_hsa_tensor_extra tensor_extra{dev_info, *op};
         return (tensor_extra.kernel != nullptr);
     } catch (const std::exception & ex) {
-        //GGML_LOG_WARN("%s: exception caught: %s\n", __func__, ex.what());
+        GGML_LOG_WARN("%s: exception caught: %s\n", __func__, ex.what());
         return false;
     }
 }
@@ -1500,35 +1500,32 @@ static struct {
     std::once_flag flag;
 } ggml_backend_hsa_reg_metadata;
 
-ggml_backend_reg_t ggml_backend_hsa_reg() {
-    try {
-        std::call_once(ggml_backend_hsa_reg_metadata.flag, [] {
-            const auto & info = ggml_hsa_info();
+ggml_backend_reg_t ggml_backend_hsa_reg() try {
+    std::call_once(ggml_backend_hsa_reg_metadata.flag, [] {
+        const auto & info = ggml_hsa_info();
 
-            auto * reg_ctx = new ggml_backend_hsa_reg_context;
+        auto * reg_ctx = new ggml_backend_hsa_reg_context;
 
-            reg_ctx->devices.reserve(info.device_count);
-            for (std::int32_t i = 0; i < info.device_count; i++) {
-                auto * dev_ctx = new ggml_backend_hsa_device_context{i, info.devices[i].agent};
+        reg_ctx->devices.reserve(info.device_count);
+        for (std::int32_t i = 0; i < info.device_count; i++) {
+            auto * dev_ctx = new ggml_backend_hsa_device_context{i, info.devices[i].agent};
 
-                auto dev =
-                    new ggml_backend_device{/* .iface   = */ ggml_backend_hsa_device_interface,
-                                            /* .reg     = */ &ggml_backend_hsa_reg_metadata.reg,
-                                            /* .context = */ dev_ctx};
-                reg_ctx->devices.push_back(dev);
-            }
+            auto dev = new ggml_backend_device{/* .iface   = */ ggml_backend_hsa_device_interface,
+                                               /* .reg     = */ &ggml_backend_hsa_reg_metadata.reg,
+                                               /* .context = */ dev_ctx};
+            reg_ctx->devices.push_back(dev);
+        }
 
-            ggml_backend_hsa_reg_metadata.reg =
-                ggml_backend_reg{/* .api_version = */ GGML_BACKEND_API_VERSION,
-                                 /* .iface       = */ ggml_backend_hsa_reg_interface,
-                                 /* .context     = */ reg_ctx};
-        });
+        ggml_backend_hsa_reg_metadata.reg =
+            ggml_backend_reg{/* .api_version = */ GGML_BACKEND_API_VERSION,
+                             /* .iface       = */ ggml_backend_hsa_reg_interface,
+                             /* .context     = */ reg_ctx};
+    });
 
-        return &ggml_backend_hsa_reg_metadata.reg;
-    } catch (const std::exception & ex) {
-        GGML_LOG_ERROR("%s: exception caught: %s\n", __func__, ex.what());
-        return nullptr;
-    }
+    return &ggml_backend_hsa_reg_metadata.reg;
+} catch (const std::exception & ex) {
+    GGML_LOG_ERROR("%s: exception caught: %s\n", __func__, ex.what());
+    return nullptr;
 }
 
 ggml_backend_t ggml_backend_hsa_init(std::int32_t device) {
