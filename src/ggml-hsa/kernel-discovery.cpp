@@ -28,9 +28,8 @@ static const fs::path kernel_dir = [] {
     if (const char * kernel_dir = std::getenv("GGML_HSA_KERNEL_DIR"); kernel_dir != nullptr) {
         auto dir = fs::path(kernel_dir);
         if (!fs::is_directory(dir)) {
-            GGML_ABORT(
-                "ggml_hsa_backend: value of GGML_HSA_KERNEL_DIR (%s) is not a valid directory.\n",
-                dir.c_str());
+            GGML_ABORT("ggml_hsa_backend: GGML_HSA_KERNEL_DIR (%s) is not a valid directory.\n",
+                       dir.c_str());
         }
         return dir;
     }
@@ -198,7 +197,7 @@ ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev
 
         // unsupported device types
         default:
-            GGML_LOG_ERROR("%s: device %s is not supported.\n", __func__, dev_info.name.c_str());
+            GGML_LOG_ERROR("%s: unsupported device %s.\n", __func__, dev_info.name.c_str());
             return GGML_STATUS_FAILED;
     }
 
