@@ -785,10 +785,6 @@ struct ggml_backend_hsa_buffer_type_context {
 
     explicit ggml_backend_hsa_buffer_type_context(std::int32_t device) :
         device(device), name(ggml_hsa_format_name(device)) {}
-
-    ~ggml_backend_hsa_buffer_type_context() {
-        printf("Releasing HSA buffer type context for device %d\n", device);
-    }
 };
 
 /**
