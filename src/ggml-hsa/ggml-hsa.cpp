@@ -1188,6 +1188,7 @@ static const ggml_backend_i ggml_backend_hsa_interface = {
     /* .graph_compute      = */ ggml_backend_hsa_graph_compute,
     /* .event_record       = */ ggml_backend_hsa_event_record,
     /* .event_wait         = */ ggml_backend_hsa_event_wait,
+    /* .graph_optimize     = */ nullptr,
 };
 
 /**
