@@ -18,6 +18,17 @@
 #include <string>
 #include <vector>
 
+bool g_ggml_hsa_verbose = [] {
+    if (const char * verbose = std::getenv("GGML_HSA_ENABLE_LOG"); verbose != nullptr) {
+        return ggml_hsa_string_to_bool(verbose);
+    }
+#if defined(NDEBUG)
+    return false;
+#else
+    return true;
+#endif
+}();
+
 /// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
 #define MATRIX_ROW_PADDING 512
 
@@ -28,7 +39,7 @@
 
 bool ggml_hsa_string_to_bool(std::string_view s) {
     return s == "1" || s == "true" || s == "True" || s == "TRUE" || s == "yes" || s == "Yes" ||
-           s == "YES";
+           s == "YES" || s == "on" || s == "On" || s == "ON";
 }
 
 const char * ggml_hsa_get_status_string(hsa_status_t status) {
@@ -542,9 +553,9 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, buffer_size,
                                                    /* flags = */ 0, &ptr);
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)\n", __func__,
-                       (buffer_size / 1024.0 / 1024.0), dev_info.name.c_str(),
-                       ggml_hsa_get_status_string(status));
+        GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
+                           (buffer_size / 1024.0 / 1024.0), dev_info.name.c_str(),
+                           ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
     buffer.reset(static_cast<std::byte *>(ptr));
@@ -559,10 +570,8 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
         }
     }
 
-#ifndef NDEBUG
-    GGML_LOG_INFO("%s: created temporary storage for tensor %s (%s)\n", __func__, node.tensor.name,
-                  ggml_op_desc(&node.tensor));
-#endif
+    GGML_HSA_LOG_INFO("%s: created temporary storage for tensor %s (%s)", __func__,
+                      node.tensor.name, ggml_op_desc(&node.tensor));
 
     return GGML_STATUS_SUCCESS;
 }
@@ -673,7 +682,7 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
         buf_ctx.tensor_extras.push_back(std::move(tensor_extra));
         tensor->extra = buf_ctx.tensor_extras.back().get();
     } catch (const std::exception & ex) {
-        GGML_LOG_ERROR("%s: exception caught: %s\n", __func__, ex.what());
+        GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
         return GGML_STATUS_FAILED;
     }
 
@@ -814,9 +823,9 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
                                                    /* flags = */ 0, &buffer);
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)\n", __func__,
-                       (size / 1024.0 / 1024.0), dev_info.name.c_str(),
-                       ggml_hsa_get_status_string(status));
+        GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
+                           (size / 1024.0 / 1024.0), dev_info.name.c_str(),
+                           ggml_hsa_get_status_string(status));
         return nullptr;
     }
 
@@ -825,7 +834,7 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
             new ggml_backend_hsa_buffer_context(buft_ctx.device, ggml_hsa_unique_ptr<void>{buffer});
         return ggml_backend_buffer_init(buft, ggml_backend_hsa_buffer_interface, buf_ctx, size);
     } catch (const std::exception & ex) {
-        GGML_LOG_ERROR("%s: exception caught: %s\n", __func__, ex.what());
+        GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
         return nullptr;
     }
 }
@@ -905,7 +914,7 @@ ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(std::int32_t device) {
 
         return &ggml_backend_hsa_buffer_type_metadata.type[device];
     } catch (const std::exception & ex) {
-        GGML_LOG_ERROR("%s: exception caught: %s\n", __func__, ex.what());
+        GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
         return nullptr;
     }
 }
@@ -1133,8 +1142,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 // change layout and/or convert datatypes
                 if (status = ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
                     status != GGML_STATUS_SUCCESS) {
-                    GGML_LOG_ERROR("%s: failed to copy source %i for tensor \"%s (%s)\"\n",
-                                   __func__, src_idx, node->name, ggml_op_desc(node));
+                    GGML_HSA_LOG_ERROR("%s: failed to copy source %i for tensor \"%s (%s)\"",
+                                       __func__, src_idx, node->name, ggml_op_desc(node));
                     return status;
                 }
             }
@@ -1143,8 +1152,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         if (status = tensor_extra.kernel->dispatch(ctx, internal_node.src, tensor_extra.nsrcs,
                                                    internal_node);
             status != GGML_STATUS_SUCCESS) {
-            GGML_LOG_ERROR("%s: failed to dispatch kernel for tensor \"%s\" (%s)\n", __func__,
-                           node->name, ggml_op_desc(node));
+            GGML_HSA_LOG_ERROR("%s: failed to dispatch kernel for tensor \"%s\" (%s)", __func__,
+                               node->name, ggml_op_desc(node));
             return status;
         }
 
@@ -1153,8 +1162,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             ggml_hsa_wait_dispatches(ctx);
             if (status = ggml_hsa_copy_tensor(&internal_node, node);
                 status != GGML_STATUS_SUCCESS) {
-                GGML_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)\n", __func__,
-                               node->name, ggml_op_desc(node));
+                GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__,
+                                   node->name, ggml_op_desc(node));
                 return status;
             }
         }
@@ -1369,7 +1378,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         ggml_backend_hsa_tensor_extra tensor_extra{dev_info, *op};
         return (tensor_extra.kernel != nullptr);
     } catch (const std::exception & ex) {
-        GGML_LOG_WARN("%s: exception caught: %s\n", __func__, ex.what());
+        GGML_HSA_LOG_WARN("%s: exception caught: %s", __func__, ex.what());
         return false;
     }
 }
@@ -1521,7 +1530,7 @@ ggml_backend_reg_t ggml_backend_hsa_reg() try {
 
     return &ggml_backend_hsa_reg_metadata.reg;
 } catch (const std::exception & ex) {
-    GGML_LOG_ERROR("%s: exception caught: %s\n", __func__, ex.what());
+    GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
     return nullptr;
 }
 
@@ -1529,7 +1538,7 @@ ggml_backend_t ggml_backend_hsa_init(std::int32_t device) {
     const auto & info = ggml_hsa_info();
 
     if (device < 0 || device >= info.device_count) {
-        GGML_LOG_ERROR("%s: invalid device ID %d\n", __func__, device);
+        GGML_HSA_LOG_ERROR("%s: invalid device ID %d", __func__, device);
         return nullptr;
     }
 
@@ -1545,7 +1554,7 @@ ggml_backend_t ggml_backend_hsa_init(std::int32_t device) {
 
         return hsa_backend;
     } catch (const std::exception & ex) {
-        GGML_LOG_ERROR("%s: exception caught: %s\n", __func__, ex.what());
+        GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
         return nullptr;
     }
 }
