@@ -18,7 +18,16 @@
 #include <string>
 #include <vector>
 
-bool g_ggml_hsa_verbose = true;
+bool g_ggml_hsa_verbose = [] {
+    if (const char * verbose = std::getenv("GGML_HSA_ENABLE_LOG"); verbose != nullptr) {
+        return ggml_hsa_string_to_bool(verbose);
+    }
+#if defined(NDEBUG)
+    return false;
+#else
+    return true;
+#endif
+}();
 
 /// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
 #define MATRIX_ROW_PADDING 512
@@ -30,7 +39,7 @@ bool g_ggml_hsa_verbose = true;
 
 bool ggml_hsa_string_to_bool(std::string_view s) {
     return s == "1" || s == "true" || s == "True" || s == "TRUE" || s == "yes" || s == "Yes" ||
-           s == "YES";
+           s == "YES" || s == "on" || s == "On" || s == "ON";
 }
 
 const char * ggml_hsa_get_status_string(hsa_status_t status) {
