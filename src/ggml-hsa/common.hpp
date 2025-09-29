@@ -21,6 +21,45 @@
 
 #include "ggml-common.h"
 
+#if defined(__clang__) || defined(__GNUC__)
+// Optimize for the execution path that is more or less likely than the alternative.
+#define LIKELY(ex) __builtin_expect(!!(ex), 1)
+#define UNLIKELY(ex) __builtin_expect(!!(ex), 0)
+#else
+#define LIKELY(ex) (ex)
+#define UNLIKELY(ex) (ex)
+#endif
+
+/// @brief @c true if logging is enabled.
+extern bool g_ggml_hsa_verbose;
+
+/**
+ * @brief Logs errors.
+ */
+#define GGML_HSA_LOG_ERROR(MSG, ...)                                                               \
+    do {                                                                                           \
+        if (UNLIKELY(g_ggml_hsa_verbose))                                                          \
+            GGML_LOG_ERROR(MSG "\n", __VA_ARGS__);                                                 \
+    } while (false)
+
+/**
+ * @brief Logs warnings.
+ */
+#define GGML_HSA_LOG_WARN(MSG, ...)                                                                \
+    do {                                                                                           \
+        if (UNLIKELY(g_ggml_hsa_verbose))                                                          \
+            GGML_LOG_WARN(MSG "\n", __VA_ARGS__);                                                  \
+    } while (false)
+
+/**
+ * @brief Logs information.
+ */
+#define GGML_HSA_LOG_INFO(MSG, ...)                                                                \
+    do {                                                                                           \
+        if (UNLIKELY(g_ggml_hsa_verbose))                                                          \
+            GGML_LOG_INFO(MSG "\n", __VA_ARGS__);                                                  \
+    } while (false)
+
 /**
  * @brief Returns if @p s evaluates to `true` or `false`.
  */
