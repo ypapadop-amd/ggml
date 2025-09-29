@@ -17,36 +17,35 @@
 
 namespace fs = std::filesystem;
 
-// PDI file suffix.
-static const std::string_view pdi_file_suffix = ".pdi";
-
-// Binary instructions file suffix.
-static const std::string_view inst_file_suffix = "_insts.bin";
-
-// Precompiled kernel directory.
-static const fs::path kernel_dir = [] {
+/**
+ * @brief Returns the precompiled kernel directory.
+ */
+static fs::path ggml_hsa_precompiled_kernel_dir() {
     if (const char * kernel_dir = std::getenv("GGML_HSA_KERNEL_DIR"); kernel_dir != nullptr) {
         auto dir = fs::path(kernel_dir);
         if (!fs::is_directory(dir)) {
-            GGML_ABORT("ggml_hsa_backend: GGML_HSA_KERNEL_DIR (%s) is not a valid directory.\n",
+            GGML_ABORT("%s: GGML_HSA_KERNEL_DIR (%s) is not a valid directory.\n", __func__,
                        dir.c_str());
         }
         return dir;
     }
-#ifndef NDEBUG
-    GGML_LOG_INFO("ggml_hsa_backend: no pregenerated kernel directory defined.\n");
-#endif
+    GGML_HSA_LOG_INFO("%s: no pregenerated kernel directory defined.", __func__);
     return fs::path{};
-}();
+}
 
-// Cached (i.e., JIT compiled) kernel directory.
-static const fs::path cached_kernel_dir = [] {
-    // Cached kernels are stored in the following directories:
-    // 1. GGML_HSA_KERNEL_CACHE_DIR if defined, or
-    // 2. $XDG_CACHE_HOME/ggml if XDG_CACHE_HOME is defined, or
-    // 3. $HOME/.cache/ggml if HOME is defined, or
-    // 4. /tmp/ggml/ggml-hsa otherwise.
+/// Precompiled kernel directory.
+static const fs::path kernel_dir = ggml_hsa_precompiled_kernel_dir();
 
+/**
+ * @brief Returns the cached kernel directory and clears it if requested.
+ *
+ * Cached kernels are stored in the following directories:
+ * 1. GGML_HSA_KERNEL_CACHE_DIR if defined, or
+ * 2. $XDG_CACHE_HOME/ggml if XDG_CACHE_HOME is defined, or,
+ * 3. $HOME/.cache/ggml if HOME is defined, or
+ * 4. /tmp/ggml/ggml-hsa otherwise.
+ */
+static fs::path ggml_hsa_cached_kernel_dir() {
     fs::path cache_dir;
     if (const char * base_dir = std::getenv("GGML_HSA_KERNEL_CACHE_DIR"); base_dir != nullptr) {
         cache_dir = fs::path(base_dir);
@@ -57,20 +56,25 @@ static const fs::path cached_kernel_dir = [] {
     } else {
         cache_dir = fs::path("/tmp/ggml/ggml-hsa");
     }
-#ifndef NDEBUG
-    GGML_LOG_INFO("ggml_hsa_backend: cached kernels in %s\n", cache_dir.c_str());
-#endif
+    GGML_HSA_LOG_INFO("%s: cached kernels in %s", __func__, cache_dir.c_str());
 
     if (const char * clear_cache = std::getenv("GGML_HSA_KERNEL_CACHE_CLEAR");
         clear_cache != nullptr && ggml_hsa_string_to_bool(clear_cache)) {
-#ifndef NDEBUG
-        GGML_LOG_INFO("ggml_hsa_backend: clearing kernel cache in %s\n", cache_dir.c_str());
-#endif
+        GGML_HSA_LOG_INFO("%s: clearing kernel cache in %s", __func__, cache_dir.c_str());
         fs::remove_all(cache_dir);
     }
 
     return cache_dir;
-}();
+}
+
+/// Cached (i.e., JIT compiled) kernel directory.
+static const fs::path cached_kernel_dir = ggml_hsa_cached_kernel_dir();
+
+/// PDI file suffix.
+static const std::string_view pdi_file_suffix = ".pdi";
+
+/// Binary instructions file suffix.
+static const std::string_view inst_file_suffix = "_insts.bin";
 
 /**
  * @brief Returns if @p p is a file.
@@ -121,21 +125,21 @@ static ggml_status
 ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & path, ggml_hsa_pdi_buffer & buffer) {
     std::ifstream is(path, std::ios::binary | std::ios::ate | std::ios::in);
     if (is.fail()) {
-        GGML_LOG_ERROR("%s: could not open file %s\n", __func__, path.c_str());
+        GGML_HSA_LOG_ERROR("%s: could not open file %s", __func__, path.c_str());
         return GGML_STATUS_FAILED;
     }
 
     const std::size_t size = is.tellg();
     if (!is.seekg(0, std::ios::beg) || (size == 0)) {
-        GGML_LOG_ERROR("%s: could not get file size for %s\n", __func__, path.c_str());
+        GGML_HSA_LOG_ERROR("%s: could not get file size for %s", __func__, path.c_str());
         return GGML_STATUS_FAILED;
     }
 
     void * ptr = nullptr;
     if (auto status = hsa_amd_memory_pool_allocate(pool, size, 0, &ptr);
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: failed to allocate %zu bytes (%s)\n", __func__, size,
-                       ggml_hsa_get_status_string(status));
+        GGML_HSA_LOG_ERROR("%s: failed to allocate %zu bytes (%s)", __func__, size,
+                           ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
 
@@ -155,27 +159,27 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
                                        ggml_hsa_insts_buffer & buffer) {
     std::ifstream is(path, std::ios::binary | std::ios::ate | std::ios::in);
     if (is.fail()) {
-        GGML_LOG_ERROR("%s: could not open file %s\n", __func__, path.c_str());
+        GGML_HSA_LOG_ERROR("%s: could not open file %s", __func__, path.c_str());
         return GGML_STATUS_FAILED;
     }
 
     const std::size_t size = is.tellg();
     if (!is.seekg(0, std::ios::beg) || (size == 0)) {
-        GGML_LOG_ERROR("%s: could not get file size for %s\n", __func__, path.c_str());
+        GGML_HSA_LOG_ERROR("%s: could not get file size for %s", __func__, path.c_str());
         return GGML_STATUS_FAILED;
     }
 
     if (size % sizeof(std::uint32_t) != 0) {
-        GGML_LOG_ERROR("%s: file size %zu bytes is not a multiple of %zu bytes\n", __func__, size,
-                       sizeof(std::uint32_t));
+        GGML_HSA_LOG_ERROR("%s: file size %zu bytes is not a multiple of %zu bytes", __func__, size,
+                           sizeof(std::uint32_t));
         return GGML_STATUS_FAILED;
     }
 
     void * ptr = nullptr;
     if (auto status = hsa_amd_memory_pool_allocate(pool, size, 0, &ptr);
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: failed to allocate %zu bytes (%s)\n", __func__, size,
-                       ggml_hsa_get_status_string(status));
+        GGML_HSA_LOG_ERROR("%s: failed to allocate %zu bytes (%s)", __func__, size,
+                           ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
 
@@ -197,7 +201,7 @@ ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev
 
         // unsupported device types
         default:
-            GGML_LOG_ERROR("%s: unsupported device %s.\n", __func__, dev_info.name.c_str());
+            GGML_HSA_LOG_ERROR("%s: unsupported device %s", __func__, dev_info.name.c_str());
             return GGML_STATUS_FAILED;
     }
 
@@ -218,6 +222,7 @@ ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev
             return GGML_STATUS_FAILED;
         }
 #else
+        GGML_HSA_LOG_INFO("%s: JIT compilation is disabled", __func__);
         return GGML_STATUS_FAILED;
 #endif
     }

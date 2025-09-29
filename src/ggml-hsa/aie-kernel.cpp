@@ -44,8 +44,8 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     if (auto status =
             hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, 64, 0, &ptr);
         status != HSA_STATUS_SUCCESS) {
-        GGML_LOG_ERROR("%s: failed to allocate hsa_queue packet storage (%s)\n", __func__,
-                       ggml_hsa_get_status_string(status));
+        GGML_HSA_LOG_ERROR("%s: failed to allocate hsa_queue packet storage (%s)", __func__,
+                           ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
     ctx.pending_payloads.emplace_back(ptr);

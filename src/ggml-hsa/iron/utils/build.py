@@ -120,6 +120,13 @@ def compile_kernel(
     """
 
     logger = logging.getLogger(__name__)
+    # remove all existing handlers
+    for handler in logger.handlers.copy():
+        try:
+            logger.removeHandler(handler)
+        except ValueError:
+            # ignore double removals
+            pass
     if verbose:
         logger.setLevel(logging.DEBUG)
         ch = logging.StreamHandler()
