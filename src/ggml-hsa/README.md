@@ -55,9 +55,10 @@ The following CMake build options are supported:
 ## Environment Variables
 
 The following environment variables are supported:
-| Variable                      | Description                                                                        |
-|-------------------------------|------------------------------------------------------------------------------------|
-| `GGML_HSA_KERNEL_DIR`         | Precompiled kernel directory path.                                                 |
-| `GGML_HSA_KERNEL_CACHE_DIR`   | Cached kernel directory, populated by JIT kernel compilation.                      |
-| `GGML_HSA_KERNEL_CACHE_CLEAR` | If set to `1`, `true`, or `TRUE`, remove all files in the cached kernel directory. |
-| `GGML_HSA_JIT_VERBOSE`        | If set to `1`, `true`, or `TRUE`, enable verbose output during JIT compilation.    |
+| Variable                      | Description                                                                                |
+|-------------------------------|--------------------------------------------------------------------------------------------|
+| `GGML_HSA_ENABLE_LOG`         | If set to `1`, `true`, or `on` enable internal logging. Off by default for release builds. |
+| `GGML_HSA_KERNEL_DIR`         | Precompiled kernel directory path.                                                         |
+| `GGML_HSA_KERNEL_CACHE_DIR`   | Cached kernel directory, populated by JIT kernel compilation.                              |
+| `GGML_HSA_KERNEL_CACHE_CLEAR` | If set to `1`, `true`, or `on` remove all files in the cached kernel directory.            |
+| `GGML_HSA_JIT_VERBOSE`        | If set to `1`, `true`, or `on`, enable verbose output during JIT compilation.              |
