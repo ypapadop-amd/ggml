@@ -442,22 +442,16 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     assert(ggml_hsa_nsrcs(node.tensor) == nsrcs);
 
     // early exit if operation does not require a kernel
-    switch (node.tensor.op) {
-        // noop; nothing to be done
-        case GGML_OP_NONE:
+    if (ggml_op_is_empty(node.tensor.op)) {
+        return;
+    }
 
+    switch (node.tensor.op) {
         // implemented as host kernels; nothing to be done
         case GGML_OP_DUP:
         case GGML_OP_CPY:
         case GGML_OP_CONT:
-
-        // implemented as views; nothing to be done
-        case GGML_OP_RESHAPE:
-        case GGML_OP_VIEW:
-        case GGML_OP_PERMUTE:
-        case GGML_OP_TRANSPOSE:
             return;
-
         default:
             break;
     }
@@ -1077,20 +1071,6 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
     ggml_hsa_wait_dispatches(ctx);
 }
 
-/**
- * @brief Creates a temporary transposed view of @p @p tensor.
- */
-static ggml_tensor ggml_hsa_transpose(const ggml_tensor * tensor) {
-    ggml_tensor transposed_vw = {};
-    transposed_vw.type = tensor->type;
-    transposed_vw.data = tensor->data;
-    std::copy_n(tensor->ne, GGML_MAX_DIMS, transposed_vw.ne);
-    std::swap(transposed_vw.ne[0], transposed_vw.ne[1]);
-    std::copy_n(tensor->nb, GGML_MAX_DIMS, transposed_vw.nb);
-    std::swap(transposed_vw.nb[0], transposed_vw.nb[1]);
-    return transposed_vw;
-}
-
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                                                        ggml_cgraph * cgraph) {
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
@@ -1099,15 +1079,13 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     const std::int32_t node_count = ggml_graph_n_nodes(cgraph);
     for (std::int32_t i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
         ggml_tensor * node = ggml_graph_node(cgraph, i);
-        if (ggml_is_empty(node)) {
+
+        // early exit if operation does not require a dispatch
+        if (ggml_op_is_empty(node->op) || ggml_is_empty(node)) {
             continue;
         }
 
         switch (node->op) {
-            // NOP, no dispatch required
-            case GGML_OP_NONE:
-                continue;
-
             // implemented as host kernels, so no dispatch required
             case GGML_OP_DUP:
                 status = ggml_hsa_compute_dup(ctx, node);
@@ -1118,14 +1096,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             case GGML_OP_CONT:
                 status = ggml_hsa_compute_cont(ctx, node);
                 continue;
-
-            // implemented as views, so no dispatch required
-            case GGML_OP_RESHAPE:
-            case GGML_OP_VIEW:
-            case GGML_OP_PERMUTE:
-            case GGML_OP_TRANSPOSE:
-                continue;
-
             default:
                 break;
         }
@@ -1344,40 +1314,35 @@ ggml_backend_hsa_device_get_host_buffer_type(ggml_backend_dev_t /*dev*/) {
  * @brief Returns if the operation in tensor @p op is supported by device @p dev.
  */
 static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
-    switch (op->op) {
-        // NOP, no kernel required
-        case GGML_OP_NONE:
+    // early exit if operation does not require a kernel
+    if (ggml_op_is_empty(op->op)) {
+        return true;
+    }
 
+    switch (op->op) {
         // implemented as host kernels
         case GGML_OP_DUP:
         case GGML_OP_CPY:
         case GGML_OP_CONT:
-
-        // implemented as views, so no kernel required
-        case GGML_OP_RESHAPE:
-        case GGML_OP_VIEW:
-        case GGML_OP_PERMUTE:
-        case GGML_OP_TRANSPOSE:
             return true;
-
         default:
             break;
     }
 
+    // check if tensor is already initialized with a valid kernel
     if ((op->extra != nullptr) &&
         (static_cast<ggml_backend_hsa_tensor_extra *>(op->extra)->kernel != nullptr)) {
-        // tensor that is already initialized with a valid kernel
         return true;
     }
 
+    // check if compilation artifacts exist or if the kernel can be compiled
     const auto & dev_ctx = *static_cast<ggml_backend_hsa_device_context *>(dev->context);
     const auto & dev_info = ggml_hsa_get_device_info(dev_ctx.device);
     try {
-        // check if the kernel is cached at the tensor level, if the compilation
-        // artifacts exist or if it can be compiled
         ggml_backend_hsa_tensor_extra tensor_extra{dev_info, *op};
         return (tensor_extra.kernel != nullptr);
     } catch (const std::exception & ex) {
+        // exception is not fatal, it means that the op is not supported
         GGML_HSA_LOG_WARN("%s: exception caught: %s", __func__, ex.what());
         return false;
     }
