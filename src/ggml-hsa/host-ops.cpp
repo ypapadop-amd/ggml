@@ -207,7 +207,7 @@ ggml_status ggml_hsa_copy_tensor(const ggml_tensor * src, ggml_tensor * dst) {
     }
 
     GGML_HSA_LOG_ERROR("%s: unsupported tensor combination between source \"%s\" (%s) and "
-                       "destination tensor \"%s\" (%s)",
+                       "destination tensors \"%s\" (%s)",
                        __func__, src->name, ggml_op_desc(src), dst->name, ggml_op_desc(dst));
     return GGML_STATUS_FAILED;
 }

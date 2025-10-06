@@ -159,7 +159,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     // retrieve the compilation information for the kernel
     const auto & kernel_jit_info = ggml_hsa_get_kernel_jit_info(tensor);
     if (!kernel_jit_info.is_valid()) {
-        // no JIT compilable kernel
+        GGML_HSA_LOG_INFO("%s: kernel does not exist for operation %s in for tensor \"%s\"",
+                          __func__, ggml_op_desc(&tensor), tensor.name);
         return GGML_STATUS_FAILED;
     }
 
