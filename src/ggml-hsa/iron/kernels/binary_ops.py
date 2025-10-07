@@ -197,8 +197,6 @@ def ggml_op_div(arch: str, input_tensors: list, output_tensor):
     ],
 )
 def test_ggml_op_binary(function, op, dtype, num_elements):
-    import aie.iron as iron
-
     # Construct two input random tensors and an output zeroed tensor
     input_tensor0 = iron.randint(
         1, 100, (num_elements, 1, 1, 1), dtype=dtype, device="npu"
