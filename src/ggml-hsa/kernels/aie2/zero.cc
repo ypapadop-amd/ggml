@@ -10,7 +10,6 @@
 #define ZERO_CC
 
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <type_traits>
 
