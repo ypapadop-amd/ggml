@@ -69,16 +69,21 @@ The following CMake build options are supported:
 
 ## Kernel Pregeneration
 
-For environments where JIT compilation is not available (e.g., lacking IRON dependencies), kernels can be pregenerated using the `ggml-hsa-gen-kernels.py` tool. This tool reads a configuration file and generates precompiled kernels that can be used at runtime.
+For environments where JIT compilation is not available (e.g., lacking IRON dependencies), kernels can be pregenerated using the `ggml-hsa-gen-kernels` tool. This tool reads a configuration file and generates precompiled kernels that can be used at runtime.
+
+> **Note:** The pregeneration tool requires an IRON environment to compile the kernels. However, once kernels are pregenerated, they can be used in environments without IRON.
 
 ### Usage
 
 ```bash
-python3 ggml-hsa-gen-kernels.py \
+# Pregenerate kernels (requires IRON environment)
+ggml-hsa-gen-kernels \
     --config example-kernel-config.json \
     --output-dir /path/to/precompiled/kernels \
     --verbose
 ```
+
+After building with CMake, the tool is installed as `ggml-hsa-gen-kernels` in the bin directory. Example configuration files are installed in `share/ggml-hsa/examples/`.
 
 ### Configuration File Format
 
@@ -118,7 +123,18 @@ export GGML_HSA_KERNEL_DIR=/path/to/precompiled/kernels
 
 The backend will automatically use pregenerated kernels from this directory, avoiding JIT compilation at runtime.
 
-See [example-kernel-config.json](./example-kernel-config.json) for a complete example configuration file.
+The output directory structure will be:
+```
+/path/to/precompiled/kernels/
+└── aie2/                          # Architecture-specific directory
+    ├── add_f32_1024.pdi           # PDI file for kernel
+    ├── add_f32_1024_insts.bin     # Instructions binary for kernel
+    ├── mul_f32_1024.pdi
+    ├── mul_f32_1024_insts.bin
+    └── ...
+```
+
+See [example-kernel-config.json](./example-kernel-config.json) and [minimal-kernel-config.json](./minimal-kernel-config.json) for complete example configuration files.
 
 ## Environment Variables
 

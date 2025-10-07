@@ -1,0 +1,27 @@
+{
+    "description": "Minimal configuration for common operations",
+    "kernels": [
+        {
+            "kernel_name": "ggml_op_add",
+            "kernel_source": "binary_ops.py",
+            "arch": "aie2",
+            "input_tensors": [
+                "(1024,1,1,1)/f32",
+                "(1024,1,1,1)/f32"
+            ],
+            "output_tensor": "(1024,1,1,1)/f32",
+            "exported_name": "add_f32_1024"
+        },
+        {
+            "kernel_name": "ggml_op_mul",
+            "kernel_source": "binary_ops.py",
+            "arch": "aie2",
+            "input_tensors": [
+                "(1024,1,1,1)/f32",
+                "(1024,1,1,1)/f32"
+            ],
+            "output_tensor": "(1024,1,1,1)/f32",
+            "exported_name": "mul_f32_1024"
+        }
+    ]
+}

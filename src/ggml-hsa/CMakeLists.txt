@@ -71,6 +71,23 @@ if (GGML_HSA_JIT_COMPILE)
     target_link_libraries(ggml-hsa PRIVATE pybind11::embed)
 
     add_subdirectory(kernels)
+
+    # Install kernel pregeneration tool and example configs
+    install(
+        PROGRAMS
+            ${CMAKE_CURRENT_SOURCE_DIR}/ggml-hsa-gen-kernels.py
+        DESTINATION
+            ${CMAKE_INSTALL_BINDIR}
+        RENAME
+            ggml-hsa-gen-kernels
+    )
+    install(
+        FILES
+            ${CMAKE_CURRENT_SOURCE_DIR}/example-kernel-config.json
+            ${CMAKE_CURRENT_SOURCE_DIR}/minimal-kernel-config.json
+        DESTINATION
+            share/ggml-hsa/examples
+    )
 endif ()
 
 add_compile_definitions(GGML_USE_HSA)
