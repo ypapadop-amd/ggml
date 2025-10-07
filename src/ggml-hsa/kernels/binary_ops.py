@@ -6,15 +6,15 @@
 # (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
 import operator
-import numpy as np
 from typing import Callable
+import numpy as np
 import pytest
 
 from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from utils import arch_aligned_num_elements, arch_to_device, max_tile_size
+from build import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
 def apply_binary_op(arch: str, input_tensors: list, function: Callable, output_tensor):
@@ -197,8 +197,6 @@ def ggml_op_div(arch: str, input_tensors: list, output_tensor):
     ],
 )
 def test_ggml_op_binary(function, op, dtype, num_elements):
-    import aie.iron as iron
-
     # Construct two input random tensors and an output zeroed tensor
     input_tensor0 = iron.randint(
         1, 100, (num_elements, 1, 1, 1), dtype=dtype, device="npu"
