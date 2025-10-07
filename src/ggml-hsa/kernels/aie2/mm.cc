@@ -8,7 +8,6 @@
 
 #define NOCPP
 
-#include <stdio.h>
 #include <stdlib.h>
 
 #define REL_WRITE 0
