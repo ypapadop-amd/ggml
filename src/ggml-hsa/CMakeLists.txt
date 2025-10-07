@@ -70,7 +70,7 @@ if (GGML_HSA_JIT_COMPILE)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_JIT_COMPILE)
     target_link_libraries(ggml-hsa PRIVATE pybind11::embed)
 
-    add_subdirectory(iron)
+    add_subdirectory(kernels)
 endif ()
 
 add_compile_definitions(GGML_USE_HSA)
