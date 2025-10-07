@@ -1,0 +1,69 @@
+{
+    "description": "Example configuration for pregenerating HSA kernels",
+    "kernels": [
+        {
+            "kernel_name": "ggml_op_add",
+            "kernel_source": "binary_ops.py",
+            "arch": "aie2",
+            "input_tensors": [
+                "(1024,1,1,1)/f32",
+                "(1024,1,1,1)/f32"
+            ],
+            "output_tensor": "(1024,1,1,1)/f32",
+            "exported_name": "add_f32_1024"
+        },
+        {
+            "kernel_name": "ggml_op_add",
+            "kernel_source": "binary_ops.py",
+            "arch": "aie2",
+            "input_tensors": [
+                "(2048,1,1,1)/bf16",
+                "(2048,1,1,1)/bf16"
+            ],
+            "output_tensor": "(2048,1,1,1)/bf16",
+            "exported_name": "add_bf16_2048"
+        },
+        {
+            "kernel_name": "ggml_op_mul",
+            "kernel_source": "binary_ops.py",
+            "arch": "aie2",
+            "input_tensors": [
+                "(1024,1,1,1)/f32",
+                "(1024,1,1,1)/f32"
+            ],
+            "output_tensor": "(1024,1,1,1)/f32",
+            "exported_name": "mul_f32_1024"
+        },
+        {
+            "kernel_name": "ggml_op_mul_mat",
+            "kernel_source": "mul_mat.py",
+            "arch": "aie2",
+            "input_tensors": [
+                "(1024,768,1,1)/bf16",
+                "(768,1024,1,1)/bf16"
+            ],
+            "output_tensor": "(1024,1024,1,1)/bf16",
+            "exported_name": "mul_mat_bf16_1024x768"
+        },
+        {
+            "kernel_name": "ggml_unary_op_relu",
+            "kernel_source": "unary_ops.py",
+            "arch": "aie2",
+            "input_tensors": [
+                "(2048,1,1,1)/f32"
+            ],
+            "output_tensor": "(2048,1,1,1)/f32",
+            "exported_name": "relu_f32_2048"
+        },
+        {
+            "kernel_name": "ggml_unary_op_gelu",
+            "kernel_source": "unary_ops.py",
+            "arch": "aie2",
+            "input_tensors": [
+                "(4096,1,1,1)/bf16"
+            ],
+            "output_tensor": "(4096,1,1,1)/bf16",
+            "exported_name": "gelu_bf16_4096"
+        }
+    ]
+}

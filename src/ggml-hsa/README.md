@@ -67,6 +67,59 @@ The following CMake build options are supported:
 | `GGML_HSA`              | Enable HSA backend.                                                                                                 |
 | `GGML_HSA_JIT_COMPILE`  | Enable JIT compilation of kernels. Requires an IRON environment to be active.                                       |
 
+## Kernel Pregeneration
+
+For environments where JIT compilation is not available (e.g., lacking IRON dependencies), kernels can be pregenerated using the `ggml-hsa-gen-kernels.py` tool. This tool reads a configuration file and generates precompiled kernels that can be used at runtime.
+
+### Usage
+
+```bash
+python3 ggml-hsa-gen-kernels.py \
+    --config example-kernel-config.json \
+    --output-dir /path/to/precompiled/kernels \
+    --verbose
+```
+
+### Configuration File Format
+
+The configuration file is a JSON file specifying the kernels to generate:
+
+```json
+{
+    "kernels": [
+        {
+            "kernel_name": "ggml_op_add",
+            "kernel_source": "binary_ops.py",
+            "arch": "aie2",
+            "input_tensors": [
+                "(1024,1,1,1)/f32",
+                "(1024,1,1,1)/f32"
+            ],
+            "output_tensor": "(1024,1,1,1)/f32",
+            "exported_name": "add_f32_1024"
+        }
+    ]
+}
+```
+
+**Tensor Description Format:** `(dim0,dim1,dim2,dim3)/dtype[/(stride0,stride1,stride2,stride3)]`
+
+**Supported dtypes:** `f32`, `f16`, `bf16`, `i8`, `i16`, `i32`
+
+**Example:** `(1024,768,1,1)/bf16`
+
+### Using Pregenerated Kernels
+
+Set the `GGML_HSA_KERNEL_DIR` environment variable to the output directory:
+
+```bash
+export GGML_HSA_KERNEL_DIR=/path/to/precompiled/kernels
+```
+
+The backend will automatically use pregenerated kernels from this directory, avoiding JIT compilation at runtime.
+
+See [example-kernel-config.json](./example-kernel-config.json) for a complete example configuration file.
+
 ## Environment Variables
 
 The following environment variables are supported:
