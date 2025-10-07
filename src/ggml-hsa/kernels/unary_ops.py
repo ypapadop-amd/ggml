@@ -20,7 +20,7 @@ from aie.iron import (
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from utils import arch_aligned_num_elements, arch_to_device, max_tile_size
+from build import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
 def ggml_op_unary(
