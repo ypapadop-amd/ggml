@@ -39,17 +39,14 @@ static const std::filesystem::path ggml_hsa_library_dir = [] {
     return std::filesystem::path{info.dli_fname}.parent_path();
 }();
 
-/// @brief Path to IRON kernel support.
-static const std::filesystem::path iron_path = ggml_hsa_library_dir / "iron";
+/// @brief Path to AIE kernels.
+static const fs::path kernel_path = ggml_hsa_library_dir / "kernels";
 
 /// @brief Python interpreter initialization guard.
 static pybind11::scoped_interpreter python_interpreter_guard = [] {
-    const auto utils_path = iron_path / "utils";
-
     pybind11::scoped_interpreter guard;
     auto sys = pybind11::module_::import("sys");
-    sys.attr("path").attr("append")(iron_path.string());
-    sys.attr("path").attr("append")(utils_path.string());
+    sys.attr("path").attr("append")(kernel_path.string());
     return guard;
 }();
 
@@ -165,15 +162,13 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     }
 
     // compile kernel
-    const auto kernel_path = iron_path / "kernels";
-    const auto device_kernel_path = kernel_path / dev_info.name;
-    const auto kernel_source_path = device_kernel_path / kernel_jit_info.source;
+    const auto kernel_source_path = kernel_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
 
     try {
         // convert a GGML tensor to input and output TensorDesc objects
-        auto utils = py::module_::import("utils");
-        auto tensor_desc_ctor = utils.attr("tensordesc");
+        auto tensor_desc_mod = py::module_::import("tensor_desc");
+        auto tensor_desc_ctor = tensor_desc_mod.attr("tensordesc");
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto input_tensors = py::list(src_tensor_count);
         for (auto i = 0; i < src_tensor_count; ++i) {
@@ -190,8 +185,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                               "contiguous"_a = ggml_is_contiguous(&tensor));
 
         // compile the kernel
-        auto iron_compiler = py::module_::import("build");
-        auto compile_kernel = iron_compiler.attr("compile_kernel");
+        auto build_mod = py::module_::import("build");
+        auto compile_kernel = build_mod.attr("compile_kernel");
         compile_kernel(
             "kernel_name"_a = kernel_jit_info.name, "kernel_source"_a = kernel_source_path.string(),
             "arch"_a = dev_info.name, "input_tensors"_a = std::move(input_tensors),
