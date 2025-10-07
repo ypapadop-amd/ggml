@@ -89,8 +89,10 @@ def import_from_path(module_name: str, path: os.PathLike):
         path (os.PathLike): Path to the module file.
     """
     spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot find module {module_name} at path {path}")
+    if spec is None:
+        raise ImportError(f"Cannot find module spec for {module_name} at path {path}")
+    if spec.loader is None:
+        raise ImportError(f"Cannot find loader for module {module_name} at path {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
