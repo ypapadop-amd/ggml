@@ -40,7 +40,15 @@ static const std::filesystem::path ggml_hsa_library_dir = [] {
 }();
 
 /// @brief Path to IRON kernel support.
-static const std::filesystem::path iron_path = ggml_hsa_library_dir / "iron";
+static const fs::path iron_path = ggml_hsa_library_dir / "iron";
+
+/// @brief Path to IRON kernels.
+static const fs::path kernel_path = iron_path / "kernels";
+
+/**
+ * @brief Enum to control if a kernel is device specific or generic.
+ */
+enum class ggml_hsa_aie_kernel_type { GENERIC, DEVICE_SPECIFIC };
 
 /// @brief Python interpreter initialization guard.
 static pybind11::scoped_interpreter python_interpreter_guard = [] {
@@ -60,13 +68,16 @@ static pybind11::scoped_interpreter python_interpreter_guard = [] {
  * @ref ggml_hsa_aie_jit_kernel_info objects.
  */
 struct ggml_hsa_aie_jit_kernel_info {
-    std::string_view name; ///< Kernel name.
-    fs::path source;       ///< Kernel source file relative to the kernel directory.
+    std::string_view name;                                            ///< Kernel name.
+    ggml_hsa_aie_kernel_type type{ggml_hsa_aie_kernel_type::GENERIC}; ///< Kernel type.
+    fs::path source; ///< Kernel source file relative to the kernel directory.
 
     ggml_hsa_aie_jit_kernel_info() = default;
 
-    ggml_hsa_aie_jit_kernel_info(std::string_view name, fs::path source) :
-        name{name}, source{std::move(source)} {}
+    ggml_hsa_aie_jit_kernel_info(std::string_view name,
+                                 ggml_hsa_aie_kernel_type type,
+                                 fs::path source) :
+        name{name}, type{type}, source{std::move(source)} {}
 
     bool is_valid() const { return !source.empty(); }
 };
@@ -76,16 +87,17 @@ struct ggml_hsa_aie_jit_kernel_info {
  */
 static auto ggml_backend_hsa_kernel_jit_info = []() {
     std::array<ggml_hsa_aie_jit_kernel_info, GGML_OP_COUNT> kernels = {};
-    kernels[GGML_OP_ADD] = {"ggml_op_add", "binary_ops.py"};
-    kernels[GGML_OP_SUB] = {"ggml_op_sub", "binary_ops.py"};
-    kernels[GGML_OP_MUL] = {"ggml_op_mul", "binary_ops.py"};
-    kernels[GGML_OP_DIV] = {"ggml_op_div", "binary_ops.py"};
-    kernels[GGML_OP_SQR] = {"ggml_op_sqr", "unary_ops.py"};
-    kernels[GGML_OP_SQRT] = {"ggml_op_sqrt", "unary_ops.py"};
-    kernels[GGML_OP_LOG] = {"ggml_op_log", "unary_ops.py"};
-    kernels[GGML_OP_SIN] = {"ggml_op_sin", "unary_ops.py"};
-    kernels[GGML_OP_COS] = {"ggml_op_cos", "unary_ops.py"};
-    kernels[GGML_OP_MUL_MAT] = {"ggml_op_mul_mat", "mul_mat.py"};
+    kernels[GGML_OP_ADD] = {"ggml_op_add", ggml_hsa_aie_kernel_type::GENERIC, "binary_ops.py"};
+    kernels[GGML_OP_SUB] = {"ggml_op_sub", ggml_hsa_aie_kernel_type::GENERIC, "binary_ops.py"};
+    kernels[GGML_OP_MUL] = {"ggml_op_mul", ggml_hsa_aie_kernel_type::GENERIC, "binary_ops.py"};
+    kernels[GGML_OP_DIV] = {"ggml_op_div", ggml_hsa_aie_kernel_type::GENERIC, "binary_ops.py"};
+    kernels[GGML_OP_SQR] = {"ggml_op_sqr", ggml_hsa_aie_kernel_type::GENERIC, "unary_ops.py"};
+    kernels[GGML_OP_SQRT] = {"ggml_op_sqrt", ggml_hsa_aie_kernel_type::GENERIC, "unary_ops.py"};
+    kernels[GGML_OP_LOG] = {"ggml_op_log", ggml_hsa_aie_kernel_type::GENERIC, "unary_ops.py"};
+    kernels[GGML_OP_SIN] = {"ggml_op_sin", ggml_hsa_aie_kernel_type::GENERIC, "unary_ops.py"};
+    kernels[GGML_OP_COS] = {"ggml_op_cos", ggml_hsa_aie_kernel_type::GENERIC, "unary_ops.py"};
+    kernels[GGML_OP_MUL_MAT] = {"ggml_op_mul_mat", ggml_hsa_aie_kernel_type::DEVICE_SPECIFIC,
+                                "mul_mat.py"};
     return kernels;
 }();
 
@@ -94,21 +106,36 @@ static auto ggml_backend_hsa_kernel_jit_info = []() {
  */
 static auto ggml_backend_hsa_unary_kernel_jit_info = []() {
     std::array<ggml_hsa_aie_jit_kernel_info, GGML_UNARY_OP_COUNT> kernels = {};
-    kernels[GGML_UNARY_OP_ABS] = {"ggml_unary_op_abs", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_SGN] = {"ggml_unary_op_sgn", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_NEG] = {"ggml_unary_op_neg", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_STEP] = {"ggml_unary_op_step", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_TANH] = {"ggml_unary_op_tanh", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_ELU] = {"ggml_unary_op_elu", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_RELU] = {"ggml_unary_op_relu", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_SIGMOID] = {"ggml_unary_op_sigmoid", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_GELU] = {"ggml_unary_op_gelu", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_GELU_QUICK] = {"ggml_unary_op_gelu_quick", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_SILU] = {"ggml_unary_op_silu", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_HARDSWISH] = {"ggml_unary_op_hardswish", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_HARDSIGMOID] = {"ggml_unary_op_hardsigmoid", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_EXP] = {"ggml_unary_op_exp", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_GELU_ERF] = {"ggml_unary_op_gelu_erf", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_ABS] = {"ggml_unary_op_abs", ggml_hsa_aie_kernel_type::GENERIC,
+                                  "unary_ops.py"};
+    kernels[GGML_UNARY_OP_SGN] = {"ggml_unary_op_sgn", ggml_hsa_aie_kernel_type::GENERIC,
+                                  "unary_ops.py"};
+    kernels[GGML_UNARY_OP_NEG] = {"ggml_unary_op_neg", ggml_hsa_aie_kernel_type::GENERIC,
+                                  "unary_ops.py"};
+    kernels[GGML_UNARY_OP_STEP] = {"ggml_unary_op_step", ggml_hsa_aie_kernel_type::GENERIC,
+                                   "unary_ops.py"};
+    kernels[GGML_UNARY_OP_TANH] = {"ggml_unary_op_tanh", ggml_hsa_aie_kernel_type::GENERIC,
+                                   "unary_ops.py"};
+    kernels[GGML_UNARY_OP_ELU] = {"ggml_unary_op_elu", ggml_hsa_aie_kernel_type::GENERIC,
+                                  "unary_ops.py"};
+    kernels[GGML_UNARY_OP_RELU] = {"ggml_unary_op_relu", ggml_hsa_aie_kernel_type::GENERIC,
+                                   "unary_ops.py"};
+    kernels[GGML_UNARY_OP_SIGMOID] = {"ggml_unary_op_sigmoid", ggml_hsa_aie_kernel_type::GENERIC,
+                                      "unary_ops.py"};
+    kernels[GGML_UNARY_OP_GELU] = {"ggml_unary_op_gelu", ggml_hsa_aie_kernel_type::GENERIC,
+                                   "unary_ops.py"};
+    kernels[GGML_UNARY_OP_GELU_QUICK] = {"ggml_unary_op_gelu_quick",
+                                         ggml_hsa_aie_kernel_type::GENERIC, "unary_ops.py"};
+    kernels[GGML_UNARY_OP_SILU] = {"ggml_unary_op_silu", ggml_hsa_aie_kernel_type::GENERIC,
+                                   "unary_ops.py"};
+    kernels[GGML_UNARY_OP_HARDSWISH] = {"ggml_unary_op_hardswish",
+                                        ggml_hsa_aie_kernel_type::GENERIC, "unary_ops.py"};
+    kernels[GGML_UNARY_OP_HARDSIGMOID] = {"ggml_unary_op_hardsigmoid",
+                                          ggml_hsa_aie_kernel_type::GENERIC, "unary_ops.py"};
+    kernels[GGML_UNARY_OP_EXP] = {"ggml_unary_op_exp", ggml_hsa_aie_kernel_type::GENERIC,
+                                  "unary_ops.py"};
+    kernels[GGML_UNARY_OP_GELU_ERF] = {"ggml_unary_op_gelu_erf", ggml_hsa_aie_kernel_type::GENERIC,
+                                       "unary_ops.py"};
     return kernels;
 }();
 
@@ -126,6 +153,19 @@ ggml_hsa_get_kernel_jit_info(const ggml_tensor & tensor) {
     }
 
     return ggml_backend_hsa_kernel_jit_info[tensor.op];
+}
+
+/**
+ * @brief Returns the absolute kernel source path for the given device and kernel info.
+ */
+static fs::path ggml_hsa_get_kernel_source_path(const ggml_hsa_device_info::device_info & dev_info,
+                                                const ggml_hsa_aie_jit_kernel_info & kernel_info) {
+    fs::path path = kernel_path;
+    if (kernel_info.type == ggml_hsa_aie_kernel_type::DEVICE_SPECIFIC) {
+        path /= dev_info.name;
+    }
+    path /= kernel_info.source;
+    return path;
 }
 
 /**
@@ -165,9 +205,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     }
 
     // compile kernel
-    const auto kernel_path = iron_path / "kernels";
-    const auto device_kernel_path = kernel_path / dev_info.name;
-    const auto kernel_source_path = device_kernel_path / kernel_jit_info.source;
+    const auto kernel_source_path = ggml_hsa_get_kernel_source_path(dev_info, kernel_jit_info);
     const auto output_directory = output_path / dev_info.name;
 
     try {

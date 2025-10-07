@@ -42,10 +42,14 @@ if (GGML_HSA_JIT_COMPILE)
             lib/iron/utils
         )
 
-    # copy kernel files
+    # copy generic kernel files
     set(IRON_KERNEL_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/kernels/__init__.py
         ${CMAKE_CURRENT_SOURCE_DIR}/kernels/aie_kernel_utils.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernels/binary_ops.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernels/ggml-aie.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernels/unary_ops.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernels/unary_ops.py
         )
     ggml_hsa_copy_files(ggml_hsa_copy_iron_kernel_files
         FILES
@@ -64,11 +68,8 @@ if (GGML_HSA_JIT_COMPILE)
     # copy aie2 kernel files
     set(IRON_AIE2_KERNEL_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/kernels/aie2/__init__.py
-        ${CMAKE_CURRENT_SOURCE_DIR}/kernels/aie2/binary_ops.py
         ${CMAKE_CURRENT_SOURCE_DIR}/kernels/aie2/mm.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/kernels/aie2/mul_mat.py
-        ${CMAKE_CURRENT_SOURCE_DIR}/kernels/aie2/unary_ops.cc
-        ${CMAKE_CURRENT_SOURCE_DIR}/kernels/aie2/unary_ops.py
         ${CMAKE_CURRENT_SOURCE_DIR}/kernels/aie2/zero.cc
         )
     ggml_hsa_copy_files(ggml_hsa_copy_iron_aie2_kernel_files
