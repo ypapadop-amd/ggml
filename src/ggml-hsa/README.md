@@ -85,6 +85,33 @@ ggml-hsa-gen-kernels \
 
 After building with CMake, the tool is installed as `ggml-hsa-gen-kernels` in the bin directory. Example configuration files are installed in `share/ggml-hsa/examples/`.
 
+**Typical Workflow:**
+
+1. Set up IRON environment on a machine with compilation tools:
+   ```bash
+   source /path/to/ggml/src/ggml-hsa/env_setup.sh
+   ```
+
+2. Pregenerate kernels using the configuration file:
+   ```bash
+   ggml-hsa-gen-kernels \
+       --config /usr/local/share/ggml-hsa/examples/example-kernel-config.json \
+       --output-dir ./precompiled_kernels \
+       --verbose
+   ```
+
+3. Copy the precompiled kernels to the target system (without IRON):
+   ```bash
+   scp -r ./precompiled_kernels target-system:/opt/ggml-hsa/kernels
+   ```
+
+4. On the target system, set the environment variable:
+   ```bash
+   export GGML_HSA_KERNEL_DIR=/opt/ggml-hsa/kernels
+   ```
+
+5. Run your application - it will use the precompiled kernels without JIT compilation.
+
 ### Configuration File Format
 
 The configuration file is a JSON file specifying the kernels to generate:

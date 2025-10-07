@@ -71,7 +71,7 @@ def parse_tensor_desc(tensor_str: str):
     """
     Parse tensor description string into a TensorDesc.
     
-    Format: "(shape0,shape1,shape2,shape3)/dtype[/stride0,stride1,stride2,stride3]"
+    Format: "(shape0,shape1,shape2,shape3)/dtype[/(stride0,stride1,stride2,stride3)]"
     Example: "(1024,1,1,1)/f32" or "(1024,768,1,1)/bf16/(1,1024,786432,786432)"
     
     Parameters:
@@ -84,25 +84,43 @@ def parse_tensor_desc(tensor_str: str):
     
     parts = tensor_str.split('/')
     if len(parts) < 2:
-        raise ValueError(f"Invalid tensor descriptor: {tensor_str}")
+        raise ValueError(f"Invalid tensor descriptor: {tensor_str} (expected format: (dim0,dim1,dim2,dim3)/dtype)")
     
-    # Parse shape
-    shape_str = parts[0].strip('()')
-    shape = tuple(int(x.strip()) for x in shape_str.split(','))
+    # Parse shape - must be enclosed in parentheses
+    shape_part = parts[0].strip()
+    if not shape_part.startswith('(') or not shape_part.endswith(')'):
+        raise ValueError(f"Invalid shape format in {tensor_str}: shape must be enclosed in parentheses")
+    
+    shape_str = shape_part.strip('()')
+    try:
+        shape = tuple(int(x.strip()) for x in shape_str.split(','))
+    except ValueError as e:
+        raise ValueError(f"Invalid shape values in {tensor_str}: {e}")
+    
     if len(shape) != 4:
-        raise ValueError(f"Shape must have 4 dimensions, got {shape}")
+        raise ValueError(f"Shape must have exactly 4 dimensions, got {len(shape)} in {tensor_str}")
     
     # Parse dtype
-    dtype = parts[1]
+    dtype = parts[1].strip()
+    if not dtype:
+        raise ValueError(f"Invalid tensor descriptor: {tensor_str} (missing dtype)")
     
     # Parse optional stride
     stride = None
     contiguous = True
     if len(parts) >= 3:
-        stride_str = parts[2].strip('()')
-        stride = tuple(int(x.strip()) for x in stride_str.split(','))
+        stride_part = parts[2].strip()
+        if not stride_part.startswith('(') or not stride_part.endswith(')'):
+            raise ValueError(f"Invalid stride format in {tensor_str}: stride must be enclosed in parentheses")
+        
+        stride_str = stride_part.strip('()')
+        try:
+            stride = tuple(int(x.strip()) for x in stride_str.split(','))
+        except ValueError as e:
+            raise ValueError(f"Invalid stride values in {tensor_str}: {e}")
+        
         if len(stride) != 4:
-            raise ValueError(f"Stride must have 4 dimensions, got {stride}")
+            raise ValueError(f"Stride must have exactly 4 dimensions, got {len(stride)} in {tensor_str}")
         contiguous = False
     
     return tensordesc(dtype=dtype, shape=shape, stride=stride, contiguous=contiguous)
