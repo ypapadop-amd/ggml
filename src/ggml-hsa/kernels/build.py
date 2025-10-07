@@ -60,12 +60,12 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
         vector_register_size = 512  # bits
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
-    max_tile_size = int(vector_register_size / dtype.itemsize)
+    tile_size = int(vector_register_size / dtype.itemsize)
 
-    while num_elements % max_tile_size != 0 and max_tile_size > 1:
-        max_tile_size //= 2
+    while num_elements % tile_size != 0 and tile_size > 1:
+        tile_size //= 2
 
-    return max_tile_size
+    return tile_size
 
 
 def arch_to_device(device):
