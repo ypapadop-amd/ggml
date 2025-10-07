@@ -1,25 +1,51 @@
-# GGML HSA Backend
+# GGML HSA (ggml-hsa) Backend
 
-## JIT Compilation
+## Supported Devices
 
-The HSA backend supports JIT compilation of kernels. This allows for the generation of optimized kernels for the target architecture at runtime.
+The GGML HSA (`ggml-hsa`) backend supports the following devices:
+- [AMD XDNA](https://www.amd.com/en/technologies/xdna.html) (`aie2` architecture), e.g., Phoenix, Hawk Point.
 
-JIT compilation requires additional dependencies, such as the [IRON framework](https://github.com/Xilinx/mlir-aie) which must be installed and consume considerable storage space. If kernels are already generated, they can be placed in a directory specified by the environment variable `GGML_HSA_KERNEL_DIR` and JIT can be disabled at compile time.
+## Supported Datatypes
 
-### Setting up an IRON Environment
+The following data types are supported by the HSA backend:
+| Type             | Comment                                       |
+|------------------|-----------------------------------------------|
+| `GGML_TYPE_I8`   | Native `aie2` / `aie2p` datatype.             |
+| `GGML_TYPE_I16`  | Native `aie2` / `aie2p` datatype.             |
+| `GGML_TYPE_I32`  | Native `aie2` / `aie2p` datatype.             |
+| `GGML_TYPE_BF16` | Native `aie2` / `aie2p` datatype.             |
+| `GGML_TYPE_F16`  | Supported via conversion to `GGML_TYPE_BF16`. |
+| `GGML_TYPE_F32`  | Emulated, so slower than native types.        |
 
-For JIT compilation support, an IRON environment must be created to compile GGML in by installing the necessary dependencies:
+## Prerequisites
+
+### AMD XDNA™ Driver
+
+`ggml-hsa` depends on the [AMD XDNA™ Driver](https://github.com/amd/xdna-driver). You can find the installation instructions [here](https://github.com/amd/xdna-driver?tab=readme-ov-file#linux-compilation-and-installation).
+
+
+### ROCm
+
+`ggml-hsa` requires a fairly new [ROCR](https://github.com/ROCm/rocm-systems) (development happens using ROCm 7.0.1). Installation instructions are [here](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
+
+### MLIR-AIE
+
+`ggml-hsa` supports JIT compilation of kernels for the generation of optimized kernels for the target architecture at runtime. This is supported via integration with the [IRON framework](https://github.com/Xilinx/mlir-aie), a Python-based solution for creating AIE kernels.
+
+An IRON environment must be created to compile GGML in by installing the necessary dependencies:
 ```bash
 MLIR_PYTHON_EXTRAS_SET_VERSION="0.0.8.3" HOST_MLIR_PYTHON_PACKAGE_PREFIX="aie" \
 python3 -m pip install -r ${SCRIPT_DIR_NAME}/requirements.txt
 ```
 
-Alternatively, one can use the provided script to set up a Python virtual environment. The [env_setup.sh](./env_setup.sh) script will create a Python virtual environment, activate it, and install the necessary dependencies.
+Alternatively, one can use the [env_setup.sh](./env_setup.sh) script to set up a Python virtual environment; the script will create a Python virtual environment, activate it, and install the necessary dependencies.
 ```bash
 source ./env_setup.sh
 ```
 
-### JIT Compilation Process
+> **Note** : An IRON environment can consume considerable storage space and JIT compilation is expensive. If kernels are already generated, they can be placed in a directory specified by the environment variable `GGML_HSA_KERNEL_DIR` and JIT can be disabled at compile time.
+
+## JIT Compilation
 
 The JIT compilation process generates kernels on-the-fly from the installed kernel sources. If `GGML_HSA_KERNEL_DIR` is set, any kernels found there take precedence over JIT compiled kernels.
 
@@ -31,18 +57,7 @@ JIT generated kernels are cached in a directory in the following order of preced
 
 One can clear the cache by setting the environment variable `GGML_HSA_KERNEL_CACHE_CLEAR` to an appropriate value.
 
-***WARNING:*** **Setting `GGML_HSA_KERNEL_CACHE_CLEAR` will delete all files in the cache directory.**
-
-## NPU Supported Datatypes
-
-The following data types are supported by AIEs:
-| Type             | Comment                                |
-|------------------|----------------------------------------|
-| `GGML_TYPE_I8`   | Native datatype.                       |
-| `GGML_TYPE_I16`  | Native datatype.                       |
-| `GGML_TYPE_I32`  | Native datatype.                       |
-| `GGML_TYPE_BF16` | Native datatype.                       |
-| `GGML_TYPE_F32`  | Emulated, so slower than native types. |
+> **WARNING:** Setting `GGML_HSA_KERNEL_CACHE_CLEAR` will delete all the files in the cache directory.
 
 ## CMake Build Options
 

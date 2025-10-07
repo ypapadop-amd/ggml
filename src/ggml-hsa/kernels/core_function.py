@@ -1,7 +1,6 @@
 #  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
 from dataclasses import dataclass
-from sys import stderr
 from typing import Callable
 
 
