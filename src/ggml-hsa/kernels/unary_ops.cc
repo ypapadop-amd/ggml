@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "ggml-aie.hpp"
 #include <aie_api/aie.hpp>
+#include "ggml-aie.hpp"
 
 template <typename T, typename Size, typename UnaryOp>
 void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryOp op) {

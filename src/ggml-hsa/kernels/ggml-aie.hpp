@@ -3,7 +3,7 @@
 #pragma once
 
 #include <cstdint>
-#include <aie_api/bfloat16.hpp>
+#include <aie_api/aie.hpp>
 
 using i8 = std::int8_t;
 using i16 = std::int16_t;
