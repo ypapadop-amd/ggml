@@ -77,3 +77,37 @@ The following environment variables are supported:
 | `GGML_HSA_KERNEL_CACHE_DIR`   | Cached kernel directory, populated by JIT kernel compilation.                              |
 | `GGML_HSA_KERNEL_CACHE_CLEAR` | If set to `1`, `true`, or `on` remove all files in the cached kernel directory.            |
 | `GGML_HSA_JIT_VERBOSE`        | If set to `1`, `true`, or `on`, enable verbose output during JIT compilation.              |
+
+## Code Formatting
+
+The `src/ggml-hsa` directory follows specific code formatting standards that are enforced via GitHub Actions.
+
+### Formatting Standards
+
+- **Python files**: Formatted using [black](https://black.readthedocs.io/)
+- **C++ files** (`.cpp`, `.hpp`, `.h`): Formatted using [clang-format](https://clang.llvm.org/docs/ClangFormat.html) with the configuration in [`.clang-format`](./.clang-format)
+
+### Checking Formatting Locally
+
+To check if your code follows the formatting standards before pushing, run:
+
+```bash
+./src/ggml-hsa/check-format.sh
+```
+
+This script will check all Python and C++ files in `src/ggml-hsa` and report any formatting issues.
+
+### Fixing Formatting Issues
+
+**Python files:**
+```bash
+black src/ggml-hsa
+```
+
+**C++ files:**
+```bash
+find src/ggml-hsa -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) ! -path '*/kernels/*' \
+  -exec clang-format -i --style=file:src/ggml-hsa/.clang-format {} +
+```
+
+**Note:** The `.clang-format` file requires clang-format 19 or later. Earlier versions may not support all formatting options.

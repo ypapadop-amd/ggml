@@ -37,6 +37,8 @@ jobs:
         sudo apt-get install -y clang-format-19
         # Make clang-format-19 the default
         sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 200
+        # Verify installation
+        clang-format --version
 
     - name: Check Python formatting with black
       run: |
