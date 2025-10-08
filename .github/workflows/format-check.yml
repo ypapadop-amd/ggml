@@ -1,0 +1,94 @@
+name: Format Check
+
+on:
+  pull_request:
+    branches: [ master, hsa-backend ]
+    paths:
+      - 'src/ggml-hsa/**'
+  push:
+    branches: [ hsa-backend ]
+    paths:
+      - 'src/ggml-hsa/**'
+
+jobs:
+  format-check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black
+
+    - name: Install clang-format 19
+      run: |
+        # Install clang-format 19 which supports all options in .clang-format
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+        sudo add-apt-repository -y "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-19 main"
+        sudo apt-get update
+        sudo apt-get install -y clang-format-19
+        # Make clang-format-19 the default
+        sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 200
+
+    - name: Check Python formatting with black
+      run: |
+        echo "Checking Python files in src/ggml-hsa with black..."
+        PYTHON_FILES=$(find src/ggml-hsa -name "*.py" 2>/dev/null || true)
+        if [ -n "$PYTHON_FILES" ]; then
+          # Check if files need formatting
+          black --check --diff $PYTHON_FILES || {
+            echo "❌ Python formatting issues found!"
+            echo ""
+            echo "To fix the formatting issues, run:"
+            echo "  black $PYTHON_FILES"
+            echo ""
+            exit 1
+          }
+          echo "✅ All Python files are properly formatted!"
+        else
+          echo "No Python files found in src/ggml-hsa"
+        fi
+
+    - name: Check C++ formatting with clang-format
+      run: |
+        echo "Checking C++ files in src/ggml-hsa with clang-format..."
+        CPP_FILES=$(find src/ggml-hsa -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.h" \) ! -path "*/kernels/*" 2>/dev/null || true)
+        
+        if [ -n "$CPP_FILES" ]; then
+          FORMAT_ISSUES=0
+          
+          for file in $CPP_FILES; do
+            # Generate formatted output and compare with original
+            FORMATTED=$(clang-format --style=file:src/ggml-hsa/.clang-format "$file" 2>/dev/null)
+            ORIGINAL=$(cat "$file")
+            
+            if [ "$FORMATTED" != "$ORIGINAL" ]; then
+              echo "❌ Formatting issues in $file:"
+              echo "$FORMATTED" | diff -u "$file" - || true
+              echo ""
+              FORMAT_ISSUES=1
+            fi
+          done
+          
+          if [ $FORMAT_ISSUES -eq 1 ]; then
+            echo ""
+            echo "To fix the formatting issues, run:"
+            echo "  clang-format -i --style=file:src/ggml-hsa/.clang-format <file>"
+            echo ""
+            echo "Or to format all C++ files in src/ggml-hsa:"
+            echo "  find src/ggml-hsa -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) ! -path '*/kernels/*' -exec clang-format -i --style=file:src/ggml-hsa/.clang-format {} +"
+            exit 1
+          fi
+          
+          echo "✅ All C++ files are properly formatted!"
+        else
+          echo "No C++ files found in src/ggml-hsa"
+        fi
