@@ -120,8 +120,8 @@ def my_matmul(
     use_scalar,
     emulate_bf16_mmul_with_bfp16,
     trace_size,
-    mm_fn,
     zero_fn,
+    matmul_fn,
     object_file,
     generate_taps=False,
 ):
@@ -231,7 +231,7 @@ def my_matmul(
 
         # AIE Core Function declarations
         zero = external_func(zero_fn, inputs=[C_l1_ty])
-        matmul = external_func(mm_fn, inputs=[A_l1_ty, B_l1_ty, C_l1_ty])
+        matmul = external_func(matmul_fn, inputs=[A_l1_ty, B_l1_ty, C_l1_ty])
 
         # Tile declarations as tile[row][col]
         tiles = [

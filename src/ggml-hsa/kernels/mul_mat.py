@@ -66,7 +66,6 @@ def create_mul_mat_external_functions(
     n = 8
     k = 8
     use_scalar = False
-    scalar_suffix = "_scalar" if use_scalar else ""
 
     num_cols = None
     if arch == "aie2":
@@ -76,15 +75,7 @@ def create_mul_mat_external_functions(
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
 
-    return (
-        m,
-        n,
-        k,
-        use_scalar,
-        num_cols,
-        f"matmul{scalar_suffix}_{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}",
-        f"zero{scalar_suffix}_{dtype_to_str(output_tensor.dtype)}",
-    )
+    return m, n, k, use_scalar, num_cols
 
 
 @core_function(mul_mat_core_function_info)
@@ -126,9 +117,11 @@ def ggml_op_mul_mat(
     if A.shape[0] != B.shape[0]:
         raise ValueError(f"Incompatible K for A and B ({A.shape[0]} != {B.shape[0]})")
 
-    m, n, k, use_scalar, num_cols, mm_fn, zero_fn = create_mul_mat_external_functions(
+    m, n, k, use_scalar, num_cols = create_mul_mat_external_functions(
         arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
     )
+    matmul_fn = core_function_info.exported_function["matmul"]
+    zero_fn = core_function_info.exported_function["zero"]
     object_file = core_function_info.object_file
 
     with mlir_mod_ctx() as ctx:
@@ -148,7 +141,7 @@ def ggml_op_mul_mat(
             use_scalar=use_scalar,
             emulate_bf16_mmul_with_bfp16=False,
             trace_size=0,
-            mm_fn=mm_fn,
+            matmul_fn=matmul_fn,
             zero_fn=zero_fn,
             object_file=object_file,
         )
