@@ -96,6 +96,8 @@ def ggml_op_mul_mat(
             use_scalar=core_function_info.additional_args["use_scalar"],
             emulate_bf16_mmul_with_bfp16=False,
             trace_size=0,
-            core_function_info=core_function_info,
+            mm_fn=core_function_info.exported_function["matmul"],
+            zero_fn=core_function_info.exported_function["zero"],
+            object_file=core_function_info.object_file,
         )
         return ctx.module
