@@ -37,7 +37,44 @@ def mul_mat_core_function_info(arch: str, input_tensors: list, output_tensor):
             "-DB_COL_MAJ",
             "-DC_COL_MAJ",
         ],
-        additional_args={"m": m, "n": n, "k": k, "use_scalar": use_scalar},
+    )
+
+
+def create_mul_mat_external_functions(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+):
+    """
+    Returns the parameters and names of the external functions for matrix multiplication.
+
+    Args:
+        arch (str): Target architecture.
+        input_tensors: List of two input tensors.
+        output_tensor: Output tensor.
+
+    Returns:
+        A tuple containing:
+            - m: The block size in the M dimension.
+            - n: The block size in the N dimension.
+            - k: The block size in the K dimension.
+            - use_scalar: Boolean indicating if scalar multiplication is used.
+            - mm_fn: The name of the matrix multiplication function.
+            - zero_fn: The name of the zeroing function.
+    """
+    m = 8
+    n = 8
+    k = 8
+    use_scalar = False
+    scalar_suffix = "_scalar" if use_scalar else ""
+
+    return (
+        m,
+        n,
+        k,
+        use_scalar,
+        f"matmul{scalar_suffix}_{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}",
+        f"zero{scalar_suffix}_{dtype_to_str(output_tensor.dtype)}",
     )
 
 
@@ -57,6 +94,8 @@ def ggml_op_mul_mat(
         dev = "npu"
     elif arch == "aie2p":
         dev = "npu2"
+
+        raise ValueError(f"Not implemented for {arch}")
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
 
@@ -79,25 +118,30 @@ def ggml_op_mul_mat(
     if A.shape[0] != B.shape[0]:
         raise ValueError(f"Incompatible K for A and B ({A.shape[0]} != {B.shape[0]})")
 
+    m, n, k, use_scalar, mm_fn, zero_fn = create_mul_mat_external_functions(
+        arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
+    )
+    object_file = core_function_info.object_file
+
     with mlir_mod_ctx() as ctx:
         mat_mul_fn(
             dev=dev,
             M=A.shape[1],
             N=B.shape[1],
             K=A.shape[0],
-            m=core_function_info.additional_args["m"],
-            n=core_function_info.additional_args["n"],
-            k=core_function_info.additional_args["k"],
+            m=m,
+            n=n,
+            k=k,
             n_aie_cols=4,
             dtype_in_str=dtype_to_str(A.dtype),
             dtype_out_str=dtype_to_str(C.dtype),
             b_col_maj=True,
             c_col_maj=True,
-            use_scalar=core_function_info.additional_args["use_scalar"],
+            use_scalar=use_scalar,
             emulate_bf16_mmul_with_bfp16=False,
             trace_size=0,
-            mm_fn=core_function_info.exported_function["matmul"],
-            zero_fn=core_function_info.exported_function["zero"],
-            object_file=core_function_info.object_file,
+            mm_fn=mm_fn,
+            zero_fn=zero_fn,
+            object_file=object_file,
         )
         return ctx.module
