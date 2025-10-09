@@ -1,7 +1,7 @@
 #  Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 
 @dataclass
@@ -19,9 +19,9 @@ class CoreFunctionInfo:
     """
 
     source_file: str
-    exported_function: str
+    exported_function: str | dict[str, str]
     compile_args: None | list[str] = None
-    additional_args: None | dict[str, str] = None
+    additional_args: None | dict[str, Any] = None
     object_file: None | str = None
 
 

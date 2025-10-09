@@ -13,34 +13,7 @@ from aie.extras.context import mlir_mod_ctx
 from core_function import core_function, CoreFunctionInfo
 
 
-def mul_mat_core_function_info(arch: str, input_tensors: list, output_tensor):
-    """Returns a compilation specification for matrix multiplication."""
-
-    m = 8
-    n = 8
-    k = 8
-    use_scalar = False
-
-    scalar_suffix = "_scalar" if use_scalar else ""
-    current_dir = path.dirname(path.realpath(__file__))
-    return CoreFunctionInfo(
-        source_file=path.join(current_dir, arch, "mm.cc"),
-        exported_function={
-            "matmul": f"matmul{scalar_suffix}_{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}",
-            "zero": f"zero{scalar_suffix}_{dtype_to_str(output_tensor.dtype)}",
-        },
-        compile_args=[
-            f"-DDIM_M={m}",
-            f"-DDIM_N={n}",
-            f"-DDIM_K={k}",
-            f"-D{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}_ONLY",
-            "-DB_COL_MAJ",
-            "-DC_COL_MAJ",
-        ],
-    )
-
-
-def create_mul_mat_external_functions(
+def create_mat_mul_external_functions(
     arch: str,
     input_tensors: list,
     output_tensor,
@@ -66,6 +39,7 @@ def create_mul_mat_external_functions(
     n = 8
     k = 8
     use_scalar = False
+    scalar_suffix = "_scalar" if use_scalar else ""
 
     num_cols = None
     if arch == "aie2":
@@ -75,7 +49,52 @@ def create_mul_mat_external_functions(
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
 
-    return m, n, k, use_scalar, num_cols
+    current_dir = path.dirname(path.realpath(__file__))
+    source_file = path.join(current_dir, arch, "mm.cc")
+
+    compile_args = [
+        f"-DDIM_M={m}",
+        f"-DDIM_N={n}",
+        f"-DDIM_K={k}",
+        f"-D{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}_ONLY",
+        "-DB_COL_MAJ",
+        "-DC_COL_MAJ",
+    ]
+
+    return (
+        m,
+        n,
+        k,
+        use_scalar,
+        num_cols,
+        source_file,
+        f"zero{scalar_suffix}_{dtype_to_str(output_tensor.dtype)}",
+        f"matmul{scalar_suffix}_{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}",
+        compile_args,
+    )
+
+
+def mul_mat_core_function_info(arch: str, input_tensors: list, output_tensor):
+    """Returns a compilation specification for matrix multiplication."""
+
+    m, n, k, use_scalar, num_cols, source_file, zero_fn, matmul_fn, compile_args = (
+        create_mat_mul_external_functions(
+            arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
+        )
+    )
+
+    return CoreFunctionInfo(
+        source_file=source_file,
+        exported_function={"zero": zero_fn, "matmul": matmul_fn},
+        compile_args=compile_args,
+        additional_args={
+            "m": m,
+            "n": n,
+            "k": k,
+            "use_scalar": use_scalar,
+            "num_cols": num_cols,
+        },
+    )
 
 
 @core_function(mul_mat_core_function_info)
@@ -85,19 +104,6 @@ def ggml_op_mul_mat(
     output_tensor,
     core_function_info: CoreFunctionInfo,
 ):
-    mat_mul_fn = None
-    dev = None
-    if arch == "aie2":
-        from aie2 import mul_mat
-
-        mat_mul_fn = mul_mat.my_matmul
-        dev = "npu"
-    elif arch == "aie2p":
-        dev = "npu2"
-        raise ValueError(f"Not implemented for {arch}")
-    else:
-        raise ValueError(f"Unsupported architecture: {arch}")
-
     if len(input_tensors) != 2:
         raise ValueError("Requires two input tensors")
 
@@ -117,9 +123,24 @@ def ggml_op_mul_mat(
     if A.shape[0] != B.shape[0]:
         raise ValueError(f"Incompatible K for A and B ({A.shape[0]} != {B.shape[0]})")
 
-    m, n, k, use_scalar, num_cols = create_mul_mat_external_functions(
-        arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
-    )
+    mat_mul_fn = None
+    dev = None
+    if arch == "aie2":
+        from aie2 import mul_mat
+
+        mat_mul_fn = mul_mat.my_matmul
+        dev = "npu"
+    elif arch == "aie2p":
+        dev = "npu2"
+        raise ValueError(f"Not implemented for {arch}")
+    else:
+        raise ValueError(f"Unsupported architecture: {arch}")
+
+    m = core_function_info.additional_args["m"]
+    n = core_function_info.additional_args["n"]
+    k = core_function_info.additional_args["k"]
+    use_scalar = core_function_info.additional_args["use_scalar"]
+    num_cols = core_function_info.additional_args["num_cols"]
     matmul_fn = core_function_info.exported_function["matmul"]
     zero_fn = core_function_info.exported_function["zero"]
     object_file = core_function_info.object_file
