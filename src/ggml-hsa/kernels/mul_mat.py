@@ -68,11 +68,20 @@ def create_mul_mat_external_functions(
     use_scalar = False
     scalar_suffix = "_scalar" if use_scalar else ""
 
+    num_cols = None
+    if arch == "aie2":
+        num_cols = 4
+    elif arch == "aie2p":
+        num_cols = 8
+    else:
+        raise ValueError(f"Unsupported architecture: {arch}")
+
     return (
         m,
         n,
         k,
         use_scalar,
+        num_cols,
         f"matmul{scalar_suffix}_{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}",
         f"zero{scalar_suffix}_{dtype_to_str(output_tensor.dtype)}",
     )
@@ -94,7 +103,6 @@ def ggml_op_mul_mat(
         dev = "npu"
     elif arch == "aie2p":
         dev = "npu2"
-
         raise ValueError(f"Not implemented for {arch}")
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
@@ -118,7 +126,7 @@ def ggml_op_mul_mat(
     if A.shape[0] != B.shape[0]:
         raise ValueError(f"Incompatible K for A and B ({A.shape[0]} != {B.shape[0]})")
 
-    m, n, k, use_scalar, mm_fn, zero_fn = create_mul_mat_external_functions(
+    m, n, k, use_scalar, num_cols, mm_fn, zero_fn = create_mul_mat_external_functions(
         arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
     )
     object_file = core_function_info.object_file
@@ -132,7 +140,7 @@ def ggml_op_mul_mat(
             m=m,
             n=n,
             k=k,
-            n_aie_cols=4,
+            n_aie_cols=num_cols,
             dtype_in_str=dtype_to_str(A.dtype),
             dtype_out_str=dtype_to_str(C.dtype),
             b_col_maj=True,
