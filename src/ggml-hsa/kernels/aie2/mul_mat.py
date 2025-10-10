@@ -230,6 +230,7 @@ def my_matmul(
         C_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
         # AIE Core Function declarations
+        scalar_suffix = "_scalar" if use_scalar else ""
         zero = external_func(zero_fn, inputs=[C_l1_ty])
         matmul = external_func(matmul_fn, inputs=[A_l1_ty, B_l1_ty, C_l1_ty])
 

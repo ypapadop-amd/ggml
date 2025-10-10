@@ -6,11 +6,10 @@
 # (c) Copyright 2025 AMD Inc.
 
 from os import path
+import numpy as np
 
-from aie.iron import dtype_to_str
+from aie.iron import dtype_to_str, ExternalFunction
 from aie.extras.context import mlir_mod_ctx
-
-from core_function import core_function, CoreFunctionInfo
 
 
 def create_mat_mul_external_functions(
@@ -51,7 +50,6 @@ def create_mat_mul_external_functions(
 
     current_dir = path.dirname(path.realpath(__file__))
     source_file = path.join(current_dir, arch, "mm.cc")
-
     compile_args = [
         f"-DDIM_M={m}",
         f"-DDIM_N={n}",
@@ -60,6 +58,27 @@ def create_mat_mul_external_functions(
         "-DB_COL_MAJ",
         "-DC_COL_MAJ",
     ]
+    object_file_name = "matmul_core_functions.o"
+
+    zero_fn = ExternalFunction(
+        name=f"zero{scalar_suffix}_{dtype_to_str(output_tensor.dtype)}",
+        object_file_name=object_file_name,
+        source_file=source_file,
+        arg_types=[np.ndarray[(m, n), np.dtype[output_tensor.dtype]]],
+        compile_flags=compile_args,
+    )
+
+    matmul_fn = ExternalFunction(
+        name=f"matmul{scalar_suffix}_{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}",
+        object_file_name=object_file_name,
+        source_file=source_file,
+        arg_types=[
+            np.ndarray[(m, k), np.dtype[input_tensors[0].dtype]],
+            np.ndarray[(k, n), np.dtype[input_tensors[0].dtype]],
+            np.ndarray[(m, n), np.dtype[output_tensor.dtype]],
+        ],
+        compile_flags=compile_args,
+    )
 
     return (
         m,
@@ -67,43 +86,12 @@ def create_mat_mul_external_functions(
         k,
         use_scalar,
         num_cols,
-        source_file,
-        f"zero{scalar_suffix}_{dtype_to_str(output_tensor.dtype)}",
-        f"matmul{scalar_suffix}_{dtype_to_str(input_tensors[0].dtype)}_{dtype_to_str(output_tensor.dtype)}",
-        compile_args,
+        zero_fn,
+        matmul_fn,
     )
 
 
-def mul_mat_core_function_info(arch: str, input_tensors: list, output_tensor):
-    """Returns a compilation specification for matrix multiplication."""
-
-    m, n, k, use_scalar, num_cols, source_file, zero_fn, matmul_fn, compile_args = (
-        create_mat_mul_external_functions(
-            arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
-        )
-    )
-
-    return CoreFunctionInfo(
-        source_file=source_file,
-        exported_function={"zero": zero_fn, "matmul": matmul_fn},
-        compile_args=compile_args,
-        additional_args={
-            "m": m,
-            "n": n,
-            "k": k,
-            "use_scalar": use_scalar,
-            "num_cols": num_cols,
-        },
-    )
-
-
-@core_function(mul_mat_core_function_info)
-def ggml_op_mul_mat(
-    arch: str,
-    input_tensors: list,
-    output_tensor,
-    core_function_info: CoreFunctionInfo,
-):
+def ggml_op_mul_mat(arch: str, input_tensors: list, output_tensor):
     if len(input_tensors) != 2:
         raise ValueError("Requires two input tensors")
 
@@ -136,14 +124,11 @@ def ggml_op_mul_mat(
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
 
-    m = core_function_info.additional_args["m"]
-    n = core_function_info.additional_args["n"]
-    k = core_function_info.additional_args["k"]
-    use_scalar = core_function_info.additional_args["use_scalar"]
-    num_cols = core_function_info.additional_args["num_cols"]
-    matmul_fn = core_function_info.exported_function["matmul"]
-    zero_fn = core_function_info.exported_function["zero"]
-    object_file = core_function_info.object_file
+    m, n, k, use_scalar, num_cols, zero_fn, matmul_fn = (
+        create_mat_mul_external_functions(
+            arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
+        )
+    )
 
     with mlir_mod_ctx() as ctx:
         mat_mul_fn(
@@ -162,8 +147,8 @@ def ggml_op_mul_mat(
             use_scalar=use_scalar,
             emulate_bf16_mmul_with_bfp16=False,
             trace_size=0,
-            matmul_fn=matmul_fn,
-            zero_fn=zero_fn,
-            object_file=object_file,
+            zero_fn=zero_fn._name,
+            matmul_fn=matmul_fn._name,
+            object_file=matmul_fn.bin_name,
         )
         return ctx.module
