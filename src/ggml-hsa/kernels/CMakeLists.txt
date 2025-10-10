@@ -38,7 +38,6 @@ if (GGML_HSA_JIT_COMPILE)
         ${CMAKE_CURRENT_SOURCE_DIR}/aie2/mm.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/aie2/mat_mul.py
         ${CMAKE_CURRENT_SOURCE_DIR}/aie2/softmax.cc
-        ${CMAKE_CURRENT_SOURCE_DIR}/aie2/softmax.py
         ${CMAKE_CURRENT_SOURCE_DIR}/aie2/zero.cc
         )
     ggml_hsa_copy_files(ggml_hsa_copy_iron_aie2_kernel_files
