@@ -88,6 +88,9 @@ def main():
             args.scalar,
             args.emulate_bf16_mmul_with_bfp16,
             args.trace_size,
+            f"matmul_{dtype_to_str(args.dtype_in)}_{dtype_to_str(args.dtype_out)}",
+            f"zero_{dtype_to_str(args.dtype_out)}",
+            f"mm_{args.m}x{args.k}x{args.n}.o",
             args.generate_taps,
         )
         # print(ctx.module.operation.verify())
@@ -117,7 +120,9 @@ def my_matmul(
     use_scalar,
     emulate_bf16_mmul_with_bfp16,
     trace_size,
-    core_function_info,
+    zero_fn,
+    matmul_fn,
+    object_file,
     generate_taps=False,
 ):
     n_aie_rows = 4
@@ -225,13 +230,8 @@ def my_matmul(
         C_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
         # AIE Core Function declarations
-        zero = external_func(
-            core_function_info.exported_function["zero"], inputs=[C_l1_ty]
-        )
-        matmul = external_func(
-            core_function_info.exported_function["matmul"],
-            inputs=[A_l1_ty, B_l1_ty, C_l1_ty],
-        )
+        zero = external_func(zero_fn, inputs=[C_l1_ty])
+        matmul = external_func(matmul_fn, inputs=[A_l1_ty, B_l1_ty, C_l1_ty])
 
         # Tile declarations as tile[row][col]
         tiles = [
@@ -402,11 +402,7 @@ def my_matmul(
                 # Exceding the stack size leads to wrong results from the kernel, but no error is triggered.
                 # Stack usage can be checked as explained here:
                 # https://github.com/Xilinx/llvm-aie/issues/487#issuecomment-2969438585
-                @core(
-                    core_tiles[row][col],
-                    core_function_info.object_file,
-                    stack_size=0xD00,
-                )
+                @core(core_tiles[row][col], object_file, stack_size=0xD00)
                 def core_body():
                     for _ in range_(0xFFFFFFFF):
                         loop = (

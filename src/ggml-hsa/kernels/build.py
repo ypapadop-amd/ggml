@@ -159,55 +159,22 @@ def compile_kernel(
     module = import_from_path(kernel_name, kernel_source)
     kernel = getattr(module, kernel_name)
 
-    # compile core function if it exists
-    core_function_info = None
-    try:
-        core_function_info_func = getattr(kernel, "core_function_info")
-        core_function_info = core_function_info_func(
-            arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
-        )
-        output_path = os.path.join(work_dir, kernel_name + ".o")
-        aie.iron.compile.compile_cxx_core_function(
-            source_path=core_function_info.source_file,
-            target_arch=arch,
-            output_path=output_path,
-            compile_args=core_function_info.compile_args,
-            cwd=work_dir,
-            verbose=verbose,
-        )
-        core_function_info.object_file = output_path
-        logger.info(
-            "Core function found for kernel %s: %s", kernel_name, core_function_info
-        )
-    except AttributeError:
-        # ignore missing attribute
-        logger.info("No core function found for kernel %s", kernel_name)
-
     # remove any existing external functions
     aie.iron.ExternalFunction._instances.clear()
 
     # generate MLIR module
-    if core_function_info:  # probably not needed
-        mlir_module = kernel(
-            arch=arch,
-            input_tensors=input_tensors,
-            output_tensor=output_tensor,
-            core_function_info=core_function_info,
-        )
-    else:
-        mlir_module = kernel(
-            arch=arch,
-            input_tensors=input_tensors,
-            output_tensor=output_tensor,
-        )
+    mlir_module = kernel(
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+    )
 
     # compile any external functions
     for func in aie.iron.kernel.ExternalFunction._instances:
-        output_path = os.path.join(work_dir, func._object_file_name)
         aie.iron.compile.compile_cxx_core_function(
             source_path=func._source_file,
             target_arch=arch,
-            output_path=output_path,
+            output_path=func._object_file_name,
             include_dirs=func._include_dirs,
             compile_args=func._compile_flags,
             cwd=work_dir,

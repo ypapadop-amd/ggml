@@ -82,7 +82,7 @@ static auto ggml_backend_hsa_kernel_jit_info = []() {
     kernels[GGML_OP_LOG] = {"ggml_op_log", "unary_ops.py"};
     kernels[GGML_OP_SIN] = {"ggml_op_sin", "unary_ops.py"};
     kernels[GGML_OP_COS] = {"ggml_op_cos", "unary_ops.py"};
-    kernels[GGML_OP_MUL_MAT] = {"ggml_op_mul_mat", "mul_mat.py"};
+    kernels[GGML_OP_MUL_MAT] = {"ggml_op_mul_mat", "mat_mul.py"};
     return kernels;
 }();
 
