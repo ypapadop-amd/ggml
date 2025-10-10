@@ -114,9 +114,9 @@ def ggml_op_mul_mat(arch: str, input_tensors: list, output_tensor):
     mat_mul_fn = None
     dev = None
     if arch == "aie2":
-        from aie2 import mul_mat
+        from aie2 import mat_mul
 
-        mat_mul_fn = mul_mat.my_matmul
+        mat_mul_fn = mat_mul.my_matmul
         dev = "npu"
     elif arch == "aie2p":
         dev = "npu2"
