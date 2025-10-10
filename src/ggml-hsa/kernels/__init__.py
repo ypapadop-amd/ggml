@@ -5,8 +5,6 @@ __all__ = [
     "max_tile_size",
     "arch_to_device",
     "compile_kernel",
-    "CoreFunctionInfo",
-    "core_function",
     "TensorDesc",
     "tensordesc",
 ]
@@ -17,7 +15,5 @@ from .build import (
     arch_to_device,
     compile_kernel,
 )
-
-from .core_function import CoreFunctionInfo, core_function
 
 from .tensor_desc import TensorDesc, tensordesc
