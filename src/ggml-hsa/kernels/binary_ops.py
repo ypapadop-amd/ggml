@@ -212,7 +212,7 @@ def test_ggml_op_binary(function, op, dtype, num_elements):
     elif device == aie.iron.Device.NPU2:
         arch = "aie2p"
     else:
-        raise ValueError(f"Unsupported device: {device}")
+        raise ValueError(f"Unsupported architecture: {arch}")
 
     # JIT-compile the kernel then launch the kernel with the given arguments
     @iron.jit(is_placed=False)
