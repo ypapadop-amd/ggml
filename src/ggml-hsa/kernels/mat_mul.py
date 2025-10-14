@@ -103,13 +103,13 @@ def ggml_op_mul_mat(arch: str, input_tensors: list, output_tensor):
         raise ValueError("Tensors must be contiguous")
 
     if A.shape[1] != C.shape[0]:
-        raise ValueError(f"Incompatible M for A and C ({A.shape[1]} != {C.shape[0]})")
+        raise ValueError(f"Incompatible M for A and C: {A.shape[1]} != {C.shape[0]}")
 
     if B.shape[1] != C.shape[1]:
-        raise ValueError(f"Incompatible N for B and C ({B.shape[1]} != {C.shape[1]})")
+        raise ValueError(f"Incompatible N for B and C: {B.shape[1]} != {C.shape[1]}")
 
     if A.shape[0] != B.shape[0]:
-        raise ValueError(f"Incompatible K for A and B ({A.shape[0]} != {B.shape[0]})")
+        raise ValueError(f"Incompatible K for A and B: {A.shape[0]} != {B.shape[0]}")
 
     mat_mul_fn = None
     dev = None
