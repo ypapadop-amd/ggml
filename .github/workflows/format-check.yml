@@ -1,0 +1,105 @@
+name: Code Format Check
+
+on:
+  pull_request:
+    paths:
+      - 'src/ggml-hsa/**'
+  push:
+    branches: [ hsa-backend ]
+    paths:
+      - 'src/ggml-hsa/**'
+
+jobs:
+  format-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Clone
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install Black
+      run: pip install black
+
+    - name: Install clang-format
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format-20
+
+    - name: Check Python formatting with Black
+      id: black-check
+      run: |
+        echo "## Python Format Check (Black)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Find all Python files in src/ggml-hsa
+        PYTHON_FILES=$(find src/ggml-hsa -type f -name "*.py")
+        
+        if [ -z "$PYTHON_FILES" ]; then
+          echo "No Python files found to check." >> $GITHUB_STEP_SUMMARY
+          exit 0
+        fi
+        
+        # Check formatting without modifying files
+        if black --check --diff $PYTHON_FILES > /tmp/black-output.txt 2>&1; then
+          echo "✅ All Python files are properly formatted!" >> $GITHUB_STEP_SUMMARY
+          exit 0
+        else
+          echo "❌ Some Python files need formatting:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```diff' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/black-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**To fix:** Run \`black src/ggml-hsa\` in your local repository" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+
+    - name: Check C++ formatting with clang-format
+      id: clang-format-check
+      run: |
+        echo "## C++ Format Check (clang-format)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Find all C++ files in src/ggml-hsa recursively
+        CPP_FILES=$(find src/ggml-hsa -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.h" -o -name "*.c" \))
+        
+        if [ -z "$CPP_FILES" ]; then
+          echo "No C++ files found to check." >> $GITHUB_STEP_SUMMARY
+          exit 0
+        fi
+        
+        FORMAT_ISSUES=0
+        
+        for file in $CPP_FILES; do
+          # Check if file needs formatting
+          if ! clang-format-20 --dry-run --Werror --style=file:src/ggml-hsa/.clang-format "$file" 2>&1; then
+            FORMAT_ISSUES=1
+            echo "❌ File needs formatting: \`$file\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>Suggested changes for $file</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```diff' >> $GITHUB_STEP_SUMMARY
+            diff -u "$file" <(clang-format-20 --style=file:src/ggml-hsa/.clang-format "$file") >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+        done
+        
+        if [ $FORMAT_ISSUES -eq 0 ]; then
+          echo "✅ All C++ files are properly formatted!" >> $GITHUB_STEP_SUMMARY
+          exit 0
+        else
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**To fix:** Run \`clang-format-20 -i --style=file:src/ggml-hsa/.clang-format <file>\` for each file" >> $GITHUB_STEP_SUMMARY
+          echo "Or install clang-format version 20 and run: \`clang-format -i --style=file:src/ggml-hsa/.clang-format <file>\`" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
