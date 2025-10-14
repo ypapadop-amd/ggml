@@ -30,10 +30,6 @@ def apply_binary_op(arch: str, input_tensors: list, function: Callable, output_t
 
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
     tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
-    if num_elements % tile_size != 0:
-        raise ValueError(
-            f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
-        )
     num_tiles = num_elements // tile_size
 
     # Define a task that will run on a compute tile
@@ -103,7 +99,7 @@ def ggml_op_binary(arch: str, input_tensors: list, function: Callable, output_te
     for input_tensor in input_tensors:
         if input_tensor.shape != output_tensor.shape:
             raise ValueError(
-                f"Input and output tensors must have the same shape ({input_tensor.shape} != {output_tensor.shape})."
+                f"Input and output tensors must have the same shape: {input_tensor.shape} != {output_tensor.shape}"
             )
 
     if output_tensor.shape[1:4] != (1, 1, 1):

@@ -129,10 +129,6 @@ def create_external_function(
 
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
     tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
-    if num_elements % tile_size != 0:
-        raise ValueError(
-            f"Number of elements ({num_elements}) must be a multiple of {tile_size}."
-        )
 
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(

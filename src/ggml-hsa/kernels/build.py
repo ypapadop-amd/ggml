@@ -55,15 +55,19 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     Returns:
         int: Maximum tile size.
     """
-    vector_register_size = 0
+    vector_register_width = 0
     if arch == "aie2" or arch == "aie2p":
-        vector_register_size = 512  # bits
+        vector_register_width = 512  # bits
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
-    tile_size = int(vector_register_size / dtype.itemsize)
+    tile_size = int(vector_register_width / dtype.itemsize)
 
     while num_elements % tile_size != 0 and tile_size > 1:
         tile_size //= 2
+
+    assert num_elements % tile_size == 0, (
+        f"Number of elements ({num_elements}) must be a multiple of tile size ({tile_size})."
+    )
 
     return tile_size
 

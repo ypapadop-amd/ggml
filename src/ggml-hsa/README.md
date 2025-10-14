@@ -19,14 +19,21 @@ The following data types are supported by the HSA backend:
 
 ## Prerequisites
 
-### AMD XDNA™ Driver
+### Tested Configurations
 
-`ggml-hsa` depends on the [AMD XDNA™ Driver](https://github.com/amd/xdna-driver). You can find the installation instructions [here](https://github.com/amd/xdna-driver?tab=readme-ov-file#linux-compilation-and-installation).
-
+The following configurations have been tested and confirmed working:
+- OS: [Ubuntu 25.04](https://releases.ubuntu.com/plucky/)
+- ROCm: [7.0.2](https://rocm.docs.amd.com/en/docs-7.0.2/)
+- XDNA Driver: [1.6](https://github.com/amd/xdna-driver/tree/1.6)
+- MLIR-AIE: [latest](https://github.com/Xilinx/mlir-aie/commit/083064591d1678e194f03c8b185339a2cf392b89)
 
 ### ROCm
 
-`ggml-hsa` requires a fairly new [ROCR](https://github.com/ROCm/rocm-systems) (development happens using ROCm 7.0.1). Installation instructions are [here](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
+`ggml-hsa` requires a fairly new [ROCR](https://github.com/ROCm/rocm-systems) (development happens using ROCm 7.0.2). Installation instructions are [here](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
+
+### AMD XDNA™ Driver
+
+`ggml-hsa` depends on the [AMD XDNA™ Driver](https://github.com/amd/xdna-driver). You can find the installation instructions [here](https://github.com/amd/xdna-driver?tab=readme-ov-file#linux-compilation-and-installation).
 
 ### MLIR-AIE
 
