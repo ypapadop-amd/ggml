@@ -77,3 +77,37 @@ The following environment variables are supported:
 | `GGML_HSA_KERNEL_CACHE_DIR`   | Cached kernel directory, populated by JIT kernel compilation.                              |
 | `GGML_HSA_KERNEL_CACHE_CLEAR` | If set to `1`, `true`, or `on` remove all files in the cached kernel directory.            |
 | `GGML_HSA_JIT_VERBOSE`        | If set to `1`, `true`, or `on`, enable verbose output during JIT compilation.              |
+
+## Code Formatting
+
+The `src/ggml-hsa` directory follows strict coding standards that are enforced by automated checks.
+
+### Python Code
+
+All Python files must be formatted with [Black](https://black.readthedocs.io/):
+
+```bash
+pip install black
+black src/ggml-hsa
+```
+
+### C++ Code
+
+All C++ files (`.cpp`, `.hpp`, `.h`, `.c`) must follow the clang-format style defined in `.clang-format`. Use clang-format version 20:
+
+```bash
+# Format a single file
+clang-format-20 -i --style=file:src/ggml-hsa/.clang-format <file>
+
+# Or if you have clang-format 20 as the default:
+clang-format -i --style=file:src/ggml-hsa/.clang-format <file>
+```
+
+### Automated Checks
+
+A GitHub Action automatically checks code formatting on pull requests and pushes to the `hsa-backend` branch. If formatting issues are detected, the action will:
+- Fail the check
+- Provide a detailed report with suggested changes
+- Show diffs for files that need formatting
+
+The action **only suggests changes** and **never modifies code automatically**. Developers must apply formatting fixes locally and push the corrected code.
