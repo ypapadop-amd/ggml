@@ -106,6 +106,9 @@ void ggml_op_hardswish(const INPUT_DTYPE * __restrict in,
 void ggml_op_floor(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
+        if (v == static_cast<int32>(v)) {
+            return static_cast<int32>(v);
+        }
         return (v >= static_cast<INPUT_DTYPE>(0)) ? static_cast<int32>(v)
                                                   : static_cast<int32>(v) - 1;
     });
