@@ -1,7 +1,8 @@
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "ggml-aie.hpp"
 #include <aie_api/aie.hpp>
+
+#include "ggml-aie.hpp"
 
 template <typename T, typename Size, typename UnaryOp>
 void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryOp op) {
@@ -103,6 +104,7 @@ void ggml_op_hardswish(const INPUT_DTYPE * __restrict in,
 #ifdef COMPILE_FLOOR
 
 void ggml_op_floor(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         return (v >= static_cast<INPUT_DTYPE>(0)) ? static_cast<int32>(v)
                                                   : static_cast<int32>(v) - 1;
@@ -114,6 +116,7 @@ void ggml_op_floor(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict 
 #ifdef COMPILE_CEIL
 
 void ggml_op_ceil(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         if (v == static_cast<int32>(v)) {
             return static_cast<int32>(v);
@@ -128,6 +131,7 @@ void ggml_op_ceil(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
 #ifdef COMPILE_ROUND
 
 void ggml_op_round(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         return (v >= static_cast<INPUT_DTYPE>(0))
                    ? static_cast<int32>(v + static_cast<INPUT_DTYPE>(.5))
@@ -140,6 +144,7 @@ void ggml_op_round(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict 
 #ifdef COMPILE_TRUNC
 
 void ggml_op_trunc(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return static_cast<int32>(v); });
 }
 
