@@ -43,9 +43,9 @@ static const std::filesystem::path ggml_hsa_library_dir = [] {
 static const fs::path kernel_path = ggml_hsa_library_dir / "kernels";
 
 /// @brief Python interpreter initialization guard.
-static pybind11::scoped_interpreter python_interpreter_guard = [] {
-    pybind11::scoped_interpreter guard;
-    auto sys = pybind11::module_::import("sys");
+static py::scoped_interpreter python_interpreter_guard = [] {
+    py::scoped_interpreter guard;
+    auto sys = py::module_::import("sys");
     sys.attr("path").attr("append")(kernel_path.string());
     return guard;
 }();
@@ -106,6 +106,11 @@ static auto ggml_backend_hsa_unary_kernel_jit_info = []() {
     kernels[GGML_UNARY_OP_HARDSIGMOID] = {"ggml_unary_op_hardsigmoid", "unary_ops.py"};
     kernels[GGML_UNARY_OP_EXP] = {"ggml_unary_op_exp", "unary_ops.py"};
     kernels[GGML_UNARY_OP_GELU_ERF] = {"ggml_unary_op_gelu_erf", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_XIELU] = {"ggml_unary_op_xielu", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_FLOOR] = {"ggml_unary_op_floor", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_CEIL] = {"ggml_unary_op_ceil", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_ROUND] = {"ggml_unary_op_round", "unary_ops.py"};
+    kernels[GGML_UNARY_OP_TRUNC] = {"ggml_unary_op_trunc", "unary_ops.py"};
     return kernels;
 }();
 
@@ -151,7 +156,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                     const ggml_tensor & tensor,
                                     const std::string & exported_name,
                                     const std::filesystem::path & output_path) {
-    using namespace pybind11::literals;
+    using namespace py::literals;
 
     // retrieve the compilation information for the kernel
     const auto & kernel_jit_info = ggml_hsa_get_kernel_jit_info(tensor);
@@ -192,7 +197,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
             "arch"_a = dev_info.name, "input_tensors"_a = std::move(input_tensors),
             "output_tensor"_a = std::move(output_tensor), "exported_name"_a = exported_name,
             "output_directory"_a = output_directory.string(), "verbose"_a = verbose_compilation);
-    } catch (const pybind11::error_already_set & ex) {
+    } catch (const py::error_already_set & ex) {
         GGML_HSA_LOG_INFO("%s: failed to compile kernel %s for tensor \"%s\" (%s): %s", __func__,
                           exported_name.c_str(), tensor.name, ggml_op_desc(&tensor), ex.what());
         return GGML_STATUS_FAILED;
