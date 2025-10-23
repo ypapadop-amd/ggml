@@ -483,3 +483,111 @@ def ggml_unary_op_gelu_erf(arch: str, input_tensors: list, output_tensor):
         output_tensor: Output tensor.
     """
     raise NotImplementedError
+
+
+def ggml_unary_op_xielu(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_XIELU implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
+    raise NotImplementedError
+
+
+def ggml_unary_op_floor(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_FLOOR implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
+
+    core_function = create_external_function(
+        arch=arch,
+        op_name="floor",
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
+    return ggml_op_unary(
+        arch=arch,
+        function=core_function,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+    )
+
+
+def ggml_unary_op_ceil(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_CEIL implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
+
+    core_function = create_external_function(
+        arch=arch,
+        op_name="ceil",
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
+    return ggml_op_unary(
+        arch=arch,
+        function=core_function,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+    )
+
+
+def ggml_unary_op_round(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_ROUND implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
+
+    core_function = create_external_function(
+        arch=arch,
+        op_name="round",
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
+    return ggml_op_unary(
+        arch=arch,
+        function=core_function,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+    )
+
+
+def ggml_unary_op_trunc(arch: str, input_tensors: list, output_tensor):
+    """
+    GGML_UNARY_OP_TRUNC implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
+
+    core_function = create_external_function(
+        arch=arch,
+        op_name="trunc",
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
+    return ggml_op_unary(
+        arch=arch,
+        function=core_function,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+    )

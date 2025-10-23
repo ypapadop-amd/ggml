@@ -65,9 +65,9 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     while num_elements % tile_size != 0 and tile_size > 1:
         tile_size //= 2
 
-    assert num_elements % tile_size == 0, (
-        f"Number of elements ({num_elements}) must be a multiple of tile size ({tile_size})."
-    )
+    assert (
+        num_elements % tile_size == 0
+    ), f"Number of elements ({num_elements}) must be a multiple of tile size ({tile_size})."
 
     return tile_size
 
