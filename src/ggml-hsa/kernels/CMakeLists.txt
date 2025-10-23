@@ -49,4 +49,23 @@ if (GGML_HSA_JIT_COMPILE)
         DESTINATION
             lib/iron/aie2
         )
+
+    # copy aie2p kernel files
+    set(IRON_AIE2P_KERNEL_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/aie2p/mm.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/aie2p/zero.cc
+        )
+    ggml_hsa_copy_files(ggml_hsa_copy_iron_aie2p_kernel_files
+        FILES
+            ${IRON_AIE2P_KERNEL_FILES}
+        DESTINATION
+            ${CMAKE_CURRENT_BINARY_DIR}/aie2p
+        )
+    add_dependencies(ggml-hsa ggml_hsa_copy_iron_aie2p_kernel_files)
+    install(
+        FILES
+            ${IRON_AIE2P_KERNEL_FILES}
+        DESTINATION
+            lib/iron/aie2p
+        )
 endif ()
