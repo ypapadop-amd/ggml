@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include <aie_api/aie.hpp>
 #include "ggml-aie.hpp"
+#include <aie_api/aie.hpp>
 
 template <typename T, typename Size, typename UnaryOp>
 void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryOp op) {
@@ -99,5 +99,50 @@ void ggml_op_hardswish(const INPUT_DTYPE * __restrict in,
 }
 
 #endif // COMPILE_HARDSWISH
+
+#ifdef COMPILE_FLOOR
+
+void ggml_op_floor(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
+        return (v >= static_cast<INPUT_DTYPE>(0)) ? static_cast<int32>(v)
+                                                  : static_cast<int32>(v) - 1;
+    });
+}
+
+#endif // COMPILE_FLOOR
+
+#ifdef COMPILE_CEIL
+
+void ggml_op_ceil(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
+        if (v == static_cast<int32>(v)) {
+            return static_cast<int32>(v);
+        }
+        return (v >= static_cast<INPUT_DTYPE>(0)) ? static_cast<int32>(v) + 1
+                                                  : static_cast<int32>(v);
+    });
+}
+
+#endif // COMPILE_CEIL
+
+#ifdef COMPILE_ROUND
+
+void ggml_op_round(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
+        return (v >= static_cast<INPUT_DTYPE>(0))
+                   ? static_cast<int32>(v + static_cast<INPUT_DTYPE>(.5))
+                   : static_cast<int32>(v - static_cast<INPUT_DTYPE>(.5));
+    });
+}
+
+#endif // COMPILE_ROUND
+
+#ifdef COMPILE_TRUNC
+
+void ggml_op_trunc(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return static_cast<int32>(v); });
+}
+
+#endif // COMPILE_TRUNC
 
 } // extern "C"
