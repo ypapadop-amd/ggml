@@ -2,8 +2,9 @@
 
 ## Supported Devices
 
-The GGML HSA (`ggml-hsa`) backend supports the following devices:
+The GGML HSA (`ggml-hsa`) backend supports the following AMD XDNA NPUs:
 - [AMD XDNA](https://www.amd.com/en/technologies/xdna.html) (`aie2` architecture), e.g., Phoenix, Hawk Point.
+- [AMD XDNA2](https://www.amd.com/en/technologies/xdna.html#xdna2) (`aie2p` architecture), e.g., Strix Halo, Krackan.
 
 ## Supported Datatypes
 
@@ -19,17 +20,19 @@ The following data types are supported by the HSA backend:
 
 ## Prerequisites
 
-### Tested Configurations
+### Supported Configurations
 
 The following configurations have been tested and confirmed working:
-- OS: [Ubuntu 25.04](https://releases.ubuntu.com/plucky/)
+- OS: [Ubuntu 24.04.2](https://releases.ubuntu.com/noble/), [Ubuntu 25.04](https://releases.ubuntu.com/plucky/)
 - ROCm: [7.0.2](https://rocm.docs.amd.com/en/docs-7.0.2/)
 - XDNA Driver: [1.6](https://github.com/amd/xdna-driver/tree/1.6)
-- MLIR-AIE: [latest](https://github.com/Xilinx/mlir-aie/commit/083064591d1678e194f03c8b185339a2cf392b89)
+- MLIR-AIE: [commit](https://github.com/Xilinx/mlir-aie/commit/083064591d1678e194f03c8b185339a2cf392b89)
 
 ### ROCm
 
 `ggml-hsa` requires a fairly new [ROCR](https://github.com/ROCm/rocm-systems) (development happens using ROCm 7.0.2). Installation instructions are [here](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
+
+Due to the ongoing work for supporting NPUs in ROCR, the latest [ROCR](https://github.com/ROCm/rocm-systems) should be compiled and installed from source. Commit [37bbc90](https://github.com/ROCm/rocm-systems/commit/37bbc9062a0cf22061eed97b342a427184212abc) is confirmed working.
 
 ### AMD XDNA™ Driver
 
