@@ -19,7 +19,3 @@ endif()
 if (GGML_METAL)
     add_compile_definitions(GGML_USE_METAL)
 endif()
-
-if (GGML_HSA)
-    add_compile_definitions(GGML_USE_HSA)
-endif()
