@@ -23,7 +23,7 @@ The following data types are supported by the HSA backend:
 ### Supported Configurations
 
 The following configurations have been tested and confirmed working:
-- OS: [Ubuntu 24.04.02](https://releases.ubuntu.com/noble/), [Ubuntu 25.04](https://releases.ubuntu.com/plucky/)
+- OS: [Ubuntu 24.04.2](https://releases.ubuntu.com/noble/), [Ubuntu 25.04](https://releases.ubuntu.com/plucky/)
 - ROCm: [7.0.2](https://rocm.docs.amd.com/en/docs-7.0.2/)
 - XDNA Driver: [1.6](https://github.com/amd/xdna-driver/tree/1.6)
 - MLIR-AIE: [commit](https://github.com/Xilinx/mlir-aie/commit/083064591d1678e194f03c8b185339a2cf392b89)
