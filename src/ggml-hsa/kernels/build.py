@@ -113,7 +113,7 @@ class Kernel:
     source_file: str
 
 
-# mapping of GGML unary operations to kernel source files
+# mapping of GGML operations (unary, binary, and others) to kernel source files
 op_to_kernel_map = {
     # unary operation to kernel source mapping
     "ABS": Kernel("ggml_unary_op_abs", "unary_ops.py"),
