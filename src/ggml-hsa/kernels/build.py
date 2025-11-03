@@ -128,7 +128,7 @@ op_to_kernel_map = {
     "GELU_QUICK": Kernel("ggml_unary_op_gelu_quick", "unary_ops.py"),
     "SILU": Kernel("ggml_unary_op_silu", "unary_ops.py"),
     "HARDSWISH": Kernel("ggml_unary_op_hardswish", "unary_ops.py"),
-    "HARDSIGMOID": Kernel("ggml_unary_op_hardsigmoi", "unary_ops.py"),
+    "HARDSIGMOID": Kernel("ggml_unary_op_hardsigmoid", "unary_ops.py"),
     "EXP": Kernel("ggml_unary_op_exp", "unary_ops.py"),
     "GELU_ERF": Kernel("ggml_unary_op_gelu_erf", "unary_ops.py"),
     "XIELU": Kernel("ggml_unary_op_xielu", "unary_ops.py"),
