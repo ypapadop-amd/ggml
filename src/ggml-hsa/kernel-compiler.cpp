@@ -51,86 +51,6 @@ static py::scoped_interpreter python_interpreter_guard = [] {
 }();
 
 /**
- * @brief Information to drive JIT compilation for a kernel.
- *
- * Operations that cannot be JIT compiled have default constructed
- * @ref ggml_hsa_aie_jit_kernel_info objects.
- */
-struct ggml_hsa_aie_jit_kernel_info {
-    std::string_view name; ///< Kernel name.
-    fs::path source;       ///< Kernel source file relative to the kernel directory.
-
-    ggml_hsa_aie_jit_kernel_info() = default;
-
-    ggml_hsa_aie_jit_kernel_info(std::string_view name, fs::path source) :
-        name{name}, source{std::move(source)} {}
-
-    bool is_valid() const { return !source.empty(); }
-};
-
-/**
- * @brief JIT compilation information for operations.
- */
-static auto ggml_backend_hsa_kernel_jit_info = []() {
-    std::array<ggml_hsa_aie_jit_kernel_info, GGML_OP_COUNT> kernels = {};
-    kernels[GGML_OP_ADD] = {"ggml_op_add", "binary_ops.py"};
-    kernels[GGML_OP_SUB] = {"ggml_op_sub", "binary_ops.py"};
-    kernels[GGML_OP_MUL] = {"ggml_op_mul", "binary_ops.py"};
-    kernels[GGML_OP_DIV] = {"ggml_op_div", "binary_ops.py"};
-    kernels[GGML_OP_SQR] = {"ggml_op_sqr", "unary_ops.py"};
-    kernels[GGML_OP_SQRT] = {"ggml_op_sqrt", "unary_ops.py"};
-    kernels[GGML_OP_LOG] = {"ggml_op_log", "unary_ops.py"};
-    kernels[GGML_OP_SIN] = {"ggml_op_sin", "unary_ops.py"};
-    kernels[GGML_OP_COS] = {"ggml_op_cos", "unary_ops.py"};
-    kernels[GGML_OP_MUL_MAT] = {"ggml_op_mul_mat", "mat_mul.py"};
-    return kernels;
-}();
-
-/**
- * @brief JIT compilation information for unary operations.
- */
-static auto ggml_backend_hsa_unary_kernel_jit_info = []() {
-    std::array<ggml_hsa_aie_jit_kernel_info, GGML_UNARY_OP_COUNT> kernels = {};
-    kernels[GGML_UNARY_OP_ABS] = {"ggml_unary_op_abs", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_SGN] = {"ggml_unary_op_sgn", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_NEG] = {"ggml_unary_op_neg", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_STEP] = {"ggml_unary_op_step", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_TANH] = {"ggml_unary_op_tanh", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_ELU] = {"ggml_unary_op_elu", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_RELU] = {"ggml_unary_op_relu", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_SIGMOID] = {"ggml_unary_op_sigmoid", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_GELU] = {"ggml_unary_op_gelu", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_GELU_QUICK] = {"ggml_unary_op_gelu_quick", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_SILU] = {"ggml_unary_op_silu", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_HARDSWISH] = {"ggml_unary_op_hardswish", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_HARDSIGMOID] = {"ggml_unary_op_hardsigmoid", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_EXP] = {"ggml_unary_op_exp", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_GELU_ERF] = {"ggml_unary_op_gelu_erf", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_XIELU] = {"ggml_unary_op_xielu", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_FLOOR] = {"ggml_unary_op_floor", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_CEIL] = {"ggml_unary_op_ceil", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_ROUND] = {"ggml_unary_op_round", "unary_ops.py"};
-    kernels[GGML_UNARY_OP_TRUNC] = {"ggml_unary_op_trunc", "unary_ops.py"};
-    return kernels;
-}();
-
-/**
- * @brief Returns the JIT compilation information for the given operation.
- */
-static const ggml_hsa_aie_jit_kernel_info &
-ggml_hsa_get_kernel_jit_info(const ggml_tensor & tensor) {
-    assert((tensor.op > GGML_OP_NONE) && (tensor.op < GGML_OP_COUNT) &&
-           "Tensor operation index out of bounds");
-
-    if (tensor.op == GGML_OP_UNARY) {
-        // for unary operations, we need to get the specific unary operation type
-        return ggml_backend_hsa_unary_kernel_jit_info[ggml_get_unary_op(&tensor)];
-    }
-
-    return ggml_backend_hsa_kernel_jit_info[tensor.op];
-}
-
-/**
  * @brief Creates a @p py::tuple from the tensor shape.
  */
 static py::tuple ggml_hsa_tensor_ne_as_pytuple(const ggml_tensor & tensor) {
@@ -158,16 +78,6 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                     const std::filesystem::path & output_path) {
     using namespace py::literals;
 
-    // retrieve the compilation information for the kernel
-    const auto & kernel_jit_info = ggml_hsa_get_kernel_jit_info(tensor);
-    if (!kernel_jit_info.is_valid()) {
-        GGML_HSA_LOG_INFO("%s: kernel does not exist for operation %s in for tensor \"%s\"",
-                          __func__, ggml_op_desc(&tensor), tensor.name);
-        return GGML_STATUS_FAILED;
-    }
-
-    // compile kernel
-    const auto kernel_source_path = kernel_path / kernel_jit_info.source;
     const auto output_directory = output_path / dev_info.name;
 
     try {
@@ -193,8 +103,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
         auto build_mod = py::module_::import("build");
         auto compile_kernel = build_mod.attr("compile_kernel");
         compile_kernel(
-            "kernel_name"_a = kernel_jit_info.name, "kernel_source"_a = kernel_source_path.string(),
-            "arch"_a = dev_info.name, "input_tensors"_a = std::move(input_tensors),
+            "ggml_op"_a = ggml_op_desc(&tensor), "arch"_a = dev_info.name,
+            "input_tensors"_a = std::move(input_tensors),
             "output_tensor"_a = std::move(output_tensor), "exported_name"_a = exported_name,
             "output_directory"_a = output_directory.string(), "verbose"_a = verbose_compilation);
     } catch (const py::error_already_set & ex) {
