@@ -1,6 +1,7 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
 from dataclasses import dataclass
+import dataclasses
 import importlib.util
 import os
 import sys
@@ -104,7 +105,7 @@ def import_from_path(module_name: str, path: str | os.PathLike):
     return module
 
 
-@dataclass
+@dataclass(frozen=True)
 class Kernel:
     """Dataclass representing a kernel."""
 
@@ -191,8 +192,11 @@ def compile_kernel(
     kernel = op_to_kernel_map.get(ggml_op, None)
     if kernel is None:
         raise ValueError(f"Unsupported GGML operation: {ggml_op}")
-    kernel.source_file = os.path.abspath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), kernel.source_file)
+    kernel = dataclasses.replace(
+        kernel,
+        source_file=os.path.abspath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), kernel.source_file)
+        ),
     )
 
     logger.info(
