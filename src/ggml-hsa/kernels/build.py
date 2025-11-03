@@ -84,7 +84,7 @@ def arch_to_device(device):
     return device
 
 
-def import_from_path(module_name: str, path: os.PathLike):
+def import_from_path(module_name: str, path: str | os.PathLike):
     """
     Imports the module with name module_name from path.
 
@@ -103,9 +103,47 @@ def import_from_path(module_name: str, path: os.PathLike):
     return module
 
 
+# unary operation to kernel source mapping
+unary_kernels = {
+    "ABS": "unary_ops.py",
+    "SGN": "unary_ops.py",
+    "NEG": "unary_ops.py",
+    "STEP": "unary_ops.py",
+    "TANH": "unary_ops.py",
+    "ELU": "unary_ops.py",
+    "RELU": "unary_ops.py",
+    "SIGMOID": "unary_ops.py",
+    "GELU": "unary_ops.py",
+    "GELU_QUICK": "unary_ops.py",
+    "SILU": "unary_ops.py",
+    "HARDSWISH": "unary_ops.py",
+    "HARDSIGMOID": "unary_ops.py",
+    "EXP": "unary_ops.py",
+    "GELU_ERF": "unary_ops.py",
+    "XIELU": "unary_ops.py",
+    "FLOOR": "unary_ops.py",
+    "CEIL": "unary_ops.py",
+    "ROUND": "unary_ops.py",
+    "TRUNC": "unary_ops.py",
+}
+
+# operation to kernel source mapping
+kernels = {
+    "ADD": "binary_ops.py",
+    "SUB": "binary_ops.py",
+    "MUL": "binary_ops.py",
+    "DIV": "binary_ops.py",
+    "SQR": "unary_ops.py",
+    "SQRT": "unary_ops.py",
+    "LOG": "unary_ops.py",
+    "SIN": "unary_ops.py",
+    "COS": "unary_ops.py",
+    "MUL_MAT": "mat_mul.py",
+}
+
+
 def compile_kernel(
-    kernel_name: str,
-    kernel_source: os.PathLike,
+    ggml_op: str,
     arch: str,
     input_tensors: list[TensorDesc],
     output_tensor: TensorDesc,
@@ -117,8 +155,7 @@ def compile_kernel(
     Compiles the kernel code to PDI and instruction files.
 
     Parameters:
-        kernel_name (str): Name of the IRON kernel.
-        kernel_source (str): Path to the IRON kernel source file.
+        ggml_op (str): GGML operation.
         arch (str): Target architecture.
         input_tensors (list[TensorDesc]): List of input tensor descriptions.
         output_tensor (TensorDesc): Output tensor description.
@@ -143,11 +180,33 @@ def compile_kernel(
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
+    # get kernel source file based on operation
+    kernel_source_fn = unary_kernels.get(ggml_op, None)
+    if kernel_source_fn is None:
+        kernel_source_fn = kernels.get(ggml_op, None)
+        if kernel_source_fn is None:
+            raise ValueError(f"Unsupported GGML operation: {ggml_op}")
+        kernel_name = f"ggml_op_{ggml_op.lower()}"
+    else:
+        kernel_name = f"ggml_unary_op_{ggml_op.lower()}"
+    kernel_source = os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), kernel_source_fn)
+    )
+
     logger.info(
-        "Compiling kernel: %s\n\tKernel source: %s\n\tArch: %s\n\tInput tensors: %s\n\tOutput tensor: %s\n\tExported name: %s\n\tOutput directory: %s",
+        (
+            "Compiling op: %s for arch %s\n"
+            "  Kernel name:      %s\n"
+            "  Kernel source:    %s\n"
+            "  Input tensors:    %s\n"
+            "  Output tensor:    %s\n"
+            "  Exported name:    %s\n"
+            "  Output directory: %s"
+        ),
+        ggml_op,
+        arch,
         kernel_name,
         kernel_source,
-        arch,
         input_tensors,
         output_tensor,
         exported_name,
@@ -249,16 +308,10 @@ def main():
         description="Compiles IRON kernels",
     )
     parser.add_argument(
-        "--kernel_name",
+        "--ggml_op",
         type=str,
         required=True,
-        help="Kernel name",
-    )
-    parser.add_argument(
-        "--kernel_source",
-        type=file_path,
-        required=True,
-        help="Kernel source file",
+        help="GGML operation name, e.g., MUL_MAT, ADD, RELU, etc.",
     )
     parser.add_argument(
         "--arch",
@@ -300,8 +353,7 @@ def main():
     args = parser.parse_args()
 
     compile_kernel(
-        kernel_name=args.kernel_name,
-        kernel_source=args.kernel_source,
+        ggml_op=args.ggml_op,
         arch=args.arch,
         input_tensors=args.input_tensors,
         output_tensor=args.output_tensor,
