@@ -1,5 +1,7 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
+from dataclasses import dataclass
+import dataclasses
 import importlib.util
 import os
 import sys
@@ -84,7 +86,7 @@ def arch_to_device(device):
     return device
 
 
-def import_from_path(module_name: str, path: os.PathLike):
+def import_from_path(module_name: str, path: str | os.PathLike):
     """
     Imports the module with name module_name from path.
 
@@ -103,9 +105,53 @@ def import_from_path(module_name: str, path: os.PathLike):
     return module
 
 
+@dataclass(frozen=True)
+class Kernel:
+    """Dataclass representing a kernel."""
+
+    name: str
+    source_file: str
+
+
+# mapping of GGML operations (unary, binary, and others) to kernel source files
+op_to_kernel_map = {
+    # unary operation to kernel source mapping
+    "ABS": Kernel("ggml_unary_op_abs", "unary_ops.py"),
+    "SGN": Kernel("ggml_unary_op_sgn", "unary_ops.py"),
+    "NEG": Kernel("ggml_unary_op_neg", "unary_ops.py"),
+    "STEP": Kernel("ggml_unary_op_step", "unary_ops.py"),
+    "TANH": Kernel("ggml_unary_op_tanh", "unary_ops.py"),
+    "ELU": Kernel("ggml_unary_op_elu", "unary_ops.py"),
+    "RELU": Kernel("ggml_unary_op_relu", "unary_ops.py"),
+    "SIGMOID": Kernel("ggml_unary_op_sigmoid", "unary_ops.py"),
+    "GELU": Kernel("ggml_unary_op_gelu", "unary_ops.py"),
+    "GELU_QUICK": Kernel("ggml_unary_op_gelu_quick", "unary_ops.py"),
+    "SILU": Kernel("ggml_unary_op_silu", "unary_ops.py"),
+    "HARDSWISH": Kernel("ggml_unary_op_hardswish", "unary_ops.py"),
+    "HARDSIGMOID": Kernel("ggml_unary_op_hardsigmoid", "unary_ops.py"),
+    "EXP": Kernel("ggml_unary_op_exp", "unary_ops.py"),
+    "GELU_ERF": Kernel("ggml_unary_op_gelu_erf", "unary_ops.py"),
+    "XIELU": Kernel("ggml_unary_op_xielu", "unary_ops.py"),
+    "FLOOR": Kernel("ggml_unary_op_floor", "unary_ops.py"),
+    "CEIL": Kernel("ggml_unary_op_ceil", "unary_ops.py"),
+    "ROUND": Kernel("ggml_unary_op_round", "unary_ops.py"),
+    "TRUNC": Kernel("ggml_unary_op_trunc", "unary_ops.py"),
+    # operation to kernel source mapping
+    "ADD": Kernel("ggml_op_add", "binary_ops.py"),
+    "SUB": Kernel("ggml_op_sub", "binary_ops.py"),
+    "MUL": Kernel("ggml_op_mul", "binary_ops.py"),
+    "DIV": Kernel("ggml_op_div", "binary_ops.py"),
+    "SQR": Kernel("ggml_op_sqr", "unary_ops.py"),
+    "SQRT": Kernel("ggml_op_sqrt", "unary_ops.py"),
+    "LOG": Kernel("ggml_op_log", "unary_ops.py"),
+    "SIN": Kernel("ggml_op_sin", "unary_ops.py"),
+    "COS": Kernel("ggml_op_cos", "unary_ops.py"),
+    "MUL_MAT": Kernel("ggml_op_mul_mat", "mat_mul.py"),
+}
+
+
 def compile_kernel(
-    kernel_name: str,
-    kernel_source: os.PathLike,
+    ggml_op: str,
     arch: str,
     input_tensors: list[TensorDesc],
     output_tensor: TensorDesc,
@@ -117,8 +163,7 @@ def compile_kernel(
     Compiles the kernel code to PDI and instruction files.
 
     Parameters:
-        kernel_name (str): Name of the IRON kernel.
-        kernel_source (str): Path to the IRON kernel source file.
+        ggml_op (str): GGML operation.
         arch (str): Target architecture.
         input_tensors (list[TensorDesc]): List of input tensor descriptions.
         output_tensor (TensorDesc): Output tensor description.
@@ -143,11 +188,31 @@ def compile_kernel(
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
+    # get kernel source file based on operation
+    kernel = op_to_kernel_map.get(ggml_op, None)
+    if kernel is None:
+        raise ValueError(f"Unsupported GGML operation: {ggml_op}")
+    kernel = dataclasses.replace(
+        kernel,
+        source_file=os.path.abspath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), kernel.source_file)
+        ),
+    )
+
     logger.info(
-        "Compiling kernel: %s\n\tKernel source: %s\n\tArch: %s\n\tInput tensors: %s\n\tOutput tensor: %s\n\tExported name: %s\n\tOutput directory: %s",
-        kernel_name,
-        kernel_source,
+        (
+            "Compiling op: %s for arch %s\n"
+            "  Kernel name:      %s\n"
+            "  Kernel source:    %s\n"
+            "  Input tensors:    %s\n"
+            "  Output tensor:    %s\n"
+            "  Exported name:    %s\n"
+            "  Output directory: %s"
+        ),
+        ggml_op,
         arch,
+        kernel.name,
+        kernel.source_file,
         input_tensors,
         output_tensor,
         exported_name,
@@ -160,14 +225,14 @@ def compile_kernel(
     os.makedirs(work_dir, exist_ok=True)
 
     # find IRON kernel
-    module = import_from_path(kernel_name, kernel_source)
-    kernel = getattr(module, kernel_name)
+    module = import_from_path(kernel.name, kernel.source_file)
+    kernel_fn = getattr(module, kernel.name)
 
     # remove any existing external functions
     aie.iron.ExternalFunction._instances.clear()
 
     # generate MLIR module
-    mlir_module = kernel(
+    mlir_module = kernel_fn(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -190,7 +255,7 @@ def compile_kernel(
 
     # write MLIR module to file
     mlir_path = os.path.join(work_dir, f"{exported_name}.mlir")
-    logger.info("Writing MLIR module for kernel %s in %s", kernel_name, mlir_path)
+    logger.info("Writing MLIR module for kernel %s in %s", kernel.name, mlir_path)
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
 
@@ -206,7 +271,7 @@ def compile_kernel(
         work_dir=work_dir,
     )
     logger.info(
-        "Finished compilation for kernel %s in %s", kernel_name, output_directory
+        "Finished compilation for kernel %s in %s", kernel.name, output_directory
     )
 
 
@@ -249,16 +314,10 @@ def main():
         description="Compiles IRON kernels",
     )
     parser.add_argument(
-        "--kernel_name",
+        "--ggml_op",
         type=str,
         required=True,
-        help="Kernel name",
-    )
-    parser.add_argument(
-        "--kernel_source",
-        type=file_path,
-        required=True,
-        help="Kernel source file",
+        help="GGML operation name, e.g., MUL_MAT, ADD, RELU, etc.",
     )
     parser.add_argument(
         "--arch",
@@ -300,8 +359,7 @@ def main():
     args = parser.parse_args()
 
     compile_kernel(
-        kernel_name=args.kernel_name,
-        kernel_source=args.kernel_source,
+        ggml_op=args.ggml_op,
         arch=args.arch,
         input_tensors=args.input_tensors,
         output_tensor=args.output_tensor,
