@@ -71,10 +71,10 @@ static fs::path ggml_hsa_cached_kernel_dir() {
 static const fs::path cached_kernel_dir = ggml_hsa_cached_kernel_dir();
 
 /// PDI file suffix.
-static const std::string_view pdi_file_suffix = ".pdi";
+static constexpr std::string_view pdi_file_suffix = ".pdi";
 
 /// Binary instructions file suffix.
-static const std::string_view inst_file_suffix = "_insts.bin";
+static constexpr std::string_view inst_file_suffix = "_insts.bin";
 
 /**
  * @brief Returns if @p p is a file.
@@ -84,12 +84,12 @@ static bool ggml_hsa_is_file(const fs::path & p) {
 }
 
 /**
- * @brief Returns if the kernel exists in any of the directories.
+ * @brief Returns if the files for a @ref ggml_hsa_aie_kernel exists in any of the directories.
  */
-static bool ggml_hsa_find_kernel_files(const std::string & device_name,
-                                       const std::string & kernel_name,
-                                       fs::path & pdi_path,
-                                       fs::path & insts_path) {
+static bool ggml_hsa_find_aie_kernel_files(const std::string & device_name,
+                                           const std::string & kernel_name,
+                                           fs::path & pdi_path,
+                                           fs::path & insts_path) {
     const auto partial_path = fs::path(device_name).append(kernel_name);
     const auto partial_pdi_path = fs::path(partial_path).concat(pdi_file_suffix);
     const auto partial_insts_path = fs::path(partial_path).concat(inst_file_suffix);
@@ -191,25 +191,15 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
     return GGML_STATUS_SUCCESS;
 }
 
-ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                   const std::string & kernel_name,
-                                   const ggml_tensor & tensor,
-                                   std::shared_ptr<ggml_hsa_kernel> & kernel) {
-    switch (dev_info.type) {
-        case HSA_DEVICE_TYPE_AIE:
-            break;
-
-        // unsupported device types
-        default:
-            GGML_HSA_LOG_ERROR("%s: unsupported device %s", __func__, dev_info.name.c_str());
-            return GGML_STATUS_FAILED;
-    }
-
+static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                              const std::string & kernel_name,
+                                              const ggml_tensor & tensor,
+                                              std::shared_ptr<ggml_hsa_kernel> & kernel) {
     fs::path pdi_path;
     fs::path insts_path;
 
     // search for kernel files
-    if (!ggml_hsa_find_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
+    if (!ggml_hsa_find_aie_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
 #ifdef GGML_HSA_JIT_COMPILE
         // kernel files not found, compile kernel
         if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, cached_kernel_dir);
@@ -218,30 +208,45 @@ ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev
         }
 
         // search for kernel files after compilation
-        if (!ggml_hsa_find_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        if (!ggml_hsa_find_aie_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
             return GGML_STATUS_FAILED;
         }
 #else
-        GGML_HSA_LOG_INFO("%s: JIT compilation is disabled", __func__);
+        GGML_HSA_LOG_INFO("%s: JIT compilation is disabled, kernel cannot be compiled", __func__);
         return GGML_STATUS_FAILED;
 #endif
     }
 
-    ggml_hsa_aie_kernel aie_kernel;
+    auto aie_kernel = std::make_shared<ggml_hsa_aie_kernel>();
 
     // load PDI and instructions
-    if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, aie_kernel.pdi);
+    if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, aie_kernel->pdi);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
     if (auto status =
-            ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, insts_path, aie_kernel.insts);
+            ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, insts_path, aie_kernel->insts);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
-    kernel = std::make_shared<ggml_hsa_aie_kernel>(std::move(aie_kernel));
+    kernel = std::move(aie_kernel);
 
     return GGML_STATUS_SUCCESS;
+}
+
+ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                   const std::string & kernel_name,
+                                   const ggml_tensor & tensor,
+                                   std::shared_ptr<ggml_hsa_kernel> & kernel) {
+    switch (dev_info.type) {
+        case HSA_DEVICE_TYPE_AIE:
+            return ggml_hsa_create_aie_kernel(dev_info, kernel_name, tensor, kernel);
+
+        // unsupported device types
+        default:
+            GGML_HSA_LOG_ERROR("%s: unsupported device %s", __func__, dev_info.name.c_str());
+            return GGML_STATUS_FAILED;
+    }
 }

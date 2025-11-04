@@ -10,10 +10,10 @@
 /**
  * @brief Creates the kernel for the tensor's operation.
  *
- * This function will try the following until one succeeds:
- *   -# load the kernel from the precompiled kernel directory,
- *   -# load the kernel from the cached kernel directory,
- *   -# JIT compile the kernel and store it to the cached kernel directory.
+ * This function may try the following until one succeeds in order of priority:
+ *   -# load the kernel from a precompiled kernel directory,
+ *   -# load the kernel from a cached kernel directory,
+ *   -# compile the kernel, store it to the cached kernel directory, and load it.
  * If none of the above succeeds, an error message will be returned.
  *
  * @param[in] dev_info device information
