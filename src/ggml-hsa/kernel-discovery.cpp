@@ -202,7 +202,8 @@ static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device
     if (!ggml_hsa_find_aie_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
 #ifdef GGML_HSA_JIT_COMPILE
         // kernel files not found, compile kernel
-        if (auto status = ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, cached_kernel_dir);
+        if (auto status =
+                ggml_hsa_compile_aie_kernel(dev_info, tensor, kernel_name, cached_kernel_dir);
             status != GGML_STATUS_SUCCESS) {
             return status;
         }
