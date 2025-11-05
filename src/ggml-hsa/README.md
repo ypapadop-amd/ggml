@@ -55,6 +55,28 @@ source ./env_setup.sh
 
 > **Note** : An IRON environment can consume considerable storage space and JIT compilation is expensive. If kernels are already generated, they can be placed in a directory specified by the environment variable `GGML_HSA_KERNEL_DIR` and JIT can be disabled at compile time.
 
+## HSA Build
+
+To build GGML with HSA support, enable the `GGML_HSA` CMake option. If JIT compilation is desired, also enable the `GGML_HSA_JIT_COMPILE` CMake option.
+
+If a different ROCR installation is preferred, you can point to it by setting the `hsa-runtime64_DIR` CMake variable; this will require the ROCR shared library directory to be in your LD_LIBRARY_PATH before any installed ROCm libraries.
+
+```bash
+cmake -S . -B build -DGGML_HSA=ON -Dhsa-runtime64_DIR=/path/to/rocm/lib/cmake/hsa-runtime64 -DGGML_HSA_JIT_COMPILE=ON \
+  -DCMAKE_BUILD_TYPE=Release \
+  && cmake --build build --config Release -- -j
+```
+
+If GPU acceleration via HIP is also desired, you can combine the above with the HIP compilation options:
+
+```bash
+HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+  cmake -S . -B build -DGGML_HIP=ON -DGPU_TARGETS=gfx1102 \
+  -DGGML_HSA=ON -Dhsa-runtime64_DIR=/path/to/rocm/lib/cmake/hsa-runtime64 -DGGML_HSA_JIT_COMPILE=ON \
+  -DCMAKE_BUILD_TYPE=Release \
+  && cmake --build build --config Release -- -j
+```
+
 ## JIT Compilation
 
 The JIT compilation process generates kernels on-the-fly from the installed kernel sources. If `GGML_HSA_KERNEL_DIR` is set, any kernels found there take precedence over JIT compiled kernels.
