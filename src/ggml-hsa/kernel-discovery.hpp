@@ -10,7 +10,7 @@
 /**
  * @brief Creates the kernel for the tensor's operation.
  *
- * This function may try the following until one succeeds in order of priority:
+ * This function may try different approaches until one succeeds:
  *   -# load the kernel from a precompiled kernel directory,
  *   -# load the kernel from a cached kernel directory,
  *   -# compile the kernel, store it to the cached kernel directory, and load it.
