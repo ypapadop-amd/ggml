@@ -18,15 +18,24 @@ class TensorDesc:
         contiguous (bool): Indicates if the tensor is contiguous in memory.
     """
 
-    dtype: np.dtype | str
-    shape: tuple[int, ...]
-    stride: tuple[int, ...] | None
+    dtype: np.dtype
+    shape: tuple[int, int, int, int]
+    stride: tuple[int, int, int, int]
     contiguous: bool = True
 
     def __post_init__(self):
-        # Convert dtype to np.dtype if it's a string
+        # convert dtype to np.dtype if it's a string
         if isinstance(self.dtype, str):
             object.__setattr__(self, "dtype", np.dtype(str_to_dtype(self.dtype)))
+
+        # compute stride if not provided as if the tensor is contiguous
+        if self.stride is None:
+            stride = [0, 0, 0, 0]
+            stride[0] = self.dtype.itemsize
+            stride[1] = stride[0] * self.shape[0]
+            for i in range(2, len(self.shape)):
+                stride[i] = stride[i - 1] * self.shape[i - 1]
+            object.__setattr__(self, "stride", tuple(stride))
 
     @property
     def size(self):
@@ -66,5 +75,4 @@ def ggml_tensor_to_tensordesc(
     Returns:
         TensorDesc: A new TensorDesc instance.
     """
-    dtype = np.dtype(str_to_dtype(type))
-    return TensorDesc(dtype=dtype, shape=ne, stride=nb, contiguous=contiguous)
+    return TensorDesc(dtype=type, shape=ne, stride=nb, contiguous=contiguous)
