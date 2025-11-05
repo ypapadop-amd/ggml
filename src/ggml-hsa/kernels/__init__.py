@@ -6,7 +6,7 @@ __all__ = [
     "arch_to_device",
     "compile_kernel",
     "TensorDesc",
-    "tensordesc",
+    "ggml_tensor_to_tensordesc",
 ]
 
 from .build import (
@@ -16,4 +16,4 @@ from .build import (
     compile_kernel,
 )
 
-from .tensor_desc import TensorDesc, tensordesc
+from .tensor_desc import TensorDesc, ggml_tensor_to_tensordesc
