@@ -59,7 +59,7 @@ source ./env_setup.sh
 
 To build GGML with HSA support, enable the `GGML_HSA` CMake option. If JIT compilation is desired, also enable the `GGML_HSA_JIT_COMPILE` CMake option.
 
-If a different ROCR installation is preferred, you can point to it setting the `hsa-runtime64_DIR` CMake variable; this will require the ROCR shared library directory to be in your LD_LIBRARY_PATH before any install ROCm libraries.
+If a different ROCR installation is preferred, you can point to it setting the `hsa-runtime64_DIR` CMake variable; this will require the ROCR shared library directory to be in your LD_LIBRARY_PATH before any installed ROCm libraries.
 
 ```bash
 cmake -S . -B build -DGGML_HSA=ON -Dhsa-runtime64_DIR=/path/to/rocm/lib/cmake/hsa-runtime64 -DGGML_HSA_JIT_COMPILE=ON \
