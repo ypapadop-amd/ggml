@@ -27,6 +27,7 @@ class TensorDesc:
         # Convert dtype to np.dtype if it's a string
         if isinstance(self.dtype, str):
             object.__setattr__(self, "dtype", np.dtype(str_to_dtype(self.dtype)))
+
     @property
     def size(self):
         """
