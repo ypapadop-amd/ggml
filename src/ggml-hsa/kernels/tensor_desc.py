@@ -8,24 +8,20 @@ from aie.iron import str_to_dtype
 
 @dataclass(frozen=True)
 class TensorDesc:
-    """ggml_tensor description.
+    """
+    ggml_tensor description.
 
     Attributes:
         dtype: Data type of the tensor.
         shape (tuple): Shape of the tensor as a tuple of integers. Dimensions are from innermost to outermost (reverse of PyTorch).
         stride (tuple): Stride of the tensor as a tuple of integers, or None if not specified. Dimensions are from innermost to outermost (reverse of PyTorch).
-        size (int): Total number of elements in the tensor, calculated as the product of the shape dimensions.
         contiguous (bool): Indicates if the tensor is contiguous in memory.
     """
 
     dtype: np.dtype
-    shape: tuple[int, int, int, int]
-    stride: tuple[int, int, int, int] | None
-
-    @property
-    def contiguous(self):
-        """Indicates if the tensor is contiguous in memory."""
-        return True
+    shape: tuple[int, ...]
+    stride: tuple[int, ...] | None
+    contiguous: bool = True
 
     @property
     def size(self):
@@ -38,7 +34,8 @@ class TensorDesc:
         return int(np.prod(self.shape))
 
     def numel(self):
-        """Returns the number of elements in the tensor.
+        """
+        Returns the number of elements in the tensor.
 
         Returns:
             int: The total number of elements in the tensor.
@@ -46,18 +43,23 @@ class TensorDesc:
         return self.size
 
 
-def ggml_tensor_to_tensordesc(dtype, shape, stride=None) -> TensorDesc:
-    """Creates a TensorDesc from the specified shape and dtype.
+def ggml_tensor_to_tensordesc(
+    type: str,
+    ne: tuple[int, int, int, int],
+    nb: tuple[int, int, int, int],
+    contiguous: bool,
+) -> TensorDesc:
+    """
+    Creates a TensorDesc from the ggml_tensor parameters.
 
     Parameters:
-        dtype: Tensor data type.
-        shape (tuple): Tensor number of elements in each dimension. Dimensions are from innermost to outermost (reverse of PyTorch).
-        stride (tuple): Tensor stride in bytes for each dimension. Dimensions are from innermost to outermost (reverse of PyTorch).
+        type: Tensor data type.
+        ne (tuple[int, int, int, int]): Number of elements in each dimension. Dimensions are from innermost to outermost (reverse of PyTorch).
+        nb (tuple[int, int, int, int]): Tensor stride in bytes for each dimension. Dimensions are from innermost to outermost (reverse of PyTorch).
         contiguous (bool): Indicates if the tensor is contiguous in memory.
 
     Returns:
         TensorDesc: A new TensorDesc instance.
     """
-    if isinstance(dtype, str):
-        dtype = np.dtype(str_to_dtype(dtype))
-    return TensorDesc(dtype=dtype, shape=shape, stride=stride)
+    dtype = np.dtype(str_to_dtype(type))
+    return TensorDesc(dtype=dtype, shape=ne, stride=nb, contiguous=contiguous)

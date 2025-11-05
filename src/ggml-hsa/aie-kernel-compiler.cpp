@@ -54,22 +54,22 @@ static py::scoped_interpreter python_interpreter_guard = [] {
  * @brief Creates a @p py::tuple from the tensor shape.
  */
 static py::tuple ggml_hsa_tensor_ne_as_pytuple(const ggml_tensor & tensor) {
-    auto shape = py::tuple(GGML_MAX_DIMS);
+    auto ne = py::tuple(GGML_MAX_DIMS);
     for (auto i = 0; i < GGML_MAX_DIMS; ++i) {
-        shape[i] = py::int_(tensor.ne[i]);
+        ne[i] = py::int_(tensor.ne[i]);
     }
-    return shape;
+    return ne;
 }
 
 /**
  * @brief Creates a @p py::tuple from the tensor strides.
  */
 static py::tuple ggml_hsa_tensor_nb_as_pytuple(const ggml_tensor & tensor) {
-    auto stride = py::tuple(GGML_MAX_DIMS);
+    auto nb = py::tuple(GGML_MAX_DIMS);
     for (auto i = 0; i < GGML_MAX_DIMS; ++i) {
-        stride[i] = py::int_(tensor.nb[i]);
+        nb[i] = py::int_(tensor.nb[i]);
     }
-    return stride;
+    return nb;
 }
 
 ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
@@ -89,13 +89,15 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
         for (auto i = 0; i < src_tensor_count; ++i) {
             const auto src_tensor = tensor.src[i];
             input_tensors[i] =
-                create_tensor_desc("dtype"_a = ggml_type_name(src_tensor->type),
-                                   "shape"_a = ggml_hsa_tensor_ne_as_pytuple(*src_tensor),
-                                   "stride"_a = ggml_hsa_tensor_nb_as_pytuple(*src_tensor));
+                create_tensor_desc("type"_a = ggml_type_name(src_tensor->type),
+                                   "ne"_a = ggml_hsa_tensor_ne_as_pytuple(*src_tensor),
+                                   "nb"_a = ggml_hsa_tensor_nb_as_pytuple(*src_tensor),
+                                   "contiguous"_a = ggml_is_contiguous(src_tensor));
         }
-        auto output_tensor = create_tensor_desc("dtype"_a = ggml_type_name(tensor.type),
-                                                "shape"_a = ggml_hsa_tensor_ne_as_pytuple(tensor),
-                                                "stride"_a = ggml_hsa_tensor_nb_as_pytuple(tensor));
+        auto output_tensor = create_tensor_desc("type"_a = ggml_type_name(tensor.type),
+                                                "ne"_a = ggml_hsa_tensor_ne_as_pytuple(tensor),
+                                                "nb"_a = ggml_hsa_tensor_nb_as_pytuple(tensor),
+                                                "contiguous"_a = ggml_is_contiguous(&tensor));
 
         // compile the kernel
         auto build_mod = py::module_::import("build");
