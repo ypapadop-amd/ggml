@@ -45,7 +45,7 @@ if (GGML_HSA_JIT_COMPILE)
     set(PYBIND11_FINDPYTHON OFF)
     FetchContent_MakeAvailable(pybind11)
 
-    set(GGML_SOURCES_HSA kernel-compiler.cpp ${GGML_SOURCES_HSA})
+    set(GGML_SOURCES_HSA aie-kernel-compiler.cpp ${GGML_SOURCES_HSA})
 endif ()
 
 ggml_add_backend_library(ggml-hsa
@@ -66,7 +66,7 @@ target_sources(ggml-hsa
     )
 
 if (GGML_HSA_JIT_COMPILE)
-    target_sources(ggml-hsa PRIVATE kernel-compiler.hpp)
+    target_sources(ggml-hsa PRIVATE aie-kernel-compiler.hpp)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_JIT_COMPILE)
     target_link_libraries(ggml-hsa PRIVATE pybind11::embed)
 
