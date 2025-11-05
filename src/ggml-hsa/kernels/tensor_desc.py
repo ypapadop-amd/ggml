@@ -18,9 +18,9 @@ class TensorDesc:
         contiguous (bool): Indicates if the tensor is contiguous in memory.
     """
 
-    dtype: np.dtype
+    dtype: np.dtype | str
     shape: tuple[int, int, int, int]
-    stride: tuple[int, int, int, int]
+    stride: tuple[int, int, int, int] | None = None
     contiguous: bool = True
 
     def __post_init__(self):
