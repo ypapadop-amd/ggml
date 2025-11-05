@@ -278,9 +278,13 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
         status != HSA_STATUS_SUCCESS) {
         return status;
     }
-    if (type != HSA_DEVICE_TYPE_AIE) {
-        // only consider NPUs for now
-        return HSA_STATUS_SUCCESS;
+
+    switch (type) {
+        case HSA_DEVICE_TYPE_AIE:
+            break;
+        default:
+            // only consider AIE agents for now
+            return HSA_STATUS_SUCCESS;
     }
 
     auto & info = *static_cast<ggml_hsa_device_info *>(data);
