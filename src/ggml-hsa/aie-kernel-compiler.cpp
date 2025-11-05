@@ -83,21 +83,19 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
     try {
         // convert a GGML tensor to input and output TensorDesc objects
         auto tensor_desc_mod = py::module_::import("tensor_desc");
-        auto tensor_desc_ctor = tensor_desc_mod.attr("tensordesc");
+        auto create_tensor_desc = tensor_desc_mod.attr("ggml_tensor_to_tensordesc");
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto input_tensors = py::list(src_tensor_count);
         for (auto i = 0; i < src_tensor_count; ++i) {
             const auto src_tensor = tensor.src[i];
             input_tensors[i] =
-                tensor_desc_ctor("dtype"_a = ggml_type_name(src_tensor->type),
-                                 "shape"_a = ggml_hsa_tensor_ne_as_pytuple(*src_tensor),
-                                 "stride"_a = ggml_hsa_tensor_nb_as_pytuple(*src_tensor),
-                                 "contiguous"_a = ggml_is_contiguous(src_tensor));
+                create_tensor_desc("dtype"_a = ggml_type_name(src_tensor->type),
+                                   "shape"_a = ggml_hsa_tensor_ne_as_pytuple(*src_tensor),
+                                   "stride"_a = ggml_hsa_tensor_nb_as_pytuple(*src_tensor));
         }
-        auto output_tensor = tensor_desc_ctor("dtype"_a = ggml_type_name(tensor.type),
-                                              "shape"_a = ggml_hsa_tensor_ne_as_pytuple(tensor),
-                                              "stride"_a = ggml_hsa_tensor_nb_as_pytuple(tensor),
-                                              "contiguous"_a = ggml_is_contiguous(&tensor));
+        auto output_tensor = create_tensor_desc("dtype"_a = ggml_type_name(tensor.type),
+                                                "shape"_a = ggml_hsa_tensor_ne_as_pytuple(tensor),
+                                                "stride"_a = ggml_hsa_tensor_nb_as_pytuple(tensor));
 
         // compile the kernel
         auto build_mod = py::module_::import("build");

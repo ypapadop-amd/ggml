@@ -1,10 +1,12 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
+from dataclasses import dataclass
 import numpy as np
 
 from aie.iron import str_to_dtype
 
 
+@dataclass(frozen=True)
 class TensorDesc:
     """ggml_tensor description.
 
@@ -16,40 +18,24 @@ class TensorDesc:
         contiguous (bool): Indicates if the tensor is contiguous in memory.
     """
 
-    def __init__(
-        self,
-        dtype,
-        shape: tuple[int, int, int, int],
-        stride,
-        contiguous: bool,
-    ):
-        if len(shape) != 4:
-            raise ValueError(f"Shape must be a tuple of 4 integers, got {shape}")
-        if stride is not None and len(stride) != 4:
-            raise ValueError(f"Stride must be a tuple of 4 integers, got {stride}")
-        self.dtype = np.dtype(dtype)
-        self.shape = shape
-        self.size = int(np.prod(shape))
-        self.stride = stride
-        self.contiguous = contiguous
+    dtype: np.dtype
+    shape: tuple[int, int, int, int]
+    stride: tuple[int, int, int, int] | None
 
-    def __repr__(self):
-        """Returns a string representation of the TensorDesc."""
-        if self.stride is not None:
-            return (
-                f"{self.__class__.__name__}"
-                f"(dtype={str(self.dtype)} "
-                f"shape={str(self.shape)} "
-                f"stride={str(self.stride)} "
-                f"contiguous={str(self.contiguous)})"
-            )
-        else:
-            return (
-                f"{self.__class__.__name__}"
-                f"(dtype={str(self.dtype)} "
-                f"shape={str(self.shape)} "
-                f"contiguous={str(self.contiguous)})"
-            )
+    @property
+    def contiguous(self):
+        """Indicates if the tensor is contiguous in memory."""
+        return True
+
+    @property
+    def size(self):
+        """
+        Returns the number of elements in the tensor.
+
+        Returns:
+            int: The total number of elements in the tensor.
+        """
+        return int(np.prod(self.shape))
 
     def numel(self):
         """Returns the number of elements in the tensor.
@@ -60,7 +46,7 @@ class TensorDesc:
         return self.size
 
 
-def tensordesc(dtype, shape, stride=None, contiguous=True) -> TensorDesc:
+def ggml_tensor_to_tensordesc(dtype, shape, stride=None) -> TensorDesc:
     """Creates a TensorDesc from the specified shape and dtype.
 
     Parameters:
@@ -73,5 +59,5 @@ def tensordesc(dtype, shape, stride=None, contiguous=True) -> TensorDesc:
         TensorDesc: A new TensorDesc instance.
     """
     if isinstance(dtype, str):
-        dtype = str_to_dtype(dtype)
-    return TensorDesc(dtype=dtype, shape=shape, stride=stride, contiguous=contiguous)
+        dtype = np.dtype(str_to_dtype(dtype))
+    return TensorDesc(dtype=dtype, shape=shape, stride=stride)
