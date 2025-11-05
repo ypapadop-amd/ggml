@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "ggml-hsa/kernel-compiler.hpp"
+#include "ggml-hsa/aie-kernel-compiler.hpp"
 
 #include <algorithm>
 #include <array>
@@ -33,7 +33,7 @@ static const bool verbose_compilation = [] {
 static const std::filesystem::path ggml_hsa_library_dir = [] {
     // retrieve the shared library path
     Dl_info info;
-    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_compile_kernel), &info) == 0) {
+    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_compile_aie_kernel), &info) == 0) {
         GGML_ABORT("Could not retrieve library directory\n");
     }
     return std::filesystem::path{info.dli_fname}.parent_path();
@@ -72,10 +72,10 @@ static py::tuple ggml_hsa_tensor_nb_as_pytuple(const ggml_tensor & tensor) {
     return stride;
 }
 
-ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                    const ggml_tensor & tensor,
-                                    const std::string & exported_name,
-                                    const std::filesystem::path & output_path) {
+ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                        const ggml_tensor & tensor,
+                                        const std::string & exported_name,
+                                        const std::filesystem::path & output_path) {
     using namespace py::literals;
 
     const auto output_directory = output_path / dev_info.name;
