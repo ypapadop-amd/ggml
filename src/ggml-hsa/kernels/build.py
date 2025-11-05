@@ -281,7 +281,7 @@ def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
     ints = map(int, string.split(","))
     t = tuple(ints)
     if len(t) != 4:
-        raise ValueError("Shape must have 4 dimensions.")
+        raise ValueError(f"Shape must have 4 dimensions, got {len(t)}.")
     return t
 
 
