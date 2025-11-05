@@ -12,7 +12,7 @@ import aie.iron
 import aie.iron.compile
 import aie.iron.device
 
-from tensor_desc import tensordesc, TensorDesc
+from tensor_desc import TensorDesc
 
 
 def arch_aligned_num_elements(arch: str, tensor) -> int:
@@ -275,11 +275,14 @@ def compile_kernel(
     )
 
 
-def to_tuple_of_ints(string: str):
+def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
     """Converts a string of the form (x,...) to a tuple of ints."""
     string = string.replace("(", "").replace(")", "").strip(",")
     ints = map(int, string.split(","))
-    return tuple(ints)
+    t = tuple(ints)
+    if len(t) != 4:
+        raise ValueError(f"Shape must have 4 dimensions, got {len(t)}.")
+    return t
 
 
 def to_tensordesc(string: str) -> TensorDesc:
@@ -294,7 +297,7 @@ def to_tensordesc(string: str) -> TensorDesc:
     """
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
-    return tensordesc(dtype=dtype, shape=shape)
+    return TensorDesc(dtype=dtype, shape=shape, stride=None)
 
 
 def file_path(string: str):
