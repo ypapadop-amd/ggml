@@ -18,11 +18,15 @@ class TensorDesc:
         contiguous (bool): Indicates if the tensor is contiguous in memory.
     """
 
-    dtype: np.dtype
+    dtype: np.dtype | str
     shape: tuple[int, ...]
     stride: tuple[int, ...] | None
     contiguous: bool = True
 
+    def __post_init__(self):
+        # Convert dtype to np.dtype if it's a string
+        if isinstance(self.dtype, str):
+            object.__setattr__(self, "dtype", np.dtype(str_to_dtype(self.dtype)))
     @property
     def size(self):
         """
