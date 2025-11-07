@@ -99,14 +99,18 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
                                                 "nb"_a = ggml_hsa_tensor_nb_as_pytuple(tensor),
                                                 "contiguous"_a = ggml_is_contiguous(&tensor));
 
+        auto op_params = py::bytearray(reinterpret_cast<const char *>(tensor.op_params),
+                                       sizeof(tensor.op_params));
+
         // compile the kernel
         auto build_mod = py::module_::import("build");
         auto compile_kernel = build_mod.attr("compile_kernel");
-        compile_kernel(
-            "ggml_op"_a = ggml_op_desc(&tensor), "arch"_a = dev_info.name,
-            "input_tensors"_a = std::move(input_tensors),
-            "output_tensor"_a = std::move(output_tensor), "exported_name"_a = exported_name,
-            "output_directory"_a = output_directory.string(), "verbose"_a = verbose_compilation);
+        compile_kernel("ggml_op"_a = ggml_op_desc(&tensor), "arch"_a = dev_info.name,
+                       "input_tensors"_a = std::move(input_tensors),
+                       "output_tensor"_a = std::move(output_tensor),
+                       "op_params"_a = std::move(op_params), "exported_name"_a = exported_name,
+                       "output_directory"_a = output_directory.string(),
+                       "verbose"_a = verbose_compilation);
     } catch (const py::error_already_set & ex) {
         GGML_HSA_LOG_INFO("%s: failed to compile kernel %s for tensor \"%s\" (%s): %s", __func__,
                           exported_name.c_str(), tensor.name, ggml_op_desc(&tensor), ex.what());
