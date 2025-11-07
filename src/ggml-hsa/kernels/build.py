@@ -155,6 +155,7 @@ def compile_kernel(
     arch: str,
     input_tensors: list[TensorDesc],
     output_tensor: TensorDesc,
+    op_params: bytearray,
     exported_name: str,
     output_directory: os.PathLike,
     verbose: bool = False,
@@ -206,6 +207,7 @@ def compile_kernel(
             "  Kernel source:    %s\n"
             "  Input tensors:    %s\n"
             "  Output tensor:    %s\n"
+            "  Operation parameters: %s\n"
             "  Exported name:    %s\n"
             "  Output directory: %s"
         ),
@@ -215,6 +217,7 @@ def compile_kernel(
         kernel.source_file,
         input_tensors,
         output_tensor,
+        op_params,
         exported_name,
         output_directory,
     )
@@ -236,6 +239,7 @@ def compile_kernel(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
+        op_params=op_params,
     )
 
     # compile any external functions

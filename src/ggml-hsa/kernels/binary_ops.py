@@ -113,7 +113,7 @@ def ggml_op_binary(arch: str, input_tensors: list, function: Callable, output_te
     )
 
 
-def ggml_op_add(arch: str, input_tensors: list, output_tensor):
+def ggml_op_add(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_ADD implementation.
 
@@ -121,6 +121,7 @@ def ggml_op_add(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     return ggml_op_binary(
         arch=arch,
@@ -130,7 +131,7 @@ def ggml_op_add(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_op_sub(arch: str, input_tensors: list, output_tensor):
+def ggml_op_sub(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_SUB implementation.
 
@@ -138,6 +139,7 @@ def ggml_op_sub(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     return ggml_op_binary(
         arch=arch,
@@ -147,7 +149,7 @@ def ggml_op_sub(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_op_mul(arch: str, input_tensors: list, output_tensor):
+def ggml_op_mul(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_MUL implementation.
 
@@ -155,6 +157,7 @@ def ggml_op_mul(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     return ggml_op_binary(
         arch=arch,
@@ -164,7 +167,7 @@ def ggml_op_mul(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_op_div(arch: str, input_tensors: list, output_tensor):
+def ggml_op_div(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_DIV implementation.
 
@@ -172,6 +175,7 @@ def ggml_op_div(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     return ggml_op_binary(
         arch=arch,
