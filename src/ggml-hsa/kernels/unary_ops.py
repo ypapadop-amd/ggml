@@ -149,7 +149,7 @@ def create_external_function(
     return func
 
 
-def ggml_op_sqr(arch: str, input_tensors: list, output_tensor):
+def ggml_op_sqr(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_SQR implementation.
 
@@ -157,6 +157,7 @@ def ggml_op_sqr(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -173,7 +174,7 @@ def ggml_op_sqr(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_op_sqrt(arch: str, input_tensors: list, output_tensor):
+def ggml_op_sqrt(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_SQRT implementation.
 
@@ -181,11 +182,12 @@ def ggml_op_sqrt(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_op_log(arch: str, input_tensors: list, output_tensor):
+def ggml_op_log(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_LOG implementation.
 
@@ -193,11 +195,12 @@ def ggml_op_log(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_op_sin(arch: str, input_tensors: list, output_tensor):
+def ggml_op_sin(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_SIN implementation.
 
@@ -205,11 +208,12 @@ def ggml_op_sin(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_op_cos(arch: str, input_tensors: list, output_tensor):
+def ggml_op_cos(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_COS implementation.
 
@@ -217,11 +221,14 @@ def ggml_op_cos(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_unary_op_abs(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_abs(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_ABS implementation.
 
@@ -229,6 +236,7 @@ def ggml_unary_op_abs(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -245,7 +253,9 @@ def ggml_unary_op_abs(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_unary_op_sgn(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_sgn(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_SGN implementation.
 
@@ -253,6 +263,7 @@ def ggml_unary_op_sgn(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -269,7 +280,9 @@ def ggml_unary_op_sgn(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_unary_op_neg(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_neg(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_NEG implementation.
 
@@ -277,6 +290,7 @@ def ggml_unary_op_neg(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -293,7 +307,9 @@ def ggml_unary_op_neg(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_unary_op_step(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_step(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_STEP implementation.
 
@@ -301,6 +317,7 @@ def ggml_unary_op_step(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -317,7 +334,9 @@ def ggml_unary_op_step(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_unary_op_tanh(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_tanh(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_TANH implementation.
 
@@ -325,11 +344,14 @@ def ggml_unary_op_tanh(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_unary_op_elu(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_elu(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_ELU implementation.
 
@@ -337,11 +359,14 @@ def ggml_unary_op_elu(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_unary_op_relu(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_relu(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_RELU implementation.
 
@@ -349,6 +374,7 @@ def ggml_unary_op_relu(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -365,7 +391,9 @@ def ggml_unary_op_relu(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_unary_op_sigmoid(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_sigmoid(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_SIGMOID implementation.
 
@@ -373,11 +401,14 @@ def ggml_unary_op_sigmoid(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_unary_op_gelu(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_gelu(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_GELU implementation.
 
@@ -385,11 +416,14 @@ def ggml_unary_op_gelu(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_unary_op_gelu_quick(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_gelu_quick(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_GELU_QUICK implementation.
 
@@ -397,11 +431,14 @@ def ggml_unary_op_gelu_quick(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_unary_op_silu(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_silu(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_SILU implementation.
 
@@ -409,11 +446,14 @@ def ggml_unary_op_silu(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_unary_op_hardswish(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_hardswish(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_HARDSWISH implementation.
 
@@ -421,6 +461,7 @@ def ggml_unary_op_hardswish(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -437,7 +478,9 @@ def ggml_unary_op_hardswish(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_unary_op_hardsigmoid(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_hardsigmoid(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_HARDSIGMOID implementation.
 
@@ -445,6 +488,7 @@ def ggml_unary_op_hardsigmoid(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -461,7 +505,9 @@ def ggml_unary_op_hardsigmoid(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_unary_op_exp(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_exp(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_EXP implementation.
 
@@ -469,11 +515,14 @@ def ggml_unary_op_exp(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_unary_op_gelu_erf(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_gelu_erf(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_GELU_ERF implementation.
 
@@ -481,11 +530,14 @@ def ggml_unary_op_gelu_erf(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_unary_op_xielu(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_xielu(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_XIELU implementation.
 
@@ -493,11 +545,14 @@ def ggml_unary_op_xielu(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
     raise NotImplementedError
 
 
-def ggml_unary_op_floor(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_floor(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_FLOOR implementation.
 
@@ -505,6 +560,7 @@ def ggml_unary_op_floor(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -521,7 +577,9 @@ def ggml_unary_op_floor(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_unary_op_ceil(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_ceil(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_CEIL implementation.
 
@@ -529,6 +587,7 @@ def ggml_unary_op_ceil(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -545,7 +604,9 @@ def ggml_unary_op_ceil(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_unary_op_round(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_round(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_ROUND implementation.
 
@@ -553,6 +614,7 @@ def ggml_unary_op_round(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
@@ -569,7 +631,9 @@ def ggml_unary_op_round(arch: str, input_tensors: list, output_tensor):
     )
 
 
-def ggml_unary_op_trunc(arch: str, input_tensors: list, output_tensor):
+def ggml_unary_op_trunc(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
     GGML_UNARY_OP_TRUNC implementation.
 
@@ -577,6 +641,7 @@ def ggml_unary_op_trunc(arch: str, input_tensors: list, output_tensor):
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
         output_tensor: Output tensor.
+        op_params: Operation parameters.
     """
 
     core_function = create_external_function(
