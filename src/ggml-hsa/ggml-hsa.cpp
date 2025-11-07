@@ -66,6 +66,32 @@ std::int64_t ggml_hsa_nsrcs(const ggml_tensor & tensor) {
     return nsrcs;
 }
 
+/**
+ * @brief Checks whether all operation parameters of a tensor are zero.
+ *
+ * This function inspects the tensor's op_params array and
+ * determines if every 32-bit element is zero.
+ *
+ * @param[in] tensor Tensor whose operation parameters are to be checked.
+ *
+ * @return `true` if all elements of op_params are zero;
+ *         `false` otherwise.
+ */
+static bool ggml_hsa_op_params_all_zero(const ggml_tensor & tensor) {
+    const std::int32_t * params = tensor.op_params;
+    const std::size_t num_elements = GGML_MAX_OP_PARAMS / sizeof(std::int32_t);
+    return std::all_of(params, params + num_elements, [](int32_t x) { return x == 0; });
+}
+
+/**
+ * @brief Returns if @p op is a unary operation.
+ */
+constexpr bool ggml_hsa_is_unary_op(ggml_op op) {
+    return (op == GGML_OP_UNARY) || (op == GGML_OP_SQR) || (op == GGML_OP_SQRT) ||
+           (op == GGML_OP_LOG) || (op == GGML_OP_SIN) || (op == GGML_OP_COS) ||
+           (op == GGML_OP_SILU_BACK) || (op == GGML_OP_LEAKY_RELU);
+}
+
 std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor) {
     if ((tensor.op < GGML_OP_NONE) || (tensor.op >= GGML_OP_COUNT)) {
         throw std::runtime_error{std::string("Tensor \"")
@@ -95,16 +121,13 @@ std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor) {
         ggml_hsa_output_tensor(*(tensor.src[i]), oss);
     }
 
-    return oss.str();
-}
+    // determine if op_params need to be encoded in the kernel name
+    if (!ggml_hsa_is_unary_op(tensor.op) && !ggml_hsa_op_params_all_zero(tensor)) {
+        oss << '-';
+        ggml_hsa_encode_op_params(tensor, oss);
+    }
 
-/**
- * @brief Returns if @p op is a unary operation.
- */
-constexpr bool ggml_hsa_is_unary_op(ggml_op op) {
-    return (op == GGML_OP_UNARY) || (op == GGML_OP_SQR) || (op == GGML_OP_SQRT) ||
-           (op == GGML_OP_LOG) || (op == GGML_OP_SIN) || (op == GGML_OP_COS) ||
-           (op == GGML_OP_SILU_BACK) || (op == GGML_OP_LEAKY_RELU);
+    return oss.str();
 }
 
 /**
