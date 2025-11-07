@@ -166,6 +166,19 @@ void ggml_hsa_output_tensor(const ggml_tensor & tensor, OutputStream & os) {
 }
 
 /**
+ * @brief Creates a string representation of the tensor's op_params using a hash.
+ *
+ * @param[in] tensor tensor to output
+ * @param[out] os output stream
+ */
+template <typename OutputStream>
+void ggml_hsa_encode_op_params(const ggml_tensor & tensor, OutputStream & os) {
+    std::string_view bytes(reinterpret_cast<const char *>(tensor.op_params), GGML_MAX_OP_PARAMS);
+    std::size_t hash_value = std::hash<std::string_view>{}(bytes);
+    os << std::hex << hash_value;
+}
+
+/**
  * @brief Returns a kernel name for @p tensor.
  */
 std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor);
