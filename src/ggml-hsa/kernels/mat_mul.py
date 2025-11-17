@@ -655,17 +655,20 @@ def create_mat_mul_external_functions(
             - mm_fn: The name of the matrix multiplication function.
             - zero_fn: The name of the zeroing function.
     """
-    m = 8
-    n = 8
-    k = 8
     use_scalar = False
     scalar_suffix = "_scalar" if use_scalar else ""
 
     num_cols = None
     if arch == "aie2":
         num_cols = 4
+        m = 8
+        n = 8
+        k = 8
     elif arch == "aie2p":
         num_cols = 8
+        m = 16
+        n = 16
+        k = 16
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
 
