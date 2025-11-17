@@ -9,8 +9,8 @@ if (GGML_HSA_JIT_COMPILE)
         ${CMAKE_CURRENT_SOURCE_DIR}/aie_kernel_utils.h
         ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
         ${CMAKE_CURRENT_SOURCE_DIR}/build.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/gemm.py
         ${CMAKE_CURRENT_SOURCE_DIR}/ggml-aie.hpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/mat_mul.py
         ${CMAKE_CURRENT_SOURCE_DIR}/tensor_desc.py
         ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.py
