@@ -31,9 +31,7 @@ if (GGML_HSA_JIT_COMPILE)
 
     # copy aie2 kernel files
     set(IRON_AIE2_KERNEL_FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/aie2/__init__.py
         ${CMAKE_CURRENT_SOURCE_DIR}/aie2/mm.cc
-        ${CMAKE_CURRENT_SOURCE_DIR}/aie2/mat_mul.py
         ${CMAKE_CURRENT_SOURCE_DIR}/aie2/zero.cc
         )
     ggml_hsa_copy_files(ggml_hsa_copy_iron_aie2_kernel_files

@@ -4,10 +4,7 @@
 #ifndef ZERO_CC
 #define ZERO_CC
 
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <type_traits>
+#include <aie_api/aie.hpp>
 
 template <typename T, int M, int N> void zero_scalar(T *__restrict c)
 {
