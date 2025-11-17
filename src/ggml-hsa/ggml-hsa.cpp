@@ -134,7 +134,8 @@ std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor) {
  * @brief Returns if @p op is an element-wise operation.
  */
 constexpr bool ggml_hsa_is_elementwise_op(ggml_op op) {
-    return (op == GGML_OP_ADD) || (op == GGML_OP_SUB) || (op == GGML_OP_MUL) || (op == GGML_OP_DIV);
+    return (op == GGML_OP_ADD) || (op == GGML_OP_SUB) || (op == GGML_OP_MUL) ||
+           (op == GGML_OP_DIV) || (op == GGML_OP_SCALE);
 }
 
 /**
@@ -460,6 +461,10 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) :
     nsrcs{ggml_hsa_nsrcs(parent_tensor)} {
 
+    if (parent_tensor.view_src != nullptr) {
+        throw std::runtime_error{"View tensor is not supported."};
+    }
+
     // initialize internal nodes
     node.tensor = parent_tensor;
     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
@@ -681,7 +686,7 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
  */
 static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
                                                             ggml_tensor * tensor) {
-    if (tensor->view_src != nullptr) {
+    if (tensor->view_src != nullptr) { 
         // no further initialization needed for views
         GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
         return GGML_STATUS_SUCCESS;
