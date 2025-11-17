@@ -147,6 +147,7 @@ op_to_kernel_map = {
     "SIN": Kernel("ggml_op_sin", "unary_ops.py"),
     "COS": Kernel("ggml_op_cos", "unary_ops.py"),
     "MUL_MAT": Kernel("ggml_op_mul_mat", "gemm.py"),
+    "SCALE": Kernel("ggml_op_scale", "scale.py"),
 }
 
 
