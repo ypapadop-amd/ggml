@@ -356,7 +356,8 @@ if (NOT GGML_BACKEND_DL)
 
     #
     # ggml-hsa tests
-
-    add_subdirectory(ggml-hsa)
+    if (GGML_HSA)
+        add_subdirectory(ggml-hsa)
+    endif()
 
 endif()
