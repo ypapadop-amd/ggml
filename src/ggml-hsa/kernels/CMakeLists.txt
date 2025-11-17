@@ -14,6 +14,10 @@ if (GGML_HSA_JIT_COMPILE)
         ${CMAKE_CURRENT_SOURCE_DIR}/tensor_desc.py
         ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/scale.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/scale.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/clamp.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/clamp.py
         )
     ggml_hsa_copy_files(ggml_hsa_copy_iron_files
         FILES
