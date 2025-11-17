@@ -681,24 +681,24 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
  */
 static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
                                                             ggml_tensor * tensor) {
-    if (tensor->view_src != nullptr) {
-        // no further initialization needed for views
-        GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
-        return GGML_STATUS_SUCCESS;
-    }
-
-    assert(tensor->extra == nullptr);
-
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
     const auto & dev_info = ggml_hsa_get_device_info(buf_ctx.device);
 
     try {
-        // initialize tensor extra
         auto tensor_extra = std::make_unique<ggml_backend_hsa_tensor_extra>(dev_info, *tensor);
-        if (auto status = tensor_extra->allocate_internal_storage(dev_info);
-            status != GGML_STATUS_SUCCESS) {
-            return status;
+
+        // views reuse memory from the source, so no internal storage allocation is needed.
+        if (tensor->view_src != nullptr) {
+            GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
+        } else {
+            assert(tensor->extra == nullptr);
+
+            if (auto status = tensor_extra->allocate_internal_storage(dev_info);
+                status != GGML_STATUS_SUCCESS) {
+                return status;
+            }
         }
+
         // register tensor extra with the buffer context and the tensor
         buf_ctx.tensor_extras.push_back(std::move(tensor_extra));
         tensor->extra = buf_ctx.tensor_extras.back().get();
