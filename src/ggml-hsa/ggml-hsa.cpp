@@ -613,7 +613,7 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     }
 
     // create signal to wait for packets
-    if (auto status = hsa_signal_create(0, 0, nullptr, &dispatch_signal);
+    if (auto status = hsa_signal_create(1, 0, nullptr, &dispatch_signal);
         status != HSA_STATUS_SUCCESS) {
         throw std::runtime_error{std::string("Could not create hsa_signal (")
                                      .append(ggml_hsa_get_status_string(status))
@@ -630,11 +630,12 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
 void ggml_backend_hsa_context::free_pending_payloads() { pending_payloads.clear(); }
 
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
-    if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
-                                             UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
+    if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_LT, 1,
+                                            UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
         val != 0) {
         GGML_ABORT("%s: unexpected signal value (%ld)\n", __func__, val);
     }
+    hsa_signal_store_screlease(ctx.dispatch_signal, 1);
 
     ctx.free_pending_payloads();
 }
