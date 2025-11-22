@@ -1146,11 +1146,17 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             }
         }
 
+        // Increment the dispatch signal before dispatching the kernel
+        hsa_signal_add_relaxed(ctx.dispatch_signal, 1);
+
         if (status = tensor_extra.kernel->dispatch(ctx, internal_node.src, tensor_extra.nsrcs,
                                                    internal_node);
             status != GGML_STATUS_SUCCESS) {
             GGML_HSA_LOG_ERROR("%s: failed to dispatch kernel for tensor \"%s\" (%s)", __func__,
                                node->name, ggml_op_desc(node));
+            
+            // Decrement the signal since we failed to dispatch
+            hsa_signal_subtract_relaxed(ctx.dispatch_signal, 1);
             return status;
         }
 
