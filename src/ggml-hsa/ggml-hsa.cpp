@@ -686,7 +686,7 @@ static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
  */
 static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_t buffer,
                                                             ggml_tensor * tensor) {
-    if (tensor->view_src != nullptr) { 
+    if (tensor->view_src != nullptr) {
         // no further initialization needed for views
         GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
         return GGML_STATUS_SUCCESS;
