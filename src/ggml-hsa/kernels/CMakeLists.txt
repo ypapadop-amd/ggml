@@ -17,6 +17,8 @@ if (GGML_HSA_JIT_COMPILE)
         ${CMAKE_CURRENT_SOURCE_DIR}/scale.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/scale.py
         ${CMAKE_CURRENT_SOURCE_DIR}/utils.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/softmax.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/softmax.py
         )
     ggml_hsa_copy_files(ggml_hsa_copy_iron_files
         FILES
