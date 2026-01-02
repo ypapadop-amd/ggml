@@ -20,6 +20,34 @@ from aie.utils.compile import compile_mlir_module
 from tensor_desc import TensorDesc
 
 
+def align_to_arch(arch: str, size: int, dtype: np.dtype, alignment_bytes: int = 4) -> int:
+    """
+    Align a size to architecture requirements.
+
+    Parameters:
+        arch (str): Target architecture.
+        size (int): Size to align (number of elements).
+        dtype (np.dtype): Data type of elements.
+        alignment_bytes (int): Alignment in bytes.
+
+    Returns:
+        int: Aligned size.
+    """
+    if arch in ["aie2", "aie2p"]:
+        dtype_size = dtype.itemsize
+        data_size = size * dtype_size
+        if data_size % alignment_bytes != 0:
+            aligned_size = (
+                alignment_bytes
+                * ((data_size + (alignment_bytes - 1)) // alignment_bytes)
+                // dtype_size
+            )
+            return aligned_size
+        return size
+    else:
+        raise ValueError(f"Unsupported architecture: {arch}")
+
+
 def arch_aligned_num_elements(arch: str, tensor) -> int:
     """
     Returns the number of elements in the tensor aligned to what the architecture expects for the data type of the tensor.
@@ -31,23 +59,7 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
     Returns:
         int: Number of elements aligned to architecture requirements.
     """
-
-    num_elements = np.size(tensor)
-    if arch in ["aie2", "aie2p"]:
-        # align to 4 bytes for data types with size < 4
-        ALIGNMENT_BYTES = 4
-        dtype_size = tensor.dtype.itemsize
-        data_size = num_elements * dtype_size
-        if data_size % ALIGNMENT_BYTES != 0:
-            num_elements = (
-                ALIGNMENT_BYTES
-                * ((data_size + (ALIGNMENT_BYTES - 1)) // ALIGNMENT_BYTES)
-                // dtype_size
-            )
-    else:
-        raise ValueError(f"Unsupported architecture: {arch}")
-
-    return num_elements
+    return align_to_arch(arch, np.size(tensor), tensor.dtype)
 
 
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
@@ -153,6 +165,7 @@ op_to_kernel_map = {
     "COS": Kernel("ggml_op_cos", "unary_ops.py"),
     "MUL_MAT": Kernel("ggml_op_mul_mat", "gemm.py"),
     "SCALE": Kernel("ggml_op_scale", "scale.py"),
+    "SOFT_MAX": Kernel("ggml_op_softmax", "softmax.py"),
 }
 
 
