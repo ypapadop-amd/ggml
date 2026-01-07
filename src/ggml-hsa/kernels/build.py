@@ -248,7 +248,7 @@ def compile_kernel(
         aie.iron.compile.compile_cxx_core_function(
             source_path=func._source_file,
             target_arch=arch,
-            output_path=func._object_file_name,
+            output_path=func.bin_name,
             include_dirs=func._include_dirs,
             compile_args=func._compile_flags,
             cwd=work_dir,
