@@ -24,13 +24,13 @@ The following data types are supported by the HSA backend:
 
 The following configurations have been tested and confirmed working:
 - OS: [Ubuntu 24.04.2](https://releases.ubuntu.com/noble/), [Ubuntu 25.04](https://releases.ubuntu.com/plucky/)
-- ROCm: [7.0.2](https://rocm.docs.amd.com/en/docs-7.0.2/)
+- ROCm: [7.1.1](https://rocm.docs.amd.com/en/docs-7.1.1/)
 - XDNA Driver: [1.6](https://github.com/amd/xdna-driver/tree/1.6)
-- MLIR-AIE: [commit](https://github.com/Xilinx/mlir-aie/commit/083064591d1678e194f03c8b185339a2cf392b89)
+- MLIR-AIE: [commit](https://github.com/Xilinx/mlir-aie/commit/60ba7fad5ce9074e4c63a90eb26f217a54c4706d)
 
 ### ROCm
 
-`ggml-hsa` requires a fairly new [ROCR](https://github.com/ROCm/rocm-systems) (development happens using ROCm 7.0.2). Installation instructions are [here](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
+`ggml-hsa` requires a fairly new [ROCR](https://github.com/ROCm/rocm-systems) (development happens using ROCm 7.1.1). Installation instructions are [here](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
 
 Due to the ongoing work for supporting NPUs in ROCR, the latest [ROCR](https://github.com/ROCm/rocm-systems) should be compiled and installed from source. Commit [37bbc90](https://github.com/ROCm/rocm-systems/commit/37bbc9062a0cf22061eed97b342a427184212abc) is confirmed working.
 
@@ -45,7 +45,7 @@ Due to the ongoing work for supporting NPUs in ROCR, the latest [ROCR](https://g
 An IRON environment must be created to compile GGML in by installing the necessary dependencies:
 ```bash
 MLIR_PYTHON_EXTRAS_SET_VERSION="0.0.8.3" HOST_MLIR_PYTHON_PACKAGE_PREFIX="aie" \
-python3 -m pip install -r ${SCRIPT_DIR_NAME}/requirements.txt
+python3 -m pip install -r src/ggml-hsa/requirements.txt
 ```
 
 Alternatively, one can use the [env_setup.sh](./env_setup.sh) script to set up a Python virtual environment; the script will create a Python virtual environment, activate it, and install the necessary dependencies.
