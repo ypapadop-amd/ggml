@@ -5,10 +5,8 @@ def suppress_import_pyxrt_msg():
     # is resolved
     import os
     import sys
+    import contextlib
 
-    stderr_backup = sys.stderr
-    sys.stderr = open(os.devnull, "w", encoding="utf-8")
-
-    import aie.utils
-
-    sys.stderr = stderr_backup
+    with open(os.devnull, "w", encoding="utf-8") as devnull:
+        with contextlib.redirect_stderr(devnull):
+            import aie.utils
