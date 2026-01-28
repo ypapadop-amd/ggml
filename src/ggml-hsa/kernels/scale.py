@@ -6,10 +6,14 @@
 # (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
 from os import path
-from typing import Callable, Tuple
+from typing import Tuple
+import struct
 
 import numpy as np
-import struct
+
+from utils import suppress_import_pyxrt_msg
+
+suppress_import_pyxrt_msg()
 
 from aie.iron import (
     ObjectFifo,

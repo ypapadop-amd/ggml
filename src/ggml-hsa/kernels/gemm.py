@@ -9,6 +9,10 @@ import argparse
 from os import path
 import numpy as np
 
+from utils import suppress_import_pyxrt_msg
+
+suppress_import_pyxrt_msg()
+
 from aie.extras.context import mlir_mod_ctx
 
 from aie.dialects.aie import *
@@ -16,7 +20,6 @@ from aie.dialects.aiex import *
 from aie.helpers.taplib import TensorAccessPattern, TensorAccessSequence
 from aie.iron.controlflow import range_
 from aie.iron import dtype_to_str, str_to_dtype, ExternalFunction
-
 
 microkernel_mac_dim_map = {
     "npu": {
