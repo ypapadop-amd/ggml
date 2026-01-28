@@ -3,6 +3,10 @@
 from dataclasses import dataclass
 import numpy as np
 
+from utils import suppress_import_pyxrt_msg
+
+suppress_import_pyxrt_msg()
+
 from aie.iron import str_to_dtype
 
 
