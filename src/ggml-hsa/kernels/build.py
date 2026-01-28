@@ -8,9 +8,13 @@ import sys
 import logging
 import numpy as np
 
-import aie.iron
-import aie.iron.compile
-import aie.iron.device
+from utils import suppress_import_pyxrt_msg
+
+suppress_import_pyxrt_msg()
+
+from aie.iron import ExternalFunction
+from aie.utils.compile import compile_cxx_core_function
+from aie.utils.compile import compile_mlir_module
 
 from tensor_desc import TensorDesc
 
@@ -233,7 +237,7 @@ def compile_kernel(
     kernel_fn = getattr(module, kernel.name)
 
     # remove any existing external functions
-    aie.iron.ExternalFunction._instances.clear()
+    ExternalFunction._instances.clear()
 
     # generate MLIR module
     mlir_module = kernel_fn(
@@ -244,8 +248,8 @@ def compile_kernel(
     )
 
     # compile any external functions
-    for func in aie.iron.kernel.ExternalFunction._instances:
-        aie.iron.compile.compile_cxx_core_function(
+    for func in ExternalFunction._instances:
+        compile_cxx_core_function(
             source_path=func._source_file,
             target_arch=arch,
             output_path=func.bin_name,
@@ -256,7 +260,7 @@ def compile_kernel(
         )
 
     # remove generated external functions
-    aie.iron.ExternalFunction._instances.clear()
+    ExternalFunction._instances.clear()
 
     # write MLIR module to file
     mlir_path = os.path.join(work_dir, f"{exported_name}.mlir")
@@ -267,7 +271,7 @@ def compile_kernel(
     # generate PDI and instructions files
     pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
     insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
-    aie.iron.compile.compile_mlir_module(
+    compile_mlir_module(
         mlir_module=mlir_module,
         options=["--alloc-scheme=basic-sequential"],
         insts_path=insts_path,
