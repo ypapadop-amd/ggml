@@ -3,12 +3,14 @@
 ## Supported Devices
 
 The GGML HSA (`ggml-hsa`) backend supports the following AMD XDNA NPUs:
+
 - [AMD XDNA](https://www.amd.com/en/technologies/xdna.html) (`aie2` architecture), e.g., Phoenix, Hawk Point.
 - [AMD XDNA2](https://www.amd.com/en/technologies/xdna.html#xdna2) (`aie2p` architecture), e.g., Strix Halo, Krackan.
 
 ## Supported Datatypes
 
 The following data types are supported by the HSA backend:
+
 | Type             | Comment                                       |
 |------------------|-----------------------------------------------|
 | `GGML_TYPE_I8`   | Native `aie2` / `aie2p` datatype.             |
@@ -23,6 +25,7 @@ The following data types are supported by the HSA backend:
 ### Supported Configurations
 
 The following configurations have been tested and confirmed working:
+
 - OS: [Ubuntu 24.04.2](https://releases.ubuntu.com/noble/), [Ubuntu 25.04](https://releases.ubuntu.com/plucky/)
 - ROCm: [7.1.1](https://rocm.docs.amd.com/en/docs-7.1.1/)
 - XDNA Driver: [1.6](https://github.com/amd/xdna-driver/tree/1.6)
@@ -44,11 +47,11 @@ Due to the ongoing work for supporting NPUs in ROCR, the latest [ROCR](https://g
 
 An IRON environment must be created to compile GGML in by installing the necessary dependencies:
 ```bash
-MLIR_PYTHON_EXTRAS_SET_VERSION="0.0.8.3" HOST_MLIR_PYTHON_PACKAGE_PREFIX="aie" \
 python3 -m pip install -r src/ggml-hsa/requirements.txt
 ```
 
 Alternatively, one can use the [env_setup.sh](./env_setup.sh) script to set up a Python virtual environment; the script will create a Python virtual environment, activate it, and install the necessary dependencies.
+
 ```bash
 source ./env_setup.sh
 ```
