@@ -9,6 +9,10 @@ from os import path
 from typing import Callable
 import numpy as np
 
+from utils import suppress_import_pyxrt_msg
+
+suppress_import_pyxrt_msg()
+
 from aie.iron import (
     ObjectFifo,
     Program,

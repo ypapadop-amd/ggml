@@ -10,6 +10,10 @@ from typing import Callable
 import numpy as np
 import pytest
 
+from utils import suppress_import_pyxrt_msg
+
+suppress_import_pyxrt_msg()
+
 from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
