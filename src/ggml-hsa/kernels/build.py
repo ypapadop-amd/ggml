@@ -13,6 +13,7 @@ from utils import suppress_import_pyxrt_msg
 suppress_import_pyxrt_msg()
 
 from aie.iron import ExternalFunction
+from aie.iron.device import NPU1, NPU2
 from aie.utils.compile import compile_cxx_core_function
 from aie.utils.compile import compile_mlir_module
 
@@ -82,9 +83,9 @@ def arch_to_device(device):
     """Returns the device from the string."""
     if isinstance(device, str):
         if device == "aie2":
-            return aie.iron.device.NPU1()
+            return NPU1()
         elif device == "aie2p":
-            return aie.iron.device.NPU2()
+            return NPU2()
         else:
             raise ValueError(f"Unsupported device: {device}")
     return device
