@@ -67,7 +67,11 @@ def apply_unary_op(
     num_elements = function_spec.num_elements
     tile_size = function_spec.tile_size
     num_tiles = num_elements // tile_size
-    assert num_elements % tile_size == 0
+    if num_elements % tile_size != 0:
+        raise ValueError(
+            f"num_elements ({num_elements}) must be divisible by tile_size ({tile_size}) "
+            "for correct tiling"
+        )
 
     # AIE-array data movement with object fifos
     input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
