@@ -5,8 +5,8 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
+from dataclasses import dataclass
 from os import path
-from typing import Callable
 import numpy as np
 
 from utils import suppress_import_pyxrt_msg
@@ -27,10 +27,28 @@ from aie.iron.controlflow import range_
 from build import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
+@dataclass(frozen=True)
+class CoreFunctionSpec:
+    """Specification for a core function to be used in binary operations.
+
+    Attributes:
+        external_function (ExternalFunction): The external function to be called for the binary operation.
+        num_elements (int): The total number of elements in the input/output tensors.
+    """
+
+    external_function: ExternalFunction
+    num_elements: int
+
+    @property
+    def tile_size(self) -> int:
+        """Returns the tile size used by the external function."""
+        return self.external_function.tile_size(0)
+
+
 def apply_binary_op(
     arch: str,
     input_tensors: list,
-    function: Callable | ExternalFunction,
+    function_spec: CoreFunctionSpec,
     output_tensor,
 ):
     """
@@ -39,18 +57,13 @@ def apply_binary_op(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): Input tensors.
-        function (Callable | ExternalFunction): Binary operator.
+        function_spec (CoreFunctionSpec): Binary operator specification.
         output_tensor: Output tensor.
     """
 
-    # Find tile size and number of tiles
-    num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
-    tile_size = None
-    num_tiles = None
-    if isinstance(function, ExternalFunction):
-        tile_size = function.tile_size(0)
-    else:
-        tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
+    # Tile size and number of tiles
+    num_elements = function_spec.num_elements
+    tile_size = function_spec.tile_size
     num_tiles = num_elements // tile_size
     assert num_elements % tile_size == 0
 
@@ -68,38 +81,24 @@ def apply_binary_op(
 
     # Create a worker to run the task on a compute tile
     worker = None
-    if isinstance(function, ExternalFunction):
-        # Task for the core to perform with an external function
-        def ext_core_fn(of_in0, of_in1, of_out, function):
-            # Number of sub-vector "tile" iterations
-            for _ in range_(num_tiles):
-                elem_in0 = of_in0.acquire(1)
-                elem_in1 = of_in1.acquire(1)
-                elem_out = of_out.acquire(1)
-                function(elem_in0, elem_in1, elem_out, tile_size)
-                of_in0.release(1)
-                of_in1.release(1)
-                of_out.release(1)
+    function = function_spec.external_function
 
-        worker = Worker(
-            ext_core_fn,
-            fn_args=[x.cons() for x in of_ins] + [of_out.prod(), function],
-        )
-    else:
-        # Define a task that will run on a compute tile
-        def core_body(of_in0, of_in1, of_out):
-            # Number of sub-vector "tile" iterations
-            for _ in range_(num_tiles):
-                elem_in0 = of_in0.acquire(1)
-                elem_in1 = of_in1.acquire(1)
-                elem_out = of_out.acquire(1)
-                for i in range_(tile_size):
-                    elem_out[i] = function(elem_in0[i], elem_in1[i])
-                of_in0.release(1)
-                of_in1.release(1)
-                of_out.release(1)
+    # Task for the core to perform with an external function
+    def ext_core_fn(of_in0, of_in1, of_out, function):
+        # Number of sub-vector "tile" iterations
+        for _ in range_(num_tiles):
+            elem_in0 = of_in0.acquire(1)
+            elem_in1 = of_in1.acquire(1)
+            elem_out = of_out.acquire(1)
+            function(elem_in0, elem_in1, elem_out, tile_size)
+            of_in0.release(1)
+            of_in1.release(1)
+            of_out.release(1)
 
-        worker = Worker(core_body, fn_args=[x.cons() for x in of_ins] + [of_out.prod()])
+    worker = Worker(
+        ext_core_fn,
+        fn_args=[x.cons() for x in of_ins] + [of_out.prod(), function],
+    )
 
     # Runtime operations to move data to/from the AIE-array
     input_tensor_tys = [
@@ -120,7 +119,7 @@ def apply_binary_op(
 def ggml_op_binary(
     arch: str,
     input_tensors: list,
-    function: Callable | ExternalFunction,
+    function_spec: CoreFunctionSpec,
     output_tensor,
 ):
     """
@@ -129,7 +128,7 @@ def ggml_op_binary(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        function (Callable | ExternalFunction): Binary operator.
+        function_spec (CoreFunctionSpec): Binary operator.
         output_tensor: Output tensor.
     """
 
@@ -154,7 +153,7 @@ def ggml_op_binary(
     return apply_binary_op(
         arch=arch,
         input_tensors=input_tensors,
-        function=function,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -164,15 +163,18 @@ def create_external_function(
     op_name: str,
     input_tensors: list,
     output_tensor,
-) -> ExternalFunction:
+) -> CoreFunctionSpec:
     """
-    Creates an ExternalFunction specification for binary ops.
+    Creates a specification for binary ops.
 
     Parameters:
         arch (str): Target architecture.
         op_name (str): Name of the operation.
         input_tensors (list): List of input tensors.
         output_tensor: Output tensor.
+
+    Returns:
+        CoreFunctionSpec: Specification for the core function to be used in binary ops.
     """
 
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
@@ -196,7 +198,7 @@ def create_external_function(
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
         ],
     )
-    return func
+    return CoreFunctionSpec(external_function=func, num_elements=num_elements)
 
 
 def ggml_op_add(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -210,7 +212,7 @@ def ggml_op_add(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="add",
         input_tensors=input_tensors,
@@ -219,7 +221,7 @@ def ggml_op_add(arch: str, input_tensors: list, output_tensor, op_params: bytear
     return ggml_op_binary(
         arch=arch,
         input_tensors=input_tensors,
-        function=core_function,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -235,7 +237,7 @@ def ggml_op_sub(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="sub",
         input_tensors=input_tensors,
@@ -244,7 +246,7 @@ def ggml_op_sub(arch: str, input_tensors: list, output_tensor, op_params: bytear
     return ggml_op_binary(
         arch=arch,
         input_tensors=input_tensors,
-        function=core_function,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -260,7 +262,7 @@ def ggml_op_mul(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="mul",
         input_tensors=input_tensors,
@@ -269,7 +271,7 @@ def ggml_op_mul(arch: str, input_tensors: list, output_tensor, op_params: bytear
     return ggml_op_binary(
         arch=arch,
         input_tensors=input_tensors,
-        function=core_function,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -285,7 +287,7 @@ def ggml_op_div(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="div",
         input_tensors=input_tensors,
@@ -294,6 +296,6 @@ def ggml_op_div(arch: str, input_tensors: list, output_tensor, op_params: bytear
     return ggml_op_binary(
         arch=arch,
         input_tensors=input_tensors,
-        function=core_function,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
