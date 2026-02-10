@@ -11,27 +11,7 @@ void transform_binary_n(const T0 * __restrict in0,
                         TOut * __restrict out,
                         BinaryOp op) {
     event0();
-
-    // Use AIE vector operations to process multiple elements per iteration.
-    constexpr int kVectorLength = 16;
-
-    Size i = 0;
-
-    // Vectorized main loop
-    for (; i + kVectorLength <= count; i += kVectorLength) {
-        aie::vector<T0, kVectorLength> v_in0 = aie::load_v<kVectorLength>(in0 + i);
-        aie::vector<T1, kVectorLength> v_in1 = aie::load_v<kVectorLength>(in1 + i);
-        aie::vector<TOut, kVectorLength> v_out;
-
-        for (int lane = 0; lane < kVectorLength; ++lane) {
-            v_out[lane] = op(v_in0[lane], v_in1[lane]);
-        }
-
-        aie::store_v(out + i, v_out);
-    }
-
-    // Scalar tail for remaining elements
-    for (; i < count; ++i) {
+    for (Size i = 0; i < count; ++i) {
         out[i] = op(in0[i], in1[i]);
     }
     event1();
