@@ -7,6 +7,7 @@ if (GGML_HSA_JIT_COMPILE)
     set(IRON_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
         ${CMAKE_CURRENT_SOURCE_DIR}/aie_kernel_utils.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
         ${CMAKE_CURRENT_SOURCE_DIR}/build.py
         ${CMAKE_CURRENT_SOURCE_DIR}/gemm.py
