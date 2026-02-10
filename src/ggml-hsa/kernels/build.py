@@ -20,7 +20,9 @@ from aie.utils.compile import compile_mlir_module
 from tensor_desc import TensorDesc
 
 
-def align_to_arch(arch: str, size: int, dtype: np.dtype, alignment_bytes: int = 4) -> int:
+def align_to_arch(
+    arch: str, size: int, dtype: np.dtype, alignment_bytes: int = 4
+) -> int:
     """
     Align a size to architecture requirements.
 
