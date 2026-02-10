@@ -3,10 +3,10 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
+# (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
+from dataclasses import dataclass
 from os import path
-from typing import Callable
 import numpy as np
 
 from utils import suppress_import_pyxrt_msg
@@ -27,19 +27,96 @@ from aie.iron.controlflow import range_
 from build import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
-def ggml_op_unary(
+@dataclass(frozen=True)
+class CoreFunctionSpec:
+    """Specification for a core function to be used in binary operations.
+
+    Attributes:
+        external_function (ExternalFunction): The external function to be called for the binary operation.
+        num_elements (int): The total number of elements in the input/output tensors.
+    """
+
+    external_function: ExternalFunction
+    num_elements: int
+
+    @property
+    def tile_size(self) -> int:
+        """Returns the tile size used by the external function."""
+        return self.external_function.tile_size(0)
+
+
+def apply_unary_op(
     arch: str,
     input_tensors: list,
-    function: Callable | ExternalFunction,
+    function_spec: CoreFunctionSpec,
     output_tensor,
 ):
     """
-    Implements output_tensor = function(input_tensors[0])
+    Implements output_tensor = op(input_tensors[0])
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): Input tensors.
+        function_spec (CoreFunctionSpec): Unary operator specification.
+        output_tensor: Output tensor.
+    """
+
+    input_tensor = input_tensors[0]
+
+    # Tile size and number of tiles
+    num_elements = function_spec.num_elements
+    tile_size = function_spec.tile_size
+    num_tiles = num_elements // tile_size
+    assert num_elements % tile_size == 0
+
+    # AIE-array data movement with object fifos
+    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
+    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+    of_in = ObjectFifo(input_tile_ty, name="in")
+    of_out = ObjectFifo(output_tile_ty, name="out")
+
+    # Create a worker to run the task on a compute tile
+    worker = None
+    function = function_spec.external_function
+
+    # Task for the core to perform with an external function
+    def ext_core_fn(of_in, of_out, function):
+        # Number of sub-vector "tile" iterations
+        for _ in range_(num_tiles):
+            elem_in = of_in.acquire(1)
+            elem_out = of_out.acquire(1)
+            function(elem_in, elem_out, tile_size)
+            of_in.release(1)
+            of_out.release(1)
+
+    worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+
+    # Runtime operations to move data to/from the AIE-array
+    input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
+    output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
+    rt = Runtime()
+    with rt.sequence(input_tensor_ty, output_tensor_ty) as t:
+        rt.start(worker)
+        rt.fill(of_in.prod(), t[0])
+        rt.drain(of_out.cons(), t[-1], wait=True)
+
+    # Place program components (assign them resources on the device) and generate an MLIR module
+    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+
+
+def ggml_op_unary(
+    arch: str,
+    input_tensors: list,
+    function_spec: CoreFunctionSpec,
+    output_tensor,
+):
+    """
+    Unary operation implementation.
 
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        function (Callable): Unary operator.
+        function_spec (CoreFunctionSpec): Unary operator.
         output_tensor: Output tensor.
     """
 
@@ -55,64 +132,12 @@ def ggml_op_unary(
     if output_tensor.shape[1:4] != (1, 1, 1):
         raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
 
-    input_tensor = input_tensors[0]
-
-    # Find tile size and number of tiles
-    num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
-    tile_size = None
-    num_tiles = None
-    if isinstance(function, ExternalFunction):
-        tile_size = function.tile_size(0)
-    else:
-        tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
-    num_tiles = num_elements // tile_size
-    assert num_elements % tile_size == 0
-
-    # AIE-array data movement with object fifos
-    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
-    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-    of_in = ObjectFifo(input_tile_ty, name="in")
-    of_out = ObjectFifo(output_tile_ty, name="out")
-
-    # Create a worker to run the task on a compute tile
-    worker = None
-    if isinstance(function, ExternalFunction):
-        # Task for the core to perform with an external function
-        def ext_core_fn(of_in, of_out, function):
-            # Number of sub-vector "tile" iterations
-            for _ in range_(num_tiles):
-                elem_in = of_in.acquire(1)
-                elem_out = of_out.acquire(1)
-                function(elem_in, elem_out, tile_size)
-                of_in.release(1)
-                of_out.release(1)
-
-        worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
-    else:
-
-        def core_fn(of_in, of_out):
-            # Number of sub-vector "tile" iterations
-            for _ in range_(num_tiles):
-                elem_in = of_in.acquire(1)
-                elem_out = of_out.acquire(1)
-                for i in range_(tile_size):
-                    elem_out[i] = function(elem_in[i])
-                of_in.release(1)
-                of_out.release(1)
-
-        worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod()])
-
-    # Runtime operations to move data to/from the AIE-array
-    rt = Runtime()
-    input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
-    output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
-    with rt.sequence(input_tensor_ty, output_tensor_ty) as (a_in, b_out):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.drain(of_out.cons(), b_out, wait=True)
-
-    # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+    return apply_unary_op(
+        arch=arch,
+        input_tensors=input_tensors,
+        function_spec=function_spec,
+        output_tensor=output_tensor,
+    )
 
 
 def create_external_function(
@@ -120,15 +145,18 @@ def create_external_function(
     op_name: str,
     input_tensor,
     output_tensor,
-) -> ExternalFunction:
+) -> CoreFunctionSpec:
     """
-    Creates an ExternalFunction specification for unary ops.
+    Creates a specification for unary ops.
 
     Parameters:
         arch (str): Target architecture.
         op_name (str): Name of the operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
+
+    Returns:
+        CoreFunctionSpec: Specification for the core function to be used in unary ops.
     """
 
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
@@ -150,7 +178,7 @@ def create_external_function(
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
         ],
     )
-    return func
+    return CoreFunctionSpec(external_function=func, num_elements=num_elements)
 
 
 def ggml_op_sqr(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -164,7 +192,7 @@ def ggml_op_sqr(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="sqr",
         input_tensor=input_tensors[0],
@@ -172,8 +200,8 @@ def ggml_op_sqr(arch: str, input_tensors: list, output_tensor, op_params: bytear
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -243,7 +271,7 @@ def ggml_unary_op_abs(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="abs",
         input_tensor=input_tensors[0],
@@ -251,8 +279,8 @@ def ggml_unary_op_abs(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -270,7 +298,7 @@ def ggml_unary_op_sgn(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="sgn",
         input_tensor=input_tensors[0],
@@ -278,8 +306,8 @@ def ggml_unary_op_sgn(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -297,7 +325,7 @@ def ggml_unary_op_neg(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="neg",
         input_tensor=input_tensors[0],
@@ -305,8 +333,8 @@ def ggml_unary_op_neg(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -324,7 +352,7 @@ def ggml_unary_op_step(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="step",
         input_tensor=input_tensors[0],
@@ -332,8 +360,8 @@ def ggml_unary_op_step(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -381,7 +409,7 @@ def ggml_unary_op_relu(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="relu",
         input_tensor=input_tensors[0],
@@ -389,8 +417,8 @@ def ggml_unary_op_relu(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -468,7 +496,7 @@ def ggml_unary_op_hardswish(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="hardswish",
         input_tensor=input_tensors[0],
@@ -476,8 +504,8 @@ def ggml_unary_op_hardswish(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -495,7 +523,7 @@ def ggml_unary_op_hardsigmoid(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="hardsigmoid",
         input_tensor=input_tensors[0],
@@ -503,8 +531,8 @@ def ggml_unary_op_hardsigmoid(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -567,7 +595,7 @@ def ggml_unary_op_floor(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="floor",
         input_tensor=input_tensors[0],
@@ -575,8 +603,8 @@ def ggml_unary_op_floor(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -594,7 +622,7 @@ def ggml_unary_op_ceil(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="ceil",
         input_tensor=input_tensors[0],
@@ -602,8 +630,8 @@ def ggml_unary_op_ceil(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -621,7 +649,7 @@ def ggml_unary_op_round(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="round",
         input_tensor=input_tensors[0],
@@ -629,8 +657,8 @@ def ggml_unary_op_round(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -648,7 +676,7 @@ def ggml_unary_op_trunc(
         op_params: Operation parameters.
     """
 
-    core_function = create_external_function(
+    function_spec = create_external_function(
         arch=arch,
         op_name="trunc",
         input_tensor=input_tensors[0],
@@ -656,7 +684,7 @@ def ggml_unary_op_trunc(
     )
     return ggml_op_unary(
         arch=arch,
-        function=core_function,
         input_tensors=input_tensors,
+        function_spec=function_spec,
         output_tensor=output_tensor,
     )
