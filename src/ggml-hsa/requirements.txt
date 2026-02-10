@@ -9,5 +9,4 @@
 mlir_aie==1.2.0
 llvm-aie
 
-pytest
 black
