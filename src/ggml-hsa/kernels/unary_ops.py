@@ -29,10 +29,10 @@ from build import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 @dataclass(frozen=True)
 class CoreFunctionSpec:
-    """Specification for a core function to be used in binary operations.
+    """Specification for a core function to be used in unary operations.
 
     Attributes:
-        external_function (ExternalFunction): The external function to be called for the binary operation.
+        external_function (ExternalFunction): The external function to be called for the unary operation.
         num_elements (int): The total number of elements in the input/output tensors.
     """
 
