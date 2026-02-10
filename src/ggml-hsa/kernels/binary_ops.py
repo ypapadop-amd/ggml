@@ -65,7 +65,10 @@ def apply_binary_op(
     num_elements = function_spec.num_elements
     tile_size = function_spec.tile_size
     num_tiles = num_elements // tile_size
-    assert num_elements % tile_size == 0
+    if num_elements % tile_size != 0:
+        raise ValueError(
+            f"Number of elements ({num_elements}) must be divisible by tile size ({tile_size})."
+        )
 
     # AIE-array data movement with object fifos
     input_tile_tys = [
