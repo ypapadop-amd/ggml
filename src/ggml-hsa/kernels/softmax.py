@@ -5,6 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
+from opcode import opname
 import struct
 from os import path
 from typing import Any, Optional, Tuple
@@ -25,9 +26,7 @@ from aie.iron.placers import SequentialPlacer
 
 from build import (
     align_to_arch,
-    arch_aligned_num_elements,
     arch_to_device,
-    max_tile_size,
 )
 
 
@@ -121,7 +120,7 @@ def ggml_op_softmax(
     scale = struct.unpack_from("f", op_params, 0)[0]
     max_bias = struct.unpack_from("f", op_params, 4)[0]
 
-    op_name = "softmax"
+    op_name = "GGML_OP_SOFT_MAX"
 
     if input_tensor_count == 1:
         return create_unary_program(
@@ -480,20 +479,20 @@ def create_external_function(
         arg_types.append(np.int32)  # tile_idx (passed dynamically)
         arg_types.append(np.int32)  # rows_per_head
     # determine function name and compile directive
+    function_name = f"{op_name.lower()}"
     if mask_tensor is not None and sink_tensor is not None:
-        function_name = f"ggml_op_{op_name}_with_mask_and_sinks"
-        compile_flags.append("-DCOMPILE_GGML_OP_SOFTMAX_WITH_MASK_AND_SINKS")
+        function_name = function_name + "_with_mask_and_sinks"
+        compile_flags.append(f"-D{op_name}_WITH_MASK_AND_SINKS")
     elif mask_tensor is not None:
-        function_name = f"ggml_op_{op_name}_with_mask"
-        compile_flags.append("-DCOMPILE_GGML_OP_SOFTMAX_WITH_MASK")
+        function_name = function_name + "_with_mask"
+        compile_flags.append(f"-D{op_name}_WITH_MASK")
     else:
-        function_name = f"ggml_op_{op_name}"
-        compile_flags.append("-DCOMPILE_GGML_OP_SOFTMAX")
+        compile_flags.append(f"-D{op_name}")
 
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
         name=function_name,
-        object_file_name=f"{op_name}_core_function.o",
+        object_file_name=f"{function_name}_core_function.o",
         source_file=path.join(current_dir, "softmax.cc"),
         arg_types=arg_types,
         compile_flags=compile_flags,
