@@ -15,34 +15,38 @@ void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryO
 
 extern "C" {
 
-#ifdef COMPILE_SQR
+#ifdef GGML_OP_SQR
 
 void ggml_op_sqr(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return v * v; });
 }
 
-#endif // COMPILE_SQR
+#endif // GGML_OP_SQR
 
-#ifdef COMPILE_SQRT
+#ifdef GGML_OP_SQRT
 
 void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return aie::sqrt(v); });
 }
 
-#endif // COMPILE_SQRT
+#endif // GGML_OP_SQRT
 
-#ifdef COMPILE_ABS
+#ifdef GGML_UNARY_OP_ABS
 
-void ggml_op_abs(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+void ggml_unary_op_abs(const INPUT_DTYPE * __restrict in,
+                       OUTPUT_DTYPE * __restrict out,
+                       int32_t N) {
     transform_n(in, N, out,
                 [](auto v) -> OUTPUT_DTYPE { return v < static_cast<INPUT_DTYPE>(0) ? -v : v; });
 }
 
-#endif // COMPILE_ABS
+#endif // GGML_UNARY_OP_ABS
 
-#ifdef COMPILE_SGN
+#ifdef GGML_UNARY_OP_SGN
 
-void ggml_op_sgn(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+void ggml_unary_op_sgn(const INPUT_DTYPE * __restrict in,
+                       OUTPUT_DTYPE * __restrict out,
+                       int32_t N) {
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         return (v > static_cast<INPUT_DTYPE>(0))
                    ? static_cast<OUTPUT_DTYPE>(1)
@@ -51,59 +55,67 @@ void ggml_op_sgn(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict ou
     });
 }
 
-#endif // COMPILE_SGN
+#endif // GGML_UNARY_OP_SGN
 
-#ifdef COMPILE_NEG
+#ifdef GGML_UNARY_OP_NEG
 
-void ggml_op_neg(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+void ggml_unary_op_neg(const INPUT_DTYPE * __restrict in,
+                       OUTPUT_DTYPE * __restrict out,
+                       int32_t N) {
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return -v; });
 }
 
-#endif // COMPILE_NEG
+#endif // GGML_UNARY_OP_NEG
 
-#ifdef COMPILE_STEP
+#ifdef GGML_UNARY_OP_STEP
 
-void ggml_op_step(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+void ggml_unary_op_step(const INPUT_DTYPE * __restrict in,
+                        OUTPUT_DTYPE * __restrict out,
+                        int32_t N) {
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return v > 0; });
 }
 
-#endif // COMPILE_STEP
+#endif // GGML_UNARY_OP_STEP
 
-#ifdef COMPILE_RELU
+#ifdef GGML_UNARY_OP_RELU
 
-void ggml_op_relu(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
+                        OUTPUT_DTYPE * __restrict out,
+                        int32_t N) {
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return std::max<INPUT_DTYPE>(v, 0); });
 }
 
-#endif // COMPILE_RELU
+#endif // GGML_UNARY_OP_RELU
 
-#ifdef COMPILE_HARDSIGMOID
+#ifdef GGML_UNARY_OP_HARDSIGMOID
 
-void ggml_op_hardsigmoid(const INPUT_DTYPE * __restrict in,
-                         OUTPUT_DTYPE * __restrict out,
-                         int32_t N) {
+void ggml_unary_op_hardsigmoid(const INPUT_DTYPE * __restrict in,
+                               OUTPUT_DTYPE * __restrict out,
+                               int32_t N) {
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         return std::min<INPUT_DTYPE>(1, std::max<INPUT_DTYPE>(0, (v + 3) / 6));
     });
 }
 
-#endif // COMPILE_HARDSIGMOID
+#endif // GGML_UNARY_OP_HARDSIGMOID
 
-#ifdef COMPILE_HARDSWISH
+#ifdef GGML_UNARY_OP_HARDSWISH
 
-void ggml_op_hardswish(const INPUT_DTYPE * __restrict in,
-                       OUTPUT_DTYPE * __restrict out,
-                       int32_t N) {
+void ggml_unary_op_hardswish(const INPUT_DTYPE * __restrict in,
+                             OUTPUT_DTYPE * __restrict out,
+                             int32_t N) {
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         return v * std::min<INPUT_DTYPE>(1, std::max<INPUT_DTYPE>(0, (v + 3) / 6));
     });
 }
 
-#endif // COMPILE_HARDSWISH
+#endif // GGML_UNARY_OP_HARDSWISH
 
-#ifdef COMPILE_FLOOR
+#ifdef GGML_UNARY_OP_FLOOR
 
-void ggml_op_floor(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+void ggml_unary_op_floor(const INPUT_DTYPE * __restrict in,
+                         OUTPUT_DTYPE * __restrict out,
+                         int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         if (v == static_cast<int32>(v)) {
@@ -114,11 +126,13 @@ void ggml_op_floor(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict 
     });
 }
 
-#endif // COMPILE_FLOOR
+#endif // GGML_UNARY_OP_FLOOR
 
-#ifdef COMPILE_CEIL
+#ifdef GGML_UNARY_OP_CEIL
 
-void ggml_op_ceil(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+void ggml_unary_op_ceil(const INPUT_DTYPE * __restrict in,
+                        OUTPUT_DTYPE * __restrict out,
+                        int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         if (v == static_cast<int32>(v)) {
@@ -129,11 +143,13 @@ void ggml_op_ceil(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
     });
 }
 
-#endif // COMPILE_CEIL
+#endif // GGML_UNARY_OP_CEIL
 
-#ifdef COMPILE_ROUND
+#ifdef GGML_UNARY_OP_ROUND
 
-void ggml_op_round(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+void ggml_unary_op_round(const INPUT_DTYPE * __restrict in,
+                         OUTPUT_DTYPE * __restrict out,
+                         int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         return (v >= static_cast<INPUT_DTYPE>(0))
@@ -142,15 +158,17 @@ void ggml_op_round(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict 
     });
 }
 
-#endif // COMPILE_ROUND
+#endif // GGML_UNARY_OP_ROUND
 
-#ifdef COMPILE_TRUNC
+#ifdef GGML_UNARY_OP_TRUNC
 
-void ggml_op_trunc(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+void ggml_unary_op_trunc(const INPUT_DTYPE * __restrict in,
+                         OUTPUT_DTYPE * __restrict out,
+                         int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return static_cast<int32>(v); });
 }
 
-#endif // COMPILE_TRUNC
+#endif // GGML_UNARY_OP_TRUNC
 
 } // extern "C"

@@ -108,6 +108,47 @@ def apply_unary_op(
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
+def create_external_function(
+    arch: str,
+    op_name: str,
+    input_tensor,
+    output_tensor,
+) -> CoreFunctionSpec:
+    """
+    Creates a specification for unary ops.
+
+    Parameters:
+        arch (str): Target architecture.
+        op_name (str): Name of the operation.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
+
+    Returns:
+        CoreFunctionSpec: Specification for the core function to be used in unary ops.
+    """
+
+    num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
+    tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
+
+    current_dir = path.dirname(path.realpath(__file__))
+    func = ExternalFunction(
+        name=op_name.lower(),
+        object_file_name=f"{op_name.lower()}_core_function.o",
+        source_file=path.join(current_dir, "unary_ops.cc"),
+        arg_types=[
+            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
+            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
+            np.int32,
+        ],
+        compile_flags=[
+            f"-D{op_name}=1",
+            f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
+            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        ],
+    )
+    return CoreFunctionSpec(external_function=func, num_elements=num_elements)
+
+
 def ggml_op_unary(
     arch: str,
     op_name: str,
@@ -151,47 +192,6 @@ def ggml_op_unary(
     )
 
 
-def create_external_function(
-    arch: str,
-    op_name: str,
-    input_tensor,
-    output_tensor,
-) -> CoreFunctionSpec:
-    """
-    Creates a specification for unary ops.
-
-    Parameters:
-        arch (str): Target architecture.
-        op_name (str): Name of the operation.
-        input_tensor: Input tensor.
-        output_tensor: Output tensor.
-
-    Returns:
-        CoreFunctionSpec: Specification for the core function to be used in unary ops.
-    """
-
-    num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
-    tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
-
-    current_dir = path.dirname(path.realpath(__file__))
-    func = ExternalFunction(
-        name="ggml_op_" + op_name,
-        object_file_name=f"{op_name}_core_function.o",
-        source_file=path.join(current_dir, "unary_ops.cc"),
-        arg_types=[
-            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
-            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
-            np.int32,
-        ],
-        compile_flags=[
-            f"-DCOMPILE_{op_name.upper()}=1",
-            f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
-            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-        ],
-    )
-    return CoreFunctionSpec(external_function=func, num_elements=num_elements)
-
-
 def ggml_op_sqr(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_SQR implementation.
@@ -207,7 +207,7 @@ def ggml_op_sqr(arch: str, input_tensors: list, output_tensor, op_params: bytear
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="sqr",
+        op_name="GGML_OP_SQR",
     )
 
 
@@ -280,7 +280,7 @@ def ggml_unary_op_abs(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="abs",
+        op_name="GGML_UNARY_OP_ABS",
     )
 
 
@@ -301,7 +301,7 @@ def ggml_unary_op_sgn(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="sgn",
+        op_name="GGML_UNARY_OP_SGN",
     )
 
 
@@ -322,7 +322,7 @@ def ggml_unary_op_neg(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="neg",
+        op_name="GGML_UNARY_OP_NEG",
     )
 
 
@@ -343,7 +343,7 @@ def ggml_unary_op_step(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="step",
+        op_name="GGML_UNARY_OP_STEP",
     )
 
 
@@ -394,7 +394,7 @@ def ggml_unary_op_relu(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="relu",
+        op_name="GGML_UNARY_OP_RELU",
     )
 
 
@@ -475,7 +475,7 @@ def ggml_unary_op_hardswish(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="hardswish",
+        op_name="GGML_UNARY_OP_HARDSWISH",
     )
 
 
@@ -496,7 +496,7 @@ def ggml_unary_op_hardsigmoid(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="hardsigmoid",
+        op_name="GGML_UNARY_OP_HARDSIGMOID",
     )
 
 
@@ -562,7 +562,7 @@ def ggml_unary_op_floor(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="floor",
+        op_name="GGML_UNARY_OP_FLOOR",
     )
 
 
@@ -583,7 +583,7 @@ def ggml_unary_op_ceil(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="ceil",
+        op_name="GGML_UNARY_OP_CEIL",
     )
 
 
@@ -604,7 +604,7 @@ def ggml_unary_op_round(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="round",
+        op_name="GGML_UNARY_OP_ROUND",
     )
 
 
@@ -625,5 +625,5 @@ def ggml_unary_op_trunc(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_name="trunc",
+        op_name="GGML_UNARY_OP_TRUNC",
     )
