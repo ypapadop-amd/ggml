@@ -5,7 +5,6 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-from opcode import opname
 import struct
 from os import path
 from typing import Any, Optional, Tuple
