@@ -144,7 +144,7 @@ def create_external_function(
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
         name=op_name.lower(),
-        object_file_name=f"{op_name}_core_function.o",
+        object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=path.join(current_dir, "binary_ops.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
