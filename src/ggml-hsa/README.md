@@ -35,7 +35,7 @@ The following configurations have been tested and confirmed working:
 
 `ggml-hsa` requires a fairly new [ROCm](https://github.com/ROCm/rocm-systems) (development happens using ROCm 7.1.1). Installation instructions are [here](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
 
-Due to the ongoing work for supporting NPUs in the ROCm Runtime, [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime), it is recommended that the latest ROCR should be compiled source. Commit [863ffc1](https://github.com/ROCm/rocm-systems/commit/863ffc1c07cf56567101fff2c39b66efb4cdb579) is confirmed working.
+Due to the ongoing work for supporting NPUs in the ROCm Runtime, [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime), it is recommended that the latest ROCR should be compiled from source. Commit [863ffc1](https://github.com/ROCm/rocm-systems/commit/863ffc1c07cf56567101fff2c39b66efb4cdb579) is confirmed working.
 
 ### AMD XDNA™ Driver
 
