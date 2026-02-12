@@ -9,13 +9,13 @@ extern "C" {
 void ggml_op_clamp(
     const INPUT_DTYPE * in, OUTPUT_DTYPE * out, int32_t N, float min_val, float max_val) {
     for (int32_t i = 0; i < N; ++i) {
-        INPUT_DTYPE val = in[i];
-        if (val < static_cast<INPUT_DTYPE>(min_val)) {
-            val = static_cast<INPUT_DTYPE>(min_val);
-        } else if (val > static_cast<INPUT_DTYPE>(max_val)) {
-            val = static_cast<INPUT_DTYPE>(max_val);
+        if (in[i] < static_cast<INPUT_DTYPE>(min_val)) {
+            out[i] = static_cast<OUTPUT_DTYPE>(min_val);
+        } else if (in[i] > static_cast<INPUT_DTYPE>(max_val)) {
+            out[i] = static_cast<OUTPUT_DTYPE>(max_val);
+        } else {
+            out[i] = static_cast<OUTPUT_DTYPE>(in[i]);
         }
-        out[i] = val;
     }
 }
 

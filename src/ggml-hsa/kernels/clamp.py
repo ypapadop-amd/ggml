@@ -47,8 +47,8 @@ def create_external_function(
 
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
-        name="ggml_op_" + op_name,
-        object_file_name=f"{op_name}_core_function.o",
+        name=op_name.lower(),
+        object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=path.join(current_dir, "clamp.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
@@ -95,7 +95,7 @@ def ggml_op_clamp(arch: str, input_tensors: list, output_tensor, op_params: byte
 
     function, num_elements, tile_size = create_external_function(
         arch=arch,
-        op_name="clamp",
+        op_name="GGML_OP_CLAMP",
         input_tensor=input_tensor,
         output_tensor=output_tensor,
     )
