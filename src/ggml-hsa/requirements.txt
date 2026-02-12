@@ -2,11 +2,11 @@
 
 # The MLIR-AIE and LLVM-AIE (Peano) packages are not on the official PyPI, so
 # we add them as additional indices here.
---extra-index-url https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.2.0
+--extra-index-url https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.2.1
 --extra-index-url https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 --extra-index-url https://pypi.org/simple
 
-mlir_aie==1.2.0
+mlir_aie==1.2.1
 llvm-aie
 
 black
