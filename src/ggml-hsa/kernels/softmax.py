@@ -481,12 +481,12 @@ def create_external_function(
     function_name = f"{op_name.lower()}"
     if mask_tensor is not None and sink_tensor is not None:
         function_name = function_name + "_with_mask_and_sinks"
-        compile_flags.append(f"-D{op_name}_WITH_MASK_AND_SINKS")
+        compile_flags.append(f"-D{op_name}_WITH_MASK_AND_SINKS=1")
     elif mask_tensor is not None:
         function_name = function_name + "_with_mask"
-        compile_flags.append(f"-D{op_name}_WITH_MASK")
+        compile_flags.append(f"-D{op_name}_WITH_MASK=1")
     else:
-        compile_flags.append(f"-D{op_name}")
+        compile_flags.append(f"-D{op_name}=1")
 
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
