@@ -478,7 +478,7 @@ def create_external_function(
         arg_types.append(np.int32)  # tile_idx (passed dynamically)
         arg_types.append(np.int32)  # rows_per_head
     # determine function name and compile directive
-    function_name = f"{op_name.lower()}"
+    function_name = op_name.lower()
     if mask_tensor is not None and sink_tensor is not None:
         function_name = function_name + "_with_mask_and_sinks"
         compile_flags.append(f"-D{op_name}_WITH_MASK_AND_SINKS=1")
