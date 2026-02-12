@@ -66,11 +66,11 @@ def get_softmax_dimensions(tensor) -> Tuple[int, int]:
 KERN_VEC_SIZE = 8
 
 
-def ggml_op_softmax(
+def ggml_op_soft_max(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ):
     """
-    GGML_OP_SOFTMAX implementation.
+    GGML_OP_SOFT_MAX implementation.
 
     Parameters:
         arch (str): Target architecture.
