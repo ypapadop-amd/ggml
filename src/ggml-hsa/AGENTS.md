@@ -136,6 +136,7 @@ python3 -m pip install -r requirements.txt
 - Build with `GGML_HSA=ON` and optionally `GGML_HSA_JIT_COMPILE=ON`
 - Test files are in `tests` and `tests/ggml-hsa/`
 - Ensure kernels work for both `aie2` and `aie2p` architectures
+- A specific operation can be tested using `test-backend-ops -o OP`
 
 ## Common Pitfalls
 
