@@ -10,6 +10,8 @@ if (GGML_HSA_JIT_COMPILE)
         ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
         ${CMAKE_CURRENT_SOURCE_DIR}/build.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/clamp.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/clamp.py
         ${CMAKE_CURRENT_SOURCE_DIR}/gemm.py
         ${CMAKE_CURRENT_SOURCE_DIR}/ggml-aie.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/tensor_desc.py
