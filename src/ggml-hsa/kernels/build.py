@@ -169,6 +169,7 @@ op_to_kernel_map = {
     "SCALE": Kernel("ggml_op_scale", "scale.py"),
     "SOFT_MAX": Kernel("ggml_op_soft_max", "softmax.py"),
     "CLAMP": Kernel("ggml_op_clamp", "clamp.py"),
+    "CROSS_ENTROPY_LOSS": Kernel("ggml_op_cross_entropy_loss", "cross_entropy_loss.py"),
 }
 
 
