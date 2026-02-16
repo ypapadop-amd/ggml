@@ -119,48 +119,6 @@ def apply_binary_op(
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
-def ggml_op_binary(
-    arch: str,
-    input_tensors: list,
-    function_spec: CoreFunctionSpec,
-    output_tensor,
-):
-    """
-    Binary operation implementation.
-
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of two input tensors.
-        function_spec (CoreFunctionSpec): Binary operator.
-        output_tensor: Output tensor.
-    """
-
-    if len(input_tensors) != 2:
-        raise ValueError("Operation requires exactly two input tensors.")
-
-    if (
-        any(t.contiguous is False for t in input_tensors)
-        or output_tensor.contiguous is False
-    ):
-        raise ValueError("Input and output tensors must be contiguous in memory.")
-
-    for input_tensor in input_tensors:
-        if input_tensor.shape != output_tensor.shape:
-            raise ValueError(
-                f"Input and output tensors must have the same shape: {input_tensor.shape} != {output_tensor.shape}"
-            )
-
-    if output_tensor.shape[1:4] != (1, 1, 1):
-        raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
-
-    return apply_binary_op(
-        arch=arch,
-        input_tensors=input_tensors,
-        function_spec=function_spec,
-        output_tensor=output_tensor,
-    )
-
-
 def create_external_function(
     arch: str,
     op_name: str,
@@ -185,8 +143,8 @@ def create_external_function(
 
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
-        name="ggml_op_" + op_name,
-        object_file_name=f"{op_name}_core_function.o",
+        name=op_name.lower(),
+        object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=path.join(current_dir, "binary_ops.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
@@ -195,13 +153,62 @@ def create_external_function(
             np.int32,
         ],
         compile_flags=[
-            f"-DCOMPILE_{op_name.upper()}=1",
+            f"-D{op_name}=1",
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
+
+
+def ggml_op_binary(
+    arch: str,
+    op_name: str,
+    input_tensors: list,
+    output_tensor,
+):
+    """
+    Binary operation implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        op_name (str): Name of the operation.
+        input_tensors (list): List of two input tensors.
+        output_tensor: Output tensor.
+    """
+
+    if len(input_tensors) != 2:
+        raise ValueError("Operation requires exactly two input tensors.")
+
+    if (
+        any(t.contiguous is False for t in input_tensors)
+        or output_tensor.contiguous is False
+    ):
+        raise ValueError("Input and output tensors must be contiguous in memory.")
+
+    for input_tensor in input_tensors:
+        if input_tensor.shape != output_tensor.shape:
+            raise ValueError(
+                f"Input and output tensors must have the same shape: {input_tensor.shape} != {output_tensor.shape}"
+            )
+
+    if output_tensor.shape[1:4] != (1, 1, 1):
+        raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
+
+    function_spec = create_external_function(
+        arch=arch,
+        op_name=op_name,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+    )
+
+    return apply_binary_op(
+        arch=arch,
+        input_tensors=input_tensors,
+        function_spec=function_spec,
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_op_add(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -215,16 +222,10 @@ def ggml_op_add(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="add",
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-    )
     return ggml_op_binary(
         arch=arch,
+        op_name="GGML_OP_ADD",
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -240,16 +241,10 @@ def ggml_op_sub(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="sub",
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-    )
     return ggml_op_binary(
         arch=arch,
+        op_name="GGML_OP_SUB",
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -265,16 +260,10 @@ def ggml_op_mul(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="mul",
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-    )
     return ggml_op_binary(
         arch=arch,
+        op_name="GGML_OP_MUL",
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
     )
 
@@ -290,15 +279,9 @@ def ggml_op_div(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="div",
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-    )
     return ggml_op_binary(
         arch=arch,
+        op_name="GGML_OP_DIV",
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
     )
