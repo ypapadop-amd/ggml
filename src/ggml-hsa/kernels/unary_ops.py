@@ -108,42 +108,6 @@ def apply_unary_op(
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
-def ggml_op_unary(
-    arch: str,
-    input_tensors: list,
-    function_spec: CoreFunctionSpec,
-    output_tensor,
-):
-    """
-    Unary operation implementation.
-
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of one input tensor.
-        function_spec (CoreFunctionSpec): Unary operator.
-        output_tensor: Output tensor.
-    """
-
-    if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
-
-    if input_tensors[0].contiguous is False or output_tensor.contiguous is False:
-        raise ValueError("Input and output tensors must be contiguous in memory.")
-
-    if input_tensors[0].shape != output_tensor.shape:
-        raise ValueError("Input and output tensors must have the same shape.")
-
-    if output_tensor.shape[1:4] != (1, 1, 1):
-        raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
-
-    return apply_unary_op(
-        arch=arch,
-        input_tensors=input_tensors,
-        function_spec=function_spec,
-        output_tensor=output_tensor,
-    )
-
-
 def create_external_function(
     arch: str,
     op_name: str,
@@ -168,8 +132,8 @@ def create_external_function(
 
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
-        name="ggml_op_" + op_name,
-        object_file_name=f"{op_name}_core_function.o",
+        name=op_name.lower(),
+        object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=path.join(current_dir, "unary_ops.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
@@ -177,12 +141,55 @@ def create_external_function(
             np.int32,
         ],
         compile_flags=[
-            f"-DCOMPILE_{op_name.upper()}=1",
+            f"-D{op_name}=1",
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
+
+
+def ggml_op_unary(
+    arch: str,
+    op_name: str,
+    input_tensors: list,
+    output_tensor,
+):
+    """
+    Unary operation implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        op_name (str): Name of the unary operation.
+        input_tensors (list): List of one input tensor.
+        output_tensor: Output tensor.
+    """
+
+    if len(input_tensors) != 1:
+        raise ValueError("Operation requires exactly one input tensor.")
+
+    if input_tensors[0].contiguous is False or output_tensor.contiguous is False:
+        raise ValueError("Input and output tensors must be contiguous in memory.")
+
+    if input_tensors[0].shape != output_tensor.shape:
+        raise ValueError("Input and output tensors must have the same shape.")
+
+    if output_tensor.shape[1:4] != (1, 1, 1):
+        raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
+
+    function_spec = create_external_function(
+        arch=arch,
+        op_name=op_name,
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+    )
+
+    return apply_unary_op(
+        arch=arch,
+        input_tensors=input_tensors,
+        function_spec=function_spec,
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_op_sqr(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -196,17 +203,11 @@ def ggml_op_sqr(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="sqr",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_OP_SQR",
     )
 
 
@@ -275,17 +276,11 @@ def ggml_unary_op_abs(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="abs",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_ABS",
     )
 
 
@@ -302,17 +297,11 @@ def ggml_unary_op_sgn(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="sgn",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_SGN",
     )
 
 
@@ -329,17 +318,11 @@ def ggml_unary_op_neg(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="neg",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_NEG",
     )
 
 
@@ -356,17 +339,11 @@ def ggml_unary_op_step(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="step",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_STEP",
     )
 
 
@@ -413,17 +390,11 @@ def ggml_unary_op_relu(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="relu",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_RELU",
     )
 
 
@@ -500,17 +471,11 @@ def ggml_unary_op_hardswish(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="hardswish",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_HARDSWISH",
     )
 
 
@@ -527,17 +492,11 @@ def ggml_unary_op_hardsigmoid(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="hardsigmoid",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_HARDSIGMOID",
     )
 
 
@@ -599,17 +558,11 @@ def ggml_unary_op_floor(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="floor",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_FLOOR",
     )
 
 
@@ -626,17 +579,11 @@ def ggml_unary_op_ceil(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="ceil",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_CEIL",
     )
 
 
@@ -653,17 +600,11 @@ def ggml_unary_op_round(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="round",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_ROUND",
     )
 
 
@@ -680,15 +621,9 @@ def ggml_unary_op_trunc(
         op_params: Operation parameters.
     """
 
-    function_spec = create_external_function(
-        arch=arch,
-        op_name="trunc",
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
     return ggml_op_unary(
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_name="GGML_UNARY_OP_TRUNC",
     )

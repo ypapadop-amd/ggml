@@ -19,7 +19,7 @@ void transform_binary_n(const T0 * __restrict in0,
 
 extern "C" {
 
-#ifdef COMPILE_ADD
+#ifdef GGML_OP_ADD
 
 void ggml_op_add(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
@@ -28,9 +28,9 @@ void ggml_op_add(const INPUT0_DTYPE * __restrict in0,
     transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a + b; });
 }
 
-#endif // COMPILE_ADD
+#endif // GGML_OP_ADD
 
-#ifdef COMPILE_SUB
+#ifdef GGML_OP_SUB
 
 void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
@@ -39,9 +39,9 @@ void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
     transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a - b; });
 }
 
-#endif // COMPILE_SUB
+#endif // GGML_OP_SUB
 
-#ifdef COMPILE_MUL
+#ifdef GGML_OP_MUL
 
 void ggml_op_mul(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
@@ -50,9 +50,9 @@ void ggml_op_mul(const INPUT0_DTYPE * __restrict in0,
     transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a * b; });
 }
 
-#endif // COMPILE_MUL
+#endif // GGML_OP_MUL
 
-#ifdef COMPILE_DIV
+#ifdef GGML_OP_DIV
 
 void ggml_op_div(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
@@ -61,6 +61,6 @@ void ggml_op_div(const INPUT0_DTYPE * __restrict in0,
     transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a / b; });
 }
 
-#endif // COMPILE_DIV
+#endif // GGML_OP_DIV
 
 } // extern "C"
