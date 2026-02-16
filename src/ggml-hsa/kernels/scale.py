@@ -56,7 +56,7 @@ def ggml_op_scale(arch: str, input_tensors: list, output_tensor, op_params: byte
 
     function, num_elements, tile_size = create_external_function(
         arch=arch,
-        op_name="scale",
+        op_name="GGML_OP_SCALE",
         input_tensor=input_tensor,
         output_tensor=output_tensor,
     )
@@ -114,8 +114,8 @@ def create_external_function(
 
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
-        name="ggml_op_" + op_name,
-        object_file_name=f"{op_name}_core_function.o",
+        name=f"{op_name.lower()}",
+        object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=path.join(current_dir, "scale.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
