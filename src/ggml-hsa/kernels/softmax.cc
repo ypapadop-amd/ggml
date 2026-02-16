@@ -8,7 +8,7 @@
 #endif
 
 template <int VecSize = KERN_VEC_SIZE>
-inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize>& x) {
+inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
     // Taylor series coefficients in reverse order for Horner's method
     constexpr float exp_coeffs[] = {
         0.0000000001605904f, // 1/13!
@@ -140,13 +140,13 @@ inline float compute_alibi_slope(float max_bias, int32_t n_head, int32_t head_id
 }
 
 extern "C" {
-#ifdef COMPILE_GGML_OP_SOFTMAX
+#ifdef GGML_OP_SOFT_MAX
 // Softmax without mask or sink
-void ggml_op_softmax(const INPUT_DTYPE * __restrict in,
-                     OUTPUT_DTYPE * __restrict out,
-                     int32_t N,
-                     float scale,
-                     float max_bias) {
+void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
+                      OUTPUT_DTYPE * __restrict out,
+                      int32_t N,
+                      float scale,
+                      float max_bias) {
     event0();
 
     constexpr int VEC_SIZE = KERN_VEC_SIZE;
@@ -211,19 +211,19 @@ void ggml_op_softmax(const INPUT_DTYPE * __restrict in,
     event1();
 }
 
-#endif // COMPILE_GGML_OP_SOFTMAX
+#endif // GGML_OP_SOFT_MAX
 
-#ifdef COMPILE_GGML_OP_SOFTMAX_WITH_MASK
+#ifdef GGML_OP_SOFT_MAX_WITH_MASK
 // Softmax with mask tensor
-void ggml_op_softmax_with_mask(const INPUT_DTYPE * __restrict in,
-                               const MASK_DTYPE * __restrict mask,
-                               OUTPUT_DTYPE * __restrict out,
-                               int32_t N,
-                               float scale,
-                               float max_bias,
-                               int32_t n_head,
-                               int32_t tile_idx,
-                               int32_t rows_per_head) {
+void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
+                                const MASK_DTYPE * __restrict mask,
+                                OUTPUT_DTYPE * __restrict out,
+                                int32_t N,
+                                float scale,
+                                float max_bias,
+                                int32_t n_head,
+                                int32_t tile_idx,
+                                int32_t rows_per_head) {
     event0();
 
     constexpr int VEC_SIZE = KERN_VEC_SIZE;
@@ -313,19 +313,19 @@ void ggml_op_softmax_with_mask(const INPUT_DTYPE * __restrict in,
     event1();
 }
 
-#endif // COMPILE_GGML_OP_SOFTMAX_WITH_MASK
+#endif // GGML_OP_SOFT_MAX_WITH_MASK
 
-#ifdef COMPILE_GGML_OP_SOFTMAX_WITH_MASK_AND_SINKS
+#ifdef GGML_OP_SOFT_MAX_WITH_MASK_AND_SINKS
 // Softmax with mask and sink tensors
-void ggml_op_softmax_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
-                                         const MASK_DTYPE * __restrict mask,
-                                         const SINK_DTYPE * __restrict sinks,
-                                         OUTPUT_DTYPE * __restrict out,
-                                         int32_t N,
-                                         int32_t tile_idx,
-                                         int32_t rows_per_head,
-                                         float scale,
-                                         float max_bias) {
+void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
+                                          const MASK_DTYPE * __restrict mask,
+                                          const SINK_DTYPE * __restrict sinks,
+                                          OUTPUT_DTYPE * __restrict out,
+                                          int32_t N,
+                                          int32_t tile_idx,
+                                          int32_t rows_per_head,
+                                          float scale,
+                                          float max_bias) {
     event0();
 
     constexpr int VEC_SIZE = KERN_VEC_SIZE;
@@ -414,6 +414,6 @@ void ggml_op_softmax_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
 
     event1();
 }
-#endif // COMPILE_GGML_OP_SOFTMAX_WITH_MASK_AND_SINKS
+#endif // GGML_OP_SOFT_MAX_WITH_MASK_AND_SINKS
 
 } // extern "C"
