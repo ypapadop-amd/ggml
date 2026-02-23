@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+// Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include "ggml-hsa/aie-kernel-compiler.hpp"
 
@@ -33,7 +33,7 @@ static const bool verbose_compilation = [] {
 static const std::filesystem::path ggml_hsa_library_dir = [] {
     // retrieve the shared library path
     Dl_info info;
-    if (dladdr(reinterpret_cast<void *>(&ggml_hsa_compile_aie_kernel), &info) == 0) {
+    if (dladdr(static_cast<const void *>(&ggml_hsa_library_dir), &info) == 0) {
         GGML_ABORT("Could not retrieve library directory\n");
     }
     return std::filesystem::path{info.dli_fname}.parent_path();
@@ -74,6 +74,7 @@ static py::tuple ggml_hsa_tensor_nb_as_pytuple(const ggml_tensor & tensor) {
 
 ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                         const ggml_tensor & tensor,
+                                        const std::string & op_name,
                                         const std::string & exported_name,
                                         const std::filesystem::path & output_path) {
     using namespace py::literals;
@@ -105,7 +106,7 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
         // compile the kernel
         auto build_mod = py::module_::import("build");
         auto compile_kernel = build_mod.attr("compile_kernel");
-        compile_kernel("ggml_op"_a = ggml_op_desc(&tensor), "arch"_a = dev_info.name,
+        compile_kernel("ggml_op"_a = op_name, "arch"_a = dev_info.name,
                        "input_tensors"_a = std::move(input_tensors),
                        "output_tensor"_a = std::move(output_tensor),
                        "op_params"_a = std::move(op_params), "exported_name"_a = exported_name,
@@ -113,13 +114,21 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
                        "verbose"_a = verbose_compilation);
     } catch (const py::error_already_set & ex) {
         GGML_HSA_LOG_INFO("%s: failed to compile kernel %s for tensor \"%s\" (%s): %s", __func__,
-                          exported_name.c_str(), tensor.name, ggml_op_desc(&tensor), ex.what());
+                          exported_name.c_str(), tensor.name, op_name.c_str(), ex.what());
         return GGML_STATUS_FAILED;
     }
 
     GGML_HSA_LOG_INFO("%s: generated kernel %s in %s for tensor \"%s\" (%s)", __func__,
                       exported_name.c_str(), output_directory.c_str(), tensor.name,
-                      ggml_op_desc(&tensor));
+                      op_name.c_str());
 
     return GGML_STATUS_SUCCESS;
+}
+
+ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                        const ggml_tensor & tensor,
+                                        const std::string & exported_name,
+                                        const std::filesystem::path & output_path) {
+    return ggml_hsa_compile_aie_kernel(dev_info, tensor, ggml_op_desc(&tensor), exported_name,
+                                       output_path);
 }
