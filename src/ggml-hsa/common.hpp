@@ -1,4 +1,4 @@
-// Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+// Copyright (c) 2024-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -177,11 +177,6 @@ void ggml_hsa_encode_op_params(const ggml_tensor & tensor, OutputStream & os) {
     std::size_t hash_value = std::hash<std::string_view>{}(bytes);
     os << std::hex << hash_value;
 }
-
-/**
- * @brief Returns a kernel name for @p tensor.
- */
-std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor);
 
 /**
  * @brief Frees memory allocated using HSA.
