@@ -79,7 +79,10 @@ Implements the core computation or core function using the AIE API:
    - Implement: `void ggml_op_new_op(const INPUT_DTYPE*, OUTPUT_DTYPE*, int32_t N)`
    - Use `extern "C"` linkage
 
-4. (optional) **Add backend support** in `ggml-hsa.cpp`:
+4. **Register the file with CMake**
+   - Add the files in the `kernels/CMakeLists.txt`
+
+5. (optional) **Add backend support** in `ggml-hsa.cpp`:
    - Add to `ggml_hsa_op_supports()` for operation support check
    - Add case in `ggml_hsa_compute_forward()` for dispatch
 

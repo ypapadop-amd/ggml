@@ -1,4 +1,4 @@
-// Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+// Copyright (c) 2024-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include "ggml-hsa.h"
 #include "ggml-backend-impl.h"
@@ -92,7 +92,12 @@ constexpr bool ggml_hsa_is_unary_op(ggml_op op) {
            (op == GGML_OP_SILU_BACK) || (op == GGML_OP_LEAKY_RELU);
 }
 
-std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor) {
+/**
+ * @brief Returns a kernel name for @p tensor using @p op_name as the operations name if it is not
+ *        empty.
+ */
+static std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor,
+                                               std::string op_name = "") {
     if ((tensor.op < GGML_OP_NONE) || (tensor.op >= GGML_OP_COUNT)) {
         throw std::runtime_error{std::string("Tensor \"")
                                      .append(ggml_get_name(&tensor))
@@ -101,10 +106,14 @@ std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor) {
                                      .append(" not in [0, GGML_OP_COUNT)")};
     }
 
+    // no operation name supplied - use the tensor operation name
+    if (op_name.empty()) {
+        op_name = ggml_op_desc(&tensor);
+    }
+
     std::ostringstream oss;
 
-    // name in lowercase
-    std::string_view op_name = ggml_op_desc(&tensor);
+    // convert name in lowercase
     std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss),
                    [&](char c) { return std::tolower(c); });
 
