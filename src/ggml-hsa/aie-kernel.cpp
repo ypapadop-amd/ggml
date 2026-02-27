@@ -22,7 +22,7 @@ static void ggml_hsa_aie_dispatch_packet(ggml_backend_hsa_context & ctx,
     pkt.count = payload_size;
     pkt.opcode = HSA_AMD_AIE_ERT_START_CU;
     pkt.payload_data = reinterpret_cast<std::uint64_t>(payload);
-    // TODO add pkt->completion_signal = ctx.dispatch_signal
+    // TODO add pkt.completion_signal = ctx.dispatch_signal
 
     auto queue = ctx.queue;
 
