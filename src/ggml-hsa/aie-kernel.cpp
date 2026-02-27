@@ -28,7 +28,7 @@ static void ggml_hsa_aie_dispatch_packet(ggml_backend_hsa_context & ctx,
 
     // Queue is full when (write_index - read_index) >= queue->size. Wait until there is space.
     const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
-    while (wr_idx - hsa_queue_load_read_index_acquire(queue) >= queue->size) {
+    while (wr_idx - hsa_queue_load_read_index_scacquire(queue) >= queue->size) {
         ggml_hsa_wait_dispatches(ctx);
     }
 
