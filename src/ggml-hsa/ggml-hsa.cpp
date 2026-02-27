@@ -473,7 +473,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // View tensors are generally not supported, but some operations like GGML_OP_CLAMP
     // are created as views in GGML even though they can be treated as non-in-place.
     // We allow these specific operations to proceed.
-    if (parent_tensor.view_src != nullptr && parent_tensor.op != GGML_OP_CLAMP) {
+    if (ggml_is_view(&parent_tensor) && parent_tensor.op != GGML_OP_CLAMP) {
         throw std::runtime_error{"View tensor is not supported."};
     }
 
@@ -701,7 +701,7 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
     // View tensors generally don't need initialization, but some operations like CLAMP
     // are created as views in GGML even though they have actual compute work.
     // These need tensor_extra for kernel dispatch.
-    if (tensor->view_src != nullptr && tensor->op != GGML_OP_CLAMP) {
+    if (ggml_is_view(tensor) && tensor->op != GGML_OP_CLAMP) {
         // no further initialization needed for views
         GGML_ASSERT(tensor->view_src->buffer->buft == buffer->buft);
         return GGML_STATUS_SUCCESS;
@@ -1046,7 +1046,7 @@ static void ggml_backend_hsa_free(ggml_backend_t backend) {
  * @brief Returns the buffer type of the buffer of tensor @p tensor.
  */
 static ggml_backend_buffer_type_t ggml_backend_hsa_get_tensor_buft(const ggml_tensor * tensor) {
-    return (tensor->view_src ? tensor->view_src->buffer : tensor->buffer)->buft;
+    return (ggml_is_view(tensor) ? tensor->view_src->buffer : tensor->buffer)->buft;
 }
 
 /**
