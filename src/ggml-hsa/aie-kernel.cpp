@@ -6,17 +6,17 @@
 /**
  * @brief Dispatches a packet to an AIE agent queue.
  *
- * @todo @p dispatch_signal is not used yet.
- *
  * @param[in] queue queue to enqueue the packet
- * @param[in] signal signal to notify for packet completion
+ * @param[in] dispatch_signal signal to notify for packet completion (decremented by runtime)
  * @param[in] payload packet payload
  * @param[in] payload_size payload size in dwords
  */
 static void ggml_hsa_aie_dispatch_packet(hsa_queue_t * queue,
-                                         hsa_signal_t /* dispatch_signal */,
+                                         hsa_signal_t dispatch_signal,
                                          hsa_amd_aie_ert_start_kernel_data_t * payload,
                                          std::size_t payload_size) {
+    hsa_signal_add_screlease(dispatch_signal, 1);
+
     hsa_amd_aie_ert_packet_t pkt{};
     pkt.header.header = HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE;
     pkt.header.AmdFormat = HSA_AMD_PACKET_TYPE_AIE_ERT;
@@ -24,7 +24,7 @@ static void ggml_hsa_aie_dispatch_packet(hsa_queue_t * queue,
     pkt.count = payload_size;
     pkt.opcode = HSA_AMD_AIE_ERT_START_CU;
     pkt.payload_data = reinterpret_cast<std::uint64_t>(payload);
-    // TODO add pkt->completion_signal = dispatch_signal
+    pkt.completion_signal = dispatch_signal;
 
     const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
     const std::uint64_t packet_id = wr_idx % queue->size;
