@@ -6,122 +6,16 @@ import importlib.util
 import os
 import sys
 import logging
-import numpy as np
 
 from iron.utils import suppress_import_pyxrt_msg
 
 suppress_import_pyxrt_msg()
 
 from aie.iron import ExternalFunction
-from aie.iron.device import NPU1, NPU2
 from aie.utils.compile import compile_cxx_core_function
 from aie.utils.compile import compile_mlir_module
 
 from tensor_desc import TensorDesc
-
-
-def align_to_arch(
-    arch: str, size: int, dtype: np.dtype, alignment_bytes: int = 4
-) -> int:
-    """
-    Align a size to architecture requirements.
-
-    Parameters:
-        arch (str): Target architecture.
-        size (int): Size to align (number of elements).
-        dtype (np.dtype): Data type of elements.
-        alignment_bytes (int): Alignment in bytes.
-
-    Returns:
-        int: Aligned size.
-    """
-    if arch in ["aie2", "aie2p"]:
-        dtype_size = dtype.itemsize
-        data_size = size * dtype_size
-        if data_size % alignment_bytes != 0:
-            aligned_size = (
-                alignment_bytes
-                * ((data_size + (alignment_bytes - 1)) // alignment_bytes)
-                // dtype_size
-            )
-            return aligned_size
-        return size
-    else:
-        raise ValueError(f"Unsupported architecture: {arch}")
-
-
-def arch_aligned_num_elements(arch: str, tensor) -> int:
-    """
-    Returns the number of elements in the tensor aligned to what the architecture expects for the data type of the tensor.
-
-    Parameters:
-        arch (str): Target architecture.
-        tensor: Tensor.
-
-    Returns:
-        int: Number of elements aligned to architecture requirements.
-    """
-    return align_to_arch(arch, np.size(tensor), tensor.dtype)
-
-
-def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
-    """
-    Returns the maximum tile size based on device, data type and number of elements.
-
-    Parameters:
-        arch (str): Target architecture.
-        dtype (np.dtype): Data type of the tensor elements.
-        num_elements (int): Total number of elements in the tensor.
-
-    Returns:
-        int: Maximum tile size.
-    """
-    vector_register_width = 0
-    if arch == "aie2" or arch == "aie2p":
-        vector_register_width = 512  # bits
-    else:
-        raise ValueError(f"Unsupported architecture: {arch}")
-    tile_size = int(vector_register_width / dtype.itemsize)
-
-    while num_elements % tile_size != 0 and tile_size > 1:
-        tile_size //= 2
-
-    assert (
-        num_elements % tile_size == 0
-    ), f"Number of elements ({num_elements}) must be a multiple of tile size ({tile_size})."
-
-    return tile_size
-
-
-def arch_to_device(device):
-    """Returns the device from the string."""
-    if isinstance(device, str):
-        if device == "aie2":
-            return NPU1()
-        elif device == "aie2p":
-            return NPU2()
-        else:
-            raise ValueError(f"Unsupported device: {device}")
-    return device
-
-
-def import_from_path(module_name: str, path: str | os.PathLike):
-    """
-    Imports the module with name module_name from path.
-
-    Parameters:
-        module_name (str): Name of the module.
-        path (os.PathLike): Path to the module file.
-    """
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None:
-        raise ImportError(f"Cannot find module spec for {module_name} at path {path}")
-    if spec.loader is None:
-        raise ImportError(f"Cannot find loader for module {module_name} at path {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 @dataclass(frozen=True)
@@ -170,6 +64,53 @@ op_to_kernel_map = {
     "SOFT_MAX": Kernel("ggml_op_soft_max", "soft_max.py"),
     "CLAMP": Kernel("ggml_op_clamp", "clamp.py"),
 }
+
+
+def import_from_path(module_name: str, path: str | os.PathLike):
+    """
+    Imports the module with name module_name from path.
+
+    Parameters:
+        module_name (str): Name of the module.
+        path (os.PathLike): Path to the module file.
+    """
+    import types
+
+    path = os.path.abspath(path)
+    parent_dir = os.path.dirname(path)
+    grandparent_dir = os.path.dirname(parent_dir)
+
+    # Add grandparent directory to sys.path so package imports work
+    if grandparent_dir not in sys.path:
+        sys.path.insert(0, grandparent_dir)
+
+    # Create a package name from the directory for relative imports
+    package_name = os.path.basename(parent_dir)
+
+    # Ensure the parent package exists in sys.modules
+    if package_name not in sys.modules:
+        pkg = types.ModuleType(package_name)
+        pkg.__path__ = [parent_dir]
+        pkg.__package__ = package_name
+        sys.modules[package_name] = pkg
+
+    # Create spec with submodule_search_locations for package support
+    full_module_name = f"{package_name}.{module_name}"
+    spec = importlib.util.spec_from_file_location(
+        full_module_name,
+        path,
+        submodule_search_locations=[parent_dir],
+    )
+    if spec is None:
+        raise ImportError(f"Cannot find module spec for {module_name} at path {path}")
+    if spec.loader is None:
+        raise ImportError(f"Cannot find loader for module {module_name} at path {path}")
+    module = importlib.util.module_from_spec(spec)
+    # Set __package__ to enable relative imports
+    module.__package__ = package_name
+    sys.modules[full_module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def compile_kernel(

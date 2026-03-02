@@ -11,7 +11,12 @@ import struct
 
 import numpy as np
 
-from .utils import suppress_import_pyxrt_msg
+from .utils import (
+    suppress_import_pyxrt_msg,
+    arch_aligned_num_elements,
+    arch_to_device,
+    max_tile_size,
+)
 
 suppress_import_pyxrt_msg()
 
@@ -25,8 +30,6 @@ from aie.iron import (
 )
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
-
-from build import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
 def create_external_function(
@@ -67,7 +70,7 @@ def create_external_function(
 
 def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
-    GGML_OP_CLAMP implementation.
+    IRON design for clamp.
 
     Clamps each element of the input tensor to the range [min_val, max_val].
     output[i] = max(min_val, min(input[i], max_val))

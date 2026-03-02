@@ -11,7 +11,12 @@ import struct
 
 import numpy as np
 
-from .utils import suppress_import_pyxrt_msg
+from .utils import (
+    suppress_import_pyxrt_msg,
+    arch_aligned_num_elements,
+    arch_to_device,
+    max_tile_size,
+)
 
 suppress_import_pyxrt_msg()
 
@@ -26,12 +31,10 @@ from aie.iron import (
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
-from build import arch_aligned_num_elements, arch_to_device, max_tile_size
-
 
 def scale(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
-    GGML_OP_SCALE implementation.
+    IRON design for scale.
 
     Parameters:
         arch (str): Target architecture.

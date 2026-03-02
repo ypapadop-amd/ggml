@@ -5,7 +5,34 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-from .iron.binary_ops import ggml_op_binary
+from .iron.binary_ops import binary_op
+
+
+def _ggml_op_binary(
+    arch: str,
+    op_name: str,
+    input_tensors: list,
+    output_tensor,
+):
+    """
+    Binary operation implementation.
+
+    Parameters:
+        arch (str): Target architecture.
+        op_name (str): Name of the operation.
+        input_tensors (list): List of two input tensors.
+        output_tensor: Output tensor.
+    """
+
+    if len(input_tensors) != 2:
+        raise ValueError("Operation requires exactly two input tensors.")
+
+    return binary_op(
+        arch=arch,
+        op_name=op_name,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+    )
 
 
 def ggml_op_add(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -19,7 +46,7 @@ def ggml_op_add(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    return ggml_op_binary(
+    return _ggml_op_binary(
         arch=arch,
         op_name="GGML_OP_ADD",
         input_tensors=input_tensors,
@@ -38,7 +65,7 @@ def ggml_op_sub(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    return ggml_op_binary(
+    return _ggml_op_binary(
         arch=arch,
         op_name="GGML_OP_SUB",
         input_tensors=input_tensors,
@@ -57,7 +84,7 @@ def ggml_op_mul(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    return ggml_op_binary(
+    return _ggml_op_binary(
         arch=arch,
         op_name="GGML_OP_MUL",
         input_tensors=input_tensors,
@@ -76,7 +103,7 @@ def ggml_op_div(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    return ggml_op_binary(
+    return _ggml_op_binary(
         arch=arch,
         op_name="GGML_OP_DIV",
         input_tensors=input_tensors,

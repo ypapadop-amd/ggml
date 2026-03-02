@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
 # copy root package files
 set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py

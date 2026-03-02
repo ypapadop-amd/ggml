@@ -5,7 +5,7 @@
 #
 # (c) Copyright 2025-2026 AMD Inc.
 
-from .iron.gemm import ggml_op_mul_mat
+from .iron.gemm import gemm
 
 
 def ggml_op_mul_mat(
@@ -21,7 +21,7 @@ def ggml_op_mul_mat(
         op_params (bytearray): Operation-specific parameters as a bytearray.
     """
 
-    return ggml_op_mul_mat(
+    return gemm(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,

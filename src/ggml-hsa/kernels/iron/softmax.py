@@ -11,7 +11,10 @@ from typing import Any, Optional, Tuple
 
 import numpy as np
 
-from .utils import suppress_import_pyxrt_msg
+from .utils import (
+    suppress_import_pyxrt_msg,
+    arch_to_device,
+)
 
 suppress_import_pyxrt_msg()
 
@@ -27,11 +30,6 @@ from aie.iron import (
 )
 from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
-
-from build import (
-    align_to_arch,
-    arch_to_device,
-)
 
 
 def get_softmax_dimensions(tensor) -> Tuple[int, int]:
@@ -73,7 +71,7 @@ KERN_VEC_SIZE = 8
 
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
-    GGML_OP_SOFT_MAX implementation.
+    IRON design for softmax.
 
     Parameters:
         arch (str): Target architecture.

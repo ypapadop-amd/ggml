@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from os import path
 import numpy as np
 
-from .utils import suppress_import_pyxrt_msg
+from .utils import (
+    suppress_import_pyxrt_msg,
+    arch_aligned_num_elements,
+    arch_to_device,
+    max_tile_size,
+)
 
 suppress_import_pyxrt_msg()
 
@@ -23,8 +28,6 @@ from aie.iron import (
 )
 from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
-
-from build import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
 @dataclass(frozen=True)
@@ -45,7 +48,7 @@ class CoreFunctionSpec:
         return self.external_function.tile_size(0)
 
 
-def apply_binary_op(
+def _binary_op(
     arch: str,
     input_tensors: list,
     function_spec: CoreFunctionSpec,
@@ -162,14 +165,14 @@ def create_external_function(
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
 
 
-def ggml_op_binary(
+def binary_op(
     arch: str,
     op_name: str,
     input_tensors: list,
     output_tensor,
 ):
     """
-    Binary operation implementation.
+    IRON generic design for binary operations.
 
     Parameters:
         arch (str): Target architecture.
@@ -203,7 +206,7 @@ def ggml_op_binary(
         output_tensor=output_tensor,
     )
 
-    return apply_binary_op(
+    return _binary_op(
         arch=arch,
         input_tensors=input_tensors,
         function_spec=function_spec,

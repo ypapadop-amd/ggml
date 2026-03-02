@@ -5,7 +5,7 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-from .iron.unary_ops import ggml_op_unary
+from .iron.unary_ops import unary_op
 
 
 def ggml_op_sqr(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -19,7 +19,7 @@ def ggml_op_sqr(arch: str, input_tensors: list, output_tensor, op_params: bytear
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -92,7 +92,7 @@ def ggml_unary_op_abs(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -113,7 +113,7 @@ def ggml_unary_op_sgn(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -134,7 +134,7 @@ def ggml_unary_op_neg(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -155,7 +155,7 @@ def ggml_unary_op_step(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -206,7 +206,7 @@ def ggml_unary_op_relu(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -287,7 +287,7 @@ def ggml_unary_op_hardswish(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -308,7 +308,7 @@ def ggml_unary_op_hardsigmoid(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -374,7 +374,7 @@ def ggml_unary_op_floor(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -395,7 +395,7 @@ def ggml_unary_op_ceil(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -416,7 +416,7 @@ def ggml_unary_op_round(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -437,7 +437,7 @@ def ggml_unary_op_trunc(
         op_params: Operation parameters.
     """
 
-    return ggml_op_unary(
+    return unary_op(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,

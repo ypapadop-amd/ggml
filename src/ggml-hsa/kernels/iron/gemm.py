@@ -397,7 +397,6 @@ def my_matmul(
         # Set up compute tiles
         for row in range(n_aie_rows):
             for col in range(n_aie_cols):
-
                 # The stack size choice is a workaround explained here:
                 # https://github.com/Xilinx/mlir-aie/pull/2391#issuecomment-2967432485
                 # In summary, the Peano compiler uses a stack size greater than the default one used by this kernel
@@ -455,7 +454,6 @@ def my_matmul(
                         # for small input sizes, we may not even need a "pong" iteration
                         break
                     for col in range(n_aie_cols):
-
                         # C Output Transfer:
                         # The smallest transfer unit is a (m*n_aie_rows)-x-(n)-sized sub-tile of the matrix.
                         # Transfer one such tile for every (n_aie_cols)-th column, evenly spaced,
@@ -514,7 +512,6 @@ def my_matmul(
                             )
 
                         for tile_row in range(tb_n_rows):
-
                             # A input transfer:
                             #
                             # The smallest transfer unit is a (m*n_A_tiles_per_shim)-sized sub-tile of the input matrix.
@@ -717,11 +714,9 @@ def create_mat_mul_external_functions(
     )
 
 
-def ggml_op_mul_mat(
-    arch: str, input_tensors: list, output_tensor, op_params: bytearray
-):
+def gemm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
-    GGML_MUL_MAT implemetation.
+    IRON design for matrix multiplication.
 
     Args:
         arch (str): Target architecture (e.g., "aie2", "aie2p").
