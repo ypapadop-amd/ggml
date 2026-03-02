@@ -90,12 +90,12 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
         for (auto i = 0; i < src_tensor_count; ++i) {
             const auto src_tensor = tensor.src[i];
             input_tensors[i] =
-                create_tensor_desc("type"_a = ggml_type_name(src_tensor->type),
+                create_tensor_desc("dtype"_a = ggml_type_name(src_tensor->type),
                                    "ne"_a = ggml_hsa_tensor_ne_as_pytuple(*src_tensor),
                                    "nb"_a = ggml_hsa_tensor_nb_as_pytuple(*src_tensor),
                                    "contiguous"_a = ggml_is_contiguous(src_tensor));
         }
-        auto output_tensor = create_tensor_desc("type"_a = ggml_type_name(tensor.type),
+        auto output_tensor = create_tensor_desc("dtype"_a = ggml_type_name(tensor.type),
                                                 "ne"_a = ggml_hsa_tensor_ne_as_pytuple(tensor),
                                                 "nb"_a = ggml_hsa_tensor_nb_as_pytuple(tensor),
                                                 "contiguous"_a = ggml_is_contiguous(&tensor));

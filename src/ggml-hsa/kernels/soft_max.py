@@ -5,24 +5,26 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-from .iron.clamp import clamp
+from .iron.softmax import softmax
 
 
-def ggml_op_clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def ggml_op_soft_max(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+):
     """
-    GGML_OP_CLAMP implementation.
-
-    Clamps each element of the input tensor to the range [min_val, max_val].
-    output[i] = max(min_val, min(input[i], max_val))
+    GGML_OP_SOFT_MAX implementation.
 
     Parameters:
         arch (str): Target architecture.
-        input_tensors (list): List of one input tensor.
+        input_tensors (list): List of 1-3 input tensors:
+            - input_tensors[0]: Input tensor (required)
+            - input_tensors[1]: Mask tensor (optional)
+            - input_tensors[2]: Sink tensor (optional)
         output_tensor: Output tensor.
-        op_params (bytearray): Operation parameters containing min and max values.
+        op_params (bytearray): Operation parameters (scale, max_bias).
     """
 
-    return clamp(
+    return softmax(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,

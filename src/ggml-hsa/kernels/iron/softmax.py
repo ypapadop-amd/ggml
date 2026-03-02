@@ -10,6 +10,11 @@ from os import path
 from typing import Any, Optional, Tuple
 
 import numpy as np
+
+from .utils import suppress_import_pyxrt_msg
+
+suppress_import_pyxrt_msg()
+
 from aie.dialects.arith import index_cast
 from aie.ir import IntegerType
 from aie.iron import (
@@ -66,9 +71,7 @@ def get_softmax_dimensions(tensor) -> Tuple[int, int]:
 KERN_VEC_SIZE = 8
 
 
-def ggml_op_soft_max(
-    arch: str, input_tensors: list, output_tensor, op_params: bytearray
-):
+def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     GGML_OP_SOFT_MAX implementation.
 

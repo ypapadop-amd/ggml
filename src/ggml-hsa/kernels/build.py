@@ -8,7 +8,7 @@ import sys
 import logging
 import numpy as np
 
-from utils import suppress_import_pyxrt_msg
+from iron.utils import suppress_import_pyxrt_msg
 
 suppress_import_pyxrt_msg()
 
@@ -165,9 +165,9 @@ op_to_kernel_map = {
     "LOG": Kernel("ggml_op_log", "unary_ops.py"),
     "SIN": Kernel("ggml_op_sin", "unary_ops.py"),
     "COS": Kernel("ggml_op_cos", "unary_ops.py"),
-    "MUL_MAT": Kernel("ggml_op_mul_mat", "gemm.py"),
+    "MUL_MAT": Kernel("ggml_op_mul_mat", "mul_mat.py"),
     "SCALE": Kernel("ggml_op_scale", "scale.py"),
-    "SOFT_MAX": Kernel("ggml_op_soft_max", "softmax.py"),
+    "SOFT_MAX": Kernel("ggml_op_soft_max", "soft_max.py"),
     "CLAMP": Kernel("ggml_op_clamp", "clamp.py"),
 }
 

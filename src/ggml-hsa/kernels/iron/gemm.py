@@ -9,7 +9,7 @@ import argparse
 from os import path
 import numpy as np
 
-from utils import suppress_import_pyxrt_msg
+from .utils import suppress_import_pyxrt_msg
 
 suppress_import_pyxrt_msg()
 
@@ -721,7 +721,7 @@ def ggml_op_mul_mat(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ):
     """
-    Performs matrix multiplication for GGML using the specified architecture.
+    GGML_MUL_MAT implemetation.
 
     Args:
         arch (str): Target architecture (e.g., "aie2", "aie2p").
