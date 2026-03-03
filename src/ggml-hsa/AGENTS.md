@@ -22,46 +22,80 @@ src/ggml-hsa/
 ├── aie-kernel.cpp/hpp           # AIE kernel abstraction layer
 ├── aie-kernel-compiler.cpp/hpp  # JIT compilation interface
 ├── type-traits.hpp              # GGML type to C++ type mapping
-├── kernels/                     # AIE kernel implementations
+├── kernels/                     # AIE kernel implementations (two-layer architecture)
+│   ├── __init__.py              # Package exports (ggml_compile_op, TensorDesc)
 │   ├── build.py                 # Kernel compilation orchestrator
-│   ├── tensor_desc.py           # Tensor descriptor utilities
-│   ├── utils.py                 # Shared Python utilities
-│   ├── unary_ops.py/cc          # Unary operations (sqr, sqrt, relu, etc.)
-│   ├── binary_ops.py/cc         # Binary operations (add, sub, mul, div)
-│   ├── scale.py/cc              # Scale operation
-│   ├── softmax.py/cc            # Softmax operation
-│   ├── clamp.py/cc              # Clamp operation
-│   ├── gemm.py                  # Matrix multiplication
-│   ├── aie2/                    # aie2-specific core functions
-│   └── aie2p/                   # aie2p-specific kernels
+│   ├── tensor_desc.py           # Tensor descriptor dataclass
+│   ├── binary_ops.py            # Top-level GGML binary op wrappers
+│   ├── unary_ops.py             # Top-level GGML unary op wrappers
+│   ├── scale.py                 # Top-level scale op wrapper
+│   ├── soft_max.py              # Top-level softmax op wrapper
+│   ├── clamp.py                 # Top-level clamp op wrapper
+│   ├── mul_mat.py               # Top-level matrix multiply wrapper
+│   └── iron/                    # IRON kernel implementations
+│       ├── __init__.py          # Subpackage init
+│       ├── utils.py             # Shared utilities (alignment, device mapping)
+│       ├── binary_ops.py/cc     # Binary ops IRON design + AIE core function
+│       ├── unary_ops.py/cc      # Unary ops IRON design + AIE core function
+│       ├── scale.py/cc          # Scale IRON design + AIE core function
+│       ├── softmax.py/cc        # Softmax IRON design + AIE core function
+│       ├── clamp.py/cc          # Clamp IRON design + AIE core function
+│       ├── gemm.py              # Matrix multiplication IRON design
+│       ├── ggml-aie.hpp         # Common AIE type definitions
+│       ├── aie_kernel_utils.h   # AIE kernel utility macros
+│       ├── aie2/                # aie2-specific core functions (mm.cc, zero.cc)
+│       └── aie2p/               # aie2p-specific core functions (mm.cc, zero.cc)
 └── cmake/                       # CMake utilities
 ```
 
+### Two-Layer Architecture
+
+The kernel code follows a two-layer architecture:
+
+1. **Top-level wrappers** (`kernels/*.py`): Thin wrappers that validate inputs and
+   delegate to the corresponding IRON implementation. These follow the standard
+   GGML operation signature: `ggml_op_<name>(arch, input_tensors, output_tensor, op_params)`.
+
+2. **IRON implementations** (`kernels/iron/*.py`): Low-level kernel designs that
+   define data movement (ObjectFifos), worker placement, and runtime sequences.
+   These are paired with C++ core functions (`kernels/iron/*.cc`) that implement
+   the actual vectorized computations using the AIE API.
+
 ## Kernel Development Pattern
 
-Each kernel consists of two files:
+Each kernel consists of three files across two layers:
 
-### 1. Python File (e.g., `unary_ops.py`)
+### 1. Top-level Wrapper (e.g., `kernels/unary_ops.py`)
+
+Thin wrapper that:
+
+- Imports the IRON implementation from `iron/` subpackage
+- Provides the standard GGML operation signature
+- Validates inputs before delegation
+
+### 2. IRON Design (e.g., `kernels/iron/unary_ops.py`)
 
 Defines the IRON program structure:
 
-- Data movement (ObjectFifos)
-- Worker placement
-- Runtime sequences
-- External function declarations
+- Data movement via ObjectFifos (input/output streaming)
+- Worker placement on AIE tiles
+- Runtime sequences for DMA transfers
+- External function declarations for C++ core functions
+- Tiling and alignment calculations
 
-### 2. C++ File (e.g., `unary_ops.cc`)
+### 3. C++ Core Function (e.g., `kernels/iron/unary_ops.cc`)
 
-Implements the core computation or core function using the AIE API:
+Implements the core computation using the AIE API:
 
 - Uses `#ifdef GGML_OP_<OP>` guards for selective compilation
 - Uses `INPUT_DTYPE` and `OUTPUT_DTYPE` macros for type flexibility
-- Includes `<aie_api/aie.hpp>` for AIE intrinsics
+- Includes `<aie_api/aie.hpp>` for AIE vector intrinsics
 - Functions follow naming convention: `ggml_op_<operation>`
+- Uses `extern "C"` linkage for IRON integration
 
 ## Adding a New Kernel
 
-1. **Register the operation** in `build.py`:
+1. **Register the operation** in `kernels/build.py`:
 
    ```python
    op_to_kernel_map = {
@@ -69,20 +103,34 @@ Implements the core computation or core function using the AIE API:
    }
    ```
 
-2. **Create the Python file** (`kernels/new_op.py`):
-   - Import from `aie.iron` (ObjectFifo, Program, Runtime, Worker, etc.)
-   - Define the data flow and compute structure
-   - Export via `ggml_op_new_op(arch, input_tensors, output_tensor, op_params)`
+2. **Create the top-level wrapper** (`kernels/new_op.py`):
 
-3. **Create the C++ file** (`kernels/new_op.cc`):
+   ```python
+   """Top-level entry point for GGML_OP_NEW_OP."""
+   from .iron.new_op import new_op
+
+   def ggml_op_new_op(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+       """GGML_OP_NEW_OP implementation."""
+       return new_op(arch=arch, input_tensors=input_tensors,
+                     output_tensor=output_tensor, op_params=op_params)
+   ```
+
+3. **Create the IRON design** (`kernels/iron/new_op.py`):
+   - Import from `aie.iron` (ObjectFifo, Program, Runtime, Worker, etc.)
+   - Import utilities from `.utils` (arch_to_device, align_to_arch, etc.)
+   - Define the data flow and compute structure
+   - Create external function specs for the C++ core function
+
+4. **Create the C++ core function** (`kernels/iron/new_op.cc`):
    - Use compile guards: `#ifdef GGML_OP_NEW_OP`
    - Implement: `void ggml_op_new_op(const INPUT_DTYPE*, OUTPUT_DTYPE*, int32_t N)`
    - Use `extern "C"` linkage
+   - Include `ggml-aie.hpp` for common type definitions
 
-4. **Register the file with CMake**
+5. **Register the file with CMake**
    - Add the files in the `kernels/CMakeLists.txt`
 
-5. (optional) **Add backend support** in `ggml-hsa.cpp`:
+6. (optional) **Add backend support** in `ggml-hsa.cpp`:
    - Add to `ggml_hsa_op_supports()` for operation support check
    - Add case in `ggml_hsa_compute_forward()` for dispatch
 
@@ -105,11 +153,17 @@ Implements the core computation or core function using the AIE API:
 
 ### Python
 
-- Follow existing patterns in `unary_ops.py` / `binary_ops.py`
-- Use `CoreFunctionSpec` or similar for external function specs
-- Handle tensor alignment with `arch_aligned_num_elements()`
-- Use `max_tile_size()` for optimal tiling
+- Follow existing patterns in `iron/unary_ops.py` / `iron/binary_ops.py`
+- Use `CoreFunctionSpec` dataclass for external function specifications
+- Import utilities from `iron/utils.py`:
+  - `arch_to_device()` - Convert arch string to IRON device object
+  - `arch_aligned_num_elements()` - Align tensor sizes to architecture requirements
+  - `align_to_arch()` - Align arbitrary sizes to byte boundaries
+  - `max_tile_size()` - Calculate optimal tile size for vectorization
+  - `suppress_import_pyxrt_msg()` - Suppress noisy pyxrt import messages
+- Top-level wrappers import from `.iron.<module>` subpackage
 - Follow existing formatting using `black`
+- Add module docstrings to all Python files
 
 ## Data Types
 
