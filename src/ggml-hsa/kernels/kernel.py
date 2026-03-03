@@ -67,7 +67,7 @@ class KernelSpec:
     dtypes, and other runtime parameters.
 
     Attributes:
-        backend: The compilation backend to use (IRON or TRITON).
+        backend: The compilation backend to use (see Backend enum).
         function: Callable that generates the backend-specific IR.
         op_name: Name of the operation (set by ggml_compile_op from Kernel.name).
     """
