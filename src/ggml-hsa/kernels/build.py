@@ -1,11 +1,14 @@
 # Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-from dataclasses import dataclass
 import dataclasses
+from dataclasses import dataclass
 import importlib.util
+import logging
 import os
 import sys
-import logging
+import types
+
+from typing import Any
 
 from iron.utils import suppress_import_pyxrt_msg
 
@@ -24,6 +27,7 @@ class Kernel:
 
     name: str
     source_file: str
+    function: Any = None
 
 
 # mapping of GGML operations (unary, binary, and others) to kernel source files
@@ -74,8 +78,6 @@ def import_from_path(module_name: str, path: str | os.PathLike):
         module_name (str): Name of the module.
         path (os.PathLike): Path to the module file.
     """
-    import types
-
     path = os.path.abspath(path)
     parent_dir = os.path.dirname(path)
     grandparent_dir = os.path.dirname(parent_dir)
@@ -113,92 +115,23 @@ def import_from_path(module_name: str, path: str | os.PathLike):
     return module
 
 
-def compile_kernel(
-    ggml_op: str,
+def compile_iron_kernel(
+    kernel: Kernel,
     arch: str,
     input_tensors: list[TensorDesc],
     output_tensor: TensorDesc,
     op_params: bytearray,
+    work_dir: str,
     exported_name: str,
     output_directory: os.PathLike,
-    verbose: bool = False,
+    logger: logging.Logger,
+    verbose: bool,
 ):
-    """
-    Compiles the kernel code to PDI and instruction files.
-
-    Parameters:
-        ggml_op (str): GGML operation.
-        arch (str): Target architecture.
-        input_tensors (list[TensorDesc]): List of input tensor descriptions.
-        output_tensor (TensorDesc): Output tensor description.
-        exported_name (str): Name to export the compiled kernel as.
-        output_directory (str): Directory to save the compiled files.
-        verbose (bool): If True, enables verbose logging.
-    """
-
-    logger = logging.getLogger(__name__)
-    # remove all existing handlers
-    for handler in logger.handlers.copy():
-        try:
-            logger.removeHandler(handler)
-        except ValueError:
-            # ignore double removals
-            pass
-    if verbose:
-        logger.setLevel(logging.DEBUG)
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.DEBUG)
-        formatter = logging.Formatter("%(levelname)s: %(message)s")
-        ch.setFormatter(formatter)
-        logger.addHandler(ch)
-
-    # get kernel source file based on operation
-    kernel = op_to_kernel_map.get(ggml_op, None)
-    if kernel is None:
-        raise ValueError(f"Unsupported GGML operation: {ggml_op}")
-    kernel = dataclasses.replace(
-        kernel,
-        source_file=os.path.abspath(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), kernel.source_file)
-        ),
-    )
-
-    logger.info(
-        (
-            "Compiling op: %s for arch %s\n"
-            "  Kernel name:      %s\n"
-            "  Kernel source:    %s\n"
-            "  Input tensors:    %s\n"
-            "  Output tensor:    %s\n"
-            "  Operation parameters: %s\n"
-            "  Exported name:    %s\n"
-            "  Output directory: %s"
-        ),
-        ggml_op,
-        arch,
-        kernel.name,
-        kernel.source_file,
-        input_tensors,
-        output_tensor,
-        op_params,
-        exported_name,
-        output_directory,
-    )
-
-    # create output and work directories
-    os.makedirs(output_directory, exist_ok=True)
-    work_dir = os.path.join(output_directory, f"{exported_name}-artifacts")
-    os.makedirs(work_dir, exist_ok=True)
-
-    # find IRON kernel
-    module = import_from_path(kernel.name, kernel.source_file)
-    kernel_fn = getattr(module, kernel.name)
-
     # remove any existing external functions
     ExternalFunction._instances.clear()
 
     # generate MLIR module
-    mlir_module = kernel_fn(
+    mlir_module = kernel.function(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -237,6 +170,106 @@ def compile_kernel(
         verbose=verbose,
         work_dir=work_dir,
     )
+
+
+def ggml_compile_op(
+    ggml_op: str,
+    arch: str,
+    input_tensors: list[TensorDesc],
+    output_tensor: TensorDesc,
+    op_params: bytearray,
+    exported_name: str,
+    output_directory: os.PathLike,
+    verbose: bool = False,
+):
+    """
+    Compiles the kernel code corresponding to the GGML operation to PDI and instruction files.
+
+    Parameters:
+        ggml_op (str): GGML operation.
+        arch (str): Target architecture.
+        input_tensors (list[TensorDesc]): List of input tensor descriptions.
+        output_tensor (TensorDesc): Output tensor description.
+        exported_name (str): Name to export the compiled kernel as.
+        output_directory (str): Directory to save the compiled files.
+        verbose (bool): If True, enables verbose logging.
+    """
+
+    # setup logging
+    logger = logging.getLogger(__name__)
+    # remove all existing handlers
+    for handler in logger.handlers.copy():
+        try:
+            logger.removeHandler(handler)
+        except ValueError:
+            # ignore double removals
+            pass
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.DEBUG)
+        formatter = logging.Formatter("%(levelname)s: %(message)s")
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
+    # get kernel implementation based on operation
+    kernel = op_to_kernel_map.get(ggml_op, None)
+    if not kernel:
+        raise ValueError(f"Unsupported GGML operation: {ggml_op}")
+    kernel_source_file = os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), kernel.source_file)
+    )
+    module = import_from_path(kernel.name, kernel_source_file)
+    kernel_fn = getattr(module, kernel.name)
+    kernel = dataclasses.replace(
+        kernel,
+        source_file=kernel_source_file,
+        function=kernel_fn,
+    )
+
+    # create output and work directories
+    os.makedirs(output_directory, exist_ok=True)
+    work_dir = os.path.join(output_directory, f"{exported_name}-artifacts")
+    os.makedirs(work_dir, exist_ok=True)
+
+    logger.info(
+        (
+            "Compiling op: %s for arch %s\n"
+            "  Kernel name:          %s\n"
+            "  Kernel source:        %s\n"
+            "  Input tensors:        %s\n"
+            "  Output tensor:        %s\n"
+            "  Operation parameters: %s\n"
+            "  Exported name:        %s\n"
+            "  Output directory:     %s\n"
+            "  Working directory:    %s"
+        ),
+        ggml_op,
+        arch,
+        kernel.name,
+        kernel.source_file,
+        input_tensors,
+        output_tensor,
+        op_params,
+        exported_name,
+        output_directory,
+        work_dir,
+    )
+
+    # compile kernel
+    compile_iron_kernel(
+        kernel=kernel,
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        op_params=op_params,
+        work_dir=work_dir,
+        exported_name=exported_name,
+        output_directory=output_directory,
+        logger=logger,
+        verbose=verbose,
+    )
+
     logger.info(
         "Finished compilation for kernel %s in %s", kernel.name, output_directory
     )
@@ -328,11 +361,12 @@ def main():
     )
     args = parser.parse_args()
 
-    compile_kernel(
+    ggml_compile_op(
         ggml_op=args.ggml_op,
         arch=args.arch,
         input_tensors=args.input_tensors,
         output_tensor=args.output_tensor,
+        op_params=bytearray(),
         exported_name=args.exported_name,
         output_directory=args.output_directory,
         verbose=args.verbose,
