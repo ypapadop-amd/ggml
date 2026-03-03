@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
+
 """
 Top-level entry point for the GGML softmax operation (GGML_OP_SOFT_MAX).
 """
