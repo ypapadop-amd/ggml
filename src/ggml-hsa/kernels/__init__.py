@@ -9,9 +9,11 @@ and tensor descriptor utilities needed for JIT kernel compilation.
 """
 
 from .build import ggml_compile_op
+from .kernel import Kernel
 from .tensor_desc import TensorDesc, ggml_tensor_to_tensordesc
 
 __all__ = [
+    "Kernel",
     "ggml_compile_op",
     "TensorDesc",
     "ggml_tensor_to_tensordesc",

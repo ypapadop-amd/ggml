@@ -1,11 +1,12 @@
 # Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
-"""
-IRON kernel build system for GGML HSA backend.
 
-This module provides the infrastructure for compiling IRON-based kernels to PDI
-and instruction files for AMD AIE devices. It handles mapping GGML operations to
-their corresponding kernel implementations, dynamic module loading, and
-orchestrating the MLIR compilation pipeline.
+"""
+GGML HSA backend kernel build system.
+
+This module provides the infrastructure for compiling kernels to executable code
+for AMD XDNA / XDNA2 devices. It handles mapping GGML operations to their corresponding
+kernel implementations, dynamic module loading, and orchestrating the compilation
+pipeline.
 
 Usage:
     As a module:
@@ -17,34 +18,15 @@ Usage:
 """
 
 import dataclasses
-from dataclasses import dataclass
 import importlib.util
 import logging
 import os
 import sys
 import types
 
-from typing import Any
-
-from iron.utils import suppress_import_pyxrt_msg
-
-suppress_import_pyxrt_msg()
-
-from aie.iron import ExternalFunction
-from aie.utils.compile import compile_cxx_core_function
-from aie.utils.compile import compile_mlir_module
-
+from kernel import Kernel
 from tensor_desc import TensorDesc
-
-
-@dataclass(frozen=True)
-class Kernel:
-    """Dataclass representing a kernel."""
-
-    name: str
-    source_file: str
-    function: Any = None
-
+from build_iron import compile_iron_kernel
 
 # mapping of GGML operations (unary, binary, and others) to kernel source files
 op_to_kernel_map = {
@@ -129,82 +111,6 @@ def import_from_path(module_name: str, path: str | os.PathLike):
     sys.modules[full_module_name] = module
     spec.loader.exec_module(module)
     return module
-
-
-def compile_iron_kernel(
-    kernel: Kernel,
-    arch: str,
-    input_tensors: list[TensorDesc],
-    output_tensor: TensorDesc,
-    op_params: bytearray,
-    work_dir: str,
-    exported_name: str,
-    output_directory: os.PathLike,
-    logger: logging.Logger,
-    verbose: bool,
-):
-    """
-    Compiles an IRON kernel to PDI and instruction files.
-
-    This function executes the kernel's Python function to generate an MLIR module,
-    compiles any external C++ core functions, and then compiles the MLIR module
-    to produce the final PDI and instruction binary files.
-
-    Parameters:
-        kernel (Kernel): The kernel to compile.
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        input_tensors (list[TensorDesc]): List of input tensor descriptions.
-        output_tensor (TensorDesc): Output tensor description.
-        op_params (bytearray): Operation-specific parameters.
-        work_dir (str): Working directory for intermediate files.
-        exported_name (str): Name for the exported kernel files.
-        output_directory (os.PathLike): Directory for output PDI and instruction files.
-        logger (logging.Logger): Logger for status messages.
-        verbose (bool): If True, enables verbose compilation output.
-    """
-    # remove any existing external functions
-    ExternalFunction._instances.clear()
-
-    # generate MLIR module
-    mlir_module = kernel.function(
-        arch=arch,
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-        op_params=op_params,
-    )
-
-    # compile any external functions
-    for func in ExternalFunction._instances:
-        compile_cxx_core_function(
-            source_path=func._source_file,
-            target_arch=arch,
-            output_path=func.bin_name,
-            include_dirs=func._include_dirs,
-            compile_args=func._compile_flags,
-            cwd=work_dir,
-            verbose=verbose,
-        )
-
-    # remove generated external functions
-    ExternalFunction._instances.clear()
-
-    # write MLIR module to file
-    mlir_path = os.path.join(work_dir, f"{exported_name}.mlir")
-    logger.info("Writing MLIR module for kernel %s in %s", kernel.name, mlir_path)
-    with open(mlir_path, "wt", encoding="utf-8") as file:
-        file.write(str(mlir_module))
-
-    # generate PDI and instructions files
-    pdi_path = os.path.join(output_directory, f"{exported_name}.pdi")
-    insts_path = os.path.join(output_directory, f"{exported_name}_insts.bin")
-    compile_mlir_module(
-        mlir_module=mlir_module,
-        options=["--alloc-scheme=basic-sequential"],
-        insts_path=insts_path,
-        pdi_path=pdi_path,
-        verbose=verbose,
-        work_dir=work_dir,
-    )
 
 
 def ggml_compile_op(

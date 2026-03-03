@@ -9,8 +9,10 @@ if (GGML_HSA_JIT_COMPILE)
     set(JIT_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
         ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/build_iron.py
         ${CMAKE_CURRENT_SOURCE_DIR}/build.py
         ${CMAKE_CURRENT_SOURCE_DIR}/clamp.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel.py
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
         ${CMAKE_CURRENT_SOURCE_DIR}/scale.py
         ${CMAKE_CURRENT_SOURCE_DIR}/soft_max.py
