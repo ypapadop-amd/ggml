@@ -5,6 +5,10 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
+"""
+IRON kernel implementation for the scale operation.
+"""
+
 from os import path
 from typing import Tuple
 import struct

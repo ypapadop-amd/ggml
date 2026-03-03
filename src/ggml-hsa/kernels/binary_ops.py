@@ -5,6 +5,11 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
+"""
+Top-level entry points for GGML binary operations (GGML_OP_ADD, GGML_OP_SUB,
+GGML_OP_MUL, GGML_OP_DIV).
+"""
+
 from .iron.binary_ops import binary_op
 
 

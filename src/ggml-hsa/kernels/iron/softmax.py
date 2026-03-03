@@ -5,6 +5,10 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
+"""
+IRON kernel implementation for the softmax operation.
+"""
+
 import struct
 from os import path
 from typing import Any, Optional, Tuple
@@ -12,8 +16,9 @@ from typing import Any, Optional, Tuple
 import numpy as np
 
 from .utils import (
-    suppress_import_pyxrt_msg,
+    align_to_arch,
     arch_to_device,
+    suppress_import_pyxrt_msg,
 )
 
 suppress_import_pyxrt_msg()
@@ -65,7 +70,9 @@ def get_softmax_dimensions(tensor) -> Tuple[int, int]:
         raise ValueError(f"Unsupported tensor rank: {len(shape)}")
 
 
-# Vector size for AIE kernel vector operations
+# Vector size for AIE kernel vector operations.
+# This must match the vector width used in the C++ kernel implementation
+# and constrains row lengths to be multiples of this value.
 KERN_VEC_SIZE = 8
 
 
@@ -144,7 +151,20 @@ def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
 
 def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_bias):
-    """Softmax without mask or sink encoding."""
+    """
+    Creates an IRON program for basic softmax without mask or sink tensors.
+
+    Parameters:
+        arch (str): Target architecture.
+        op_name (str): Operation name for the external function.
+        input_tensor: Input tensor description.
+        output_tensor: Output tensor description.
+        scale (float): Scaling factor applied before exponentiation.
+        max_bias (float): Maximum bias (unused in unary variant).
+
+    Returns:
+        MLIR module representing the softmax program.
+    """
     function, num_elements, tile_size = create_external_function(
         arch=arch,
         op_name=op_name,
@@ -188,7 +208,25 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
 def create_binary_program(
     arch, op_name, input_tensor, mask_tensor, output_tensor, scale, max_bias
 ):
-    """Softmax with mask tensor."""
+    """
+    Creates an IRON program for softmax with a mask tensor.
+
+    This variant supports attention masking where the mask is added to the input
+    before computing softmax. It also supports ALiBi positional encoding when
+    max_bias > 0.
+
+    Parameters:
+        arch (str): Target architecture.
+        op_name (str): Operation name for the external function.
+        input_tensor: Input tensor description.
+        mask_tensor: Mask tensor description (added to input before softmax).
+        output_tensor: Output tensor description.
+        scale (float): Scaling factor applied before exponentiation.
+        max_bias (float): Maximum bias for ALiBi positional encoding.
+
+    Returns:
+        MLIR module representing the masked softmax program.
+    """
     func_result = create_external_function(
         arch=arch,
         op_name=op_name,
@@ -201,7 +239,7 @@ def create_binary_program(
     num_elements_in = func_result[1]
     tile_size_in = func_result[2]
     tile_size_mask = func_result[3]
-    num_rows_mask = func_result[4]
+    func_result[4]
     num_elements_mask = func_result[5]
     n_head = func_result[6]
     rows_per_head = func_result[7]
@@ -297,7 +335,7 @@ def create_ternary_program(
     num_elements_in = func_result[1]
     tile_size_in = func_result[2]
     tile_size_mask = func_result[3]
-    num_rows_mask = func_result[4]
+    func_result[4]
     num_elements_mask = func_result[5]
     num_sinks = func_result[6]
     rows_per_head = func_result[7]

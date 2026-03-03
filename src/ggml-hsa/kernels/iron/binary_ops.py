@@ -5,6 +5,10 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
+"""
+IRON kernel implementation for binary element-wise operations.
+"""
+
 from dataclasses import dataclass
 from os import path
 import numpy as np

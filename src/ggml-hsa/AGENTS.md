@@ -140,6 +140,8 @@ python3 -m pip install -r requirements.txt
 - Test files are in `tests` and `tests/ggml-hsa/`
 - Ensure kernels work for both `aie2` and `aie2p` architectures
 - A specific operation can be tested using `test-backend-ops -o OP`
+- **Success:** Look for `<N>/<N> tests passed`.
+- **Failure:** Look for `0/0 tests passed` or `Could not create kernel for tensor`.
 
 ## Common Pitfalls
 

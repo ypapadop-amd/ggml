@@ -5,6 +5,10 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
+"""
+Top-level entry points for GGML unary operations.
+"""
+
 from .iron.unary_ops import unary_op
 
 

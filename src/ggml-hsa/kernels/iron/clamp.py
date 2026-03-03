@@ -5,6 +5,10 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
+"""
+IRON kernel implementation for the clamp operation.
+"""
+
 from os import path
 from typing import Tuple
 import struct

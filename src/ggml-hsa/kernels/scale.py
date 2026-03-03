@@ -5,6 +5,10 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
+"""
+Top-level entry point for the GGML scale operation (GGML_OP_SCALE).
+"""
+
 from .iron.scale import scale
 
 

@@ -1,4 +1,20 @@
 # Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+"""
+IRON kernel build system for GGML HSA backend.
+
+This module provides the infrastructure for compiling IRON-based kernels to PDI
+and instruction files for AMD AIE devices. It handles mapping GGML operations to
+their corresponding kernel implementations, dynamic module loading, and
+orchestrating the MLIR compilation pipeline.
+
+Usage:
+    As a module:
+        from kernels import ggml_compile_op, TensorDesc
+        ggml_compile_op(ggml_op="ADD", arch="aie2", ...)
+
+    As a script:
+        python build.py --ggml_op ADD --arch aie2 --input_tensors "(1024,1,1,1)/f32" ...
+"""
 
 import dataclasses
 from dataclasses import dataclass
@@ -127,6 +143,25 @@ def compile_iron_kernel(
     logger: logging.Logger,
     verbose: bool,
 ):
+    """
+    Compiles an IRON kernel to PDI and instruction files.
+
+    This function executes the kernel's Python function to generate an MLIR module,
+    compiles any external C++ core functions, and then compiles the MLIR module
+    to produce the final PDI and instruction binary files.
+
+    Parameters:
+        kernel (Kernel): The kernel to compile.
+        arch (str): Target architecture (e.g., "aie2", "aie2p").
+        input_tensors (list[TensorDesc]): List of input tensor descriptions.
+        output_tensor (TensorDesc): Output tensor description.
+        op_params (bytearray): Operation-specific parameters.
+        work_dir (str): Working directory for intermediate files.
+        exported_name (str): Name for the exported kernel files.
+        output_directory (os.PathLike): Directory for output PDI and instruction files.
+        logger (logging.Logger): Logger for status messages.
+        verbose (bool): If True, enables verbose compilation output.
+    """
     # remove any existing external functions
     ExternalFunction._instances.clear()
 
@@ -183,7 +218,8 @@ def ggml_compile_op(
     verbose: bool = False,
 ):
     """
-    Compiles the kernel code corresponding to the GGML operation to PDI and instruction files.
+    Compiles the kernel code corresponding to the GGML operation to PDI and
+    instruction files.
 
     Parameters:
         ggml_op (str): GGML operation.

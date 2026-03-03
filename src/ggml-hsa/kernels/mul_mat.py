@@ -5,6 +5,10 @@
 #
 # (c) Copyright 2025-2026 AMD Inc.
 
+"""
+Top-level entry point for the GGML matrix multiplication operation (GGML_OP_MUL_MAT).
+"""
+
 from .iron.gemm import gemm
 
 

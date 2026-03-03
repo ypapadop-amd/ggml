@@ -5,6 +5,10 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
+"""
+Top-level entry point for the GGML clamp operation (GGML_OP_CLAMP).
+"""
+
 from .iron.clamp import clamp
 
 

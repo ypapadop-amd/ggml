@@ -1,6 +1,10 @@
 # suppress stderr from aie imports until https://github.com/Xilinx/mlir-aie/issues/2833
 # is resolved
 
+"""
+Utility functions for IRON kernel implementations.
+"""
+
 import os
 
 import contextlib
@@ -98,7 +102,18 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
 
 
 def arch_to_device(device):
-    """Returns the device from the string."""
+    """
+    Converts an architecture string to an IRON device object.
+
+    Parameters:
+        device: Architecture string ("aie2" or "aie2p") or an existing device object.
+
+    Returns:
+        NPU1 for "aie2", NPU2 for "aie2p", or the input if already a device object.
+
+    Raises:
+        ValueError: If the architecture string is not supported.
+    """
     if isinstance(device, str):
         if device == "aie2":
             return NPU1()

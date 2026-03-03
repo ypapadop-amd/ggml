@@ -5,6 +5,10 @@
 #
 # (c) Copyright 2025-2026 AMD Inc.
 
+"""
+IRON kernel implementation for matrix multiplication (GEMM).
+"""
+
 import argparse
 from os import path
 import numpy as np
@@ -40,6 +44,12 @@ microkernel_mac_dim_map = {
 
 
 def main():
+    """
+    Command-line entry point for generating matrix multiplication MLIR.
+
+    Parses command-line arguments and generates MLIR code for a matrix
+    multiplication design with the specified dimensions and configuration.
+    """
     argparser = argparse.ArgumentParser(
         prog="AIE Matrix Multiplication MLIR Design (Whole Array)",
         description="Emits MLIR code for a matrix multiplication design of the given input size",
@@ -104,6 +114,7 @@ def main():
 
 
 def ceildiv(a, b):
+    """Returns the ceiling of integer division a/b."""
     return (a + b - 1) // b
 
 
@@ -128,6 +139,37 @@ def my_matmul(
     object_file,
     generate_taps=False,
 ):
+    """
+    Generates MLIR for tiled matrix multiplication across an AIE array.
+
+    This function creates the complete AIE design including tile declarations,
+    object FIFOs for data movement, compute core logic, and runtime DMA sequences.
+
+    Parameters:
+        dev (str): Device type ("npu" or "npu2").
+        M (int): Number of rows in matrix A and C.
+        K (int): Inner dimension (columns of A, rows of B).
+        N (int): Number of columns in matrix B and C.
+        m (int): Tile size in M dimension per core.
+        k (int): Tile size in K dimension (shared across all cores).
+        n (int): Tile size in N dimension per core.
+        n_aie_cols (int): Number of AIE columns to use (1, 2, 4, or 8).
+        dtype_in_str (str): Input data type ("bf16", "i8", or "i16").
+        dtype_out_str (str): Output data type ("bf16", "i8", "i16", "f32", or "i32").
+        b_col_maj (bool): If True, matrix B is in column-major layout.
+        c_col_maj (bool): If True, matrix C is in column-major layout.
+        use_scalar (bool): If True, use scalar kernels (for debugging small sizes).
+        emulate_bf16_mmul_with_bfp16 (bool): If True, use bfp16 emulation for bf16.
+        trace_size (int): Size of trace buffer (0 to disable tracing).
+        zero_fn (str): Name of the zero initialization function.
+        matmul_fn (str): Name of the matrix multiply accumulate function.
+        object_file (str): Name of the compiled object file containing kernels.
+        generate_taps (bool): If True, return TensorAccessPattern objects for visualization.
+
+    Returns:
+        If generate_taps is True, returns a tuple of TensorAccessSequence objects
+        for A, B, and C matrices. Otherwise returns None.
+    """
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
 
