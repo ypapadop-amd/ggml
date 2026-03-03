@@ -1,9 +1,10 @@
 # Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
 """
 Tensor descriptor for GGML HSA kernel operations.
 
 This module provides the TensorDesc dataclass used to describe tensors passed
-to IRON kernels. It captures the essential properties needed for kernel
+to kernels. It captures the essential properties needed for kernel
 compilation: data type, shape, stride, and contiguity information.
 
 The tensor dimensions follow GGML conventions where dimensions are ordered
