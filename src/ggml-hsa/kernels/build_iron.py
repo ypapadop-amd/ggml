@@ -1,10 +1,14 @@
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
+"""
+IRON backend compiler for GGML HSA kernels.
+"""
+
 import logging
 from collections.abc import Iterable
 from pathlib import Path
 
-from kernel import Kernel
+from kernel import KernelSpec
 from tensor_desc import TensorDesc
 from iron.utils import suppress_import_pyxrt_msg
 
@@ -22,13 +26,17 @@ def _compile_aie_core_kernels(
     verbose: bool,
 ) -> None:
     """
-    Compiles AIE core functions to object files.
+    Compile AIE core functions to object files.
+
+    This function compiles the C++ source files for external functions
+    (core compute kernels) into object files that will be linked into
+    the final PDI.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        functions: aie.iron.ExternalFunction objects
-        work_dir (Path): Working directory for intermediate files.
-        verbose (bool): If True, enables verbose compilation output.
+        arch: Target architecture (e.g., "aie2", "aie2p").
+        functions: Iterable of ExternalFunction objects to compile.
+        work_dir: Working directory for intermediate files.
+        verbose: If True, enables verbose compilation output.
     """
     for func in functions:
         compile_cxx_core_function(
@@ -43,7 +51,7 @@ def _compile_aie_core_kernels(
 
 
 def compile_iron_kernel(
-    kernel: Kernel,
+    kernel_spec: KernelSpec,
     arch: str,
     input_tensors: list[TensorDesc],
     output_tensor: TensorDesc,
@@ -55,36 +63,38 @@ def compile_iron_kernel(
     verbose: bool,
 ) -> None:
     """
-    Compiles an IRON kernel to PDI and instruction files.
+    Compile an IRON kernel to PDI and instructions files.
 
-    This function executes the kernel's Python function to generate an MLIR module,
-    compiles any external C++ core functions, and then compiles the MLIR module
-    to produce the final PDI and instruction binary files.
+    This function executes the IRON compilation pipeline:
+    1. Executes the kernel's Python function to generate an MLIR module
+    2. Compiles any external C++ core functions to object files
+    3. Compiles the MLIR module to produce PDI and instructions binaries
 
     Parameters:
-        kernel (Kernel): The kernel to compile.
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        input_tensors (list[TensorDesc]): List of input tensor descriptions.
-        output_tensor (TensorDesc): Output tensor description.
-        op_params (bytearray): Operation-specific parameters.
-        work_dir (Path): Working directory for intermediate files.
-        exported_name (str): Name for the exported kernel files.
-        output_directory (Path): Directory for output PDI and instruction files.
-        logger (logging.Logger): Logger for status messages.
-        verbose (bool): If True, enables verbose compilation output.
+        kernel_spec: The KernelSpec containing the IRON kernel function.
+        arch: Target architecture (e.g., "aie2", "aie2p").
+        input_tensors: List of input tensor descriptions.
+        output_tensor: Output tensor description.
+        op_params: Operation-specific parameters.
+        work_dir: Working directory for intermediate files.
+        exported_name: Name for the exported kernel files.
+        output_directory: Directory for output PDI and instruction files.
+        logger: Logger for status messages.
+        verbose: If True, enables verbose compilation output.
     """
-    # remove any existing external functions
+    # Clear any existing external functions from previous compilations
     ExternalFunction._instances.clear()
 
-    # generate MLIR module (populates ExternalFunction._instances)
-    mlir_module = kernel.function(
+    # Generate MLIR module by calling the kernel function
+    # (this also populates ExternalFunction._instances)
+    mlir_module = kernel_spec.function(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
     )
 
-    # compile any external functions
+    # Compile any external C++ core functions
     _compile_aie_core_kernels(
         arch=arch,
         functions=ExternalFunction._instances,
@@ -92,16 +102,18 @@ def compile_iron_kernel(
         verbose=verbose,
     )
 
-    # remove generated external functions
+    # Clear external functions after compilation
     ExternalFunction._instances.clear()
 
-    # write MLIR module to file
+    # Write MLIR module to file for debugging/inspection
     mlir_path = work_dir / f"{exported_name}.mlir"
-    logger.info("Writing MLIR module for kernel %s in %s", kernel.name, mlir_path)
+    logger.info(
+        "Writing MLIR module for operation %s in %s", kernel_spec.op_name, mlir_path
+    )
     with open(mlir_path, "wt", encoding="utf-8") as file:
         file.write(str(mlir_module))
 
-    # generate PDI and instructions files
+    # Generate PDI and instructions files from MLIR
     pdi_path = output_directory / f"{exported_name}.pdi"
     insts_path = output_directory / f"{exported_name}_insts.bin"
     compile_mlir_module(

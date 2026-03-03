@@ -10,9 +10,12 @@ Top-level entry point for the GGML clamp operation (GGML_OP_CLAMP).
 """
 
 from .iron.clamp import clamp
+from .kernel import Backend, KernelSpec
 
 
-def ggml_op_clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def ggml_op_clamp(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+) -> KernelSpec:
     """
     GGML_OP_CLAMP implementation.
 
@@ -20,15 +23,15 @@ def ggml_op_clamp(arch: str, input_tensors: list, output_tensor, op_params: byte
     output[i] = max(min_val, min(input[i], max_val))
 
     Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of one input tensor.
+        arch: Target architecture.
+        input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-        op_params (bytearray): Operation parameters containing min and max values.
-    """
+        op_params: Operation parameters containing min and max values.
 
-    return clamp(
-        arch=arch,
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-        op_params=op_params,
+    Returns:
+        KernelSpec for the CLAMP operation.
+    """
+    return KernelSpec(
+        backend=Backend.IRON,
+        function=clamp,
     )

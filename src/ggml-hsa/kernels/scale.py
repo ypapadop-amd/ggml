@@ -7,25 +7,30 @@
 
 """
 Top-level entry point for the GGML scale operation (GGML_OP_SCALE).
+
+Returns a KernelSpec specifying the compilation backend and kernel function.
 """
 
 from .iron.scale import scale
+from .kernel import Backend, KernelSpec
 
 
-def ggml_op_scale(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def ggml_op_scale(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+) -> KernelSpec:
     """
     GGML_OP_SCALE implementation.
 
     Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of one input tensor.
+        arch: Target architecture.
+        input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-        op_params (op_params): Operation parameters.
-    """
+        op_params: Operation parameters containing the scale factor.
 
-    return scale(
-        arch=arch,
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-        op_params=op_params,
+    Returns:
+        KernelSpec for the SCALE operation.
+    """
+    return KernelSpec(
+        backend=Backend.IRON,
+        function=scale,
     )

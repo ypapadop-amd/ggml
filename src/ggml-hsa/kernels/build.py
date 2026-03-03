@@ -8,6 +8,9 @@ for AMD XDNA / XDNA2 devices. It handles mapping GGML operations to their corres
 kernel implementations, dynamic module loading, and orchestrating the compilation
 pipeline.
 
+The build system supports multiple compilation backends with per-operation dispatch
+based on compilation parameters.
+
 Usage:
     As a module:
         from kernels import ggml_compile_op, TensorDesc
@@ -20,16 +23,23 @@ Usage:
 import dataclasses
 import importlib.util
 import logging
+from collections.abc import Callable
 from pathlib import Path
 import sys
 import types
 
-from kernel import Kernel
+from kernel import Kernel, KernelSpec, Backend
 from tensor_desc import TensorDesc
 from build_iron import compile_iron_kernel
 
-# mapping of GGML operations (unary, binary, and others) to kernel source files
-op_to_kernel_map = {
+# Compiler registry mapping Backend enum to compile functions
+_compilers: dict[Backend, Callable] = {
+    Backend.IRON: compile_iron_kernel,
+}
+
+# Mapping of GGML operations to kernel source files.
+# Each entry maps an operation name to a Kernel that identifies the dispatch module.
+_op_to_kernel_map: dict[str, Kernel] = {
     # unary operation to kernel source mapping
     "ABS": Kernel("ggml_unary_op_abs", "unary_ops.py"),
     "SGN": Kernel("ggml_unary_op_sgn", "unary_ops.py"),
@@ -68,13 +78,66 @@ op_to_kernel_map = {
 }
 
 
-def import_from_path(module_name: str, path: str | Path):
+def get_compiler(backend: Backend) -> Callable:
     """
-    Imports the module with name module_name from path.
+    Get the compiler function for the given backend.
 
     Parameters:
-        module_name (str): Name of the module.
-        path (Path): Path to the module file.
+        backend: The compilation backend to use.
+
+    Returns:
+        The compiler function for the specified backend.
+
+    Raises:
+        NotImplementedError: If the backend is not implemented.
+
+    Note:
+        Uses backend.name for lookup to handle the case where Backend enums
+        from dynamically imported modules have different identity than those
+        in this module.
+    """
+    # Lookup by name to handle different enum class identities from dynamic imports
+    for registered_backend, compiler in _compilers.items():
+        if registered_backend.name == backend.name:
+            return compiler
+    raise NotImplementedError(f"Backend {backend.name} not implemented.")
+
+
+def get_kernel(op_name: str) -> Kernel:
+    """
+    Get the kernel for the given operation.
+
+    Parameters:
+        op_name: Operation name.
+
+    Returns:
+        The Kernel object associated with the operation.
+
+    Raises:
+        NotImplementedError: If the Kernel is not found.
+    """
+    kernel = _op_to_kernel_map.get(op_name)
+    if kernel is None:
+        raise NotImplementedError(f"Operation {op_name} not implemented.")
+    return kernel
+
+
+def import_from_path(module_name: str, path: str | Path):
+    """
+    Import a module by name from the specified file path.
+
+    This function handles the complexity of importing Python modules dynamically,
+    including setting up the package structure for relative imports.
+
+    Parameters:
+        module_name: Name of the module to import.
+        path: Path to the Python file containing the module.
+
+    Returns:
+        The imported module object.
+
+    Raises:
+        ImportError: If the module cannot be found or loaded.
     """
     path = Path(path).resolve()
     parent_dir = path.parent
@@ -126,20 +189,28 @@ def ggml_compile_op(
     verbose: bool = False,
 ):
     """
-    Compiles the kernel code corresponding to the GGML operation to PDI and
-    instruction files.
+    Compile a GGML operation kernel to PDI and instruction files.
+
+    This is the main entry point for kernel compilation. It:
+    1. Looks up the kernel dispatch module for the operation
+    2. Calls the dispatch function to get a KernelSpec (backend + function)
+    3. Invokes the appropriate backend compiler
 
     Parameters:
-        ggml_op (str): GGML operation.
-        arch (str): Target architecture.
-        input_tensors (list[TensorDesc]): List of input tensor descriptions.
-        output_tensor (TensorDesc): Output tensor description.
-        exported_name (str): Name to export the compiled kernel as.
-        output_directory (str): Directory to save the compiled files.
-        verbose (bool): If True, enables verbose logging.
-    """
+        ggml_op: GGML operation name (e.g., "ADD", "MUL_MAT").
+        arch: Target architecture (e.g., "aie2", "aie2p").
+        input_tensors: List of input tensor descriptions.
+        output_tensor: Output tensor description.
+        op_params: Operation-specific parameters as a bytearray.
+        exported_name: Name to export the compiled kernel as.
+        output_directory: Directory to save the compiled PDI and instruction files.
+        verbose: If True, enables verbose logging output.
 
-    # setup logging
+    Raises:
+        ValueError: If the operation is not supported.
+        NotImplementedError: If the selected backend is not implemented.
+    """
+    # Setup logging
     logger = logging.getLogger(__name__)
     # remove all existing handlers
     for handler in logger.handlers.copy():
@@ -156,20 +227,26 @@ def ggml_compile_op(
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
-    # get kernel implementation based on operation
-    kernel = op_to_kernel_map.get(ggml_op, None)
-    if not kernel:
-        raise ValueError(f"Unsupported GGML operation: {ggml_op}")
+    # Get kernel mapping
+    kernel = get_kernel(ggml_op)
+
+    # Load dispatch module and get dispatch function
     kernel_source_file = Path(__file__).resolve().parent / kernel.source_file
     module = import_from_path(kernel.name, kernel_source_file)
-    kernel_fn = getattr(module, kernel.name)
-    kernel = dataclasses.replace(
-        kernel,
-        source_file=kernel_source_file,
-        function=kernel_fn,
+    dispatch_fn = getattr(module, kernel.name)
+
+    # Dispatch to get KernelSpec (determines backend and function)
+    kernel_spec: KernelSpec = dispatch_fn(
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        op_params=op_params,
     )
 
-    # create output and work directories
+    # Set the kernel name from the Kernel object
+    kernel_spec = dataclasses.replace(kernel_spec, op_name=kernel.name)
+
+    # Create output and work directories
     output_dir = Path(output_directory)
     output_dir.mkdir(parents=True, exist_ok=True)
     work_dir = output_dir / f"{exported_name}-artifacts"
@@ -178,6 +255,7 @@ def ggml_compile_op(
     logger.info(
         (
             "Compiling op: %s for arch %s\n"
+            "  Backend:              %s\n"
             "  Kernel name:          %s\n"
             "  Kernel source:        %s\n"
             "  Input tensors:        %s\n"
@@ -189,6 +267,7 @@ def ggml_compile_op(
         ),
         ggml_op,
         arch,
+        kernel_spec.backend.name,
         kernel.name,
         kernel.source_file,
         input_tensors,
@@ -199,9 +278,10 @@ def ggml_compile_op(
         work_dir,
     )
 
-    # compile kernel
-    compile_iron_kernel(
-        kernel=kernel,
+    # Get compiler for the selected backend and compile
+    compile_fn = get_compiler(kernel_spec.backend)
+    compile_fn(
+        kernel_spec=kernel_spec,
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
@@ -219,7 +299,18 @@ def ggml_compile_op(
 
 
 def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
-    """Converts a string of the form (x,...) to a tuple of ints."""
+    """
+    Convert a string of the form "(x,y,z,w)" to a tuple of integers.
+
+    Parameters:
+        string: String representation of a 4-element tuple.
+
+    Returns:
+        A tuple of 4 integers.
+
+    Raises:
+        ValueError: If the string does not represent exactly 4 integers.
+    """
     string = string.replace("(", "").replace(")", "").strip(",")
     ints = map(int, string.split(","))
     t = tuple(ints)
@@ -230,13 +321,13 @@ def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
 
 def to_tensordesc(string: str) -> TensorDesc:
     """
-    Creates a TensorDesc from the string.
+    Create a TensorDesc from a string representation.
 
     Parameters:
-        string (str): string of the form (shape)/dtype.
+        string: String of the form "(shape)/dtype", e.g., "(1024,1,1,1)/f32".
 
     Returns:
-        TensorDesc: A new TensorDesc instance.
+        A TensorDesc instance with the specified shape and dtype.
     """
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
@@ -244,20 +335,30 @@ def to_tensordesc(string: str) -> TensorDesc:
 
 
 def file_path(string: str):
-    """Checks if a string is an existing file."""
+    """
+    Validate that a string represents an existing file path.
+
+    Parameters:
+        string: The file path to validate.
+
+    Returns:
+        The validated file path string.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+    """
     if not Path(string).is_file():
         raise FileNotFoundError(string)
     return string
 
 
 def main():
-    """Main function for use during AOT compilation."""
-
-    from argparse import ArgumentParser  # pylint: disable=import-outside-toplevel
+    """Main entry point for command-line AOT compilation."""
+    from argparse import ArgumentParser
 
     parser = ArgumentParser(
         prog="build.py",
-        description="Compiles IRON kernels",
+        description="Compiles GGML HSA kernels for AMD XDNA / XDNA2 devices",
     )
     parser.add_argument(
         "--ggml_op",

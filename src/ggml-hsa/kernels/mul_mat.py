@@ -10,24 +10,25 @@ Top-level entry point for the GGML matrix multiplication operation (GGML_OP_MUL_
 """
 
 from .iron.gemm import gemm
+from .kernel import Backend, KernelSpec
 
 
 def ggml_op_mul_mat(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
-):
+) -> KernelSpec:
     """
-    GGML_MUL_MAT implemetation.
+    GGML_MUL_MAT implementation.
 
-    Args:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        input_tensors (list): List of two input tensors (A and B).
+    Parameters:
+        arch: Target architecture (e.g., "aie2", "aie2p").
+        input_tensors: List of two input tensors (A and B).
         output_tensor: Output tensor (C).
-        op_params (bytearray): Operation-specific parameters as a bytearray.
-    """
+        op_params: Operation-specific parameters as a bytearray.
 
-    return gemm(
-        arch=arch,
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-        op_params=op_params,
+    Returns:
+        KernelSpec for the MUL_MAT operation.
+    """
+    return KernelSpec(
+        backend=Backend.IRON,
+        function=gemm,
     )
