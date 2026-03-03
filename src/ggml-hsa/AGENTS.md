@@ -9,7 +9,11 @@ The ggml-hsa backend enables GGML tensor operations to run on AMD XDNA NPUs (AI 
 - **aie2** architecture (Phoenix, Hawk Point)
 - **aie2p** architecture (Strix Halo, Krackan)
 
-The backend uses the IRON framework (part of MLIR-AIE) for kernel development and supports both JIT and AOT compilation.
+The backend uses a multi-backend kernel compilation system with per-operation dispatch. Currently supported backends:
+
+- **IRON** (MLIR-AIE framework) - Optimized AIE kernels
+
+The system supports both JIT and AOT compilation.
 
 ## Codebase Structure
 
@@ -25,13 +29,15 @@ src/ggml-hsa/
 ├── kernels/                     # AIE kernel implementations (two-layer architecture)
 │   ├── __init__.py              # Package exports (ggml_compile_op, TensorDesc)
 │   ├── build.py                 # Kernel compilation orchestrator
+│   ├── build_iron.py            # IRON backend compiler
+│   ├── kernel.py                # Core types: Backend enum, Kernel, KernelSpec
 │   ├── tensor_desc.py           # Tensor descriptor dataclass
-│   ├── binary_ops.py            # Top-level GGML binary op wrappers
-│   ├── unary_ops.py             # Top-level GGML unary op wrappers
-│   ├── scale.py                 # Top-level scale op wrapper
-│   ├── soft_max.py              # Top-level softmax op wrapper
-│   ├── clamp.py                 # Top-level clamp op wrapper
-│   ├── mul_mat.py               # Top-level matrix multiply wrapper
+│   ├── binary_ops.py            # Top-level GGML binary op dispatch
+│   ├── unary_ops.py             # Top-level GGML unary op dispatch
+│   ├── scale.py                 # Top-level scale op dispatch
+│   ├── soft_max.py              # Top-level softmax op dispatch
+│   ├── clamp.py                 # Top-level clamp op dispatch
+│   ├── mul_mat.py               # Top-level matrix multiply dispatch
 │   └── iron/                    # IRON kernel implementations
 │       ├── __init__.py          # Subpackage init
 │       ├── utils.py             # Shared utilities (alignment, device mapping)
@@ -48,30 +54,117 @@ src/ggml-hsa/
 └── cmake/                       # CMake utilities
 ```
 
-### Two-Layer Architecture
+### Two-Layer Dispatch Architecture
 
-The kernel code follows a two-layer architecture:
+The kernel build system uses a two-layer dispatch architecture that separates
+static operation mapping from runtime backend selection:
 
-1. **Top-level wrappers** (`kernels/*.py`): Thin wrappers that validate inputs and
-   delegate to the corresponding IRON implementation. These follow the standard
-   GGML operation signature: `ggml_op_<name>(arch, input_tensors, output_tensor, op_params)`.
+#### Layer 1: Static Mapping (Kernel)
 
-2. **IRON implementations** (`kernels/iron/*.py`): Low-level kernel designs that
-   define data movement (ObjectFifos), worker placement, and runtime sequences.
-   These are paired with C++ core functions (`kernels/iron/*.cc`) that implement
-   the actual vectorized computations using the AIE API.
+The `_op_to_kernel_map` in `build.py` maps GGML operation names to `Kernel` objects:
+
+```python
+from kernel import Kernel
+
+_op_to_kernel_map = {
+    "ADD": Kernel("ggml_op_add", "binary_ops.py"),
+    "SCALE": Kernel("ggml_op_scale", "scale.py"),
+}
+```
+
+The `Kernel` dataclass identifies:
+
+- `name`: The dispatch function name (e.g., `"ggml_op_add"`)
+- `source_file`: The Python module containing the dispatch function
+
+#### Layer 2: Runtime Dispatch (KernelSpec)
+
+Dispatch functions examine tensor parameters and return a `KernelSpec`:
+
+```python
+from kernel import Backend, KernelSpec
+from .iron.scale import scale
+
+def ggml_op_scale(arch, input_tensors, output_tensor, op_params) -> KernelSpec:
+    return KernelSpec(
+        backend=Backend.IRON,
+        function=scale,
+    )
+```
+
+The `KernelSpec` specifies:
+
+- `backend`: Which compilation backend to use (`Backend.IRON`)
+- `function`: The callable that generates backend-specific IR
+- `op_name`: Set automatically by `ggml_compile_op` from `Kernel.name`
+
+This enables per-invocation backend selection based on tensor shapes, dtypes,
+or other runtime parameters.
+
+### Compilation Pipeline
+
+The compilation flow in `ggml_compile_op`:
+
+1. Look up `Kernel` from `_op_to_kernel_map`
+2. Dynamically import the dispatch module
+3. Call dispatch function to get `KernelSpec`
+4. Set `op_name` on the spec via `dataclasses.replace()`
+5. Look up compiler function via `get_compiler(backend)`
+6. Invoke the backend-specific compiler
+
+```
+ggml_compile_op("SCALE", ...)
+    └─> get_kernel("SCALE") -> Kernel("ggml_op_scale", "scale.py")
+    └─> import_from_path("ggml_op_scale", "scale.py")
+    └─> ggml_op_scale(...) -> KernelSpec(backend=IRON, function=scale)
+    └─> get_compiler(Backend.IRON) -> compile_iron_kernel
+    └─> compile_iron_kernel(kernel_spec, ...)
+```
+
+### Backend Compilers
+
+Each backend has a dedicated compiler module:
+
+- **IRON** (`build_iron.py`): Compiles IRON Python designs to PDI/instructions
+  - Calls the `KernelSpec.function` to generate an MLIR module
+  - Compiles any C++ core functions to object files
+  - Produces final `.pdi` and `_insts.bin` files
+
+Compilers are registered in `build.py`:
+
+```python
+from kernel import Backend
+from build_iron import compile_iron_kernel
+
+_compilers = {
+    Backend.IRON: compile_iron_kernel,
+}
+```
+
+### IRON Kernel Implementations
+
+IRON kernels (`kernels/iron/*.py`) define:
+
+- Data movement via ObjectFifos (input/output streaming)
+- Worker placement on AIE tiles
+- Runtime sequences for DMA transfers
+- External function declarations for C++ core functions
+
+These are paired with C++ core functions (`kernels/iron/*.cc`) that implement
+the actual vectorized computations using the AIE API.
 
 ## Kernel Development Pattern
 
 Each kernel consists of three files across two layers:
 
-### 1. Top-level Wrapper (e.g., `kernels/unary_ops.py`)
+### 1. Dispatch Function (e.g., `kernels/unary_ops.py`)
 
-Thin wrapper that:
+Returns a `KernelSpec` specifying backend and function:
 
-- Imports the IRON implementation from `iron/` subpackage
-- Provides the standard GGML operation signature
-- Validates inputs before delegation
+- Imports the kernel function from the appropriate backend subpackage
+- Provides the standard GGML dispatch signature
+- Returns `KernelSpec(backend=Backend.IRON, function=...)`
+- May use `functools.partial` to bind operation-specific parameters
 
 ### 2. IRON Design (e.g., `kernels/iron/unary_ops.py`)
 
@@ -98,21 +191,26 @@ Implements the core computation using the AIE API:
 1. **Register the operation** in `kernels/build.py`:
 
    ```python
-   op_to_kernel_map = {
+   _op_to_kernel_map = {
        "NEW_OP": Kernel("ggml_op_new_op", "new_op.py"),
    }
    ```
 
-2. **Create the top-level wrapper** (`kernels/new_op.py`):
+2. **Create the dispatch function** (`kernels/new_op.py`):
 
    ```python
    """Top-level entry point for GGML_OP_NEW_OP."""
    from .iron.new_op import new_op
+   from .kernel import Backend, KernelSpec
 
-   def ggml_op_new_op(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+   def ggml_op_new_op(
+       arch: str, input_tensors: list, output_tensor, op_params: bytearray
+   ) -> KernelSpec:
        """GGML_OP_NEW_OP implementation."""
-       return new_op(arch=arch, input_tensors=input_tensors,
-                     output_tensor=output_tensor, op_params=op_params)
+       return KernelSpec(
+           backend=Backend.IRON,
+           function=new_op,
+       )
    ```
 
 3. **Create the IRON design** (`kernels/iron/new_op.py`):
@@ -120,6 +218,7 @@ Implements the core computation using the AIE API:
    - Import utilities from `.utils` (arch_to_device, align_to_arch, etc.)
    - Define the data flow and compute structure
    - Create external function specs for the C++ core function
+   - Function signature: `def new_op(arch, input_tensors, output_tensor, op_params)`
 
 4. **Create the C++ core function** (`kernels/iron/new_op.cc`):
    - Use compile guards: `#ifdef GGML_OP_NEW_OP`
@@ -133,6 +232,58 @@ Implements the core computation using the AIE API:
 6. (optional) **Add backend support** in `ggml-hsa.cpp`:
    - Add to `ggml_hsa_op_supports()` for operation support check
    - Add case in `ggml_hsa_compute_forward()` for dispatch
+
+## Adding a New Compilation Backend
+
+To add a new backend (e.g., Triton):
+
+1. **Add to the Backend enum** in `kernels/kernel.py`:
+
+   ```python
+   class Backend(Enum):
+       IRON = auto()
+       TRITON = auto()  # New backend
+   ```
+
+2. **Create the backend compiler** (`kernels/build_triton.py`):
+
+   ```python
+   def compile_triton_kernel(
+       kernel_spec: KernelSpec,
+       arch: str,
+       input_tensors: list[TensorDesc],
+       output_tensor: TensorDesc,
+       op_params: bytearray,
+       work_dir: Path,
+       exported_name: str,
+       output_directory: Path,
+       logger: logging.Logger,
+       verbose: bool,
+   ) -> None:
+       # Call kernel_spec.function to generate Triton IR
+       # Compile to PDI and instructions
+       pass
+   ```
+
+3. **Register the compiler** in `kernels/build.py`:
+
+   ```python
+   from build_triton import compile_triton_kernel
+
+   _compilers = {
+       Backend.IRON: compile_iron_kernel,
+       Backend.TRITON: compile_triton_kernel,
+   }
+   ```
+
+4. **Update dispatch functions** to return the new backend when appropriate:
+
+   ```python
+   def ggml_op_new_op(...) -> KernelSpec:
+       if some_condition:
+           return KernelSpec(backend=Backend.TRITON, function=triton_new_op)
+       return KernelSpec(backend=Backend.IRON, function=iron_new_op)
+   ```
 
 ## Code Conventions
 
