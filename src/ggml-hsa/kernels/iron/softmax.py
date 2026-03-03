@@ -165,7 +165,7 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
     Returns:
         MLIR module representing the softmax program.
     """
-    function, num_elements, tile_size = create_external_function(
+    function, num_elements, tile_size = _create_external_function(
         arch=arch,
         op_name=op_name,
         input_tensor=input_tensor,
@@ -227,7 +227,7 @@ def create_binary_program(
     Returns:
         MLIR module representing the masked softmax program.
     """
-    func_result = create_external_function(
+    func_result = _create_external_function(
         arch=arch,
         op_name=op_name,
         input_tensor=input_tensor,
@@ -322,7 +322,7 @@ def create_ternary_program(
     Sink tensor contains one value per head. The kernel receives the full
     sink array and indexes into it based on tile_idx and rows_per_head.
     """
-    func_result = create_external_function(
+    func_result = _create_external_function(
         arch=arch,
         op_name=op_name,
         input_tensor=input_tensor,
@@ -415,7 +415,7 @@ def create_ternary_program(
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
-def create_external_function(
+def _create_external_function(
     arch: str,
     op_name: str,
     input_tensor: Any,

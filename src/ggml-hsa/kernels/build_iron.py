@@ -17,7 +17,7 @@ from aie.utils.compile import compile_mlir_module
 
 def _compile_aie_core_kernels(
     arch: str,
-    functions: Iterable,
+    functions: Iterable[ExternalFunction],
     work_dir: Path,
     verbose: bool,
 ) -> None:

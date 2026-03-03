@@ -36,7 +36,7 @@ from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
 
 
-def create_external_function(
+def _create_external_function(
     arch: str,
     op_name: str,
     input_tensor,
@@ -100,7 +100,7 @@ def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     min_val = struct.unpack_from("f", op_params, 0)[0]
     max_val = struct.unpack_from("f", op_params, 4)[0]
 
-    function, num_elements, tile_size = create_external_function(
+    function, num_elements, tile_size = _create_external_function(
         arch=arch,
         op_name="GGML_OP_CLAMP",
         input_tensor=input_tensor,

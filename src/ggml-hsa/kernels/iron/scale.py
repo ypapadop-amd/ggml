@@ -61,7 +61,7 @@ def scale(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     s = struct.unpack_from("f", op_params, 0)[0]
     b = struct.unpack_from("f", op_params, 4)[0]
 
-    function, num_elements, tile_size = create_external_function(
+    function, num_elements, tile_size = _create_external_function(
         arch=arch,
         op_name="GGML_OP_SCALE",
         input_tensor=input_tensor,
@@ -103,7 +103,7 @@ def scale(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
-def create_external_function(
+def _create_external_function(
     arch: str,
     op_name: str,
     input_tensor,

@@ -127,7 +127,7 @@ def _binary_op(
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
-def create_external_function(
+def _create_external_function(
     arch: str,
     op_name: str,
     input_tensors: list,
@@ -204,7 +204,7 @@ def binary_op(
     if output_tensor.shape[1:4] != (1, 1, 1):
         raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
 
-    function_spec = create_external_function(
+    function_spec = _create_external_function(
         arch=arch,
         op_name=op_name,
         input_tensors=input_tensors,
