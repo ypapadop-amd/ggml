@@ -9,9 +9,9 @@
 IRON kernel implementation for the clamp operation.
 """
 
-from os import path
-from typing import Tuple
 import struct
+from pathlib import Path
+from typing import Tuple
 
 import numpy as np
 
@@ -52,11 +52,11 @@ def create_external_function(
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
     tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
 
-    current_dir = path.dirname(path.realpath(__file__))
+    current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
         name=op_name.lower(),
         object_file_name=f"{op_name.lower()}_core_function.o",
-        source_file=path.join(current_dir, "clamp.cc"),
+        source_file=str(current_dir / "clamp.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
             np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],

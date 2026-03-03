@@ -10,7 +10,8 @@ IRON kernel implementation for binary element-wise operations.
 """
 
 from dataclasses import dataclass
-from os import path
+from pathlib import Path
+
 import numpy as np
 
 from .utils import (
@@ -148,11 +149,11 @@ def create_external_function(
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
     tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
 
-    current_dir = path.dirname(path.realpath(__file__))
+    current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
         name=op_name.lower(),
         object_file_name=f"{op_name.lower()}_core_function.o",
-        source_file=path.join(current_dir, "binary_ops.cc"),
+        source_file=str(current_dir / "binary_ops.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
             np.ndarray[(tile_size,), np.dtype[input_tensors[1].dtype]],

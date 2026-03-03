@@ -10,7 +10,8 @@ IRON kernel implementation for matrix multiplication (GEMM).
 """
 
 import argparse
-from os import path
+from pathlib import Path
+
 import numpy as np
 
 from .utils import suppress_import_pyxrt_msg
@@ -302,8 +303,10 @@ def my_matmul(
             A_l3l2_fifos[i] = object_fifo(
                 f"A_L3L2_{i}",
                 (
-                    shim_tiles[2 * i] if n_aie_cols == 8 else shim_tiles[i]
-                ),  # alternate columns in full 4x8 NPU2 case
+                    shim_tiles[2 * i]
+                    if n_aie_cols == 8
+                    else shim_tiles[i]  # alternate columns in full 4x8 NPU2 case
+                ),
                 mem_tiles[2 * i] if n_aie_cols == 8 else mem_tiles[i],
                 fifo_depth,
                 A_l2_ty,
@@ -713,8 +716,8 @@ def create_mat_mul_external_functions(
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
 
-    current_dir = path.dirname(path.realpath(__file__))
-    source_file = path.join(current_dir, arch, "mm.cc")
+    current_dir = Path(__file__).resolve().parent
+    source_file = str(current_dir / arch / "mm.cc")
     compile_args = [
         f"-DDIM_M={m}",
         f"-DDIM_N={n}",
@@ -795,10 +798,16 @@ def gemm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
 
-    m, n, k, use_scalar, num_cols, zero_fn, matmul_fn = (
-        create_mat_mul_external_functions(
-            arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
-        )
+    (
+        m,
+        n,
+        k,
+        use_scalar,
+        num_cols,
+        zero_fn,
+        matmul_fn,
+    ) = create_mat_mul_external_functions(
+        arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
     )
 
     with mlir_mod_ctx() as ctx:

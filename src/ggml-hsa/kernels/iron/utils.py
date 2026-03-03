@@ -5,9 +5,9 @@
 Utility functions for IRON kernel implementations.
 """
 
+import contextlib
 import os
 
-import contextlib
 import numpy as np
 
 from aie.iron.device import NPU1, NPU2

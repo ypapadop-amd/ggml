@@ -10,7 +10,7 @@ IRON kernel implementation for the softmax operation.
 """
 
 import struct
-from os import path
+from pathlib import Path
 from typing import Any, Optional, Tuple
 
 import numpy as np
@@ -527,11 +527,11 @@ def create_external_function(
     else:
         compile_flags.append(f"-D{op_name}=1")
 
-    current_dir = path.dirname(path.realpath(__file__))
+    current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
         name=function_name,
         object_file_name=f"{function_name}_core_function.o",
-        source_file=path.join(current_dir, "softmax.cc"),
+        source_file=str(current_dir / "softmax.cc"),
         arg_types=arg_types,
         compile_flags=compile_flags,
     )

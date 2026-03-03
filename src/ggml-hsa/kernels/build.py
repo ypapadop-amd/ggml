@@ -20,7 +20,7 @@ Usage:
 import dataclasses
 import importlib.util
 import logging
-import os
+from pathlib import Path
 import sys
 import types
 
@@ -68,29 +68,31 @@ op_to_kernel_map = {
 }
 
 
-def import_from_path(module_name: str, path: str | os.PathLike):
+def import_from_path(module_name: str, path: str | Path):
     """
     Imports the module with name module_name from path.
 
     Parameters:
         module_name (str): Name of the module.
-        path (os.PathLike): Path to the module file.
+        path (Path): Path to the module file.
     """
-    path = os.path.abspath(path)
-    parent_dir = os.path.dirname(path)
-    grandparent_dir = os.path.dirname(parent_dir)
+    path = Path(path).resolve()
+    parent_dir = path.parent
+    grandparent_dir = parent_dir.parent
 
     # Add grandparent directory to sys.path so package imports work
-    if grandparent_dir not in sys.path:
-        sys.path.insert(0, grandparent_dir)
+    grandparent_str = str(grandparent_dir)
+    if grandparent_str not in sys.path:
+        sys.path.insert(0, grandparent_str)
 
     # Create a package name from the directory for relative imports
-    package_name = os.path.basename(parent_dir)
+    package_name = parent_dir.name
 
     # Ensure the parent package exists in sys.modules
+    parent_dir_str = str(parent_dir)
     if package_name not in sys.modules:
         pkg = types.ModuleType(package_name)
-        pkg.__path__ = [parent_dir]
+        pkg.__path__ = [parent_dir_str]
         pkg.__package__ = package_name
         sys.modules[package_name] = pkg
 
@@ -99,7 +101,7 @@ def import_from_path(module_name: str, path: str | os.PathLike):
     spec = importlib.util.spec_from_file_location(
         full_module_name,
         path,
-        submodule_search_locations=[parent_dir],
+        submodule_search_locations=[parent_dir_str],
     )
     if spec is None:
         raise ImportError(f"Cannot find module spec for {module_name} at path {path}")
@@ -120,7 +122,7 @@ def ggml_compile_op(
     output_tensor: TensorDesc,
     op_params: bytearray,
     exported_name: str,
-    output_directory: os.PathLike,
+    output_directory: str | Path,
     verbose: bool = False,
 ):
     """
@@ -158,9 +160,7 @@ def ggml_compile_op(
     kernel = op_to_kernel_map.get(ggml_op, None)
     if not kernel:
         raise ValueError(f"Unsupported GGML operation: {ggml_op}")
-    kernel_source_file = os.path.abspath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), kernel.source_file)
-    )
+    kernel_source_file = Path(__file__).resolve().parent / kernel.source_file
     module = import_from_path(kernel.name, kernel_source_file)
     kernel_fn = getattr(module, kernel.name)
     kernel = dataclasses.replace(
@@ -170,9 +170,10 @@ def ggml_compile_op(
     )
 
     # create output and work directories
-    os.makedirs(output_directory, exist_ok=True)
-    work_dir = os.path.join(output_directory, f"{exported_name}-artifacts")
-    os.makedirs(work_dir, exist_ok=True)
+    output_dir = Path(output_directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    work_dir = output_dir / f"{exported_name}-artifacts"
+    work_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(
         (
@@ -207,7 +208,7 @@ def ggml_compile_op(
         op_params=op_params,
         work_dir=work_dir,
         exported_name=exported_name,
-        output_directory=output_directory,
+        output_directory=output_dir,
         logger=logger,
         verbose=verbose,
     )
@@ -244,7 +245,7 @@ def to_tensordesc(string: str) -> TensorDesc:
 
 def file_path(string: str):
     """Checks if a string is an existing file."""
-    if not os.path.isfile(string):
+    if not Path(string).is_file():
         raise FileNotFoundError(string)
     return string
 
