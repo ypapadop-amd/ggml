@@ -88,6 +88,11 @@ from .iron.scale import scale
 def ggml_op_scale(arch, input_tensors, output_tensor, op_params) -> KernelSpec:
     return KernelSpec(
         backend=Backend.IRON,
+        op_name="GGML_OP_SCALE",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        op_params=op_params,
         function=scale,
     )
 ```
@@ -95,8 +100,12 @@ def ggml_op_scale(arch, input_tensors, output_tensor, op_params) -> KernelSpec:
 The `KernelSpec` specifies:
 
 - `backend`: Which compilation backend to use (`Backend.IRON`)
+- `op_name`: Name of the operation (e.g., `"GGML_OP_SCALE"`)
+- `arch`: Target architecture string (`"aie2"` or `"aie2p"`)
+- `input_tensors`: List of input tensor descriptors
+- `output_tensor`: Output tensor descriptor
+- `op_params`: Operation-specific parameters as a bytearray
 - `function`: The callable that generates backend-specific IR
-- `op_name`: Set automatically by `ggml_compile_op` from `Kernel.name`
 
 This enables per-invocation backend selection based on tensor shapes, dtypes,
 or other runtime parameters.
@@ -107,10 +116,9 @@ The compilation flow in `ggml_compile_op`:
 
 1. Look up `Kernel` from `_op_to_kernel_map`
 2. Dynamically import the dispatch module
-3. Call dispatch function to get `KernelSpec`
-4. Set `op_name` on the spec via `dataclasses.replace()`
-5. Look up compiler function via `get_compiler(backend)`
-6. Invoke the backend-specific compiler
+3. Call dispatch function to get `KernelSpec` (includes all tensor/op context)
+4. Look up compiler function via `get_compiler(backend)`
+5. Invoke the backend-specific compiler
 
 ```
 ggml_compile_op("SCALE", ...)
@@ -159,11 +167,11 @@ Each kernel consists of three files across two layers:
 
 ### 1. Dispatch Function (e.g., `kernels/unary_ops.py`)
 
-Returns a `KernelSpec` specifying backend and function:
+Returns a `KernelSpec` specifying backend, function, and tensor context:
 
 - Imports the kernel function from the appropriate backend subpackage
 - Provides the standard GGML dispatch signature
-- Returns `KernelSpec(backend=Backend.IRON, function=...)`
+- Returns `KernelSpec` with all fields: `backend`, `op_name`, `arch`, `input_tensors`, `output_tensor`, `op_params`, `function`
 - May use `functools.partial` to bind operation-specific parameters
 
 ### 2. IRON Design (e.g., `kernels/iron/unary_ops.py`)
@@ -209,6 +217,11 @@ Implements the core computation using the AIE API:
        """GGML_OP_NEW_OP implementation."""
        return KernelSpec(
            backend=Backend.IRON,
+           op_name="GGML_OP_NEW_OP",
+           arch=arch,
+           input_tensors=input_tensors,
+           output_tensor=output_tensor,
+           op_params=op_params,
            function=new_op,
        )
    ```
