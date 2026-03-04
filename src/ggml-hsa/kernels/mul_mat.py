@@ -20,10 +20,10 @@ def ggml_op_mul_mat(
     GGML_OP_MUL_MAT implementation.
 
     Parameters:
-        arch: Target architecture (e.g., "aie2", "aie2p").
-        input_tensors: List of two input tensors (A and B).
-        output_tensor: Output tensor (C).
-        op_params: Operation-specific parameters as a bytearray.
+        arch (str): Target architecture (e.g., "aie2", "aie2p").
+        input_tensors (list): List of two input tensors (A and B).
+        output_tensor (TensorDesc): Output tensor (C).
+        op_params (bytearray): Operation-specific parameters.
 
     Returns:
         KernelSpec for the MUL_MAT operation.

@@ -22,10 +22,10 @@ def ggml_op_scale(
     GGML_OP_SCALE implementation.
 
     Parameters:
-        arch: Target architecture.
-        input_tensors: List of one input tensor.
-        output_tensor: Output tensor.
-        op_params: Operation parameters containing the scale factor.
+        arch (str): Target architecture.
+        input_tensors (list): List of one input tensor.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters containing the scale factor.
 
     Returns:
         KernelSpec for the SCALE operation.

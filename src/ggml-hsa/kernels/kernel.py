@@ -45,8 +45,9 @@ class Kernel:
     which Python module contains the dispatch function for a given operation.
 
     Attributes:
-        name: Name of the dispatch function to call (e.g., "ggml_op_add").
-        source_file: Path to the Python module containing the dispatch function.
+        name (str): Name of the dispatch function to call (e.g., "ggml_op_add").
+        source_file (str | Path): Path to the Python module containing the
+            dispatch function.
     """
 
     name: str
@@ -67,13 +68,13 @@ class KernelSpec:
     dtypes, and other runtime parameters.
 
     Attributes:
-        backend: The compilation backend to use (see Backend enum).
-        op_name: Name of the operation.
-        arch: Target architecture for the kernel.
-        input_tensors: List of input tensors for the operation.
-        output_tensor: Output tensor for the operation.
-        op_params: Operation parameters as a bytearray.
-        function: Callable that generates the backend-specific IR.
+        backend (Backend): The compilation backend to use.
+        op_name (str): Name of the operation.
+        arch (str): Target architecture for the kernel.
+        input_tensors (list): List of input tensors for the operation.
+        output_tensor (Any): Output tensor for the operation.
+        op_params (bytearray): Operation parameters.
+        function (Callable): Callable that generates the backend-specific IR.
     """
 
     backend: Backend

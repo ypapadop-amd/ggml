@@ -27,11 +27,11 @@ def _iron_binary_kernel(
     Wrapper for IRON binary operations matching the KernelFunction protocol.
 
     Parameters:
-        op_name: Name of the binary operation.
-        arch: Target architecture.
-        input_tensors: List of two input tensors.
-        output_tensor: Output tensor.
-        op_params: Operation parameters (unused for binary ops).
+        op_name (str): Name of the binary operation.
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters (unused for binary ops).
 
     Returns:
         MLIR module for the binary operation.
@@ -55,11 +55,11 @@ def _make_binary_kernel_spec(
     Create a KernelSpec for a binary operation.
 
     Parameters:
-        arch: Target architecture.
-        input_tensors: List of two input tensors.
-        output_tensor: Output tensor.
-        op_params: Operation parameters.
-        op_name: Name of the operation.
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
+        op_name (str): Name of the operation.
 
     Returns:
         KernelSpec configured for IRON backend.
@@ -88,10 +88,10 @@ def ggml_op_add(
     GGML_OP_ADD implementation.
 
     Parameters:
-        arch: Target architecture.
-        input_tensors: List of two input tensors.
-        output_tensor: Output tensor.
-        op_params: Operation parameters.
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
 
     Returns:
         KernelSpec for the ADD operation.
@@ -108,10 +108,10 @@ def ggml_op_sub(
     GGML_OP_SUB implementation.
 
     Parameters:
-        arch: Target architecture.
-        input_tensors: List of two input tensors.
-        output_tensor: Output tensor.
-        op_params: Operation parameters.
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
 
     Returns:
         KernelSpec for the SUB operation.
@@ -128,10 +128,10 @@ def ggml_op_mul(
     GGML_OP_MUL implementation.
 
     Parameters:
-        arch: Target architecture.
-        input_tensors: List of two input tensors.
-        output_tensor: Output tensor.
-        op_params: Operation parameters.
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
 
     Returns:
         KernelSpec for the MUL operation.
@@ -148,10 +148,10 @@ def ggml_op_div(
     GGML_OP_DIV implementation.
 
     Parameters:
-        arch: Target architecture.
-        input_tensors: List of two input tensors.
-        output_tensor: Output tensor.
-        op_params: Operation parameters.
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
 
     Returns:
         KernelSpec for the DIV operation.
