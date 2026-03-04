@@ -32,5 +32,10 @@ def ggml_op_scale(
     """
     return KernelSpec(
         backend=Backend.IRON,
+        op_name="GGML_OP_SCALE",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        op_params=op_params,
         function=scale,
     )

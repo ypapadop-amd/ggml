@@ -35,5 +35,10 @@ def ggml_op_soft_max(
     """
     return KernelSpec(
         backend=Backend.IRON,
+        op_name="GGML_OP_SOFT_MAX",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        op_params=op_params,
         function=softmax,
     )

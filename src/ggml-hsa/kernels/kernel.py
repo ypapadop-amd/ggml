@@ -68,17 +68,24 @@ class KernelSpec:
 
     Attributes:
         backend: The compilation backend to use (see Backend enum).
+        op_name: Name of the operation.
+        arch: Target architecture for the kernel.
+        input_tensors: List of input tensors for the operation.
+        output_tensor: Output tensor for the operation.
+        op_params: Operation parameters as a bytearray.
         function: Callable that generates the backend-specific IR.
-        op_name: Name of the operation (set by ggml_compile_op from Kernel.name).
     """
 
     backend: Backend
+    op_name: str
+    arch: str
+    input_tensors: list
+    output_tensor: Any
+    op_params: bytearray
     function: Callable[..., Any]
-    op_name: str = ""
 
     def __post_init__(self):
         """Validate that backend is a Backend enum instance."""
         if not isinstance(self.backend, Backend):
-            raise TypeError(
-                f"backend must be a Backend enum, got {type(self.backend).__name__}"
-            )
+            backend_type = type(self.backend).__name__
+            raise TypeError(f"backend must be a Backend enum, got {backend_type}")

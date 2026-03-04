@@ -33,5 +33,10 @@ def ggml_op_clamp(
     """
     return KernelSpec(
         backend=Backend.IRON,
+        op_name="GGML_OP_CLAMP",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        op_params=op_params,
         function=clamp,
     )

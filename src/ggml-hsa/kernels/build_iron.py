@@ -52,10 +52,6 @@ def _compile_aie_core_kernels(
 
 def compile_iron_kernel(
     kernel_spec: KernelSpec,
-    arch: str,
-    input_tensors: list[TensorDesc],
-    output_tensor: TensorDesc,
-    op_params: bytearray,
     work_dir: Path,
     exported_name: str,
     output_directory: Path,
@@ -72,10 +68,6 @@ def compile_iron_kernel(
 
     Parameters:
         kernel_spec: The KernelSpec containing the IRON kernel function.
-        arch: Target architecture (e.g., "aie2", "aie2p").
-        input_tensors: List of input tensor descriptions.
-        output_tensor: Output tensor description.
-        op_params: Operation-specific parameters.
         work_dir: Working directory for intermediate files.
         exported_name: Name for the exported kernel files.
         output_directory: Directory for output PDI and instruction files.
@@ -88,15 +80,15 @@ def compile_iron_kernel(
     # Generate MLIR module by calling the kernel function
     # (this also populates ExternalFunction._instances)
     mlir_module = kernel_spec.function(
-        arch=arch,
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-        op_params=op_params,
+        arch=kernel_spec.arch,
+        input_tensors=kernel_spec.input_tensors,
+        output_tensor=kernel_spec.output_tensor,
+        op_params=kernel_spec.op_params,
     )
 
     # Compile any external C++ core functions
     _compile_aie_core_kernels(
-        arch=arch,
+        arch=kernel_spec.arch,
         functions=ExternalFunction._instances,
         work_dir=work_dir,
         verbose=verbose,

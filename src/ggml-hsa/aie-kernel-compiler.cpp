@@ -106,7 +106,7 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
         // compile the kernel
         auto build_mod = py::module_::import("build");
         auto compile_kernel = build_mod.attr("ggml_compile_op");
-        compile_kernel("ggml_op"_a = op_name, "arch"_a = dev_info.name,
+        compile_kernel("op_name"_a = op_name, "arch"_a = dev_info.name,
                        "input_tensors"_a = std::move(input_tensors),
                        "output_tensor"_a = std::move(output_tensor),
                        "op_params"_a = std::move(op_params), "exported_name"_a = kernel_name,

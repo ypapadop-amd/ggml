@@ -17,7 +17,7 @@ def ggml_op_mul_mat(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
     """
-    GGML_MUL_MAT implementation.
+    GGML_OP_MUL_MAT implementation.
 
     Parameters:
         arch: Target architecture (e.g., "aie2", "aie2p").
@@ -30,5 +30,10 @@ def ggml_op_mul_mat(
     """
     return KernelSpec(
         backend=Backend.IRON,
+        op_name="GGML_OP_MUL_MAT",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        op_params=op_params,
         function=gemm,
     )

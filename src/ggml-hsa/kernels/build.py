@@ -20,7 +20,6 @@ Usage:
         python build.py --ggml_op ADD --arch aie2 --input_tensors "(1024,1,1,1)/f32" ...
 """
 
-import dataclasses
 import importlib.util
 import logging
 from collections.abc import Callable
@@ -179,7 +178,7 @@ def import_from_path(module_name: str, path: str | Path):
 
 
 def ggml_compile_op(
-    ggml_op: str,
+    op_name: str,
     arch: str,
     input_tensors: list[TensorDesc],
     output_tensor: TensorDesc,
@@ -197,7 +196,7 @@ def ggml_compile_op(
     3. Invokes the appropriate backend compiler
 
     Parameters:
-        ggml_op: GGML operation name (e.g., "ADD", "MUL_MAT").
+        op_name: Operation name (e.g., "ADD", "MUL_MAT").
         arch: Target architecture (e.g., "aie2", "aie2p").
         input_tensors: List of input tensor descriptions.
         output_tensor: Output tensor description.
@@ -228,7 +227,7 @@ def ggml_compile_op(
         logger.addHandler(ch)
 
     # Get kernel mapping
-    kernel = get_kernel(ggml_op)
+    kernel = get_kernel(op_name)
 
     # Load dispatch module and get dispatch function
     kernel_source_file = Path(__file__).resolve().parent / kernel.source_file
@@ -243,9 +242,6 @@ def ggml_compile_op(
         op_params=op_params,
     )
 
-    # Set the kernel name from the Kernel object
-    kernel_spec = dataclasses.replace(kernel_spec, op_name=kernel.name)
-
     # Create output and work directories
     output_dir = Path(output_directory)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -256,7 +252,7 @@ def ggml_compile_op(
         (
             "Compiling op: %s for arch %s\n"
             "  Backend:              %s\n"
-            "  Kernel name:          %s\n"
+            "  Op name:              %s\n"
             "  Kernel source:        %s\n"
             "  Input tensors:        %s\n"
             "  Output tensor:        %s\n"
@@ -265,27 +261,23 @@ def ggml_compile_op(
             "  Output directory:     %s\n"
             "  Working directory:    %s"
         ),
-        ggml_op,
+        op_name,
         arch,
         kernel_spec.backend.name,
-        kernel.name,
-        kernel.source_file,
-        input_tensors,
-        output_tensor,
-        op_params,
+        kernel_spec.op_name,
+        str(kernel_source_file),
+        kernel_spec.input_tensors,
+        kernel_spec.output_tensor,
+        kernel_spec.op_params,
         exported_name,
-        output_directory,
-        work_dir,
+        str(output_dir),
+        str(work_dir),
     )
 
     # Get compiler for the selected backend and compile
     compile_fn = get_compiler(kernel_spec.backend)
     compile_fn(
         kernel_spec=kernel_spec,
-        arch=arch,
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-        op_params=op_params,
         work_dir=work_dir,
         exported_name=exported_name,
         output_directory=output_dir,
@@ -361,7 +353,7 @@ def main():
         description="Compiles GGML HSA kernels for AMD XDNA / XDNA2 devices",
     )
     parser.add_argument(
-        "--ggml_op",
+        "--op_name",
         type=str,
         required=True,
         help="GGML operation name, e.g., MUL_MAT, ADD, RELU, etc.",
@@ -406,7 +398,7 @@ def main():
     args = parser.parse_args()
 
     ggml_compile_op(
-        ggml_op=args.ggml_op,
+        op_name=args.op_name,
         arch=args.arch,
         input_tensors=args.input_tensors,
         output_tensor=args.output_tensor,
