@@ -5,283 +5,157 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-from dataclasses import dataclass
-from os import path
-import numpy as np
+"""
+Top-level entry points for GGML binary operations (GGML_OP_ADD, GGML_OP_SUB,
+GGML_OP_MUL, GGML_OP_DIV).
+"""
 
-from utils import suppress_import_pyxrt_msg
+from functools import partial
 
-suppress_import_pyxrt_msg()
-
-from aie.iron import (
-    ObjectFifo,
-    Program,
-    Runtime,
-    Worker,
-    dtype_to_str,
-    ExternalFunction,
-)
-from aie.iron.placers import SequentialPlacer
-from aie.iron.controlflow import range_
-
-from build import arch_aligned_num_elements, arch_to_device, max_tile_size
+from .iron.binary_ops import binary_op
+from .kernel import Backend, KernelSpec
 
 
-@dataclass(frozen=True)
-class CoreFunctionSpec:
-    """Specification for a core function to be used in binary operations.
-
-    Attributes:
-        external_function (ExternalFunction): The external function to be called for the binary operation.
-        num_elements (int): The total number of elements in the input/output tensors.
-    """
-
-    external_function: ExternalFunction
-    num_elements: int
-
-    @property
-    def tile_size(self) -> int:
-        """Returns the tile size used by the external function."""
-        return self.external_function.tile_size(0)
-
-
-def apply_binary_op(
+def _iron_binary_kernel(
+    op_name: str,
     arch: str,
     input_tensors: list,
-    function_spec: CoreFunctionSpec,
     output_tensor,
+    op_params: bytearray,
 ):
     """
-    Implements output_tensor = op(*input_tensors)
+    Wrapper for IRON binary operations matching the KernelFunction protocol.
 
     Parameters:
+        op_name (str): Name of the binary operation.
         arch (str): Target architecture.
-        input_tensors (list): Input tensors.
-        function_spec (CoreFunctionSpec): Binary operator specification.
-        output_tensor: Output tensor.
-    """
-
-    # Tile size and number of tiles
-    num_elements = function_spec.num_elements
-    tile_size = function_spec.tile_size
-    num_tiles = num_elements // tile_size
-    if num_elements % tile_size != 0:
-        raise ValueError(
-            f"Number of elements ({num_elements}) must be divisible by tile size ({tile_size})."
-        )
-
-    # AIE-array data movement with object fifos
-    input_tile_tys = [
-        (np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]])
-        for input_tensor in input_tensors
-    ]
-    of_ins = [
-        ObjectFifo(input_tile_ty, name=f"in{index}")
-        for index, input_tile_ty in enumerate(input_tile_tys)
-    ]
-    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-    of_out = ObjectFifo(output_tile_ty, name="out")
-
-    # Create a worker to run the task on a compute tile
-    worker = None
-    function = function_spec.external_function
-
-    # Task for the core to perform with an external function
-    def ext_core_fn(of_in0, of_in1, of_out, function):
-        # Number of sub-vector "tile" iterations
-        for _ in range_(num_tiles):
-            elem_in0 = of_in0.acquire(1)
-            elem_in1 = of_in1.acquire(1)
-            elem_out = of_out.acquire(1)
-            function(elem_in0, elem_in1, elem_out, tile_size)
-            of_in0.release(1)
-            of_in1.release(1)
-            of_out.release(1)
-
-    worker = Worker(
-        ext_core_fn,
-        fn_args=[x.cons() for x in of_ins] + [of_out.prod(), function],
-    )
-
-    # Runtime operations to move data to/from the AIE-array
-    input_tensor_tys = [
-        np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
-        for input_tensor in input_tensors
-    ]
-    output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
-    rt = Runtime()
-    with rt.sequence(*input_tensor_tys, output_tensor_ty) as t:
-        rt.start(worker)
-        [rt.fill(of_in.prod(), t[i]) for i, of_in in enumerate(of_ins)]
-        rt.drain(of_out.cons(), t[-1], wait=True)
-
-    # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
-
-
-def create_external_function(
-    arch: str,
-    op_name: str,
-    input_tensors: list,
-    output_tensor,
-) -> CoreFunctionSpec:
-    """
-    Creates a specification for binary ops.
-
-    Parameters:
-        arch (str): Target architecture.
-        op_name (str): Name of the operation.
-        input_tensors (list): List of input tensors.
-        output_tensor: Output tensor.
+        input_tensors (list): List of two input tensors.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters (unused for binary ops).
 
     Returns:
-        CoreFunctionSpec: Specification for the core function to be used in binary ops.
+        MLIR module for the binary operation.
     """
-
-    num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
-    tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
-
-    current_dir = path.dirname(path.realpath(__file__))
-    func = ExternalFunction(
-        name=op_name.lower(),
-        object_file_name=f"{op_name.lower()}_core_function.o",
-        source_file=path.join(current_dir, "binary_ops.cc"),
-        arg_types=[
-            np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
-            np.ndarray[(tile_size,), np.dtype[input_tensors[1].dtype]],
-            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
-            np.int32,
-        ],
-        compile_flags=[
-            f"-D{op_name}=1",
-            f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
-            f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
-            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-        ],
-    )
-    return CoreFunctionSpec(external_function=func, num_elements=num_elements)
-
-
-def ggml_op_binary(
-    arch: str,
-    op_name: str,
-    input_tensors: list,
-    output_tensor,
-):
-    """
-    Binary operation implementation.
-
-    Parameters:
-        arch (str): Target architecture.
-        op_name (str): Name of the operation.
-        input_tensors (list): List of two input tensors.
-        output_tensor: Output tensor.
-    """
-
-    if len(input_tensors) != 2:
-        raise ValueError("Operation requires exactly two input tensors.")
-
-    if (
-        any(t.contiguous is False for t in input_tensors)
-        or output_tensor.contiguous is False
-    ):
-        raise ValueError("Input and output tensors must be contiguous in memory.")
-
-    for input_tensor in input_tensors:
-        if input_tensor.shape != output_tensor.shape:
-            raise ValueError(
-                f"Input and output tensors must have the same shape: {input_tensor.shape} != {output_tensor.shape}"
-            )
-
-    if output_tensor.shape[1:4] != (1, 1, 1):
-        raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
-
-    function_spec = create_external_function(
+    return binary_op(
         arch=arch,
         op_name=op_name,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
     )
 
-    return apply_binary_op(
+
+def _make_binary_kernel_spec(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+    op_params: bytearray,
+    op_name: str,
+) -> KernelSpec:
+    """
+    Create a KernelSpec for a binary operation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): List of two input tensors.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
+        op_name (str): Name of the operation.
+
+    Returns:
+        KernelSpec configured for IRON backend.
+
+    Raises:
+        ValueError: If input_tensors does not contain exactly two tensors.
+    """
+    if len(input_tensors) != 2:
+        raise ValueError("Operation requires exactly two input tensors.")
+
+    return KernelSpec(
+        backend=Backend.IRON,
+        op_name=op_name,
         arch=arch,
         input_tensors=input_tensors,
-        function_spec=function_spec,
         output_tensor=output_tensor,
+        op_params=op_params,
+        function=partial(_iron_binary_kernel, op_name=op_name),
     )
 
 
-def ggml_op_add(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def ggml_op_add(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+) -> KernelSpec:
     """
     GGML_OP_ADD implementation.
 
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        output_tensor: Output tensor.
-        op_params: Operation parameters.
-    """
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
 
-    return ggml_op_binary(
-        arch=arch,
-        op_name="GGML_OP_ADD",
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
+    Returns:
+        KernelSpec for the ADD operation.
+    """
+    return _make_binary_kernel_spec(
+        arch, input_tensors, output_tensor, op_params, "GGML_OP_ADD"
     )
 
 
-def ggml_op_sub(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def ggml_op_sub(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+) -> KernelSpec:
     """
     GGML_OP_SUB implementation.
 
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        output_tensor: Output tensor.
-        op_params: Operation parameters.
-    """
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
 
-    return ggml_op_binary(
-        arch=arch,
-        op_name="GGML_OP_SUB",
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
+    Returns:
+        KernelSpec for the SUB operation.
+    """
+    return _make_binary_kernel_spec(
+        arch, input_tensors, output_tensor, op_params, "GGML_OP_SUB"
     )
 
 
-def ggml_op_mul(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def ggml_op_mul(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+) -> KernelSpec:
     """
     GGML_OP_MUL implementation.
 
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        output_tensor: Output tensor.
-        op_params: Operation parameters.
-    """
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
 
-    return ggml_op_binary(
-        arch=arch,
-        op_name="GGML_OP_MUL",
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
+    Returns:
+        KernelSpec for the MUL operation.
+    """
+    return _make_binary_kernel_spec(
+        arch, input_tensors, output_tensor, op_params, "GGML_OP_MUL"
     )
 
 
-def ggml_op_div(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def ggml_op_div(
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+) -> KernelSpec:
     """
     GGML_OP_DIV implementation.
 
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        output_tensor: Output tensor.
-        op_params: Operation parameters.
-    """
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
 
-    return ggml_op_binary(
-        arch=arch,
-        op_name="GGML_OP_DIV",
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
+    Returns:
+        KernelSpec for the DIV operation.
+    """
+    return _make_binary_kernel_spec(
+        arch, input_tensors, output_tensor, op_params, "GGML_OP_DIV"
     )
