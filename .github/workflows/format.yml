@@ -2,11 +2,11 @@ name: Format Code
 
 on:
   push:
-    branches: [ master ]
+    branches: [ hsa-backend ]
     paths:
       - 'src/ggml-hsa/**'
   pull_request:
-    branches: [ master ]
+    branches: [ hsa-backend ]
     paths:
       - 'src/ggml-hsa/**'
   workflow_dispatch:
