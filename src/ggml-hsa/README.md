@@ -7,6 +7,20 @@ The GGML HSA (`ggml-hsa`) backend supports the following AMD XDNA NPUs:
 - [AMD XDNA](https://www.amd.com/en/technologies/xdna.html) (`aie2` architecture), e.g., Phoenix, Hawk Point.
 - [AMD XDNA2](https://www.amd.com/en/technologies/xdna.html#xdna2) (`aie2p` architecture), e.g., Strix Halo, Krackan.
 
+## Supported Operations
+
+The following GGML operations are supported by the HSA backend:
+
+| Category | Operation                                                    | Status      |
+|----------|--------------------------------------------------------------|-------------|
+| Binary   | `ADD`, `SUB`, `MUL`, `DIV`                                   | Implemented |
+| Unary    | `SQR`, `ABS`, `SGN`, `NEG`, `STEP`, `RELU`                   | Implemented |
+| Unary    | `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`| Implemented |
+| Unary    | `SQRT`, `LOG`, `SIN`, `COS`, `TANH`, `ELU`, `SIGMOID`        | Planned     |
+| Unary    | `GELU`, `GELU_QUICK`, `SILU`, `EXP`, `GELU_ERF`, `XIELU`     | Planned     |
+| Matrix   | `MUL_MAT`                                                    | Implemented |
+| Other    | `SCALE`, `SOFT_MAX`, `CLAMP`                                 | Implemented |
+
 ## Supported Datatypes
 
 The following data types are supported by the HSA backend:
