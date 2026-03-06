@@ -33,6 +33,8 @@ jobs:
 
     - name: Install formatters
       run: |
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        sudo add-apt-repository "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main"
         sudo apt-get update
         sudo apt-get install -y clang-format-22
         pip install black
