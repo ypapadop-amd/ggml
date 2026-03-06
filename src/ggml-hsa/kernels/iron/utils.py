@@ -69,7 +69,7 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
     Returns:
         int: Number of elements aligned to architecture requirements.
     """
-    return align_to_arch(arch, np.size(tensor), tensor.dtype)
+    return align_to_arch(arch, tensor.numel(), tensor.dtype)
 
 
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
