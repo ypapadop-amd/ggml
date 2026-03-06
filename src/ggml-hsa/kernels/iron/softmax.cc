@@ -1,54 +1,12 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include "ggml-aie.hpp"
+#include "aie_kernel_math.h"
+#include <aie_api/aie.hpp>
 
 #ifndef KERN_VEC_SIZE
-#define KERN_VEC_SIZE 16
+#define KERN_VEC_SIZE 8
 #endif
-
-template <int VecSize = KERN_VEC_SIZE>
-inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
-    // Taylor series coefficients in reverse order for Horner's method
-    constexpr float exp_coeffs[] = {
-        0.0000000001605904f, // 1/13!
-        0.0000000020876757f, // 1/12!
-        0.0000000250521084f, // 1/11!
-        0.0000002755731922f, // 1/10!
-        0.0000027557319224f, // 1/9!
-        0.0000248015873016f, // 1/8!
-        0.0001984126984127f, // 1/7!
-        0.0013888888888889f, // 1/6!
-        0.0083333333333333f, // 1/5!
-        0.0416666666666667f, // 1/4!
-        0.1666666666666667f, // 1/3!
-        0.5f,                // 1/2!
-        1.0f,                // 1/1!
-        1.0f                 // 1/0!
-    };
-    constexpr int NUM_EXP_COEFFS = sizeof(exp_coeffs) / sizeof(exp_coeffs[0]);
-
-    // clamp x to prevent overflow
-    aie::vector<float, VecSize> v_clamp_min = aie::broadcast<float, VecSize>(-88.0f);
-    aie::vector<float, VecSize> v_clamp_max = aie::broadcast<float, VecSize>(88.0f);
-    x = aie::max(x, v_clamp_min);
-    x = aie::min(x, v_clamp_max);
-
-    aie::accum<accfloat, VecSize> tmp_accum;
-    aie::vector<float, VecSize> poly = aie::broadcast<float, VecSize>(exp_coeffs[0]);
-
-#pragma unroll
-    for (int i = 1; i < NUM_EXP_COEFFS; ++i) {
-        tmp_accum = aie::mul(poly, x);
-        poly = tmp_accum.template to_vector<float>();
-        poly = aie::add(poly, aie::broadcast<float, VecSize>(exp_coeffs[i]));
-    }
-
-    // clamp to positive
-    aie::vector<float, VecSize> v_exp_min = aie::broadcast<float, VecSize>(1e-38f);
-    poly = aie::max(poly, v_exp_min);
-
-    return poly;
-}
 
 // Scalar 2^x using range reduction
 // Horner's method suffer from precision loss for large input values
@@ -416,3 +374,4 @@ void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
 #endif // GGML_OP_SOFT_MAX_WITH_MASK_AND_SINKS
 
 } // extern "C"
+
