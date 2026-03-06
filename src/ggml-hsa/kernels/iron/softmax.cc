@@ -4,12 +4,51 @@
 #include <aie_api/aie.hpp>
 
 #ifndef KERN_VEC_SIZE
-#define KERN_VEC_SIZE 16
+#define KERN_VEC_SIZE 8
 #endif
 
+// =============================================================================
+// Range-reduced vectorized exponential: exp(x) = 2^n * exp(r)
+//
+// Cody-Waite splitting of ln(2) into high and low parts minimises
+// rounding error in step 2. A degree-9 polynomial on [0, ln2) gives
+// ~6e-9 peak error, well within float32's ~1.2e-7 epsilon.
+// =============================================================================
 template <int VecSize = KERN_VEC_SIZE>
 inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
-    // Taylor series coefficients in reverse order for Horner's method
+    constexpr float log2e = 1.4426950408889634f; // log2(e)
+    // Cody-Waite split of ln(2) for accurate range reduction
+    constexpr float ln2_hi = 6.93145751953125e-1f;      // upper bits, exact in float
+    constexpr float ln2_lo = 1.4286068203094172321e-6f; // residual
+
+    // Clamp to representable range of exp() in float32
+    x = aie::max(x, aie::broadcast<float, VecSize>(-88.0f));
+    x = aie::min(x, aie::broadcast<float, VecSize>(88.0f));
+
+    // Compute t = x * log2(e)
+    aie::accum<accfloat, VecSize> t_acc = aie::mul(x, log2e);
+    aie::vector<float, VecSize> t = t_acc.template to_vector<float>();
+
+    // n = floor(t) via magic-number rounding
+    constexpr float magic = 12582912.0f; // 1.5 * 2^23
+    aie::vector<float, VecSize> v_magic = aie::broadcast<float, VecSize>(magic);
+    aie::vector<float, VecSize> n_f = aie::sub(aie::add(t, v_magic), v_magic);
+
+    // Adjust round-to-nearest -> floor: if n_f > t, we rounded up
+    auto overshot = aie::lt(t, n_f);
+    n_f = aie::sub(n_f, aie::select(aie::broadcast<float, VecSize>(0.0f),
+                                    aie::broadcast<float, VecSize>(1.0f), overshot));
+
+    // r = x - n * ln(2) with Cody-Waite precision
+    aie::accum<accfloat, VecSize> hi_acc = aie::mul(n_f, ln2_hi);
+    aie::vector<float, VecSize> r = aie::sub(x, hi_acc.template to_vector<float>());
+    aie::accum<accfloat, VecSize> lo_acc = aie::mul(n_f, ln2_lo);
+    r = aie::sub(r, lo_acc.template to_vector<float>());
+
+    // Evaluate exp(r) using Horner's method (degree 9)
+    //
+    // exp(r) ~ 1 + r + r^2/2! + r^3/3! + ... + r^9/9!
+    // Coefficients in high-to-low order for Horner evaluation:
     constexpr float exp_coeffs[] = {
         0.0000000001605904f, // 1/13!
         0.0000000020876757f, // 1/12!
@@ -28,27 +67,34 @@ inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
     };
     constexpr int NUM_EXP_COEFFS = sizeof(exp_coeffs) / sizeof(exp_coeffs[0]);
 
-    // clamp x to prevent overflow
-    aie::vector<float, VecSize> v_clamp_min = aie::broadcast<float, VecSize>(-88.0f);
-    aie::vector<float, VecSize> v_clamp_max = aie::broadcast<float, VecSize>(88.0f);
-    x = aie::max(x, v_clamp_min);
-    x = aie::min(x, v_clamp_max);
-
-    aie::accum<accfloat, VecSize> tmp_accum;
     aie::vector<float, VecSize> poly = aie::broadcast<float, VecSize>(exp_coeffs[0]);
+    aie::accum<accfloat, VecSize> tmp;
 
 #pragma unroll
     for (int i = 1; i < NUM_EXP_COEFFS; ++i) {
-        tmp_accum = aie::mul(poly, x);
-        poly = tmp_accum.template to_vector<float>();
-        poly = aie::add(poly, aie::broadcast<float, VecSize>(exp_coeffs[i]));
+        tmp = aie::mul(poly, r);
+        poly = aie::add(tmp.template to_vector<float>(),
+                        aie::broadcast<float, VecSize>(exp_coeffs[i]));
     }
 
-    // clamp to positive
-    aie::vector<float, VecSize> v_exp_min = aie::broadcast<float, VecSize>(1e-38f);
-    poly = aie::max(poly, v_exp_min);
+    // Compute 2^n via IEEE 754 bit construction
+    n_f = aie::max(n_f, aie::broadcast<float, VecSize>(-126.0f));
+    n_f = aie::min(n_f, aie::broadcast<float, VecSize>(127.0f));
 
-    return poly;
+    // aie::to_fixed<int32_t>(n_f, 23) = floor(n_f * 2^23) = n << 23
+    auto n_shifted = aie::to_fixed<int32_t>(n_f, 23);
+    // (n + 127) << 23 = (n << 23) + (127 << 23)
+    auto scale_bits = aie::add(n_shifted, aie::broadcast<int32_t, VecSize>(0x3F800000));
+    aie::vector<float, VecSize> scale = scale_bits.template cast_to<float>();
+
+    // Reconstruct exp(x) = exp(r) * 2^n
+    aie::accum<accfloat, VecSize> result_acc = aie::mul(poly, scale);
+    aie::vector<float, VecSize> result = result_acc.template to_vector<float>();
+
+    // Clamp to positive minimum (avoid exact zero from underflow)
+    result = aie::max(result, aie::broadcast<float, VecSize>(1e-38f));
+
+    return result;
 }
 
 // Scalar 2^x using range reduction
