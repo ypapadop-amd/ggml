@@ -3,39 +3,42 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
+# (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
 """
-Top-level entry point for the GGML scale operation (GGML_OP_SCALE).
+Top-level entry point for the GGML softmax operation (GGML_OP_SOFT_MAX).
 
 Returns a KernelSpec specifying the compilation backend and kernel function.
 """
 
-from .iron.scale import scale
+from .iron.softmax import softmax
 from .kernel import Backend, KernelSpec
 
 
-def ggml_op_scale(
+def ggml_op_soft_max(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
     """
-    GGML_OP_SCALE implementation.
+    GGML_OP_SOFT_MAX implementation.
 
     Parameters:
         arch (str): Target architecture.
-        input_tensors (list): List of one input tensor.
+        input_tensors (list): List of 1-3 input tensors:
+            - input_tensors[0]: Input tensor (required)
+            - input_tensors[1]: Mask tensor (optional)
+            - input_tensors[2]: Sink tensor (optional)
         output_tensor (TensorDesc): Output tensor.
-        op_params (bytearray): Operation parameters containing the scale factor.
+        op_params (bytearray): Operation parameters (scale, max_bias).
 
     Returns:
-        KernelSpec for the SCALE operation.
+        KernelSpec for the SOFT_MAX operation.
     """
     return KernelSpec(
         backend=Backend.IRON,
-        op_name="GGML_OP_SCALE",
+        op_name="GGML_OP_SOFT_MAX",
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
-        function=scale,
+        function=softmax,
     )
