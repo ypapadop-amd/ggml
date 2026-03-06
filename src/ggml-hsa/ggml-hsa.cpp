@@ -218,7 +218,7 @@ static std::uint32_t ggml_hsa_get_agent_min_queue_size(hsa_agent_t agent) {
 /**
  * @brief Populates the information in @p info from @p pool.
  */
-static hsa_status_t ggml_hsa_set_memory_pool_info(hsa_amd_memory_pool_t pool,
+static hsa_status_t ggml_hsa_get_memory_pool_info(hsa_amd_memory_pool_t pool,
                                                   ggml_hsa_device_info::memory_pool_info & info) {
     bool alloc_allowed = true;
     if (auto status = hsa_amd_memory_pool_get_info(
@@ -257,9 +257,22 @@ static hsa_status_t ggml_hsa_set_memory_pool_info(hsa_amd_memory_pool_t pool,
 }
 
 /**
- * @brief Discovers HSA memory pools.
+ * @brief Memory pool discovery information.
  */
-static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, void * data) {
+struct ggml_hsa_find_memory_pool_data_t {
+    /// Coarse or fine-grain memory.
+    hsa_amd_memory_pool_global_flag_t expected_flags =
+        HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED;
+    /// If can allocate from.
+    bool expected_allocatable = true;
+    /// Memory pool information.
+    ggml_hsa_device_info::memory_pool_info mem_info;
+};
+
+/**
+ * @brief Find a pool with the required flags.
+ */
+static hsa_status_t ggml_hsa_find_memory_pool(hsa_amd_memory_pool_t pool, void * data) {
     // query only global segments
     hsa_amd_segment_t segment_type = {};
     if (auto status =
@@ -275,31 +288,29 @@ static hsa_status_t ggml_hsa_find_hsa_memory_pools(hsa_amd_memory_pool_t pool, v
         return status;
     }
 
-    auto & dev_info = *static_cast<ggml_hsa_device_info::device_info *>(data);
-    const bool kernarg_pool = (pool_flags & HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_KERNARG_INIT) != 0x0;
-    if (kernarg_pool) {
-        return ggml_hsa_set_memory_pool_info(pool, dev_info.kernarg_memory);
+    // check if flags satisfied
+    auto & mem_pool_data = *static_cast<ggml_hsa_find_memory_pool_data_t *>(data);
+    if ((pool_flags & mem_pool_data.expected_flags) == 0x0) {
+        return HSA_STATUS_SUCCESS;
     }
 
-    const bool coarse_grained_pool =
-        (pool_flags & HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED) != 0x0;
-    if (coarse_grained_pool) {
-        std::size_t alloc_rec_granule = 0;
-        if (auto status = hsa_amd_memory_pool_get_info(
-                pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_REC_GRANULE, &alloc_rec_granule);
-            status != HSA_STATUS_SUCCESS) {
-            return status;
-        }
-
-        if (alloc_rec_granule == 0) {
-            // XDNA dev heap has alloc_rec_granule == 0
-            return ggml_hsa_set_memory_pool_info(pool, dev_info.dev_memory);
-        } else {
-            return ggml_hsa_set_memory_pool_info(pool, dev_info.data_memory);
-        }
+    // check if allocation satisfied
+    std::size_t alloc_rec_granule = 0;
+    if (auto status = hsa_amd_memory_pool_get_info(
+            pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_REC_GRANULE, &alloc_rec_granule);
+        status != HSA_STATUS_SUCCESS) {
+        return status;
+    }
+    const bool allocable = (alloc_rec_granule != 0);
+    if (mem_pool_data.expected_allocatable ^ allocable) {
+        return HSA_STATUS_SUCCESS;
     }
 
-    return HSA_STATUS_SUCCESS;
+    if (auto status = ggml_hsa_get_memory_pool_info(pool, mem_pool_data.mem_info);
+        status != HSA_STATUS_SUCCESS) {
+        return status;
+    }
+    return HSA_STATUS_INFO_BREAK;
 }
 
 /**
@@ -325,7 +336,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
         GGML_ABORT("%s: exceeded GGML_HSA_MAX_DEVICES limit (%d)", __func__, GGML_HSA_MAX_DEVICES);
     }
 
-    // create device information (agent, type, name, memory pools, etc.)
+    // populate device information (agent, type, name, etc.)
     auto & dev_info = info.devices[info.device_count];
     dev_info.device = info.device_count;
     dev_info.agent = agent;
@@ -345,10 +356,66 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
         GGML_ABORT("%s: unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
     }
 
-    if (auto status =
-            hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_hsa_memory_pools, &dev_info);
-        status != HSA_STATUS_SUCCESS) {
-        return status;
+    // find dev memory pool (only for AIE agents)
+    if (type == HSA_DEVICE_TYPE_AIE) {
+        // XDNA dev heap is coarse-grained with alloc_rec_granule == 0
+        ggml_hsa_find_memory_pool_data_t mem_pool_data = {
+            .expected_flags = HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
+            .expected_allocatable = false};
+        auto status =
+            hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_memory_pool, &mem_pool_data);
+        switch (status) {
+            case HSA_STATUS_INFO_BREAK:
+                dev_info.dev_memory = mem_pool_data.mem_info;
+                break;
+            case HSA_STATUS_SUCCESS:
+                // iteration finished with no errors, but no pool found
+                return static_cast<hsa_status_t>(HSA_STATUS_ERROR_NOT_SUPPORTED);
+            default:
+                // iteration aborted with errors
+                return status;
+        }
+    }
+
+    // find data pool
+    {
+        ggml_hsa_find_memory_pool_data_t mem_pool_data = {
+            .expected_flags = HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
+            .expected_allocatable = true};
+        auto status =
+            hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_memory_pool, &mem_pool_data);
+        switch (status) {
+            case HSA_STATUS_INFO_BREAK:
+                dev_info.data_memory = mem_pool_data.mem_info;
+                break;
+            case HSA_STATUS_SUCCESS:
+                // iteration finished with no errors, but no pool found
+                return static_cast<hsa_status_t>(HSA_STATUS_ERROR_NOT_SUPPORTED);
+            default:
+                // iteration aborted with errors
+                return status;
+        }
+    }
+
+    // find kernarg pool
+    {
+        ggml_hsa_find_memory_pool_data_t mem_pool_data = {
+            .expected_flags = HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_KERNARG_INIT,
+            .expected_allocatable = true};
+        auto status =
+            hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_memory_pool, &mem_pool_data);
+        switch (status) {
+            case HSA_STATUS_INFO_BREAK:
+                dev_info.kernarg_memory = mem_pool_data.mem_info;
+                break;
+            case HSA_STATUS_SUCCESS:
+                // iteration finished with no errors, but no pool found; use data pool
+                dev_info.kernarg_memory = dev_info.data_memory;
+                break;
+            default:
+                // iteration aborted with errors
+                return status;
+        }
     }
 
     // add device to known devices
