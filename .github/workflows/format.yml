@@ -1,0 +1,70 @@
+name: Format Code
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'src/ggml-hsa/**'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'src/ggml-hsa/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Clone
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install formatters
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format
+        pip install black
+
+    - name: Format C++ code with clang-format
+      run: |
+        find src/ggml-hsa -type f \( -name '*.cpp' -o -name '*.cc' -o -name '*.hpp' -o -name '*.h' \) \
+          -exec clang-format -i --style=file:src/ggml-hsa/.clang-format {} +
+
+    - name: Format Python code with black
+      run: |
+        black src/ggml-hsa
+
+    - name: Check for changes
+      id: verify
+      run: |
+        if ! git diff --exit-code; then
+          echo "changes=true" >> $GITHUB_OUTPUT
+        else
+          echo "changes=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Commit and push formatting changes
+      if: steps.verify.outputs.changes == 'true'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add src/ggml-hsa
+        git commit -m "Auto-format code in src/ggml-hsa
+
+        - Format C++ code with clang-format
+        - Format Python code with black
+
+        Co-Authored-By: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+        git push
