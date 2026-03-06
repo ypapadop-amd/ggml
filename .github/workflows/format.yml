@@ -34,13 +34,13 @@ jobs:
     - name: Install formatters
       run: |
         sudo apt-get update
-        sudo apt-get install -y clang-format
+        sudo apt-get install -y clang-format-22
         pip install black
 
     - name: Format C++ code with clang-format
       run: |
         find src/ggml-hsa -type f \( -name '*.cpp' -o -name '*.cc' -o -name '*.hpp' -o -name '*.h' \) \
-          -exec clang-format -i --style=file:src/ggml-hsa/.clang-format {} +
+          -exec clang-format-22 -i --style=file:src/ggml-hsa/.clang-format {} +
 
     - name: Format Python code with black
       run: |
