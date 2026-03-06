@@ -3,6 +3,7 @@
 # copy root package files
 set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/aie_kernel_math.h
     ${CMAKE_CURRENT_SOURCE_DIR}/aie_kernel_utils.h
     ${CMAKE_CURRENT_SOURCE_DIR}/argmax.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/argmax.py
@@ -12,6 +13,8 @@ set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/clamp.py
     ${CMAKE_CURRENT_SOURCE_DIR}/count_equal.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/count_equal.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.py
     ${CMAKE_CURRENT_SOURCE_DIR}/gemm.py
     ${CMAKE_CURRENT_SOURCE_DIR}/ggml-aie.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/scale.cc
@@ -73,3 +76,4 @@ install(
     DESTINATION
         lib/kernels/iron/aie2p
     )
+
