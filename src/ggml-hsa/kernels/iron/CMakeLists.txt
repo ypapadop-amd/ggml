@@ -16,6 +16,8 @@ set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/softmax.py
     ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.py
     ${CMAKE_CURRENT_SOURCE_DIR}/utils.py
     )
 ggml_hsa_copy_files(ggml_hsa_copy_iron_files
@@ -69,3 +71,4 @@ install(
     DESTINATION
         lib/kernels/iron/aie2p
     )
+
