@@ -76,6 +76,7 @@ _op_to_kernel_map: dict[str, Kernel] = {
     "CLAMP": Kernel("ggml_op_clamp", "clamp.py"),
     "ARGMAX": Kernel("ggml_op_argmax", "argmax.py"),
     "COUNT_EQUAL": Kernel("ggml_op_count_equal", "count_equal.py"),
+    "CROSS_ENTROPY_LOSS": Kernel("ggml_op_cross_entropy_loss", "cross_entropy_loss.py"),
 }
 
 
@@ -413,3 +414,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
