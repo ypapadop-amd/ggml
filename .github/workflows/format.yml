@@ -23,6 +23,7 @@ jobs:
     - name: Clone
       uses: actions/checkout@v6
       with:
+        ref: ${{ github.head_ref || github.ref_name }}
         fetch-depth: 0
         token: ${{ secrets.GITHUB_TOKEN }}
 
