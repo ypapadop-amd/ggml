@@ -74,6 +74,7 @@ _op_to_kernel_map: dict[str, Kernel] = {
     "SCALE": Kernel("ggml_op_scale", "scale.py"),
     "SOFT_MAX": Kernel("ggml_op_soft_max", "soft_max.py"),
     "CLAMP": Kernel("ggml_op_clamp", "clamp.py"),
+    "ARGMAX": Kernel("ggml_op_argmax", "argmax.py"),
 }
 
 
