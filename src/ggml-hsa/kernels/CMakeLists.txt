@@ -8,6 +8,7 @@ if (GGML_HSA_JIT_COMPILE)
     # copy root package files
     set(JIT_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/argmax.py
         ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
         ${CMAKE_CURRENT_SOURCE_DIR}/build_iron.py
         ${CMAKE_CURRENT_SOURCE_DIR}/build.py
