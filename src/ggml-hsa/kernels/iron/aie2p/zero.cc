@@ -10,19 +10,19 @@
 #include <stdlib.h>
 #include <type_traits>
 
-template <typename T, int M, int N> void zero_scalar(T *__restrict c)
-{
+template <typename T, int M, int N>
+void zero_scalar(T * __restrict c) {
     for (int i = 0; i < M * N; i++) {
         c[i] = 0;
     }
 }
 
-template <typename T, int M, int N> void zero_vectorized(T *__restrict c)
-{
+template <typename T, int M, int N>
+void zero_vectorized(T * __restrict c) {
     constexpr int r = 512 / (sizeof(T) * 8); // 512 bit store units for AIE2P
     static_assert((M * N) % r == 0);
     const aie::vector<T, r> zeros = aie::zeros<T, r>();
-    const T *__restrict c_end = c + M * N;
+    const T * __restrict c_end = c + M * N;
     event0();
     for (; c < c_end; c += r) {
         aie::store_v(c, zeros);
