@@ -3,10 +3,6 @@
 #include "ggml-aie.hpp"
 #include <aie_api/aie.hpp>
 
-#ifndef KERN_VEC_SIZE
-#define KERN_VEC_SIZE 16
-#endif
-
 extern "C" {
 
 #ifdef GGML_OP_ARGMAX
@@ -15,29 +11,28 @@ extern "C" {
  * Argmax operation: finds the index of the maximum value in a row.
  *
  * Single-pass algorithm that tracks both max value and its index.
- * Uses vectorized operations for the aligned portion, scalar for remainder.
  *
- * @param in Input row (F32 array, tile may be padded beyond N)
- * @param out Output index (I32 scalar)
+ * @param in Input row
+ * @param out Output index
  * @param N Actual row length (number of valid elements)
  */
 void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     event0();
 
-    // Simple scalar implementation that tracks index during max-finding.
-    // This avoids floating-point comparison issues in a two-pass approach.
-    float max_val = -3.4028235e+38f;
-    int32_t argmax_idx = 0;
+    if (N > 0) {
+        auto max_val = in[0];
+        int32_t argmax_idx = 0;
 
-    for (int i = 0; i < N; i++) {
-        float val = in[i];
-        if (val > max_val) {
-            max_val = val;
-            argmax_idx = i;
+        for (int32_t i = 1; i < N; i++) {
+            if (in[i] > max_val) {
+                max_val = in[i];
+                argmax_idx = i;
+            }
         }
+
+        out[0] = static_cast<OUTPUT_DTYPE>(argmax_idx);
     }
 
-    out[0] = argmax_idx;
     event1();
 }
 
