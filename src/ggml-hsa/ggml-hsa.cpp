@@ -260,12 +260,12 @@ static hsa_status_t ggml_hsa_get_memory_pool_info(hsa_amd_memory_pool_t pool,
  * @brief Memory pool discovery information.
  */
 struct ggml_hsa_find_memory_pool_data_t {
-    /// Coarse or fine-grain memory.
+    /// Expected memory pool flags.
     hsa_amd_memory_pool_global_flag_t expected_flags =
         HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED;
-    /// If can allocate from.
+    /// @c true if allocation is expected from the pool.
     bool expected_allocatable = true;
-    /// Memory pool information.
+    /// Retrieved memory pool information.
     ggml_hsa_device_info::memory_pool_info mem_info;
 };
 
