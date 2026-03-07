@@ -59,6 +59,8 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
     Raises:
         ValueError: If input_tensors does not contain exactly one tensor.
         ValueError: If input or output tensors are not contiguous in memory.
+        ValueError: If output tensor size does not match the number of input rows.
+        ValueError: If output tensor dtype is not int32.
     """
 
     if len(input_tensors) != 1:
@@ -72,6 +74,17 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
         raise ValueError("Output tensor must be contiguous in memory.")
 
     row_length, num_rows = get_softmax_dimensions(input_tensor)
+
+    if output_tensor.numel() != num_rows:
+        raise ValueError(
+            f"Output tensor size ({output_tensor.numel()}) does not match the number "
+            f"of input rows ({num_rows})."
+        )
+
+    if output_tensor.dtype != np.int32:
+        raise ValueError(
+            f"Output tensor dtype must be int32, got {output_tensor.dtype}."
+        )
 
     function = _create_external_function(
         arch=arch,
