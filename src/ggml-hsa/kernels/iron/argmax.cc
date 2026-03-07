@@ -21,9 +21,7 @@ extern "C" {
  * @param out Output index (I32 scalar)
  * @param N Actual row length (number of valid elements)
  */
-void ggml_op_argmax(const INPUT_DTYPE * __restrict in,
-                    OUTPUT_DTYPE * __restrict out,
-                    int32_t N) {
+void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     event0();
 
     // Simple scalar implementation that tracks index during max-finding.
