@@ -290,4 +290,3 @@ void ggml_op_cross_entropy_loss(const INPUT_DTYPE0 * __restrict logits,
 #endif // COMPILE_GGML_OP_CROSS_ENTROPY_LOSS
 
 } // extern "C"
-
