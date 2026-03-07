@@ -4,8 +4,8 @@
 
 #include <cstdint>
 
-#include "ggml.h"
 #include "ggml-impl.h"
+#include "ggml.h"
 
 /**
  * @brief @ref ggml_type traits.
