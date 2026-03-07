@@ -302,7 +302,7 @@ static hsa_status_t ggml_hsa_find_memory_pool(hsa_amd_memory_pool_t pool, void *
         return status;
     }
     const bool allocable = (alloc_rec_granule != 0);
-    if (mem_pool_data.expected_allocatable ^ allocable) {
+    if (mem_pool_data.expected_allocatable != allocable) {
         return HSA_STATUS_SUCCESS;
     }
 
