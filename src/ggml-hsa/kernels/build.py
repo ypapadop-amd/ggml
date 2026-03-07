@@ -75,6 +75,7 @@ _op_to_kernel_map: dict[str, Kernel] = {
     "SOFT_MAX": Kernel("ggml_op_soft_max", "soft_max.py"),
     "CLAMP": Kernel("ggml_op_clamp", "clamp.py"),
     "ARGMAX": Kernel("ggml_op_argmax", "argmax.py"),
+    "CROSS_ENTROPY_LOSS": Kernel("ggml_op_cross_entropy_loss", "cross_entropy_loss.py"),
 }
 
 

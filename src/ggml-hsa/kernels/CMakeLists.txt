@@ -19,6 +19,7 @@ if (GGML_HSA_JIT_COMPILE)
         ${CMAKE_CURRENT_SOURCE_DIR}/soft_max.py
         ${CMAKE_CURRENT_SOURCE_DIR}/tensor_desc.py
         ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.py
         )
     ggml_hsa_copy_files(ggml_hsa_copy_jit_files
         FILES
@@ -34,3 +35,4 @@ if (GGML_HSA_JIT_COMPILE)
             lib/kernels
         )
 endif ()
+
