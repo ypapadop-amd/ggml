@@ -379,9 +379,9 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
 
     // find data pool
     {
-        ggml_hsa_find_memory_pool_data_t mem_pool_data = {
-            .expected_flags = HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
-            .expected_allocatable = true};
+        ggml_hsa_find_memory_pool_data_t mem_pool_data = {};
+        mem_pool_data.expected_flags = HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED;
+        mem_pool_data.expected_allocatable = true;
         auto status =
             hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_memory_pool, &mem_pool_data);
         switch (status) {
@@ -399,9 +399,9 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
 
     // find kernarg pool
     {
-        ggml_hsa_find_memory_pool_data_t mem_pool_data = {
-            .expected_flags = HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_KERNARG_INIT,
-            .expected_allocatable = true};
+        ggml_hsa_find_memory_pool_data_t mem_pool_data = {};
+        mem_pool_data.expected_flags = HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_KERNARG_INIT;
+        mem_pool_data.expected_allocatable = true;
         auto status =
             hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_memory_pool, &mem_pool_data);
         switch (status) {
