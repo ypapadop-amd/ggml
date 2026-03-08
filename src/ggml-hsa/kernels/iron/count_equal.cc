@@ -2,6 +2,7 @@
 
 #include "ggml-aie.hpp"
 #include <aie_api/aie.hpp>
+#include <cstring>
 
 extern "C" {
 
