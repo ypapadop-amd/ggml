@@ -34,12 +34,10 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
                          int32_t last_tile_size) {
     event0();
 
-    // Cast output buffer to int64_t for accumulation
-    int64_t * out64 = reinterpret_cast<int64_t *>(out);
-
     // Initialize accumulator on first tile
     if (tile_idx == 0) {
-        out64[0] = 0;
+        out[0] = 0;
+        out[1] = 0;
     }
 
     // Determine actual size for this tile
@@ -81,7 +79,10 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
     }
 
     // Accumulate into output buffer
-    out64[0] += local_count;
+    int64_t out64 = 0;
+    std::memcpy(&out64, out, sizeof(int64_t)); // Read current count (as int64_t)
+    out64 += local_count; // Add local count
+    std::memcpy(out, &out64, sizeof(int64_t)); // Write back
 
     event1();
 }
