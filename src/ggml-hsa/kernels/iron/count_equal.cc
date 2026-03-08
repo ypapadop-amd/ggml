@@ -81,7 +81,7 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
     // Accumulate into output buffer
     int64_t out64 = 0;
     std::memcpy(&out64, out, sizeof(int64_t)); // Read current count (as int64_t)
-    out64 += local_count; // Add local count
+    out64 += local_count;                      // Add local count
     std::memcpy(out, &out64, sizeof(int64_t)); // Write back
 
     event1();
