@@ -5,8 +5,6 @@
 
 extern "C" {
 
-#ifdef GGML_OP_COUNT_EQUAL
-
 /**
  * Count equal operation: counts elements that are equal between two tensors.
  *
@@ -86,7 +84,5 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
 
     event1();
 }
-
-#endif // GGML_OP_COUNT_EQUAL
 
 } // extern "C"

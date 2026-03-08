@@ -237,8 +237,6 @@ def _create_external_function(
             np.int32,  # last_tile_size
         ],
         compile_flags=[
-            f"-D{op_name}=1",
-            f"-DTILE_SIZE={TILE_SIZE}",
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
         ],
     )
