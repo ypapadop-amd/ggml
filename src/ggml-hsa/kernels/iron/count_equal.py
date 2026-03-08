@@ -105,9 +105,17 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
         )
 
     total_elements = input_tensor0.numel()
-    num_tiles = (total_elements + TILE_SIZE - 1) // TILE_SIZE
-    last_tile_size = total_elements - (num_tiles - 1) * TILE_SIZE
 
+    # Handle empty-tensor case explicitly to ensure the worker runs and the
+    # output buffer is initialized. When there are no elements, we still
+    # process a single "tile" of size 0 so that the kernel can write a
+    # deterministic result (zero) to the output.
+    if total_elements == 0:
+        num_tiles = 1
+        last_tile_size = 0
+    else:
+        num_tiles = (total_elements + TILE_SIZE - 1) // TILE_SIZE
+        last_tile_size = total_elements - (num_tiles - 1) * TILE_SIZE
     function = _create_external_function(
         arch=arch,
         op_name="GGML_OP_COUNT_EQUAL",
