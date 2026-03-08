@@ -104,6 +104,11 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
             f"Output tensor dtype must be int64, got {output_tensor.dtype}."
         )
 
+    if output_tensor.numel() != 1:
+        raise ValueError(
+            f"Output tensor must be a single-element I64 scalar (shape [1, 1, 1, 1]), "
+            f"but has {output_tensor.numel()} elements."
+        )
     total_elements = input_tensor0.numel()
 
     # Handle empty-tensor case explicitly to ensure the worker runs and the
