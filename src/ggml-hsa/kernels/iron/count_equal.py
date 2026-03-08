@@ -37,7 +37,6 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
 
-
 # Tile size for processing - must match TILE_SIZE in count_equal.cc
 TILE_SIZE = 1024
 
@@ -139,7 +138,15 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
             # Convert tile_idx from index type to i32
             tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
             # The kernel uses last_tile_size when processing the last tile
-            function(elem_in0, elem_in1, elem_out, TILE_SIZE, tile_idx_i32, num_tiles, last_tile_size)
+            function(
+                elem_in0,
+                elem_in1,
+                elem_out,
+                TILE_SIZE,
+                tile_idx_i32,
+                num_tiles,
+                last_tile_size,
+            )
             of_in0.release(1)
             of_in1.release(1)
 
@@ -148,8 +155,14 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
     # Create a worker to run the task on a compute tile
     worker = Worker(
         ext_core_fn,
-        fn_args=[of_in0.cons(), of_in1.cons(), of_out.prod(), function,
-                 num_tiles, last_tile_size],
+        fn_args=[
+            of_in0.cons(),
+            of_in1.cons(),
+            of_out.prod(),
+            function,
+            num_tiles,
+            last_tile_size,
+        ],
     )
 
     # Runtime operations to move data to/from the AIE-array
@@ -160,7 +173,11 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
     # Output: 2 x I32 = 8 bytes = 1 x I64
     output_tensor_ty = np.ndarray[(2,), np.dtype[np.int32]]
 
-    with rt.sequence(input_tensor_ty, input_tensor_ty, output_tensor_ty) as (a_in0, a_in1, b_out):
+    with rt.sequence(input_tensor_ty, input_tensor_ty, output_tensor_ty) as (
+        a_in0,
+        a_in1,
+        b_out,
+    ):
         rt.start(worker)
         rt.fill(of_in0.prod(), a_in0)
         rt.fill(of_in1.prod(), a_in1)

@@ -25,15 +25,13 @@ extern "C" {
  * @param num_tiles Total number of tiles
  * @param last_tile_size Size of the last tile (may be smaller than tile_size)
  */
-void ggml_op_count_equal(
-    const INPUT_DTYPE * __restrict in0,
-    const INPUT_DTYPE * __restrict in1,
-    int32_t * __restrict out,  // Actually int64_t, cast due to IRON limitations
-    int32_t tile_size,
-    int32_t tile_idx,
-    int32_t num_tiles,
-    int32_t last_tile_size
-) {
+void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
+                         const INPUT_DTYPE * __restrict in1,
+                         int32_t * __restrict out, // Actually int64_t, cast due to IRON limitations
+                         int32_t tile_size,
+                         int32_t tile_idx,
+                         int32_t num_tiles,
+                         int32_t last_tile_size) {
     event0();
 
     // Cast output buffer to int64_t for accumulation
@@ -48,7 +46,7 @@ void ggml_op_count_equal(
     const int32_t actual_size = (tile_idx == num_tiles - 1) ? last_tile_size : tile_size;
 
     // Count equal elements using vectorized comparison where possible
-    constexpr int VEC_SIZE = 16;  // 16 x int32 = 512 bits
+    constexpr int VEC_SIZE = 16; // 16 x int32 = 512 bits
     const int num_full_iters = actual_size / VEC_SIZE;
     const int tail_start = num_full_iters * VEC_SIZE;
 
