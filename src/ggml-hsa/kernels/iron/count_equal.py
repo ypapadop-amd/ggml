@@ -191,9 +191,15 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
-    # Pad input to be multiple of TILE_SIZE
-    padded_elements = num_tiles * TILE_SIZE
-    input_tensor_ty = np.ndarray[(padded_elements,), np.dtype[input_tensor0.dtype]]
+    # Use the actual number of elements instead of padding to a full tile.
+    # For num_tiles > 0, total_elements = (num_tiles - 1) full tiles + last_tile_size.
+    if num_tiles == 0:
+        total_elements = 0
+    else:
+        # last_tile_size is the number of valid elements in the final tile.
+        assert 0 < last_tile_size <= TILE_SIZE
+        total_elements = (num_tiles - 1) * TILE_SIZE + last_tile_size
+    input_tensor_ty = np.ndarray[(total_elements,), np.dtype[input_tensor0.dtype]]
     # Output: 2 x I32 = 8 bytes = 1 x I64
     output_tensor_ty = np.ndarray[(2,), np.dtype[np.int32]]
 
