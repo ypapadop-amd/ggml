@@ -104,10 +104,21 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
             f"Output tensor dtype must be int64, got {output_tensor.dtype}."
         )
 
+    # The GGML COUNT_EQUAL op returns a single I64 scalar. In GGML this is
+    # represented as a 4D tensor with shape [1, 1, 1, 1]. Enforce both the
+    # scalar element count and the GGML scalar shape convention so misuse
+    # fails fast.
     if output_tensor.numel() != 1:
         raise ValueError(
-            f"Output tensor must be a single-element I64 scalar (shape [1, 1, 1, 1]), "
+            "Output tensor must be a single-element I64 scalar (shape [1, 1, 1, 1]), "
             f"but has {output_tensor.numel()} elements."
+        )
+
+    shape = output_tensor.shape
+    if len(shape) != 4 or any(dim != 1 for dim in shape):
+        raise ValueError(
+            "Output tensor must have GGML scalar shape [1, 1, 1, 1], "
+            f"but has shape {shape}."
         )
     total_elements = input_tensor0.numel()
 
