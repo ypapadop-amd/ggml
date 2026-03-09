@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "ggml-aie.hpp"
 #include "aie_kernel_math.h"
+#include "ggml-aie.hpp"
 
 extern "C" {
 
@@ -46,7 +46,8 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
 
     // Scalar tail loop for remaining elements
     for (int32_t i = tail_start; i < N; i++) {
-        if (logits[i] > global_max) global_max = logits[i];
+        if (logits[i] > global_max)
+            global_max = logits[i];
     }
 
     aie::vector<float, VEC_SIZE> v_global_max = aie::broadcast<float, VEC_SIZE>(global_max);
