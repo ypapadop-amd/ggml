@@ -19,6 +19,7 @@ import numpy as np
 
 from .utils import (
     arch_to_device,
+    max_tile_size,
     suppress_import_pyxrt_msg,
 )
 
@@ -37,17 +38,13 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
 
-# Tile size for processing - must match TILE_SIZE in count_equal.cc
-TILE_SIZE = 1024
-
 
 def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     IRON design for count_equal.
 
     Counts elements that are equal between two I32 input tensors and outputs
-    a single I64 scalar with the count. Processes data in tiles and accumulates
-    partial counts.
+    a single I64 scalar with the count. Processes data in tiles.
 
     Since IRON doesn't support I64 types in ObjectFifos, we transfer the count
     as two I32 values (low and high 32 bits). The C++ kernel writes directly
@@ -104,10 +101,7 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
             f"Output tensor dtype must be int64, got {output_tensor.dtype}."
         )
 
-    # The GGML COUNT_EQUAL op returns a single I64 scalar. In GGML this is
-    # represented as a 4D tensor with shape [1, 1, 1, 1]. Enforce both the
-    # scalar element count and the GGML scalar shape convention so misuse
-    # fails fast.
+    # Validate output tensor is a scalar
     if output_tensor.numel() != 1:
         raise ValueError(
             "Output tensor must be a single-element I64 scalar (shape [1, 1, 1, 1]), "
@@ -120,27 +114,33 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
             "Output tensor must have GGML scalar shape [1, 1, 1, 1], "
             f"but has shape {shape}."
         )
+
     total_elements = input_tensor0.numel()
 
-    # Handle empty-tensor case explicitly to ensure the worker runs and the
-    # output buffer is initialized. When there are no elements, we still
-    # process a single "tile" of size 0 so that the kernel can write a
-    # deterministic result (zero) to the output.
+    # Reject empty tensors - the result would be deterministically 0, but
+    # handling this case requires special logic to avoid DMA issues with
+    # zero-length input buffers. Empty tensor comparisons are rare in practice.
     if total_elements == 0:
-        num_tiles = 1
-        last_tile_size = 0
-    else:
-        num_tiles = (total_elements + TILE_SIZE - 1) // TILE_SIZE
-        last_tile_size = total_elements - (num_tiles - 1) * TILE_SIZE
+        raise ValueError(
+            "COUNT_EQUAL does not support empty tensors. "
+            "Empty tensor comparison would return 0."
+        )
+
+    # Use max_tile_size to find a tile size that evenly divides total_elements.
+    # This avoids padding/alignment issues with DMA transfers.
+    tile_size = max_tile_size(arch, input_tensor0.dtype, total_elements)
+    num_tiles = total_elements // tile_size
+
     function = _create_external_function(
         arch=arch,
         op_name="GGML_OP_COUNT_EQUAL",
         input_tensor=input_tensor0,
+        tile_size=tile_size,
     )
 
     # AIE-array data movement with object fifos
     # Input: tiles of I32 elements from both tensors
-    input_tile_ty = np.ndarray[(TILE_SIZE,), np.dtype[input_tensor0.dtype]]
+    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor0.dtype]]
     # Output: Two I32 values representing the I64 count (low and high parts)
     # This is needed because IRON doesn't support I64 in ObjectFifos
     output_tile_ty = np.ndarray[(2,), np.dtype[np.int32]]
@@ -150,10 +150,9 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
     of_out = ObjectFifo(output_tile_ty, name="out")
 
     # Task for the core to perform with an external function
-    def ext_core_fn(of_in0, of_in1, of_out, function, num_tiles, last_tile_size):
+    def ext_core_fn(of_in0, of_in1, of_out, function, num_tiles):
         # Acquire output buffer once at the start
         elem_out = of_out.acquire(1)
-        # Initialize count to 0 - kernel will handle this on first tile
 
         # Process all tiles
         for tile_idx in range_(num_tiles):
@@ -161,16 +160,7 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
             elem_in1 = of_in1.acquire(1)
             # Convert tile_idx from index type to i32
             tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
-            # The kernel uses last_tile_size when processing the last tile
-            function(
-                elem_in0,
-                elem_in1,
-                elem_out,
-                TILE_SIZE,
-                tile_idx_i32,
-                num_tiles,
-                last_tile_size,
-            )
+            function(elem_in0, elem_in1, elem_out, tile_size, tile_idx_i32)
             of_in0.release(1)
             of_in1.release(1)
 
@@ -185,20 +175,11 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
             of_out.prod(),
             function,
             num_tiles,
-            last_tile_size,
         ],
     )
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
-    # Use the actual number of elements instead of padding to a full tile.
-    # For num_tiles > 0, total_elements = (num_tiles - 1) full tiles + last_tile_size.
-    if num_tiles == 0:
-        total_elements = 0
-    else:
-        # last_tile_size is the number of valid elements in the final tile.
-        assert 0 < last_tile_size <= TILE_SIZE
-        total_elements = (num_tiles - 1) * TILE_SIZE + last_tile_size
     input_tensor_ty = np.ndarray[(total_elements,), np.dtype[input_tensor0.dtype]]
     # Output: 2 x I32 = 8 bytes = 1 x I64
     output_tensor_ty = np.ndarray[(2,), np.dtype[np.int32]]
@@ -221,6 +202,7 @@ def _create_external_function(
     arch: str,
     op_name: str,
     input_tensor,
+    tile_size: int,
 ) -> ExternalFunction:
     """
     Creates an ExternalFunction specification for count_equal.
@@ -233,6 +215,7 @@ def _create_external_function(
         op_name (str): Operation name used for function naming and compile flags
             (e.g., "GGML_OP_COUNT_EQUAL").
         input_tensor (TensorDesc): Input tensor descriptor providing dtype information.
+        tile_size (int): Size of each tile in elements.
 
     Returns:
         ExternalFunction: Configured external function specification that references
@@ -245,13 +228,11 @@ def _create_external_function(
         object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=str(current_dir / "count_equal.cc"),
         arg_types=[
-            np.ndarray[(TILE_SIZE,), np.dtype[input_tensor.dtype]],  # in0
-            np.ndarray[(TILE_SIZE,), np.dtype[input_tensor.dtype]],  # in1
+            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],  # in0
+            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],  # in1
             np.ndarray[(2,), np.dtype[np.int32]],  # out (count as 2 x I32)
             np.int32,  # tile_size
             np.int32,  # tile_idx
-            np.int32,  # num_tiles
-            np.int32,  # last_tile_size
         ],
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",

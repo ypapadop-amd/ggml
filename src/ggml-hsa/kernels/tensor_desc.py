@@ -17,6 +17,15 @@ import numpy as np
 from aie.iron import str_to_dtype
 
 
+# Mapping for dtypes not natively supported by IRON but still valid GGML types.
+# These tensors can still be described, but kernels need to have special handling for them.
+_FALLBACK_DTYPE_MAP = {
+    "i64": np.int64,
+    "u64": np.uint64,
+    "f64": np.float64,
+}
+
+
 @dataclass(frozen=True)
 class TensorDesc:
     """
@@ -39,7 +48,15 @@ class TensorDesc:
     def __post_init__(self):
         # convert dtype to np.dtype if it's a string
         if isinstance(self.dtype, str):
-            object.__setattr__(self, "dtype", np.dtype(str_to_dtype(self.dtype)))
+            # First try AIE-supported dtypes, then fall back to numpy for others
+            try:
+                object.__setattr__(self, "dtype", np.dtype(str_to_dtype(self.dtype)))
+            except ValueError:
+                # dtype not supported by AIE - use numpy dtype for fallback
+                if self.dtype in _FALLBACK_DTYPE_MAP:
+                    object.__setattr__(self, "dtype", np.dtype(_FALLBACK_DTYPE_MAP[self.dtype]))
+                else:
+                    raise
 
         # compute stride if not provided as if the tensor is contiguous
         if self.stride is None:

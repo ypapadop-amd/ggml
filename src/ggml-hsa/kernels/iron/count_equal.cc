@@ -1,8 +1,6 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include "ggml-aie.hpp"
-#include <aie_api/aie.hpp>
-#include <cstring>
 
 extern "C" {
 
@@ -14,23 +12,19 @@ extern "C" {
  * buffer, adds its local count, and writes back.
  *
  * The output buffer is passed as int32_t[2] due to IRON not supporting i64
- * in ObjectFifos, but we access it as int64_t through pointer casting.
+ * in ObjectFifos, but we access it as int64_t through casting.
  *
  * @param in0 First input tile
  * @param in1 Second input tile
  * @param out Output buffer (2 x int32 = 1 x int64), used as accumulator
- * @param tile_size Size of full tiles (TILE_SIZE)
+ * @param tile_size Number of elements in this tile
  * @param tile_idx Current tile index (0-based)
- * @param num_tiles Total number of tiles
- * @param last_tile_size Size of the last tile (may be smaller than tile_size)
  */
 void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
                          const INPUT_DTYPE * __restrict in1,
                          int32_t * __restrict out, // Actually int64_t, cast due to IRON limitations
                          int32_t tile_size,
-                         int32_t tile_idx,
-                         int32_t num_tiles,
-                         int32_t last_tile_size) {
+                         int32_t tile_idx) {
     event0();
 
     // Initialize accumulator on first tile
@@ -39,12 +33,9 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
         out[1] = 0;
     }
 
-    // Determine actual size for this tile
-    const int32_t actual_size = (tile_idx == num_tiles - 1) ? last_tile_size : tile_size;
-
     // Count equal elements using vectorized comparison where possible
     constexpr int VEC_SIZE = 16; // 16 x int32 = 512 bits
-    const int num_full_iters = actual_size / VEC_SIZE;
+    const int num_full_iters = tile_size / VEC_SIZE;
     const int tail_start = num_full_iters * VEC_SIZE;
 
     int32_t local_count = 0;
@@ -71,7 +62,7 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
     }
 
     // Scalar tail
-    for (int i = tail_start; i < actual_size; i++) {
+    for (int i = tail_start; i < tile_size; i++) {
         if (in0[i] == in1[i]) {
             local_count++;
         }
@@ -80,7 +71,7 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
     // Accumulate into output buffer
     int64_t out64 = 0;
     std::memcpy(&out64, out, sizeof(int64_t)); // Read current count (as int64_t)
-    out64 += local_count;                      // Add local count
+    out64 += local_count; // Add local count
     std::memcpy(out, &out64, sizeof(int64_t)); // Write back
 
     event1();
