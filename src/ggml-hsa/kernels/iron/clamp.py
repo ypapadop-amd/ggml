@@ -43,10 +43,19 @@ def _create_external_function(
     output_tensor,
 ) -> Tuple[ExternalFunction, int, int]:
     """
-    Creates an ExternalFunction specification for clamp op.
+    Creates an ExternalFunction specification for the clamp operation.
+
+    Parameters:
+        arch (str): Target architecture (e.g., "aie2", "aie2p").
+        op_name (str): Operation name used for function naming and compile flags.
+        input_tensor (TensorDesc): Input tensor descriptor providing dtype and size.
+        output_tensor (TensorDesc): Output tensor descriptor providing dtype.
 
     Returns:
-        (func, num_elements, tile_size)
+        Tuple[ExternalFunction, int, int]: A tuple containing:
+            - func: The configured ExternalFunction specification.
+            - num_elements: Architecture-aligned number of elements.
+            - tile_size: Size of each processing tile.
     """
 
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)

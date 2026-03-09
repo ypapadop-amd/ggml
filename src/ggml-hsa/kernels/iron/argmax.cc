@@ -1,17 +1,25 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
+/**
+ * @file argmax.cc
+ * @brief Argmax operation for AIE kernels.
+ */
+
 #include "ggml-aie.hpp"
 
 extern "C" {
 
 /**
- * Argmax operation: finds the index of the maximum value in a row.
+ * @brief Finds the index of the maximum value in an input array.
  *
- * Single-pass algorithm that tracks both max value and its index.
+ * Single-pass algorithm that tracks both the maximum value and its index.
+ * If multiple elements have the same maximum value, returns the index of
+ * the first occurrence.
  *
- * @param in Input row
- * @param out Output index
- * @param N Actual row length (number of valid elements)
+ * @param[in]  in  Input array of N elements.
+ * @param[out] out Output array containing the index of the maximum element.
+ *                 Only the first element (out[0]) is written.
+ * @param[in]  N   Number of elements to search. If N <= 0, no output is written.
  */
 void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     event0();
