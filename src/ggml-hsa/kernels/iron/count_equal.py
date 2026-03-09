@@ -47,9 +47,9 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
     a single I64 scalar with the count. Processes data in tiles.
 
     Since IRON doesn't support I64 types in ObjectFifos, we transfer the count
-    as two I32 values (low and high 32 bits). The C++ kernel writes directly
-    to the I64 output buffer.
-
+    as two I32 values (low and high 32 bits). The C++ kernel writes the 64-bit
+    count as these two I32 lanes to the ObjectFifo output buffer, which together
+    bitwise represent a single I64 value.
     Parameters:
         arch (str): Target architecture (e.g., "aie2", "aie2p").
         input_tensors (list[TensorDesc]): List containing exactly two input tensors.
