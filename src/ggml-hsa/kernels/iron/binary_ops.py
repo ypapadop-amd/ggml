@@ -215,7 +215,7 @@ class BroadcastFunctionSpec:
     num_elements_out: int
     num_elements_src1: int
     src1_ne: tuple  # (ne0, ne1, ne2, ne3)
-    dst_ne: tuple   # (ne0, ne1, ne2, ne3)
+    dst_ne: tuple  # (ne0, ne1, ne2, ne3)
 
     @property
     def tile_size(self) -> int:
@@ -259,7 +259,9 @@ def _create_broadcast_external_function(
         source_file=str(current_dir / "binary_ops.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],  # src0 tile
-            np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]],  # full src1
+            np.ndarray[
+                (num_elements_src1,), np.dtype[input_tensors[1].dtype]
+            ],  # full src1
             np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],  # output tile
             np.int32,  # tile_size
             np.int32,  # tile_idx
@@ -336,10 +338,18 @@ def _binary_op_broadcast(
             tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
             # Pass shape elements as individual scalars (compile-time constants)
             function(
-                src0_tile, src1_buf, out_tile,
-                tile_size, tile_idx_i32,
-                src1_ne[0], src1_ne[1], src1_ne[2], src1_ne[3],
-                dst_ne[0], dst_ne[1], dst_ne[2]
+                src0_tile,
+                src1_buf,
+                out_tile,
+                tile_size,
+                tile_idx_i32,
+                src1_ne[0],
+                src1_ne[1],
+                src1_ne[2],
+                src1_ne[3],
+                dst_ne[0],
+                dst_ne[1],
+                dst_ne[2],
             )
 
             of_src0.release(1)
@@ -401,9 +411,7 @@ def binary_op(
 
     # src0 must match output shape
     if src0_shape != dst_shape:
-        raise ValueError(
-            f"src0 shape must match output: {src0_shape} != {dst_shape}"
-        )
+        raise ValueError(f"src0 shape must match output: {src0_shape} != {dst_shape}")
 
     # Check if broadcasting is needed
     needs_broadcast = src1_shape != dst_shape
@@ -412,9 +420,7 @@ def binary_op(
         # Validate broadcasting is supported per GGML semantics
         # ggml_can_repeat(src1, dst) checks if src1 can be repeated to fill dst
         if not _ggml_can_repeat(src1_shape, dst_shape):
-            raise NotImplementedError(
-                f"Cannot broadcast: {src1_shape} -> {dst_shape}"
-            )
+            raise NotImplementedError(f"Cannot broadcast: {src1_shape} -> {dst_shape}")
 
         function_spec = _create_broadcast_external_function(
             arch=arch,
