@@ -1,9 +1,8 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "ggml-aie.hpp"
 #include "aie_kernel_math.h"
+#include "ggml-aie.hpp"
 #include <aie_api/aie.hpp>
-
 
 #ifndef KERN_VEC_SIZE
 #define KERN_VEC_SIZE 16
@@ -135,4 +134,3 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
 #endif // COMPILE_GGML_OP_CROSS_ENTROPY_LOSS
 
 } // extern "C"
-
