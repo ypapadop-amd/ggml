@@ -207,25 +207,15 @@ class BroadcastFunctionSpec:
         external_function (ExternalFunction): The external function for broadcast op.
         num_elements_out (int): Total number of elements in output (and src0).
         num_elements_src1 (int): Total number of elements in src1 (smaller).
-        ne0_src1 (int): First dimension of src1 (for index wrapping).
-        ne1_src1 (int): Second dimension of src1.
-        ne2_src1 (int): Third dimension of src1.
-        ne3_src1 (int): Fourth dimension of src1.
-        ne0_dst (int): First dimension of dst.
-        ne1_dst (int): Second dimension of dst.
-        ne2_dst (int): Third dimension of dst.
+        src1_ne (tuple): Shape of src1 as 4-element tuple (ne0, ne1, ne2, ne3).
+        dst_ne (tuple): Shape of dst as 4-element tuple (ne0, ne1, ne2, ne3).
     """
 
     external_function: ExternalFunction
     num_elements_out: int
     num_elements_src1: int
-    ne0_src1: int
-    ne1_src1: int
-    ne2_src1: int
-    ne3_src1: int
-    ne0_dst: int
-    ne1_dst: int
-    ne2_dst: int
+    src1_ne: tuple  # (ne0, ne1, ne2, ne3)
+    dst_ne: tuple   # (ne0, ne1, ne2, ne3)
 
     @property
     def tile_size(self) -> int:
@@ -258,14 +248,9 @@ def _create_broadcast_external_function(
     num_elements_src1 = arch_aligned_num_elements(arch=arch, tensor=input_tensors[1])
     tile_size = max_tile_size(arch, output_tensor.dtype, num_elements_out)
 
-    # Extract dimension sizes for multi-dimensional broadcast indexing
-    ne0_src1 = input_tensors[1].shape[0]
-    ne1_src1 = input_tensors[1].shape[1]
-    ne2_src1 = input_tensors[1].shape[2]
-    ne3_src1 = input_tensors[1].shape[3]
-    ne0_dst = output_tensor.shape[0]
-    ne1_dst = output_tensor.shape[1]
-    ne2_dst = output_tensor.shape[2]
+    # Extract shapes as 4-element tuples for multi-dimensional broadcast indexing
+    src1_ne = input_tensors[1].shape
+    dst_ne = output_tensor.shape
 
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
@@ -278,13 +263,13 @@ def _create_broadcast_external_function(
             np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],  # output tile
             np.int32,  # tile_size
             np.int32,  # tile_idx
-            np.int32,  # ne0_src1
-            np.int32,  # ne1_src1
-            np.int32,  # ne2_src1
-            np.int32,  # ne3_src1
-            np.int32,  # ne0_dst
-            np.int32,  # ne1_dst
-            np.int32,  # ne2_dst
+            np.int32,  # src1_ne[0]
+            np.int32,  # src1_ne[1]
+            np.int32,  # src1_ne[2]
+            np.int32,  # src1_ne[3]
+            np.int32,  # dst_ne[0]
+            np.int32,  # dst_ne[1]
+            np.int32,  # dst_ne[2]
         ],
         compile_flags=[
             f"-D{op_name}_BROADCAST=1",
@@ -297,13 +282,8 @@ def _create_broadcast_external_function(
         external_function=func,
         num_elements_out=num_elements_out,
         num_elements_src1=num_elements_src1,
-        ne0_src1=ne0_src1,
-        ne1_src1=ne1_src1,
-        ne2_src1=ne2_src1,
-        ne3_src1=ne3_src1,
-        ne0_dst=ne0_dst,
-        ne1_dst=ne1_dst,
-        ne2_dst=ne2_dst,
+        src1_ne=src1_ne,
+        dst_ne=dst_ne,
     )
 
 
@@ -326,13 +306,8 @@ def _binary_op_broadcast(
     num_elements_src1 = function_spec.num_elements_src1
     tile_size = function_spec.tile_size
     num_tiles = num_elements_out // tile_size
-    ne0_src1 = function_spec.ne0_src1
-    ne1_src1 = function_spec.ne1_src1
-    ne2_src1 = function_spec.ne2_src1
-    ne3_src1 = function_spec.ne3_src1
-    ne0_dst = function_spec.ne0_dst
-    ne1_dst = function_spec.ne1_dst
-    ne2_dst = function_spec.ne2_dst
+    src1_ne = function_spec.src1_ne
+    dst_ne = function_spec.dst_ne
 
     if num_elements_out % tile_size != 0:
         raise ValueError(
@@ -359,11 +334,12 @@ def _binary_op_broadcast(
             out_tile = of_out.acquire(1)
 
             tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
+            # Pass shape elements as individual scalars (compile-time constants)
             function(
                 src0_tile, src1_buf, out_tile,
                 tile_size, tile_idx_i32,
-                ne0_src1, ne1_src1, ne2_src1, ne3_src1,
-                ne0_dst, ne1_dst, ne2_dst
+                src1_ne[0], src1_ne[1], src1_ne[2], src1_ne[3],
+                dst_ne[0], dst_ne[1], dst_ne[2]
             )
 
             of_src0.release(1)
