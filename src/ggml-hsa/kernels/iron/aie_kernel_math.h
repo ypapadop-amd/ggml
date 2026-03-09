@@ -9,13 +9,29 @@
 #ifndef _AIE_KERNEL_MATH_
 #define _AIE_KERNEL_MATH_
 
-// =============================================================================
-// Range-reduced vectorized exponential: exp(x) = 2^n * exp(r)
-//
-// Cody-Waite splitting of ln(2) into high and low parts minimises
-// rounding error in step 2. A degree-13 polynomial on [0, ln2) gives
-// ~6e-13 peak error.
-// =============================================================================
+/**
+ * @brief Computes the vectorized exponential function exp(x) for AIE.
+ *
+ * This function implements a range-reduced exponential using the identity
+ * exp(x) = 2^n * exp(r), where n = floor(x * log2(e)) and r = x - n * ln(2).
+ *
+ * The implementation uses:
+ * - Cody-Waite splitting of ln(2) into high and low parts to minimize
+ *   rounding error during range reduction.
+ * - A degree-13 polynomial approximation of exp(r) on [0, ln2) with
+ *   approximately 6e-13 peak error.
+ * - IEEE 754 bit manipulation to compute 2^n efficiently.
+ *
+ * @tparam VecSize The SIMD vector width. Defaults to KERN_VEC_SIZE.
+ *
+ * @param[in,out] x Input vector of float values. The input is clamped to
+ *                  [-88, 88] to avoid overflow/underflow in float32. The
+ *                  vector may be modified during computation.
+ *
+ * @return A vector of float values containing exp(x) for each element.
+ *         Results are clamped to a minimum of 1e-38 to avoid exact zero
+ *         from underflow.
+ */
 template <int VecSize = KERN_VEC_SIZE>
 inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
     constexpr float log2e = 1.4426950408889634f; // log2(e)

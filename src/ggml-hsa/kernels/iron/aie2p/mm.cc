@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * @file mm.cc
+ * @brief Matrix multiplication kernels for AIE2P architecture.
+ *
+ * This file provides scalar and vectorized matrix multiplication kernels
+ * optimized for AIE2P. The vectorized kernels use the aie::mmul class with
+ * 2x2 expansion and AIE2P-specific mmul shapes for optimal performance.
+ */
+
 #define NOCPP
 
 #include <stdio.h>
@@ -13,6 +22,25 @@
 
 #include <aie_api/aie.hpp>
 
+/**
+ * @brief Scalar matrix multiplication kernel for reference/verification.
+ *
+ * Computes C += A * B using scalar operations. Supports configurable memory
+ * layouts for matrices B and C via template parameters.
+ *
+ * @tparam T_in      Input element type for matrices A and B.
+ * @tparam T_out     Output element type for matrix C.
+ * @tparam rowA      Number of rows in matrix A (and C).
+ * @tparam colA      Number of columns in A (rows in B).
+ * @tparam colB      Number of columns in B (and C).
+ * @tparam b_row_maj If true, B is row-major; if false, column-major.
+ * @tparam c_row_maj If true, C is row-major; if false, column-major.
+ *
+ * @param[in]     a Pointer to matrix A (rowA x colA, row-major).
+ * @param[in]     b Pointer to matrix B (colA x colB, layout per b_row_maj).
+ * @param[in,out] c Pointer to matrix C (rowA x colB, layout per c_row_maj).
+ *                  Results are accumulated into C.
+ */
 template <typename T_in,
           typename T_out,
           int rowA,
@@ -47,33 +75,41 @@ static inline void matmul_scalar(T_in * a, T_in * b, T_out * c) {
     event1();
 }
 
-/* Blocked MatMul kernel (vectorized) utilizing the aie::mmul class.
- * The matrices are assumed to be pre-tiled with the following shapes
- * for the aie:mmul class: A => rxs, B => sxt, C => rxt.
+/**
+ * @brief Vectorized matrix multiplication with 2x2 mmul expansion for AIE2P.
  *
- * The matrix dimensions of the kernel are defined by rowA, colA and colB.
- * In this particular kernel we expand the aie::mmul two times in each
- * input matrices A (in 'm' dimension, or rowA) and B (in 'n' dimension, or
- * ColB), leading to a 2x2 expansion in output matrix C (see C00, C01, C10, C11
- * below). This expansion helps with accumulator registers usage, which leads in
- * attaining high kernel efficiency (SIMD utilization).
+ * Blocked MatMul kernel utilizing the aie::mmul class. Matrices are assumed
+ * to be pre-tiled with shapes: A => rxs, B => sxt, C => rxt.
  *
- * Data within each tile (rxs, sxt and rxt) are assumed to be in row-major
- * order. Also, the entire tiles themselves are stored in row-major order, as
- * shown in the example below for matrix A:
+ * This kernel expands the aie::mmul 2x in both A (m dimension) and B (n dimension),
+ * resulting in a 2x2 expansion in output C (C00, C01, C10, C11). This expansion
+ * maximizes accumulator register usage for high SIMD efficiency.
  *
+ * Data layout: tiles are row-major, and data within tiles is row-major:
+ * @verbatim
  *      <-s->
  *    _  ________________________
- * 	  r |  1 |  2 |  3 | ...
- * 	  _ |____|____|____|
- * 	    |  x | x+1| x+2| ...
- * 	    |____|____|____|
- * 	    |.
- * 	    |.
- * 	    |.
+ *    r |  1 |  2 |  3 | ...
+ *    _ |____|____|____|
+ *      |  x | x+1| x+2| ...
+ * @endverbatim
  *
- * A simplified example of this kernel can be found in the AIE-API
- * documentation: https://xilinx.github.io/aie_api/group__group__mmul.html
+ * @tparam T_in      Input element type.
+ * @tparam T_out     Output element type.
+ * @tparam rowA      Number of tile rows in A (in units of r).
+ * @tparam colA      Number of tile columns in A / rows in B (in units of s).
+ * @tparam colB      Number of tile columns in B (in units of t).
+ * @tparam r         mmul M dimension.
+ * @tparam s         mmul K dimension.
+ * @tparam t         mmul N dimension.
+ * @tparam b_row_maj If true, B tiles are row-major; if false, column-major.
+ * @tparam c_row_maj If true, C tiles are row-major; if false, column-major.
+ *
+ * @param[in]     pA Pointer to pre-tiled matrix A.
+ * @param[in]     pB Pointer to pre-tiled matrix B.
+ * @param[in,out] pC Pointer to pre-tiled matrix C (accumulates results).
+ *
+ * @see https://xilinx.github.io/aie_api/group__group__mmul.html
  */
 template <typename T_in,
           typename T_out,
@@ -232,19 +268,30 @@ constexpr aie::rounding_mode round_mode = aie::rounding_mode::conv_even;
 constexpr aie::rounding_mode round_mode = aie::rounding_mode::floor; // default
 #endif
 
-// The following kernel definitions use mmul shapes that have been found to be
-// optimal for AIE2P in combination with the 2x2 mmul expanded kernel.
-//
-// All available matrix multiplication shapes in the AIE-API can be found here:
-// https://xilinx.github.io/aie_api/group__group__mmul.html
-//
-// They are all defined based on the shape of the mmul, the input data format
-// and the output data format.
-//
-// Additionally, they check for the correct
-// divisibility of the tile dimensions. Note that while both the 'm' and 'n'
-// dimensions of the mmul are expanded, the 'k' dimension is not.
+/**
+ * @name AIE2P-Optimized MatMul Wrappers
+ * @brief Type-specific matrix multiplication kernels optimized for AIE2P.
+ *
+ * These wrappers select optimal mmul shapes for each data type combination
+ * on AIE2P architecture. All use 2x2 mmul expansion.
+ *
+ * Available shapes: https://xilinx.github.io/aie_api/group__group__mmul.html
+ *
+ * Each wrapper validates dimension divisibility via static_assert.
+ * @{
+ */
 
+/**
+ * @brief int16 -> int16 matrix multiply using 4x4x8 mmul shape with 2x2 expansion.
+ *
+ * @tparam m Tile M dimension (must be divisible by 8).
+ * @tparam k Tile K dimension (must be divisible by 4).
+ * @tparam n Tile N dimension (must be divisible by 16).
+ *
+ * @param[in]     pA Input matrix A.
+ * @param[in]     pB Input matrix B.
+ * @param[in,out] pC Output matrix C (accumulated).
+ */
 template <unsigned m, unsigned k, unsigned n>
 static inline void matmul_vectorized_4x4x8_i16_i16(const int16 * __restrict pA,
                                                    const int16 * __restrict pB,
@@ -261,6 +308,17 @@ static inline void matmul_vectorized_4x4x8_i16_i16(const int16 * __restrict pA,
                                       is_b_row_maj, is_c_row_maj>(pA, pB, pC);
 }
 
+/**
+ * @brief int16 -> int32 matrix multiply using 4x4x8 mmul shape with 2x2 expansion.
+ *
+ * @tparam m Tile M dimension (must be divisible by 8).
+ * @tparam k Tile K dimension (must be divisible by 4).
+ * @tparam n Tile N dimension (must be divisible by 16).
+ *
+ * @param[in]     pA Input matrix A.
+ * @param[in]     pB Input matrix B.
+ * @param[in,out] pC Output matrix C (accumulated).
+ */
 template <unsigned m, unsigned k, unsigned n>
 static inline void matmul_vectorized_4x4x8_i16_i32(const int16 * __restrict pA,
                                                    const int16 * __restrict pB,
@@ -277,6 +335,17 @@ static inline void matmul_vectorized_4x4x8_i16_i32(const int16 * __restrict pA,
                                       is_b_row_maj, is_c_row_maj>(pA, pB, pC);
 }
 
+/**
+ * @brief bfloat16 -> bfloat16 matrix multiply using 4x8x8 mmul shape with 2x2 expansion.
+ *
+ * @tparam m Tile M dimension (must be divisible by 8).
+ * @tparam k Tile K dimension (must be divisible by 8).
+ * @tparam n Tile N dimension (must be divisible by 16).
+ *
+ * @param[in]     pA Input matrix A.
+ * @param[in]     pB Input matrix B.
+ * @param[in,out] pC Output matrix C (accumulated).
+ */
 template <unsigned m, unsigned k, unsigned n>
 static inline void matmul_vectorized_4x8x8_bf16_bf16(const bfloat16 * __restrict pA,
                                                      const bfloat16 * __restrict pB,
@@ -295,8 +364,20 @@ static inline void matmul_vectorized_4x8x8_bf16_bf16(const bfloat16 * __restrict
                                       is_b_row_maj, is_c_row_maj>(pA, pB, pC);
 }
 
-// Note that this shape is only possible for bf16 when using bfp16 emulation
-// during matmuls.
+/**
+ * @brief bfloat16 -> bfloat16 matrix multiply using 8x8x8 mmul shape with 2x2 expansion.
+ *
+ * @note This shape is only available when using bfp16 emulation
+ *       (AIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16).
+ *
+ * @tparam m Tile M dimension (must be divisible by 16).
+ * @tparam k Tile K dimension (must be divisible by 8).
+ * @tparam n Tile N dimension (must be divisible by 16).
+ *
+ * @param[in]     pA Input matrix A.
+ * @param[in]     pB Input matrix B.
+ * @param[in,out] pC Output matrix C (accumulated).
+ */
 template <unsigned m, unsigned k, unsigned n>
 static inline void matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 * __restrict pA,
                                                      const bfloat16 * __restrict pB,
@@ -315,6 +396,17 @@ static inline void matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 * __restrict
                                       is_b_row_maj, is_c_row_maj>(pA, pB, pC);
 }
 
+/**
+ * @brief bfloat16 -> float32 matrix multiply using 4x8x8 mmul shape with 2x2 expansion.
+ *
+ * @tparam m Tile M dimension (must be divisible by 8).
+ * @tparam k Tile K dimension (must be divisible by 8).
+ * @tparam n Tile N dimension (must be divisible by 16).
+ *
+ * @param[in]     pA Input matrix A.
+ * @param[in]     pB Input matrix B.
+ * @param[in,out] pC Output matrix C (accumulated).
+ */
 template <unsigned m, unsigned k, unsigned n>
 static inline void matmul_vectorized_4x8x8_bf16_f32(const bfloat16 * __restrict pA,
                                                     const bfloat16 * __restrict pB,
@@ -333,6 +425,20 @@ static inline void matmul_vectorized_4x8x8_bf16_f32(const bfloat16 * __restrict 
                                       is_b_row_maj, is_c_row_maj>(pA, pB, pC);
 }
 
+/**
+ * @brief bfloat16 -> float32 matrix multiply using 8x8x8 mmul shape with 2x2 expansion.
+ *
+ * @note This shape is only available when using bfp16 emulation
+ *       (AIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16).
+ *
+ * @tparam m Tile M dimension (must be divisible by 16).
+ * @tparam k Tile K dimension (must be divisible by 8).
+ * @tparam n Tile N dimension (must be divisible by 16).
+ *
+ * @param[in]     pA Input matrix A.
+ * @param[in]     pB Input matrix B.
+ * @param[in,out] pC Output matrix C (accumulated).
+ */
 template <unsigned m, unsigned k, unsigned n>
 static inline void matmul_vectorized_8x8x8_bf16_f32(const bfloat16 * __restrict pA,
                                                     const bfloat16 * __restrict pB,
@@ -351,6 +457,17 @@ static inline void matmul_vectorized_8x8x8_bf16_f32(const bfloat16 * __restrict 
                                       is_b_row_maj, is_c_row_maj>(pA, pB, pC);
 }
 
+/**
+ * @brief int8 -> int8 matrix multiply using 8x8x8 mmul shape with 2x2 expansion.
+ *
+ * @tparam m Tile M dimension (must be divisible by 16).
+ * @tparam k Tile K dimension (must be divisible by 8).
+ * @tparam n Tile N dimension (must be divisible by 16).
+ *
+ * @param[in]     pA Input matrix A.
+ * @param[in]     pB Input matrix B.
+ * @param[in,out] pC Output matrix C (accumulated).
+ */
 template <unsigned m, unsigned k, unsigned n>
 static inline void matmul_vectorized_8x8x8_i8_i8(const int8 * __restrict pA,
                                                  const int8 * __restrict pB,
@@ -367,6 +484,17 @@ static inline void matmul_vectorized_8x8x8_i8_i8(const int8 * __restrict pA,
                                       is_c_row_maj>(pA, pB, pC);
 }
 
+/**
+ * @brief int8 -> int16 matrix multiply using 8x8x8 mmul shape with 2x2 expansion.
+ *
+ * @tparam m Tile M dimension (must be divisible by 16).
+ * @tparam k Tile K dimension (must be divisible by 8).
+ * @tparam n Tile N dimension (must be divisible by 16).
+ *
+ * @param[in]     pA Input matrix A.
+ * @param[in]     pB Input matrix B.
+ * @param[in,out] pC Output matrix C (accumulated).
+ */
 template <unsigned m, unsigned k, unsigned n>
 static inline void matmul_vectorized_8x8x8_i8_i16(const int8 * __restrict pA,
                                                   const int8 * __restrict pB,
@@ -383,6 +511,17 @@ static inline void matmul_vectorized_8x8x8_i8_i16(const int8 * __restrict pA,
                                       is_c_row_maj>(pA, pB, pC);
 }
 
+/**
+ * @brief int8 -> int32 matrix multiply using 8x8x8 mmul shape with 2x2 expansion.
+ *
+ * @tparam m Tile M dimension (must be divisible by 16).
+ * @tparam k Tile K dimension (must be divisible by 8).
+ * @tparam n Tile N dimension (must be divisible by 16).
+ *
+ * @param[in]     pA Input matrix A.
+ * @param[in]     pB Input matrix B.
+ * @param[in,out] pC Output matrix C (accumulated).
+ */
 template <unsigned m, unsigned k, unsigned n>
 static inline void matmul_vectorized_8x8x8_i8_i32(const int8 * __restrict pA,
                                                   const int8 * __restrict pB,

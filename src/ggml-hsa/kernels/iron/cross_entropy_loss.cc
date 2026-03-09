@@ -8,9 +8,17 @@
 #define KERN_VEC_SIZE 16
 #endif
 
-// =============================================================================
-// Scalar natural logarithm using IEEE 754 range reduction + atanh series
-// =============================================================================
+/**
+ * @brief Computes the natural logarithm using IEEE 754 range reduction.
+ *
+ * Implements ln(x) = ln(m * 2^e) = ln(m) + e * ln(2), where m is the mantissa
+ * normalized to [1, 2). The ln(m) is computed using a 2*atanh series:
+ * ln(m) = 2 * atanh((m-1)/(m+1)) with a polynomial approximation.
+ *
+ * @param[in] x The input value (must be positive).
+ *
+ * @return The natural logarithm of x. Returns -88.0f for x <= 0.
+ */
 inline float scalar_log(float x) {
     if (x <= 0.0f)
         return -88.0f;
@@ -41,17 +49,22 @@ inline float scalar_log(float x) {
 extern "C" {
 #ifdef COMPILE_GGML_OP_CROSS_ENTROPY_LOSS
 
-// =============================================================================
-// Cross entropy loss kernel
-//
-// Computes: loss = -sum(labels * log_softmax(logits))
-// where    log_softmax(x_i) = (x_i - max) - log(sum(exp(x_j - max)))
-//
-// Three-pass algorithm:
-//   1: Find max(logits) for numerical stability
-//   2: Compute sum_exp = sum(exp(logits - max))
-//   3: Compute loss = -sum(labels * ((logits - max) - log(sum_exp)))
-// =============================================================================
+/**
+ * @brief Computes cross-entropy loss using numerically stable log-softmax.
+ *
+ * Computes: loss = -sum(labels * log_softmax(logits))
+ * where:   log_softmax(x_i) = (x_i - max) - log(sum(exp(x_j - max)))
+ *
+ * Three-pass algorithm for numerical stability:
+ * 1. Find max(logits) to prevent overflow in exp().
+ * 2. Compute sum_exp = sum(exp(logits - max)).
+ * 3. Compute loss = -sum(labels * ((logits - max) - log(sum_exp))).
+ *
+ * @param[in]  logits   Input logits array of N elements (unnormalized scores).
+ * @param[in]  labels   Target labels array of N elements (typically one-hot or probabilities).
+ * @param[out] loss_out Single-element output array receiving the total loss.
+ * @param[in]  N        Number of elements (must be divisible by KERN_VEC_SIZE).
+ */
 void ggml_op_cross_entropy_loss(const float * __restrict logits,
                                 const float * __restrict labels,
                                 float * __restrict loss_out,
