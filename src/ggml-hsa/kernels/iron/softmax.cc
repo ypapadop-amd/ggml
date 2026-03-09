@@ -8,11 +8,22 @@
 #define KERN_VEC_SIZE 8
 #endif
 
-// Scalar 2^x using range reduction
-// Horner's method suffer from precision loss for large input values
-// We apply range reduction technique, which splits x into integer (i) and
-// fractional (f) parts where i = floor(x) and f is between 0 and 1.
-// Formula: 2^x = 2^i * 2^f
+/**
+ * @brief Computes 2^x using range reduction for improved precision.
+ *
+ * Horner's method suffers from precision loss for large input values.
+ * This function applies range reduction by splitting x into integer (i) and
+ * fractional (f) parts where i = floor(x) and f is in [0, 1).
+ * Formula: 2^x = 2^i * 2^f
+ *
+ * The fractional part 2^f is computed using a degree-10 Taylor series
+ * approximation of exp(f * ln(2)) via Horner's method. The integer part 2^i
+ * is computed using IEEE 754 bit manipulation.
+ *
+ * @param[in] x The exponent value.
+ *
+ * @return The computed value of 2^x.
+ */
 inline float pow2(float x) {
     // split x into integer and fractional parts
     int i = (int)x;
@@ -54,8 +65,15 @@ inline float pow2(float x) {
     return exp_f * scale;
 }
 
-// floor of log2 for positive integers
-// by finding the index of the most significant bit
+/**
+ * @brief Computes floor(log2(x)) for positive integers.
+ *
+ * Finds the position of the most significant bit set in x.
+ *
+ * @param[in] x The input value (must be > 0 for meaningful result).
+ *
+ * @return The floor of log base 2 of x. Returns 0 for x <= 1.
+ */
 inline uint32_t floor_log2(uint32_t x) {
     uint32_t result = 0;
     while (x > 1) {
@@ -65,7 +83,23 @@ inline uint32_t floor_log2(uint32_t x) {
     return result;
 }
 
-// ALiBi slope computation
+/**
+ * @brief Computes the ALiBi (Attention with Linear Biases) slope for a head.
+ *
+ * ALiBi applies position-dependent biases in attention using geometric slopes.
+ * The slope for each head is computed based on the head index and total heads.
+ *
+ * For heads 0 to n_head_log2-1: slope = m0^(head_idx+1)
+ * For heads >= n_head_log2:     slope = m1^(2*(head_idx - n_head_log2) + 1)
+ *
+ * where m0 = 2^(-max_bias/n_head_log2) and m1 = 2^(-max_bias/2/n_head_log2)
+ *
+ * @param[in] max_bias  Maximum bias value. If <= 0, returns 1.0.
+ * @param[in] n_head    Total number of attention heads.
+ * @param[in] head_idx  Index of the current head (0-based).
+ *
+ * @return The computed ALiBi slope for this head.
+ */
 inline float compute_alibi_slope(float max_bias, int32_t n_head, int32_t head_idx) {
     if (max_bias <= 0.0f) {
         return 1.0f;
@@ -98,7 +132,22 @@ inline float compute_alibi_slope(float max_bias, int32_t n_head, int32_t head_id
 
 extern "C" {
 #ifdef GGML_OP_SOFT_MAX
-// Softmax without mask or sink
+/**
+ * @brief Computes softmax without mask or sink tensors.
+ *
+ * Implements the numerically stable softmax: softmax(x_i) = exp(x_i - max) / sum(exp(x_j - max))
+ *
+ * Algorithm:
+ * 1. Find global maximum of scaled inputs for numerical stability.
+ * 2. Compute exp(scale*x - max) for each element and accumulate sum.
+ * 3. Normalize by dividing each exp value by the sum.
+ *
+ * @param[in]  in       Input tensor of size N elements.
+ * @param[out] out      Output tensor of size N elements (can alias in).
+ * @param[in]  N        Number of elements in the row (must be divisible by KERN_VEC_SIZE).
+ * @param[in]  scale    Scale factor applied to input before softmax.
+ * @param[in]  max_bias Unused in this variant (kept for API consistency).
+ */
 void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
                       OUTPUT_DTYPE * __restrict out,
                       int32_t N,
@@ -171,7 +220,27 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
 #endif // GGML_OP_SOFT_MAX
 
 #ifdef GGML_OP_SOFT_MAX_WITH_MASK
-// Softmax with mask tensor
+/**
+ * @brief Computes softmax with a mask tensor and ALiBi position biases.
+ *
+ * Implements: softmax(scale*x + slope*mask) where slope is computed via ALiBi.
+ *
+ * Algorithm:
+ * 1. Compute ALiBi slope for current head based on tile_idx and rows_per_head.
+ * 2. Find global maximum of (scale*input + slope*mask) for numerical stability.
+ * 3. Compute exp(scale*x + slope*mask - max) and accumulate sum.
+ * 4. Normalize by dividing each exp value by the sum.
+ *
+ * @param[in]  in            Input tensor of size N elements.
+ * @param[in]  mask          Mask tensor of size N elements (e.g., causal attention mask).
+ * @param[out] out           Output tensor of size N elements (can alias in).
+ * @param[in]  N             Number of elements in the row (must be divisible by KERN_VEC_SIZE).
+ * @param[in]  scale         Scale factor applied to input.
+ * @param[in]  max_bias      Maximum ALiBi bias value.
+ * @param[in]  n_head        Total number of attention heads.
+ * @param[in]  tile_idx      Current tile index (used to determine head index).
+ * @param[in]  rows_per_head Number of rows per attention head.
+ */
 void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
                                 const MASK_DTYPE * __restrict mask,
                                 OUTPUT_DTYPE * __restrict out,
@@ -273,7 +342,30 @@ void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
 #endif // GGML_OP_SOFT_MAX_WITH_MASK
 
 #ifdef GGML_OP_SOFT_MAX_WITH_MASK_AND_SINKS
-// Softmax with mask and sink tensors
+/**
+ * @brief Computes softmax with mask and sink (attention sink) tensors.
+ *
+ * This variant includes a "sink" value per attention head that participates
+ * in the softmax normalization but is not stored in the output. Used for
+ * streaming attention where early tokens act as attention sinks.
+ *
+ * Algorithm:
+ * 1. Get sink value for current head based on tile_idx.
+ * 2. Find global maximum including both (scale*input + mask) and sink.
+ * 3. Compute exp(scale*x + mask - max) and accumulate sum.
+ * 4. Add exp(sink - max) to sum for proper normalization.
+ * 5. Normalize output by dividing each exp value by total sum.
+ *
+ * @param[in]  in            Input tensor of size N elements.
+ * @param[in]  mask          Mask tensor of size N elements.
+ * @param[in]  sinks         Per-head sink values array (indexed by head_idx).
+ * @param[out] out           Output tensor of size N elements (can alias in).
+ * @param[in]  N             Number of elements in the row (must be divisible by KERN_VEC_SIZE).
+ * @param[in]  tile_idx      Current tile index (used to determine head index).
+ * @param[in]  rows_per_head Number of rows per attention head.
+ * @param[in]  scale         Scale factor applied to input.
+ * @param[in]  max_bias      Unused in this variant.
+ */
 void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
                                           const MASK_DTYPE * __restrict mask,
                                           const SINK_DTYPE * __restrict sinks,
