@@ -11,15 +11,16 @@ The GGML HSA (`ggml-hsa`) backend supports the following AMD XDNA NPUs:
 
 The following GGML operations are supported by the HSA backend:
 
-| Category | Operation                                                    | Status      |
-|----------|--------------------------------------------------------------|-------------|
-| Binary   | `ADD`, `SUB`, `MUL`, `DIV`                                   | Implemented |
-| Unary    | `SQR`, `ABS`, `SGN`, `NEG`, `STEP`, `RELU`                   | Implemented |
-| Unary    | `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`| Implemented |
-| Unary    | `SQRT`, `LOG`, `SIN`, `COS`, `TANH`, `ELU`, `SIGMOID`        | Planned     |
-| Unary    | `GELU`, `GELU_QUICK`, `SILU`, `EXP`, `GELU_ERF`, `XIELU`     | Planned     |
-| Matrix   | `MUL_MAT`                                                    | Implemented |
-| Other    | `SCALE`, `SOFT_MAX`, `CLAMP`                                 | Implemented |
+| Category  | Operation                                                    | Status      |
+|-----------|--------------------------------------------------------------|-------------|
+| Binary    | `ADD`, `SUB`, `MUL`, `DIV`                                   | Implemented |
+| Unary     | `SQR`, `ABS`, `SGN`, `NEG`, `STEP`, `RELU`                   | Implemented |
+| Unary     | `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`| Implemented |
+| Unary     | `SQRT`, `LOG`, `SIN`, `COS`, `TANH`, `ELU`, `SIGMOID`        | Implemented |
+| Unary     | `GELU`, `GELU_QUICK`, `SILU`, `EXP`, `GELU_ERF`, `XIELU`     | Implemented |
+| Matrix    | `MUL_MAT`                                                    | Implemented |
+| Reduction | `ARGMAX`, `COUNT_EQUAL`                                      | Implemented |
+| Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                 | Implemented |
 
 ## Supported Datatypes
 
