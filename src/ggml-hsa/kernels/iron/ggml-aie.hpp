@@ -1,11 +1,11 @@
-// Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+// Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #pragma once
 
 #include <cstdint>
 #include <type_traits>
 
-#include <aie_api/aie.hpp>
+#include "aie_api/aie.hpp"
 
 using i8 = std::int8_t;
 using i16 = std::int16_t;

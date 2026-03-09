@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include <aie_api/aie.hpp>
-
 #include "ggml-aie.hpp"
 
 template <typename T0, typename T1, typename TOut, typename Size, typename BinaryOp>

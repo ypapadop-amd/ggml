@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include "ggml-aie.hpp"
-#include <aie_api/aie.hpp>
 
 #ifndef KERN_VEC_SIZE
 #define KERN_VEC_SIZE 16
