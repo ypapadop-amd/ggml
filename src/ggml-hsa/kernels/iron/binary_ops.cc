@@ -68,8 +68,13 @@ void ggml_op_add_broadcast(const INPUT0_DTYPE * __restrict in0,
                            OUTPUT_DTYPE * __restrict out,
                            int32_t tile_size,
                            int32_t tile_idx,
-                           int32_t src1_ne0, int32_t src1_ne1, int32_t src1_ne2, int32_t src1_ne3,
-                           int32_t dst_ne0, int32_t dst_ne1, int32_t dst_ne2) {
+                           int32_t src1_ne0,
+                           int32_t src1_ne1,
+                           int32_t src1_ne2,
+                           int32_t src1_ne3,
+                           int32_t dst_ne0,
+                           int32_t dst_ne1,
+                           int32_t dst_ne2) {
     event0();
 
     int32_t global_offset = tile_idx * tile_size;
@@ -101,9 +106,8 @@ void ggml_op_add_broadcast(const INPUT0_DTYPE * __restrict in0,
         // src1 index
         int32_t idx_src1 = j0 + j1 * s1 + j2 * s2 + j3 * s3;
 
-        out[i] = static_cast<OUTPUT_DTYPE>(
-            static_cast<float>(in0[i]) + static_cast<float>(in1[idx_src1])
-        );
+        out[i] = static_cast<OUTPUT_DTYPE>(static_cast<float>(in0[i]) +
+                                           static_cast<float>(in1[idx_src1]));
     }
 
     event1();
@@ -118,8 +122,13 @@ void ggml_op_sub_broadcast(const INPUT0_DTYPE * __restrict in0,
                            OUTPUT_DTYPE * __restrict out,
                            int32_t tile_size,
                            int32_t tile_idx,
-                           int32_t src1_ne0, int32_t src1_ne1, int32_t src1_ne2, int32_t src1_ne3,
-                           int32_t dst_ne0, int32_t dst_ne1, int32_t dst_ne2) {
+                           int32_t src1_ne0,
+                           int32_t src1_ne1,
+                           int32_t src1_ne2,
+                           int32_t src1_ne3,
+                           int32_t dst_ne0,
+                           int32_t dst_ne1,
+                           int32_t dst_ne2) {
     event0();
 
     int32_t global_offset = tile_idx * tile_size;
@@ -151,9 +160,8 @@ void ggml_op_sub_broadcast(const INPUT0_DTYPE * __restrict in0,
         // src1 index
         int32_t idx_src1 = j0 + j1 * s1 + j2 * s2 + j3 * s3;
 
-        out[i] = static_cast<OUTPUT_DTYPE>(
-            static_cast<float>(in0[i]) - static_cast<float>(in1[idx_src1])
-        );
+        out[i] = static_cast<OUTPUT_DTYPE>(static_cast<float>(in0[i]) -
+                                           static_cast<float>(in1[idx_src1]));
     }
 
     event1();
@@ -168,8 +176,13 @@ void ggml_op_mul_broadcast(const INPUT0_DTYPE * __restrict in0,
                            OUTPUT_DTYPE * __restrict out,
                            int32_t tile_size,
                            int32_t tile_idx,
-                           int32_t src1_ne0, int32_t src1_ne1, int32_t src1_ne2, int32_t src1_ne3,
-                           int32_t dst_ne0, int32_t dst_ne1, int32_t dst_ne2) {
+                           int32_t src1_ne0,
+                           int32_t src1_ne1,
+                           int32_t src1_ne2,
+                           int32_t src1_ne3,
+                           int32_t dst_ne0,
+                           int32_t dst_ne1,
+                           int32_t dst_ne2) {
     event0();
 
     int32_t global_offset = tile_idx * tile_size;
@@ -201,9 +214,8 @@ void ggml_op_mul_broadcast(const INPUT0_DTYPE * __restrict in0,
         // src1 index
         int32_t idx_src1 = j0 + j1 * s1 + j2 * s2 + j3 * s3;
 
-        out[i] = static_cast<OUTPUT_DTYPE>(
-            static_cast<float>(in0[i]) * static_cast<float>(in1[idx_src1])
-        );
+        out[i] = static_cast<OUTPUT_DTYPE>(static_cast<float>(in0[i]) *
+                                           static_cast<float>(in1[idx_src1]));
     }
 
     event1();
@@ -218,8 +230,13 @@ void ggml_op_div_broadcast(const INPUT0_DTYPE * __restrict in0,
                            OUTPUT_DTYPE * __restrict out,
                            int32_t tile_size,
                            int32_t tile_idx,
-                           int32_t src1_ne0, int32_t src1_ne1, int32_t src1_ne2, int32_t src1_ne3,
-                           int32_t dst_ne0, int32_t dst_ne1, int32_t dst_ne2) {
+                           int32_t src1_ne0,
+                           int32_t src1_ne1,
+                           int32_t src1_ne2,
+                           int32_t src1_ne3,
+                           int32_t dst_ne0,
+                           int32_t dst_ne1,
+                           int32_t dst_ne2) {
     event0();
 
     int32_t global_offset = tile_idx * tile_size;
@@ -251,9 +268,8 @@ void ggml_op_div_broadcast(const INPUT0_DTYPE * __restrict in0,
         // src1 index
         int32_t idx_src1 = j0 + j1 * s1 + j2 * s2 + j3 * s3;
 
-        out[i] = static_cast<OUTPUT_DTYPE>(
-            static_cast<float>(in0[i]) / static_cast<float>(in1[idx_src1])
-        );
+        out[i] = static_cast<OUTPUT_DTYPE>(static_cast<float>(in0[i]) /
+                                           static_cast<float>(in1[idx_src1]));
     }
 
     event1();
