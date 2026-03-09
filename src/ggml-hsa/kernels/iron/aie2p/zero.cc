@@ -1,6 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (C) 2025 Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+/**
+ * @file zero.cc
+ * @brief Zero-initialization kernels for AIE2P matrix buffers.
+ *
+ * Provides scalar and vectorized functions to zero-initialize output matrices
+ * before matrix multiplication accumulation. AIE2P uses 512-bit vector stores.
+ */
+
 #ifndef ZERO_CC
 #define ZERO_CC
 
@@ -10,6 +18,17 @@
 #include <stdlib.h>
 #include <type_traits>
 
+/**
+ * @brief Scalar zero-initialization of a matrix buffer.
+ *
+ * Sets all M*N elements of the output buffer to zero using scalar stores.
+ *
+ * @tparam T Element type of the matrix.
+ * @tparam M Number of rows.
+ * @tparam N Number of columns.
+ *
+ * @param[out] c Output buffer of M*N elements to be zeroed.
+ */
 template <typename T, int M, int N>
 void zero_scalar(T * __restrict c) {
     for (int i = 0; i < M * N; i++) {
@@ -17,6 +36,18 @@ void zero_scalar(T * __restrict c) {
     }
 }
 
+/**
+ * @brief Vectorized zero-initialization of a matrix buffer.
+ *
+ * Sets all M*N elements of the output buffer to zero using 512-bit vector stores.
+ * More efficient than scalar version for AIE2P.
+ *
+ * @tparam T Element type of the matrix.
+ * @tparam M Number of rows (M*N must be divisible by vector width).
+ * @tparam N Number of columns (M*N must be divisible by vector width).
+ *
+ * @param[out] c Output buffer of M*N elements to be zeroed.
+ */
 template <typename T, int M, int N>
 void zero_vectorized(T * __restrict c) {
     constexpr int r = 512 / (sizeof(T) * 8); // 512 bit store units for AIE2P

@@ -1,5 +1,10 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
+/**
+ * @file count_equal.cc
+ * @brief Count equal operation for AIE kernels.
+ */
+
 #include <cstring>
 
 #include "ggml-aie.hpp"
@@ -7,20 +12,24 @@
 extern "C" {
 
 /**
- * Count equal operation: counts elements that are equal between two tensors.
+ * @brief Counts elements that are equal between two input tensors.
  *
- * Processes data in tiles. On the first tile (tile_idx == 0), initializes the
- * output buffer to 0. Each tile reads the accumulated count from the output
- * buffer, adds its local count, and writes back.
+ * Processes data in tiles for streaming execution. On the first tile
+ * (tile_idx == 0), initializes the output buffer to 0. Each tile
+ * reads the accumulated count, adds its local count, and writes back.
  *
- * The output buffer is passed as int32_t[2] due to IRON not supporting i64
- * in ObjectFifos, but we access it as int64_t through casting.
+ * Uses vectorized comparison where possible for better performance.
  *
- * @param in0 First input tile
- * @param in1 Second input tile
- * @param out Output buffer (2 x int32 = 1 x int64), used as accumulator
- * @param tile_size Number of elements in this tile
- * @param tile_idx Current tile index (0-based)
+ * @note The output buffer is passed as int32_t[2] because IRON does not
+ *       support int64_t in ObjectFifos. It is accessed as int64_t internally.
+ *
+ * @param[in]     in0       First input tile of tile_size elements.
+ * @param[in]     in1       Second input tile of tile_size elements.
+ * @param[in,out] out       Output buffer (2 x int32 = 1 x int64) used as
+ *                          running accumulator across tiles.
+ * @param[in]     tile_size Number of elements in this tile.
+ * @param[in]     tile_idx  Current tile index (0-based). Tile 0 initializes
+ *                          the accumulator.
  */
 void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
                          const INPUT_DTYPE * __restrict in1,

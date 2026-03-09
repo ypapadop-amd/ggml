@@ -40,6 +40,7 @@ src/ggml-hsa/
 │   ├── mul_mat.py               # Top-level matrix multiply dispatch
 │   ├── argmax.py                # Top-level argmax op dispatch
 │   ├── count_equal.py           # Top-level count_equal op dispatch
+│   ├── cross_entropy_loss.py    # Top-level cross entropy loss op dispatch
 │   └── iron/                    # IRON kernel implementations
 │       ├── __init__.py          # Subpackage init
 │       ├── utils.py             # Shared utilities (alignment, device mapping)
@@ -50,9 +51,11 @@ src/ggml-hsa/
 │       ├── clamp.py/cc          # Clamp IRON design + AIE core function
 │       ├── argmax.py/cc         # Argmax IRON design + AIE core function
 │       ├── count_equal.py/cc    # Count equal IRON design + AIE core function
+│       ├── cross_entropy_loss.py/cc  # Cross entropy loss IRON design + AIE core function
 │       ├── gemm.py              # Matrix multiplication IRON design
 │       ├── ggml-aie.hpp         # Common AIE type definitions
 │       ├── aie_kernel_utils.h   # AIE kernel utility macros
+│       ├── aie_kernel_math.h    # AIE math utility functions (vec_exp)
 │       ├── aie2/                # aie2-specific core functions (mm.cc, zero.cc)
 │       └── aie2p/               # aie2p-specific core functions (mm.cc, zero.cc)
 └── cmake/                       # CMake utilities
