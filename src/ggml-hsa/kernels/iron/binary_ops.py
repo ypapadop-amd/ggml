@@ -208,12 +208,24 @@ class BroadcastFunctionSpec:
         num_elements_out (int): Total number of elements in output (and src0).
         num_elements_src1 (int): Total number of elements in src1 (smaller).
         ne0_src1 (int): First dimension of src1 (for index wrapping).
+        ne1_src1 (int): Second dimension of src1.
+        ne2_src1 (int): Third dimension of src1.
+        ne3_src1 (int): Fourth dimension of src1.
+        ne0_dst (int): First dimension of dst.
+        ne1_dst (int): Second dimension of dst.
+        ne2_dst (int): Third dimension of dst.
     """
 
     external_function: ExternalFunction
     num_elements_out: int
     num_elements_src1: int
     ne0_src1: int
+    ne1_src1: int
+    ne2_src1: int
+    ne3_src1: int
+    ne0_dst: int
+    ne1_dst: int
+    ne2_dst: int
 
     @property
     def tile_size(self) -> int:
@@ -245,7 +257,15 @@ def _create_broadcast_external_function(
     num_elements_out = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
     num_elements_src1 = arch_aligned_num_elements(arch=arch, tensor=input_tensors[1])
     tile_size = max_tile_size(arch, output_tensor.dtype, num_elements_out)
+
+    # Extract dimension sizes for multi-dimensional broadcast indexing
     ne0_src1 = input_tensors[1].shape[0]
+    ne1_src1 = input_tensors[1].shape[1]
+    ne2_src1 = input_tensors[1].shape[2]
+    ne3_src1 = input_tensors[1].shape[3]
+    ne0_dst = output_tensor.shape[0]
+    ne1_dst = output_tensor.shape[1]
+    ne2_dst = output_tensor.shape[2]
 
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
@@ -259,6 +279,12 @@ def _create_broadcast_external_function(
             np.int32,  # tile_size
             np.int32,  # tile_idx
             np.int32,  # ne0_src1
+            np.int32,  # ne1_src1
+            np.int32,  # ne2_src1
+            np.int32,  # ne3_src1
+            np.int32,  # ne0_dst
+            np.int32,  # ne1_dst
+            np.int32,  # ne2_dst
         ],
         compile_flags=[
             f"-D{op_name}_BROADCAST=1",
@@ -272,6 +298,12 @@ def _create_broadcast_external_function(
         num_elements_out=num_elements_out,
         num_elements_src1=num_elements_src1,
         ne0_src1=ne0_src1,
+        ne1_src1=ne1_src1,
+        ne2_src1=ne2_src1,
+        ne3_src1=ne3_src1,
+        ne0_dst=ne0_dst,
+        ne1_dst=ne1_dst,
+        ne2_dst=ne2_dst,
     )
 
 
@@ -295,6 +327,12 @@ def _binary_op_broadcast(
     tile_size = function_spec.tile_size
     num_tiles = num_elements_out // tile_size
     ne0_src1 = function_spec.ne0_src1
+    ne1_src1 = function_spec.ne1_src1
+    ne2_src1 = function_spec.ne2_src1
+    ne3_src1 = function_spec.ne3_src1
+    ne0_dst = function_spec.ne0_dst
+    ne1_dst = function_spec.ne1_dst
+    ne2_dst = function_spec.ne2_dst
 
     if num_elements_out % tile_size != 0:
         raise ValueError(
@@ -321,7 +359,12 @@ def _binary_op_broadcast(
             out_tile = of_out.acquire(1)
 
             tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
-            function(src0_tile, src1_buf, out_tile, tile_size, tile_idx_i32, ne0_src1)
+            function(
+                src0_tile, src1_buf, out_tile,
+                tile_size, tile_idx_i32,
+                ne0_src1, ne1_src1, ne2_src1, ne3_src1,
+                ne0_dst, ne1_dst, ne2_dst
+            )
 
             of_src0.release(1)
             of_out.release(1)
@@ -397,18 +440,6 @@ def binary_op(
                 f"Cannot broadcast: {src1_shape} -> {dst_shape}"
             )
 
-        # For now, only support 1D case (higher dims must be 1)
-        if src1_shape[1:4] != (1, 1, 1):
-            raise NotImplementedError(
-                f"Multi-dimensional broadcasting not supported: {src1_shape}"
-            )
-
-        # Output must also be 1D for now
-        if dst_shape[1:4] != (1, 1, 1):
-            raise NotImplementedError(
-                f"Multi-dimensional output not supported for broadcast: {dst_shape}"
-            )
-
         function_spec = _create_broadcast_external_function(
             arch=arch,
             op_name=op_name,
@@ -424,9 +455,6 @@ def binary_op(
         )
     else:
         # Non-broadcast path: standard element-wise operation
-        if dst_shape[1:4] != (1, 1, 1):
-            raise ValueError(f"Unsupported shape ({dst_shape}).")
-
         function_spec = _create_external_function(
             arch=arch,
             op_name=op_name,

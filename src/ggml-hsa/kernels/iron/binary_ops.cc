@@ -68,24 +68,47 @@ void ggml_op_add_broadcast(const INPUT0_DTYPE * __restrict in0,
                            OUTPUT_DTYPE * __restrict out,
                            int32_t tile_size,
                            int32_t tile_idx,
-                           int32_t ne0_src1) {
+                           int32_t ne0_src1,
+                           int32_t ne1_src1,
+                           int32_t ne2_src1,
+                           int32_t ne3_src1,
+                           int32_t ne0_dst,
+                           int32_t ne1_dst,
+                           int32_t ne2_dst) {
     event0();
 
-    // Compute starting offset within src1 for this tile.
-    // global_offset = (tile_idx * tile_size) % ne0_src1
-    // To avoid 64-bit division, we compute: offset = (tile_idx % (ne0_src1/gcd)) * tile_size % ne0_src1
-    // For simplicity, we just track the running index within src1.
-    int32_t idx_src1 = (tile_idx * (tile_size % ne0_src1)) % ne0_src1;
+    int32_t global_offset = tile_idx * tile_size;
+
+    // src1 strides (contiguous layout)
+    int32_t s1 = ne0_src1;
+    int32_t s2 = ne0_src1 * ne1_src1;
+    int32_t s3 = ne0_src1 * ne1_src1 * ne2_src1;
+
+    // dst strides for coordinate decomposition
+    int32_t d1 = ne0_dst;
+    int32_t d2 = ne0_dst * ne1_dst;
 
     for (int32_t i = 0; i < tile_size; ++i) {
+        int32_t g = global_offset + i;
+
+        // Decompose into 4D dst coordinates
+        int32_t i0 = g % ne0_dst;
+        int32_t i1 = (g / d1) % ne1_dst;
+        int32_t i2 = (g / d2) % ne2_dst;
+        int32_t i3 = g / (d2 * ne2_dst);
+
+        // Apply broadcast modulo
+        int32_t j0 = i0 % ne0_src1;
+        int32_t j1 = i1 % ne1_src1;
+        int32_t j2 = i2 % ne2_src1;
+        int32_t j3 = i3 % ne3_src1;
+
+        // src1 index
+        int32_t idx_src1 = j0 + j1 * s1 + j2 * s2 + j3 * s3;
+
         out[i] = static_cast<OUTPUT_DTYPE>(
             static_cast<float>(in0[i]) + static_cast<float>(in1[idx_src1])
         );
-        // Increment and wrap
-        idx_src1++;
-        if (idx_src1 >= ne0_src1) {
-            idx_src1 = 0;
-        }
     }
 
     event1();
@@ -100,19 +123,47 @@ void ggml_op_sub_broadcast(const INPUT0_DTYPE * __restrict in0,
                            OUTPUT_DTYPE * __restrict out,
                            int32_t tile_size,
                            int32_t tile_idx,
-                           int32_t ne0_src1) {
+                           int32_t ne0_src1,
+                           int32_t ne1_src1,
+                           int32_t ne2_src1,
+                           int32_t ne3_src1,
+                           int32_t ne0_dst,
+                           int32_t ne1_dst,
+                           int32_t ne2_dst) {
     event0();
 
-    int32_t idx_src1 = (tile_idx * (tile_size % ne0_src1)) % ne0_src1;
+    int32_t global_offset = tile_idx * tile_size;
+
+    // src1 strides (contiguous layout)
+    int32_t s1 = ne0_src1;
+    int32_t s2 = ne0_src1 * ne1_src1;
+    int32_t s3 = ne0_src1 * ne1_src1 * ne2_src1;
+
+    // dst strides for coordinate decomposition
+    int32_t d1 = ne0_dst;
+    int32_t d2 = ne0_dst * ne1_dst;
 
     for (int32_t i = 0; i < tile_size; ++i) {
+        int32_t g = global_offset + i;
+
+        // Decompose into 4D dst coordinates
+        int32_t i0 = g % ne0_dst;
+        int32_t i1 = (g / d1) % ne1_dst;
+        int32_t i2 = (g / d2) % ne2_dst;
+        int32_t i3 = g / (d2 * ne2_dst);
+
+        // Apply broadcast modulo
+        int32_t j0 = i0 % ne0_src1;
+        int32_t j1 = i1 % ne1_src1;
+        int32_t j2 = i2 % ne2_src1;
+        int32_t j3 = i3 % ne3_src1;
+
+        // src1 index
+        int32_t idx_src1 = j0 + j1 * s1 + j2 * s2 + j3 * s3;
+
         out[i] = static_cast<OUTPUT_DTYPE>(
             static_cast<float>(in0[i]) - static_cast<float>(in1[idx_src1])
         );
-        idx_src1++;
-        if (idx_src1 >= ne0_src1) {
-            idx_src1 = 0;
-        }
     }
 
     event1();
@@ -127,19 +178,47 @@ void ggml_op_mul_broadcast(const INPUT0_DTYPE * __restrict in0,
                            OUTPUT_DTYPE * __restrict out,
                            int32_t tile_size,
                            int32_t tile_idx,
-                           int32_t ne0_src1) {
+                           int32_t ne0_src1,
+                           int32_t ne1_src1,
+                           int32_t ne2_src1,
+                           int32_t ne3_src1,
+                           int32_t ne0_dst,
+                           int32_t ne1_dst,
+                           int32_t ne2_dst) {
     event0();
 
-    int32_t idx_src1 = (tile_idx * (tile_size % ne0_src1)) % ne0_src1;
+    int32_t global_offset = tile_idx * tile_size;
+
+    // src1 strides (contiguous layout)
+    int32_t s1 = ne0_src1;
+    int32_t s2 = ne0_src1 * ne1_src1;
+    int32_t s3 = ne0_src1 * ne1_src1 * ne2_src1;
+
+    // dst strides for coordinate decomposition
+    int32_t d1 = ne0_dst;
+    int32_t d2 = ne0_dst * ne1_dst;
 
     for (int32_t i = 0; i < tile_size; ++i) {
+        int32_t g = global_offset + i;
+
+        // Decompose into 4D dst coordinates
+        int32_t i0 = g % ne0_dst;
+        int32_t i1 = (g / d1) % ne1_dst;
+        int32_t i2 = (g / d2) % ne2_dst;
+        int32_t i3 = g / (d2 * ne2_dst);
+
+        // Apply broadcast modulo
+        int32_t j0 = i0 % ne0_src1;
+        int32_t j1 = i1 % ne1_src1;
+        int32_t j2 = i2 % ne2_src1;
+        int32_t j3 = i3 % ne3_src1;
+
+        // src1 index
+        int32_t idx_src1 = j0 + j1 * s1 + j2 * s2 + j3 * s3;
+
         out[i] = static_cast<OUTPUT_DTYPE>(
             static_cast<float>(in0[i]) * static_cast<float>(in1[idx_src1])
         );
-        idx_src1++;
-        if (idx_src1 >= ne0_src1) {
-            idx_src1 = 0;
-        }
     }
 
     event1();
@@ -154,19 +233,47 @@ void ggml_op_div_broadcast(const INPUT0_DTYPE * __restrict in0,
                            OUTPUT_DTYPE * __restrict out,
                            int32_t tile_size,
                            int32_t tile_idx,
-                           int32_t ne0_src1) {
+                           int32_t ne0_src1,
+                           int32_t ne1_src1,
+                           int32_t ne2_src1,
+                           int32_t ne3_src1,
+                           int32_t ne0_dst,
+                           int32_t ne1_dst,
+                           int32_t ne2_dst) {
     event0();
 
-    int32_t idx_src1 = (tile_idx * (tile_size % ne0_src1)) % ne0_src1;
+    int32_t global_offset = tile_idx * tile_size;
+
+    // src1 strides (contiguous layout)
+    int32_t s1 = ne0_src1;
+    int32_t s2 = ne0_src1 * ne1_src1;
+    int32_t s3 = ne0_src1 * ne1_src1 * ne2_src1;
+
+    // dst strides for coordinate decomposition
+    int32_t d1 = ne0_dst;
+    int32_t d2 = ne0_dst * ne1_dst;
 
     for (int32_t i = 0; i < tile_size; ++i) {
+        int32_t g = global_offset + i;
+
+        // Decompose into 4D dst coordinates
+        int32_t i0 = g % ne0_dst;
+        int32_t i1 = (g / d1) % ne1_dst;
+        int32_t i2 = (g / d2) % ne2_dst;
+        int32_t i3 = g / (d2 * ne2_dst);
+
+        // Apply broadcast modulo
+        int32_t j0 = i0 % ne0_src1;
+        int32_t j1 = i1 % ne1_src1;
+        int32_t j2 = i2 % ne2_src1;
+        int32_t j3 = i3 % ne3_src1;
+
+        // src1 index
+        int32_t idx_src1 = j0 + j1 * s1 + j2 * s2 + j3 * s3;
+
         out[i] = static_cast<OUTPUT_DTYPE>(
             static_cast<float>(in0[i]) / static_cast<float>(in1[idx_src1])
         );
-        idx_src1++;
-        if (idx_src1 >= ne0_src1) {
-            idx_src1 = 0;
-        }
     }
 
     event1();
