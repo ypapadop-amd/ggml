@@ -3,10 +3,6 @@
 #include "ggml-aie.hpp"
 #include "aie_kernel_math.h"
 
-#ifndef KERN_VEC_SIZE
-#define KERN_VEC_SIZE 16
-#endif
-
 extern "C" {
 
 /**
