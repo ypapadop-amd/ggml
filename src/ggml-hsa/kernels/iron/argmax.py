@@ -169,7 +169,6 @@ def _create_external_function(
             np.int32,  # row_length (N)
         ],
         compile_flags=[
-            f"-D{op_name}=1",
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
         ],
