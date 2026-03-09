@@ -5,6 +5,10 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
+"""
+IRON kernel implementation for the cross entropy loss operation.
+"""
+
 from os import path
 from typing import Tuple
 
@@ -158,19 +162,31 @@ def create_reduction_program(
     num_rows: int,
 ):
     """
-    Create Iron program for cross entropy loss with on-tile reduction.
+    Creates an IRON program for cross entropy loss with on-tile reduction.
 
     The C++ kernel computes per-row loss: loss_row = -sum(labels * log_softmax).
     The worker accumulates all per-row losses on-tile and outputs a single
     scalar: total_loss / num_rows, matching the CPU reference behavior.
 
-    Approach:
+    Algorithm:
         1. Acquire the output FIFO element once (single scalar buffer).
         2. For each row: save accumulated value, call kernel (which overwrites
            the buffer with this row's loss), then add accumulated + row loss
            and store back.
         3. After all rows: divide by num_rows and release.
         4. DMA drains exactly 1 float to the host.
+
+    Parameters:
+        arch (str): Target architecture (e.g., "aie2", "aie2p").
+        function (ExternalFunction): The external function for per-row loss.
+        logits_tensor (TensorDesc): Logits tensor descriptor.
+        labels_tensor (TensorDesc): Labels tensor descriptor.
+        output_tensor (TensorDesc): Output tensor descriptor.
+        tile_size (int): Number of elements per tile (row length).
+        num_rows (int): Number of rows to process.
+
+    Returns:
+        MLIR module representing the cross entropy loss program.
     """
     num_tiles = num_rows
 
@@ -271,8 +287,20 @@ def create_external_function(
     """
     Creates an external function specification for cross entropy loss.
 
+    The external function wraps the C++ kernel that computes per-row loss:
+    loss = -sum(labels * log_softmax(logits)) using numerically stable
+    log-softmax with max subtraction.
+
+    Parameters:
+        arch (str): Target architecture (e.g., "aie2", "aie2p").
+        logits_tensor (TensorDesc): Logits tensor descriptor providing dtype.
+        labels_tensor (TensorDesc): Labels tensor descriptor providing dtype.
+        output_tensor (TensorDesc): Output tensor descriptor providing dtype.
+        tile_size (int): Number of elements per tile (equals row length).
+
     Returns:
-        ExternalFunction object configured for the kernel.
+        ExternalFunction: Configured external function specification that
+            references cross_entropy_loss.cc with appropriate compile flags.
     """
     arg_types = [
         np.ndarray[(tile_size,), np.dtype[logits_tensor.dtype]],  # logits

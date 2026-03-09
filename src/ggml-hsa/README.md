@@ -24,6 +24,7 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 | Unary     | `XIELU`                                                        |
 | Matrix    | `MUL_MAT`                                                      |
 | Reduction | `ARGMAX`, `COUNT_EQUAL`                                        |
+| Loss      | `CROSS_ENTROPY_LOSS`                                           |
 | Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                   |
 
 ### Broadcasting
