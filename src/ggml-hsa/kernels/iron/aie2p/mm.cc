@@ -594,6 +594,12 @@ extern "C" {
 #endif
 #endif
 
+#ifdef f32_f32_ONLY
+// f32 input has no vectorized MAC support on AIE2p, use scalar only
+#define combos(X) X(float, f32, float, f32, 1, 1, 1)
+#define SCALAR_ONLY
+#endif
+
 #ifndef combos
 #ifdef AIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 #define combos(X)                                                                                  \

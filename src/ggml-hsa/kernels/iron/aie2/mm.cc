@@ -1044,6 +1044,12 @@ extern "C" {
 #define combos(X) X(bfloat16, bf16, float, f32, 4, 8, 4)
 #endif
 
+#ifdef f32_f32_ONLY
+// f32 input has no vectorized MAC support on AIE2, use scalar only
+#define combos(X) X(float, f32, float, f32, 1, 1, 1)
+#define SCALAR_ONLY
+#endif
+
 #ifndef combos
 #define combos(X)                                                                                  \
     X(int8, i8, int8, i8, 4, 8, 8)                                                                 \
