@@ -1,11 +1,8 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include "ggml-aie.hpp"
-#include <aie_api/aie.hpp>
 
 extern "C" {
-
-#ifdef GGML_OP_ARGMAX
 
 /**
  * Argmax operation: finds the index of the maximum value in a row.
@@ -35,7 +32,5 @@ void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict
 
     event1();
 }
-
-#endif // GGML_OP_ARGMAX
 
 } // extern "C"

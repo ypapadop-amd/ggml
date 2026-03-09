@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include <aie_api/aie.hpp>
-
 #include "ggml-aie.hpp"
 
 extern "C" {
