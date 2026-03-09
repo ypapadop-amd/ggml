@@ -10,6 +10,8 @@ set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
     ${CMAKE_CURRENT_SOURCE_DIR}/clamp.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/clamp.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/count_equal.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/count_equal.py
     ${CMAKE_CURRENT_SOURCE_DIR}/gemm.py
     ${CMAKE_CURRENT_SOURCE_DIR}/ggml-aie.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/scale.cc

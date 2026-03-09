@@ -1,6 +1,4 @@
-// Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
-
-#include <aie_api/aie.hpp>
+// Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include "ggml-aie.hpp"
 
