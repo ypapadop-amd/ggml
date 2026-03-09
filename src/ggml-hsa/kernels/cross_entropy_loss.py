@@ -41,4 +41,3 @@ def ggml_op_cross_entropy_loss(
         op_params=op_params,
         function=cross_entropy_loss,
     )
-
