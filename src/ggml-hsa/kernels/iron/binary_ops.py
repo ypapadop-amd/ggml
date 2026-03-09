@@ -420,7 +420,7 @@ def binary_op(
         # Validate broadcasting is supported per GGML semantics
         # ggml_can_repeat(src1, dst) checks if src1 can be repeated to fill dst
         if not _ggml_can_repeat(src1_shape, dst_shape):
-            raise NotImplementedError(f"Cannot broadcast: {src1_shape} -> {dst_shape}")
+            raise ValueError(f"Cannot broadcast: {src1_shape} -> {dst_shape}")
 
         function_spec = _create_broadcast_external_function(
             arch=arch,
