@@ -296,4 +296,3 @@ def create_external_function(
     )
 
     return func
-
