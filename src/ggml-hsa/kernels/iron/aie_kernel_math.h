@@ -3,11 +3,93 @@
     SPDX-License-Identifier: MIT
 */
 
+#pragma once
+
+#include <algorithm>
+#include <cstring>
+
 #include "ggml-aie.hpp"
 #include <aie_api/aie.hpp>
 
-#ifndef _AIE_KERNEL_MATH_
-#define _AIE_KERNEL_MATH_
+/**
+ * @brief Computes the exponential function using range reduction.
+ *
+ * Implements exp(x) = 2^(x * log2(e)) = 2^n * 2^f where n is the integer part
+ * and f is the fractional part. The 2^f term is computed via a Taylor series
+ * after converting back to natural base.
+ *
+ * @param[in] x Input value (clamped to [-88, 88] to avoid overflow).
+ * @return exp(x), with a floor of 1e-38f for very small results.
+ */
+inline float scalar_exp(float x) {
+    // Clamp to avoid overflow/underflow
+    x = std::clamp(x, -88.0f, 88.0f);
+
+    // Range reduction: exp(x) = 2^(x * log2(e)) = 2^n * 2^f
+    constexpr float log2e = 1.4426950408889634f;
+    float t = x * log2e;
+    int32_t n = static_cast<int32_t>(t);
+    if (t < static_cast<float>(n))
+        n--;
+    float f = t - static_cast<float>(n);
+
+    // Convert fractional part back to natural base: 2^f = exp(f * ln2)
+    constexpr float ln2 = 0.6931471805599453f;
+    float r = f * ln2;
+
+    // Taylor series for exp(r) where r is in [0, ln2)
+    float poly =
+        1.0f +
+        r * (1.0f + r * (0.5f + r * (0.166666667f +
+                                     r * (0.041666667f + r * (0.008333333f + r * 0.001388889f)))));
+
+    // Compute 2^n via bit manipulation
+    n = (n < -126) ? -126 : ((n > 127) ? 127 : n);
+    int32_t bits = (127 + n) << 23;
+    float scale;
+    std::memcpy(&scale, &bits, sizeof(float));
+
+    float result = poly * scale;
+    return (result < 1e-38f) ? 1e-38f : result;
+}
+
+/**
+ * @brief Computes the natural logarithm using IEEE 754 range reduction.
+ *
+ * Implements ln(x) = ln(m * 2^e) = ln(m) + e * ln(2), where m is the mantissa
+ * normalized to [1, 2). The ln(m) is computed using a 2*atanh series:
+ * ln(m) = 2 * atanh((m-1)/(m+1)) with a polynomial approximation.
+ *
+ * @param[in] x The input value (must be positive).
+ *
+ * @return The natural logarithm of x. Returns -88.0f for x <= 0.
+ */
+inline float scalar_log(float x) {
+    if (x <= 0.0f)
+        return -88.0f;
+
+    int32_t bits = reinterpret_cast<int32_t &>(x);
+    int32_t e_int = ((bits >> 23) & 0xFF) - 127;
+    float e = static_cast<float>(e_int);
+
+    int32_t m_bits = (bits & 0x007FFFFF) | 0x3F800000;
+    float m = reinterpret_cast<float &>(m_bits);
+
+    float z = (m - 1.0f) / (m + 1.0f);
+    float z2 = z * z;
+
+    float poly = 0.0909090909f;       // 1/11
+    poly = poly * z2 + 0.1111111111f; // 1/9
+    poly = poly * z2 + 0.1428571429f; // 1/7
+    poly = poly * z2 + 0.2000000000f; // 1/5
+    poly = poly * z2 + 0.3333333333f; // 1/3
+    poly = poly * z2 + 1.0f;
+
+    float ln_m = 2.0f * (z * poly);
+
+    constexpr float ln2 = 0.6931471805599453f;
+    return ln_m + (e * ln2);
+}
 
 /**
  * @brief Computes the vectorized exponential function exp(x) for AIE.
@@ -114,5 +196,3 @@ inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
 
     return result;
 }
-
-#endif

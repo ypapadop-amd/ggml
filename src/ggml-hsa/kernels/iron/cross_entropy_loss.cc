@@ -1,53 +1,13 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "aie_kernel_math.h"
 #include "ggml-aie.hpp"
-#include <aie_api/aie.hpp>
+#include "aie_kernel_math.h"
 
 #ifndef KERN_VEC_SIZE
 #define KERN_VEC_SIZE 16
 #endif
 
-/**
- * @brief Computes the natural logarithm using IEEE 754 range reduction.
- *
- * Implements ln(x) = ln(m * 2^e) = ln(m) + e * ln(2), where m is the mantissa
- * normalized to [1, 2). The ln(m) is computed using a 2*atanh series:
- * ln(m) = 2 * atanh((m-1)/(m+1)) with a polynomial approximation.
- *
- * @param[in] x The input value (must be positive).
- *
- * @return The natural logarithm of x. Returns -88.0f for x <= 0.
- */
-inline float scalar_log(float x) {
-    if (x <= 0.0f)
-        return -88.0f;
-
-    int32_t bits = reinterpret_cast<int32_t &>(x);
-    int32_t e_int = ((bits >> 23) & 0xFF) - 127;
-    float e = static_cast<float>(e_int);
-
-    int32_t m_bits = (bits & 0x007FFFFF) | 0x3F800000;
-    float m = reinterpret_cast<float &>(m_bits);
-
-    float z = (m - 1.0f) / (m + 1.0f);
-    float z2 = z * z;
-
-    float poly = 0.0909090909f;       // 1/11
-    poly = poly * z2 + 0.1111111111f; // 1/9
-    poly = poly * z2 + 0.1428571429f; // 1/7
-    poly = poly * z2 + 0.2000000000f; // 1/5
-    poly = poly * z2 + 0.3333333333f; // 1/3
-    poly = poly * z2 + 1.0f;
-
-    float ln_m = 2.0f * (z * poly);
-
-    constexpr float ln2 = 0.6931471805599453f;
-    return ln_m + (e * ln2);
-}
-
 extern "C" {
-#ifdef COMPILE_GGML_OP_CROSS_ENTROPY_LOSS
 
 /**
  * @brief Computes cross-entropy loss using numerically stable log-softmax.
@@ -63,7 +23,7 @@ extern "C" {
  * @param[in]  logits   Input logits array of N elements (unnormalized scores).
  * @param[in]  labels   Target labels array of N elements (typically one-hot or probabilities).
  * @param[out] loss_out Single-element output array receiving the total loss.
- * @param[in]  N        Number of elements (must be divisible by KERN_VEC_SIZE).
+ * @param[in]  N        Number of elements.
  */
 void ggml_op_cross_entropy_loss(const float * __restrict logits,
                                 const float * __restrict labels,
@@ -71,30 +31,37 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
                                 int32_t N) {
     event0();
 
-    constexpr int VEC_SIZE = KERN_VEC_SIZE;
-    const int num_iters = N / VEC_SIZE;
+    constexpr int32_t VEC_SIZE = KERN_VEC_SIZE;
+    const int32_t num_full_iters = N / VEC_SIZE;
+    const int32_t tail_start = num_full_iters * VEC_SIZE;
 
     // ---------------------------------------------------------
     // Find max logit for numerical stability
     // ---------------------------------------------------------
-    auto it_max_in = aie::cbegin_vector<VEC_SIZE>((float *)logits);
+    auto it_max_in = aie::cbegin_vector<VEC_SIZE>(logits);
     aie::vector<float, VEC_SIZE> v_max = aie::broadcast<float, VEC_SIZE>(-3.4028235e+38f);
 
-    for (int i = 0; i < num_iters; i++) {
+    for (int32_t i = 0; i < num_full_iters; i++) {
         aie::vector<float, VEC_SIZE> logit_vec = *it_max_in++;
         v_max = aie::max(v_max, logit_vec);
     }
 
     float global_max = aie::reduce_max(v_max);
+
+    // Scalar tail loop for remaining elements
+    for (int32_t i = tail_start; i < N; i++) {
+        if (logits[i] > global_max) global_max = logits[i];
+    }
+
     aie::vector<float, VEC_SIZE> v_global_max = aie::broadcast<float, VEC_SIZE>(global_max);
 
     // ---------------------------------------------------------
     // Compute sum_exp = sum(exp(logits - max))
     // ---------------------------------------------------------
-    auto it_logits = aie::cbegin_vector<VEC_SIZE>((float *)logits);
+    auto it_logits = aie::cbegin_vector<VEC_SIZE>(logits);
     aie::accum<accfloat, VEC_SIZE> v_sum_exp_accum = aie::zeros<accfloat, VEC_SIZE>();
 
-    for (int i = 0; i < num_iters; i++) {
+    for (int32_t i = 0; i < num_full_iters; i++) {
         aie::vector<float, VEC_SIZE> logit_vec = *it_logits++;
         aie::vector<float, VEC_SIZE> x = aie::sub(logit_vec, v_global_max);
         aie::vector<float, VEC_SIZE> exp_val = vec_exp<VEC_SIZE>(x);
@@ -103,6 +70,11 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
 
     aie::vector<float, VEC_SIZE> v_sum_exp = v_sum_exp_accum.to_vector<float>();
     float sum_exp = aie::reduce_add(v_sum_exp);
+
+    // Scalar tail loop for remaining elements
+    for (int32_t i = tail_start; i < N; i++) {
+        sum_exp += scalar_exp(logits[i] - global_max);
+    }
 
     // ---------------------------------------------------------
     // Compute log(sum_exp) using range-reduced scalar log
@@ -115,13 +87,13 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
     // log_softmax(x_i) = (x_i - max) - log(sum_exp)
     // loss = -sum( labels * log_softmax )
     // ---------------------------------------------------------
-    it_logits = aie::cbegin_vector<VEC_SIZE>((float *)logits);
-    auto it_labels = aie::cbegin_vector<VEC_SIZE>((float *)labels);
+    it_logits = aie::cbegin_vector<VEC_SIZE>(logits);
+    auto it_labels = aie::cbegin_vector<VEC_SIZE>(labels);
 
     aie::accum<accfloat, VEC_SIZE> v_loss_accum = aie::zeros<accfloat, VEC_SIZE>();
     aie::vector<float, VEC_SIZE> v_log_sum_exp = aie::broadcast<float, VEC_SIZE>(log_sum_exp);
 
-    for (int i = 0; i < num_iters; i++) {
+    for (int32_t i = 0; i < num_full_iters; i++) {
         aie::vector<float, VEC_SIZE> logit_vec = *it_logits++;
         aie::vector<float, VEC_SIZE> label_vec = *it_labels++;
 
@@ -138,12 +110,16 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
     aie::vector<float, VEC_SIZE> v_loss = v_loss_accum.to_vector<float>();
     float total_loss = aie::reduce_add(v_loss);
 
+    // Scalar tail loop for remaining elements
+    for (int32_t i = tail_start; i < N; i++) {
+        float log_softmax_i = (logits[i] - global_max) - log_sum_exp;
+        total_loss += labels[i] * log_softmax_i;
+    }
+
     // Store negated loss (cross entropy is -sum)
     loss_out[0] = -total_loss;
 
     event1();
 }
-
-#endif // COMPILE_GGML_OP_CROSS_ENTROPY_LOSS
 
 } // extern "C"

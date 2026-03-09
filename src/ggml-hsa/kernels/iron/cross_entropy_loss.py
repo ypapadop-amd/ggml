@@ -18,7 +18,6 @@ from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
 
 from .utils import (
-    align_to_arch,
     arch_to_device,
     suppress_import_pyxrt_msg,
 )
@@ -34,7 +33,6 @@ from aie.iron import (
     Program,
     Runtime,
     Worker,
-    dtype_to_str,
 )
 
 
@@ -113,23 +111,9 @@ def cross_entropy_loss(
 
     row_length, num_rows = get_cross_entropy_loss_dimensions(logits_tensor)
 
-    # Currently we do not support unaligned row sizes as we use vector
-    # instructions with a fixed length.
-    if row_length % KERN_VEC_SIZE != 0:
-        raise ValueError(
-            f"Row length ({row_length}) must be a multiple of {KERN_VEC_SIZE}."
-        )
-
-    # Align tile size to architecture requirements
-    tile_size = align_to_arch(arch, row_length, logits_tensor.dtype, KERN_VEC_SIZE)
-
-    # For cross entropy loss, we process one row at a time
-    # Each tile contains one row of data
-    if tile_size != row_length:
-        raise ValueError(
-            f"Tile size ({tile_size}) must equal row length ({row_length}) "
-            "for cross entropy loss."
-        )
+    # Tile size equals row length; the kernel handles non-aligned sizes
+    # via scalar tail loops after vectorized processing.
+    tile_size = row_length
 
     # Create external function
     function = create_external_function(
@@ -311,7 +295,6 @@ def create_external_function(
 
     compile_flags = [
         f"-DKERN_VEC_SIZE={KERN_VEC_SIZE}",
-        "-DCOMPILE_GGML_OP_CROSS_ENTROPY_LOSS",
     ]
 
     current_dir = path.dirname(path.realpath(__file__))
