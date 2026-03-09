@@ -17,18 +17,18 @@ void transform_binary_n(const T0 * __restrict in0,
 
 template <typename T0, typename T1, typename TOut, typename BinaryOp>
 void transform_binary_broadcast_n(const T0 * __restrict in0,
-                                   const T1 * __restrict in1,
-                                   TOut * __restrict out,
-                                   int32_t tile_size,
-                                   int32_t tile_idx,
-                                   int32_t src1_ne0,
-                                   int32_t src1_ne1,
-                                   int32_t src1_ne2,
-                                   int32_t src1_ne3,
-                                   int32_t dst_ne0,
-                                   int32_t dst_ne1,
-                                   int32_t dst_ne2,
-                                   BinaryOp op) {
+                                  const T1 * __restrict in1,
+                                  TOut * __restrict out,
+                                  int32_t tile_size,
+                                  int32_t tile_idx,
+                                  int32_t src1_ne0,
+                                  int32_t src1_ne1,
+                                  int32_t src1_ne2,
+                                  int32_t src1_ne3,
+                                  int32_t dst_ne0,
+                                  int32_t dst_ne1,
+                                  int32_t dst_ne2,
+                                  BinaryOp op) {
     event0();
 
     int32_t global_offset = tile_idx * tile_size;
@@ -126,13 +126,11 @@ void ggml_op_add_broadcast(const INPUT0_DTYPE * __restrict in0,
                            int32_t dst_ne0,
                            int32_t dst_ne1,
                            int32_t dst_ne2) {
-    transform_binary_broadcast_n(in0, in1, out, tile_size, tile_idx,
-                                  src1_ne0, src1_ne1, src1_ne2, src1_ne3,
-                                  dst_ne0, dst_ne1, dst_ne2,
-                                  [](auto a, auto b) -> OUTPUT_DTYPE {
-                                      return static_cast<OUTPUT_DTYPE>(
-                                          static_cast<float>(a) + static_cast<float>(b));
-                                  });
+    transform_binary_broadcast_n(
+        in0, in1, out, tile_size, tile_idx, src1_ne0, src1_ne1, src1_ne2, src1_ne3, dst_ne0,
+        dst_ne1, dst_ne2, [](auto a, auto b) -> OUTPUT_DTYPE {
+            return static_cast<OUTPUT_DTYPE>(static_cast<float>(a) + static_cast<float>(b));
+        });
 }
 
 #endif // GGML_OP_ADD_BROADCAST
@@ -151,13 +149,11 @@ void ggml_op_sub_broadcast(const INPUT0_DTYPE * __restrict in0,
                            int32_t dst_ne0,
                            int32_t dst_ne1,
                            int32_t dst_ne2) {
-    transform_binary_broadcast_n(in0, in1, out, tile_size, tile_idx,
-                                  src1_ne0, src1_ne1, src1_ne2, src1_ne3,
-                                  dst_ne0, dst_ne1, dst_ne2,
-                                  [](auto a, auto b) -> OUTPUT_DTYPE {
-                                      return static_cast<OUTPUT_DTYPE>(
-                                          static_cast<float>(a) - static_cast<float>(b));
-                                  });
+    transform_binary_broadcast_n(
+        in0, in1, out, tile_size, tile_idx, src1_ne0, src1_ne1, src1_ne2, src1_ne3, dst_ne0,
+        dst_ne1, dst_ne2, [](auto a, auto b) -> OUTPUT_DTYPE {
+            return static_cast<OUTPUT_DTYPE>(static_cast<float>(a) - static_cast<float>(b));
+        });
 }
 
 #endif // GGML_OP_SUB_BROADCAST
@@ -176,13 +172,11 @@ void ggml_op_mul_broadcast(const INPUT0_DTYPE * __restrict in0,
                            int32_t dst_ne0,
                            int32_t dst_ne1,
                            int32_t dst_ne2) {
-    transform_binary_broadcast_n(in0, in1, out, tile_size, tile_idx,
-                                  src1_ne0, src1_ne1, src1_ne2, src1_ne3,
-                                  dst_ne0, dst_ne1, dst_ne2,
-                                  [](auto a, auto b) -> OUTPUT_DTYPE {
-                                      return static_cast<OUTPUT_DTYPE>(
-                                          static_cast<float>(a) * static_cast<float>(b));
-                                  });
+    transform_binary_broadcast_n(
+        in0, in1, out, tile_size, tile_idx, src1_ne0, src1_ne1, src1_ne2, src1_ne3, dst_ne0,
+        dst_ne1, dst_ne2, [](auto a, auto b) -> OUTPUT_DTYPE {
+            return static_cast<OUTPUT_DTYPE>(static_cast<float>(a) * static_cast<float>(b));
+        });
 }
 
 #endif // GGML_OP_MUL_BROADCAST
@@ -201,13 +195,11 @@ void ggml_op_div_broadcast(const INPUT0_DTYPE * __restrict in0,
                            int32_t dst_ne0,
                            int32_t dst_ne1,
                            int32_t dst_ne2) {
-    transform_binary_broadcast_n(in0, in1, out, tile_size, tile_idx,
-                                  src1_ne0, src1_ne1, src1_ne2, src1_ne3,
-                                  dst_ne0, dst_ne1, dst_ne2,
-                                  [](auto a, auto b) -> OUTPUT_DTYPE {
-                                      return static_cast<OUTPUT_DTYPE>(
-                                          static_cast<float>(a) / static_cast<float>(b));
-                                  });
+    transform_binary_broadcast_n(
+        in0, in1, out, tile_size, tile_idx, src1_ne0, src1_ne1, src1_ne2, src1_ne3, dst_ne0,
+        dst_ne1, dst_ne2, [](auto a, auto b) -> OUTPUT_DTYPE {
+            return static_cast<OUTPUT_DTYPE>(static_cast<float>(a) / static_cast<float>(b));
+        });
 }
 
 #endif // GGML_OP_DIV_BROADCAST
