@@ -16,7 +16,6 @@ import numpy as np
 
 from aie.iron import str_to_dtype
 
-
 # Mapping for dtypes not natively supported by IRON but still valid GGML types.
 # These tensors can still be described, but kernels need to have special handling for them.
 _FALLBACK_DTYPE_MAP = {
@@ -54,7 +53,9 @@ class TensorDesc:
             except ValueError:
                 # dtype not supported by AIE - use numpy dtype for fallback
                 if self.dtype in _FALLBACK_DTYPE_MAP:
-                    object.__setattr__(self, "dtype", np.dtype(_FALLBACK_DTYPE_MAP[self.dtype]))
+                    object.__setattr__(
+                        self, "dtype", np.dtype(_FALLBACK_DTYPE_MAP[self.dtype])
+                    )
                 else:
                     raise
 
