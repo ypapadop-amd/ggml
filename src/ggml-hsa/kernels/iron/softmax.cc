@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "ggml-aie.hpp"
 #include "aie_kernel_math.h"
+#include "ggml-aie.hpp"
 #include <aie_api/aie.hpp>
 
 #ifndef KERN_VEC_SIZE
@@ -374,4 +374,3 @@ void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
 #endif // GGML_OP_SOFT_MAX_WITH_MASK_AND_SINKS
 
 } // extern "C"
-
