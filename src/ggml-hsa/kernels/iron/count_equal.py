@@ -117,14 +117,19 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
 
     total_elements = input_tensor0.numel()
 
-    # Reject empty tensors - the result would be deterministically 0, but
-    # handling this case requires special logic to avoid DMA issues with
-    # zero-length input buffers. Empty tensor comparisons are rare in practice.
+    # Handle empty tensors with a host-side fast path.
+    # GGML's reference implementation defines COUNT_EQUAL on empty tensors as 0.
+    # To avoid zero-length DMA transfers, we simply write 0 to the scalar output
+    # and skip constructing an IRON program for this case.
     if total_elements == 0:
-        raise ValueError(
-            "COUNT_EQUAL does not support empty tensors. "
-            "Empty tensor comparison would return 0."
-        )
+        # output_tensor is a scalar I64 with GGML shape [1, 1, 1, 1]
+        try:
+            # Prefer a NumPy-style fill if available.
+            output_tensor.fill(np.int64(0))
+        except AttributeError:
+            # Fallback for tensor types that don't implement .fill().
+            output_tensor[...] = np.int64(0)
+        return
 
     # Use max_tile_size to find a tile size that evenly divides total_elements.
     # This avoids padding/alignment issues with DMA transfers.
