@@ -165,6 +165,47 @@ IRON kernels (`kernels/iron/*.py`) define:
 These are paired with C++ core functions (`kernels/iron/*.cc`) that implement
 the actual vectorized computations using the AIE API.
 
+### Broadcasting Support
+
+Binary operations (`ADD`, `SUB`, `MUL`, `DIV`) support multi-dimensional broadcasting
+following GGML semantics where `src1` can be repeated to fill `dst`:
+
+- **Validation**: `dst->ne[i] % src1->ne[i] == 0` for all dimensions (per `ggml_can_repeat`)
+- **Implementation**: The broadcast kernel receives full `src1` buffer and shape tuples,
+  then computes per-element `src1` indices via 4D coordinate decomposition and modulo
+
+Key data structures in `binary_ops.py`:
+
+```python
+@dataclass(frozen=True)
+class BroadcastFunctionSpec:
+    external_function: ExternalFunction
+    num_elements_out: int
+    num_elements_src1: int
+    src1_ne: tuple  # (ne0, ne1, ne2, ne3) - src1 shape
+    dst_ne: tuple   # (ne0, ne1, ne2, ne3) - dst shape
+```
+
+The C++ kernel computes broadcast indices using 32-bit arithmetic only (AIE cores lack
+64-bit division runtime):
+
+```cpp
+// Decompose global index g into 4D dst coordinates
+int32_t i0 = g % dst_ne0;
+int32_t i1 = (g / d1) % dst_ne1;
+int32_t i2 = (g / d2) % dst_ne2;
+int32_t i3 = g / (d2 * dst_ne2);
+
+// Apply broadcast modulo to get src1 coordinates
+int32_t j0 = i0 % src1_ne0;
+int32_t j1 = i1 % src1_ne1;
+int32_t j2 = i2 % src1_ne2;
+int32_t j3 = i3 % src1_ne3;
+
+// Compute linear src1 index
+int32_t idx_src1 = j0 + j1 * s1 + j2 * s2 + j3 * s3;
+```
+
 ## Kernel Development Pattern
 
 Each kernel consists of three files across two layers:

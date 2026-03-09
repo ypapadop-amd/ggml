@@ -16,7 +16,7 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 
 | Category  | Operations                                                     |
 |-----------|----------------------------------------------------------------|
-| Binary    | `ADD`, `SUB`, `MUL`, `DIV`                                     |
+| Binary    | `ADD`, `SUB`, `MUL`, `DIV` (with multi-dimensional broadcast)  |
 | Unary     | `SQR`, `SQRT`, `LOG`, `SIN`, `COS`, `EXP`                      |
 | Unary     | `ABS`, `SGN`, `NEG`, `STEP`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` |
 | Unary     | `RELU`, `TANH`, `ELU`, `SIGMOID`, `SILU`                       |
@@ -25,6 +25,13 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 | Matrix    | `MUL_MAT`                                                      |
 | Reduction | `ARGMAX`, `COUNT_EQUAL`                                        |
 | Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                   |
+
+### Broadcasting
+
+Binary operations support GGML-style broadcasting where `src1` can be repeated to match `dst`:
+- `dst->ne[i] % src1->ne[i] == 0` must hold for all dimensions
+- Examples: `(10,5,4,3) + (10,5,4,3)` (element-wise), `(20,5,4,3) + (10,5,4,3)` (broadcast in dim0)
+- Multi-dimensional broadcasting: `(20,10,8,6) + (10,5,4,3)` (broadcast in all dims)
 
 ## Supported Data Types
 
