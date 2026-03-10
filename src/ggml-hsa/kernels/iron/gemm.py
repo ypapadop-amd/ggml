@@ -43,6 +43,11 @@ microkernel_mac_dim_map = {
     },
 }
 
+# Data types that require scalar matmul (no vectorized MAC support)
+# Note: f32 matmul is not supported on AIE due to lack of f32 MAC instructions
+# and DMA size constraints.
+SCALAR_ONLY_DTYPES = {"f32"}
+
 
 def main():
     """
@@ -128,6 +133,7 @@ def my_matmul(
     k,
     n,
     n_aie_cols,
+    n_aie_rows,
     dtype_in_str,
     dtype_out_str,
     b_col_maj,
@@ -155,7 +161,8 @@ def my_matmul(
         k (int): Tile size in K dimension (shared across all cores).
         n (int): Tile size in N dimension per core.
         n_aie_cols (int): Number of AIE columns to use (1, 2, 4, or 8).
-        dtype_in_str (str): Input data type ("bf16", "i8", or "i16").
+        n_aie_rows (int): Number of AIE rows to use (1 or 4).
+        dtype_in_str (str): Input data type ("bf16", "i8", "i16", or "f32").
         dtype_out_str (str): Output data type ("bf16", "i8", "i16", "f32", or "i32").
         b_col_maj (bool): If True, matrix B is in column-major layout.
         c_col_maj (bool): If True, matrix C is in column-major layout.
@@ -171,7 +178,6 @@ def my_matmul(
         If generate_taps is True, returns a tuple of TensorAccessSequence objects
         for A, B, and C matrices. Otherwise returns None.
     """
-    n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
 
     dtype_in = str_to_dtype(dtype_in_str)
@@ -187,11 +193,16 @@ def my_matmul(
         )
 
     # r, s, t are the dimensions required by the microkernel MAC instructions.
-    mac_dims = microkernel_mac_dim_map[dev][dtype_in_str]
-    if dev == "npu2" and dtype_in_str == "bf16":
-        r, s, t = mac_dims[emulate_bf16_mmul_with_bfp16]
+    # Skip MAC dimension lookup for scalar mode (e.g., f32 has no vectorized MAC)
+    if not use_scalar:
+        mac_dims = microkernel_mac_dim_map[dev][dtype_in_str]
+        if dev == "npu2" and dtype_in_str == "bf16":
+            r, s, t = mac_dims[emulate_bf16_mmul_with_bfp16]
+        else:
+            r, s, t = mac_dims
     else:
-        r, s, t = mac_dims
+        # Scalar mode doesn't use MAC dimensions
+        r, s, t = 1, 1, 1
 
     # npu is a 4 row x 4 col array
     if dev == "npu" and n_aie_cols > 4:
@@ -207,25 +218,33 @@ def my_matmul(
     # blocks are _broadcast_ across AIE core columns, then _distributed_ across
     # rows, s.t. each of the n_rows compute cores in a column receives a
     # contiguous (m, k)-sized block of A.
-    assert (
-        M % (m * n_aie_rows) == 0
-    ), """A must be tileable into (m * n_aie_rows, k)-sized blocks"""
+    if M % (m * n_aie_rows) != 0:
+        raise ValueError(
+            f"A must be tileable into (m * n_aie_rows, k)-sized blocks: "
+            f"M={M} is not divisible by m*n_aie_rows={m}*{n_aie_rows}={m * n_aie_rows}"
+        )
 
     # Both A and B are tiled in the K dimension into size k.
-    assert K % k == 0
+    if K % k != 0:
+        raise ValueError(f"K={K} must be divisible by tile size k={k}")
 
     # Input matrix B:
     # Conceptually, we do the same as with A, but instead of broadcasting
     # across columns we broadcast across rows and distribute across columns.
-    assert (
-        N % (n * n_aie_cols) == 0
-    ), """B must be tileable into (k, n * n_aie_cols)-sized blocks"""
+    if N % (n * n_aie_cols) != 0:
+        raise ValueError(
+            f"B must be tileable into (k, n * n_aie_cols)-sized blocks: "
+            f"N={N} is not divisible by n*n_aie_cols={n}*{n_aie_cols}={n * n_aie_cols}"
+        )
 
     # r, s, t are the dimensions required by the microkernel MAC instructions.
     if not use_scalar:
-        assert m % r == 0
-        assert k % s == 0
-        assert n % t == 0
+        if m % r != 0:
+            raise ValueError(f"Tile size m={m} must be divisible by MAC dim r={r}")
+        if k % s != 0:
+            raise ValueError(f"Tile size k={k} must be divisible by MAC dim s={s}")
+        if n % t != 0:
+            raise ValueError(f"Tile size n={n} must be divisible by MAC dim t={t}")
 
     # If you get errors during CDO generation due to running out of program
     # memory, it may be because too much code is generated due to ObjectFIFO
@@ -677,10 +696,63 @@ if __name__ == "__main__":
     main()
 
 
+# Maximum number of DMA transfer iterations per dimension (hardware limit)
+MAX_DMA_ITERATIONS = 64
+
+
+def _find_tile_size(dim: int, max_tile: int, n_cores: int = 1) -> int:
+    """
+    Find tile size that divides dim evenly, respecting multi-core distribution
+    and DMA transfer size constraints.
+
+    We need:
+    1. dim % (tile * n_cores) == 0  (for even distribution)
+    2. dim / tile / n_cores <= MAX_DMA_ITERATIONS (for DMA hardware limit)
+    3. tile <= max_tile (for memory constraints)
+
+    Args:
+        dim: The dimension to tile.
+        max_tile: Maximum allowed tile size (based on memory constraints).
+        n_cores: Number of cores that will share the dimension.
+
+    Returns:
+        Tile size such that constraints are satisfied, or raises ValueError if impossible.
+    """
+    # Calculate minimum tile size to satisfy DMA iteration limit
+    # We need: dim / (tile * n_cores) <= MAX_DMA_ITERATIONS
+    # Therefore: tile >= dim / (MAX_DMA_ITERATIONS * n_cores)
+    min_tile_for_dma = (dim + MAX_DMA_ITERATIONS * n_cores - 1) // (
+        MAX_DMA_ITERATIONS * n_cores
+    )
+
+    # If min_tile_for_dma > max_tile, there's no valid tile size
+    if min_tile_for_dma > max_tile:
+        # No tile satisfies both memory and DMA constraints
+        # Return max_tile and let the caller handle the error
+        return max_tile
+
+    # Find the largest tile <= max_tile and >= min_tile_for_dma such that (tile * n_cores) divides dim
+    for tile in range(max_tile, min_tile_for_dma - 1, -1):
+        if dim % (tile * n_cores) == 0:
+            return tile
+
+    # If no tile in the preferred range works, try smaller tiles down to 1
+    # (this may violate DMA constraints but let caller check)
+    for tile in range(min_tile_for_dma - 1, 0, -1):
+        if dim % (tile * n_cores) == 0:
+            return tile
+
+    # Fallback
+    return 1
+
+
 def create_mat_mul_external_functions(
     arch: str,
     input_tensors: list,
     output_tensor,
+    M: int,
+    K: int,
+    N: int,
 ):
     """
     Returns the parameters and names of the external functions for matrix multiplication.
@@ -689,6 +761,9 @@ def create_mat_mul_external_functions(
         arch (str): Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
+        M: Number of rows in output matrix.
+        K: Shared dimension (columns of A, rows of B).
+        N: Number of columns in output matrix.
 
     Returns:
         A tuple containing:
@@ -699,22 +774,76 @@ def create_mat_mul_external_functions(
             - mm_fn: The name of the matrix multiplication function.
             - zero_fn: The name of the zeroing function.
     """
-    use_scalar = False
+    dtype_in_str = dtype_to_str(input_tensors[0].dtype)
+    use_scalar = dtype_in_str in SCALAR_ONLY_DTYPES
     scalar_suffix = "_scalar" if use_scalar else ""
 
-    num_cols = None
     if arch == "aie2":
         num_cols = 4
-        m = 8
-        n = 8
-        k = 8
+        n_aie_rows = 4
+        default_m, default_n, default_k = 8, 8, 8
     elif arch == "aie2p":
         num_cols = 8
-        m = 16
-        n = 16
-        k = 16
+        n_aie_rows = 4
+        default_m, default_n, default_k = 16, 16, 16
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
+
+    if use_scalar:
+        # f32 scalar matmul on AIE has severe constraints due to lack of vectorized
+        # MAC and limited tile memory. Only small matrices can be supported.
+        # For larger matrices, CPU fallback is recommended.
+        dtype_size = np.dtype(input_tensors[0].dtype).itemsize
+
+        # AIE2 memtile has ~512KB, AIE2 core tile has ~64KB
+        # We need buffers for A, B, C tiles plus double-buffering
+        # Conservative limit: keep total tile buffer usage under 32KB
+        MAX_TILE_BUFFER_BYTES = 32 * 1024
+
+        # For scalar mode, use single core (1 row × 1 column) to:
+        # 1. Avoid M divisibility constraints (M just needs to divide by m)
+        # 2. Reduce DMA transfer sizes to stay within hardware limits
+        num_cols = 1
+        n_aie_rows = 1
+
+        # Calculate maximum tile sizes that fit in memory
+        # A tile: m × k, B tile: k × n, C tile: m × n
+        # With double buffering: 2 × (m×k + k×n + m×n) × dtype_size <= MAX_TILE_BUFFER_BYTES
+        # Simplified: assume m = n = k = tile_size
+        # 2 × 3 × tile_size² × dtype_size <= MAX_TILE_BUFFER_BYTES
+        # tile_size <= sqrt(MAX_TILE_BUFFER_BYTES / (6 × dtype_size))
+        import math
+
+        max_tile_by_memory = int(math.sqrt(MAX_TILE_BUFFER_BYTES / (6 * dtype_size)))
+
+        # Find tile sizes that satisfy all constraints
+        # For scalar mode, use max_tile_by_memory directly (not default_m/n/k which are for vectorized mode)
+        m = _find_tile_size(M, max_tile_by_memory, n_aie_rows)
+        n = _find_tile_size(N, max_tile_by_memory, num_cols)
+        k = _find_tile_size(K, max_tile_by_memory, 1)
+
+        # Calculate actual buffer sizes
+        a_tile_bytes = m * k * dtype_size
+        b_tile_bytes = k * n * dtype_size
+        c_tile_bytes = m * n * dtype_size
+        total_tile_bytes = 2 * (a_tile_bytes + b_tile_bytes + c_tile_bytes)
+
+        if total_tile_bytes > MAX_TILE_BUFFER_BYTES:
+            raise ValueError(
+                f"Matrix multiplication {M}×{K}×{N} with dtype {dtype_in_str} requires "
+                f"{total_tile_bytes} bytes of tile buffer, exceeding AIE limit of "
+                f"{MAX_TILE_BUFFER_BYTES} bytes. Use CPU backend for this operation."
+            )
+
+        # Verify the constraints can be satisfied
+        if M % (m * n_aie_rows) != 0:
+            raise ValueError(
+                f"Matrix dimension M={M} not compatible with AIE tiling "
+                f"(requires M divisible by {n_aie_rows}*m for some m). "
+                "Use CPU backend for this operation."
+            )
+    else:
+        m, n, k = default_m, default_n, default_k
 
     current_dir = Path(__file__).resolve().parent
     source_file = str(current_dir / arch / "mm.cc")
@@ -754,6 +883,7 @@ def create_mat_mul_external_functions(
         k,
         use_scalar,
         num_cols,
+        n_aie_rows,
         zero_fn,
         matmul_fn,
     )
@@ -778,6 +908,24 @@ def gemm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     A = input_tensors[0]  # MxK = A.shape(1) x A.shape(0)
     B = input_tensors[1]  # KxN = B.shape(0) x B.shape(1)
     C = output_tensor  # MxN = C.shape(0) x C.shape(1)
+
+    # Check for batched operations (ne[2] > 1 or ne[3] > 1)
+    # The current kernel only supports 2D matrix multiplication, not batched.
+    if A.shape[2] > 1 or A.shape[3] > 1:
+        raise ValueError(
+            f"Batched matrix multiplication not supported: A has batch dims {A.shape[2]}x{A.shape[3]}. "
+            "Use CPU backend for batched operations."
+        )
+    if B.shape[2] > 1 or B.shape[3] > 1:
+        raise ValueError(
+            f"Batched matrix multiplication not supported: B has batch dims {B.shape[2]}x{B.shape[3]}. "
+            "Use CPU backend for batched operations."
+        )
+    if C.shape[2] > 1 or C.shape[3] > 1:
+        raise ValueError(
+            f"Batched matrix multiplication not supported: C has batch dims {C.shape[2]}x{C.shape[3]}. "
+            "Use CPU backend for batched operations."
+        )
 
     if not A.contiguous or not B.contiguous or not C.contiguous:
         raise ValueError("Tensors must be contiguous")
@@ -804,10 +952,16 @@ def gemm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         k,
         use_scalar,
         num_cols,
+        num_rows,
         zero_fn,
         matmul_fn,
     ) = create_mat_mul_external_functions(
-        arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        M=A.shape[1],
+        K=A.shape[0],
+        N=B.shape[1],
     )
 
     with mlir_mod_ctx() as ctx:
@@ -820,6 +974,7 @@ def gemm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
             n=n,
             k=k,
             n_aie_cols=num_cols,
+            n_aie_rows=num_rows,
             dtype_in_str=dtype_to_str(A.dtype),
             dtype_out_str=dtype_to_str(C.dtype),
             b_col_maj=True,
