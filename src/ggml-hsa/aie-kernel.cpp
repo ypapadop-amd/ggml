@@ -1,6 +1,11 @@
 // Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include "ggml-hsa/aie-kernel.hpp"
+
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+
 #include "ggml-impl.h"
 
 /**
@@ -56,6 +61,8 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     ctx.pending_payloads.emplace_back(ptr);
 
     auto cmd_payload = static_cast<hsa_amd_aie_ert_start_kernel_data_t *>(ptr);
+
+    assert(pdi.data() != nullptr);
     cmd_payload->pdi_addr =
         const_cast<void *>(static_cast<const void *>(pdi.data())); // PDI to use with this command
 
@@ -66,6 +73,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     std::size_t dword_idx = 2;
 
     // instructions; 3 dwords
+    assert(insts.data() != nullptr);
     cmd_payload->data[dword_idx] = reinterpret_cast<std::uintptr_t>(insts.data()) & 0xFFFFFFFF;
     cmd_payload->data[dword_idx + 1] = reinterpret_cast<std::uintptr_t>(insts.data()) >> 32;
     cmd_payload->data[dword_idx + 2] = static_cast<std::uint32_t>(insts.size());
@@ -73,6 +81,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
 
     // sources; 2 dwords each
     for (std::size_t src_idx = 0; src_idx < num_src_tensors; ++src_idx, dword_idx += 2) {
+        assert(src_tensors[src_idx]->data != nullptr);
         cmd_payload->data[dword_idx] =
             reinterpret_cast<std::uintptr_t>(src_tensors[src_idx]->data) & 0xFFFFFFFF;
         cmd_payload->data[dword_idx + 1] =
@@ -80,6 +89,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     }
 
     // destination; 2 dwords
+    assert(dst_tensor.data != nullptr);
     cmd_payload->data[dword_idx] = reinterpret_cast<std::uintptr_t>(dst_tensor.data) & 0xFFFFFFFF;
     cmd_payload->data[dword_idx + 1] = reinterpret_cast<std::uintptr_t>(dst_tensor.data) >> 32;
     dword_idx += 2;
