@@ -15,6 +15,16 @@ The backend uses a multi-backend kernel compilation system with per-operation di
 
 The system supports both JIT and AOT compilation.
 
+### Host Operations vs AIE Kernels
+
+Some operations run on the host CPU rather than the AIE:
+
+- **Host operations** (`DUP`, `CPY`, `CONT`): Implemented in `host-ops.cpp`, execute on the CPU
+- **AIE kernels**: All other supported operations, compiled and dispatched to AIE tiles
+
+Host operations are handled separately in `ggml_backend_hsa_device_supports_op()` and bypass
+the kernel compilation pipeline.
+
 ## Codebase Structure
 
 ```
@@ -44,8 +54,8 @@ src/ggml-hsa/
 │   └── iron/                    # IRON kernel implementations
 │       ├── __init__.py          # Subpackage init
 │       ├── utils.py             # Shared utilities (alignment, device mapping)
-│       ├── binary_ops.py/cc     # Binary ops IRON design + AIE core function
-│       ├── unary_ops.py/cc      # Unary ops IRON design + AIE core function
+│       ├── binary_ops.py/cc     # Binary ops (ADD, SUB, MUL, DIV) - multiple ops per file
+│       ├── unary_ops.py/cc      # Unary ops (ABS, NEG, RELU, SILU, etc.) - multiple ops per file
 │       ├── scale.py/cc          # Scale IRON design + AIE core function
 │       ├── softmax.py/cc        # Softmax IRON design + AIE core function
 │       ├── clamp.py/cc          # Clamp IRON design + AIE core function
@@ -56,10 +66,15 @@ src/ggml-hsa/
 │       ├── ggml-aie.hpp         # Common AIE type definitions
 │       ├── aie_kernel_utils.h   # AIE kernel utility macros
 │       ├── aie_kernel_math.h    # AIE math utility functions (vec_exp)
-│       ├── aie2/                # aie2-specific core functions (mm.cc, zero.cc)
-│       └── aie2p/               # aie2p-specific core functions (mm.cc, zero.cc)
+│       ├── aie2/                # aie2-specific core functions (use only when shared won't work)
+│       └── aie2p/               # aie2p-specific core functions (use only when shared won't work)
 └── cmake/                       # CMake utilities
 ```
+
+**Note:** Related operations are grouped in the same file (e.g., all unary ops in `unary_ops.py/cc`,
+all binary ops in `binary_ops.py/cc`). Architecture-specific directories (`aie2/`, `aie2p/`) should
+only be used when a shared implementation cannot work across architectures; prefer shared
+implementations in the parent `iron/` directory.
 
 ### Two-Layer Dispatch Architecture
 
@@ -405,9 +420,78 @@ python3 -m pip install -r requirements.txt
 - Build with `GGML_HSA=ON` and optionally `GGML_HSA_JIT_COMPILE=ON`
 - Test files are in `tests` and `tests/ggml-hsa/`
 - Ensure kernels work for both `aie2` and `aie2p` architectures
-- A specific operation can be tested using `test-backend-ops -o OP`
 - **Success:** Look for `<N>/<N> tests passed`.
 - **Failure:** Look for `0/0 tests passed` or `Could not create kernel for tensor`.
+
+### Testing Commands
+
+```bash
+# Test a specific operation (clear cache when testing kernel changes)
+GGML_HSA_KERNEL_CACHE_CLEAR=1 ./bin/test-backend-ops -o ADD -b HSA
+
+# Test with verbose JIT output for debugging compilation issues
+GGML_HSA_KERNEL_CACHE_CLEAR=1 GGML_HSA_JIT_VERBOSE=1 ./bin/test-backend-ops -o SOFT_MAX -b HSA
+
+# Test with debug logging enabled
+GGML_HSA_KERNEL_CACHE_CLEAR=1 GGML_HSA_ENABLE_LOG=1 ./bin/test-backend-ops -o MUL_MAT -b HSA
+
+# Run all HSA backend tests
+./bin/test-backend-ops -b HSA
+```
+
+## Debugging
+
+### Common Error Messages
+
+| Error | Cause | Solution |
+| ----- | ----- | -------- |
+| `Could not create kernel for tensor` | Kernel compilation failed or op not supported | Enable `GGML_HSA_JIT_VERBOSE=1` to see compilation errors |
+| `0/0 tests passed` | Operation not supported for tensor configuration | Check tensor shapes, types, and contiguity requirements |
+| `exception caught` in logs | Runtime error during kernel execution | Enable `GGML_HSA_ENABLE_LOG=1` for detailed error context |
+| `unsupported device` | Architecture not recognized | Verify device reports as `aie2` or `aie2p` |
+
+### Debugging Workflow
+
+1. **Enable verbose logging**:
+
+   ```bash
+   GGML_HSA_ENABLE_LOG=1 GGML_HSA_JIT_VERBOSE=1 ./bin/test-backend-ops -o OP -b HSA
+   ```
+
+2. **Clear the kernel cache** when testing kernel changes:
+
+   ```bash
+   GGML_HSA_KERNEL_CACHE_CLEAR=1 ./bin/test-backend-ops -o OP -b HSA
+   ```
+
+3. **Check compilation output**: JIT artifacts are stored in the cache directory
+   (default: `~/.cache/ggml-hsa-kernels/` or `GGML_HSA_KERNEL_CACHE_DIR`)
+
+4. **Inspect generated MLIR**: With `GGML_HSA_JIT_VERBOSE=1`, the compilation log shows
+   the generated MLIR and any compilation errors
+
+### Kernel Naming Conventions
+
+Kernel names are generated deterministically based on tensor configuration:
+
+```text
+<op_name>_<arch>_<input_types>_<output_type>_<shapes>[_<op_params_hash>]
+```
+
+Components:
+
+- `op_name`: GGML operation (e.g., `ADD`, `SOFT_MAX`)
+- `arch`: Target architecture (`aie2` or `aie2p`)
+- `input_types`: Input tensor data types
+- `output_type`: Output tensor data type
+- `shapes`: Tensor dimensions
+- `op_params_hash`: (Optional) Hash of non-zero `op_params` bytes
+
+Example: `ADD_aie2_bf16_bf16_bf16_1024` for a 1024-element bf16 add on aie2.
+
+When `op_params` contains non-zero values (e.g., scale factors, epsilon), they are
+encoded into the kernel name to ensure different parameter combinations produce
+distinct cached kernels.
 
 ## Common Pitfalls
 
@@ -424,4 +508,5 @@ python3 -m pip install -r requirements.txt
 | `GGML_HSA_ENABLE_LOG` | Enable debug logging |
 | `GGML_HSA_KERNEL_DIR` | Precompiled kernel directory |
 | `GGML_HSA_KERNEL_CACHE_DIR` | JIT cache directory |
+| `GGML_HSA_KERNEL_CACHE_CLEAR` | Set to `1` to clear the kernel cache (required when testing kernel changes) |
 | `GGML_HSA_JIT_VERBOSE` | Verbose JIT output |
