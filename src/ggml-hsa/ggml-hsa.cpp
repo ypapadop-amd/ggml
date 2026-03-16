@@ -1531,7 +1531,7 @@ static const ggml_backend_device_i ggml_backend_hsa_device_interface = {
 struct ggml_backend_hsa_reg_context {
     static inline const char * name = GGML_HSA_NAME;
     std::vector<ggml_backend_dev_t> devices;
-    std::vector<ggml_backend_feature> features;
+    std::array<ggml_backend_feature, 1> features = {{nullptr, nullptr}};
 };
 
 static const char * ggml_backend_hsa_reg_get_name(ggml_backend_reg_t /* reg */) {
