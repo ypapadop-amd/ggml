@@ -500,6 +500,14 @@ static void ggml_hsa_purge_unused_cached_kernels(std::int32_t device_id) {
 }
 
 /**
+ * @brief Makes a shallow copy of @p src tensor in @p dst.
+ *
+ * @param src source tensor
+ * @param dst destination tensor
+ */
+static void ggml_hsa_shallow_copy(const ggml_tensor & src, ggml_tensor & dst) { dst = src; }
+
+/**
  * @brief Returns if @p tensor has a trivial layout.
  *
  * A tensor with a trivial layout is contiguously allocated and is not permuted.
@@ -545,9 +553,9 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     }
 
     // initialize internal nodes
-    node.tensor = parent_tensor;
+    ggml_hsa_shallow_copy(parent_tensor, node.tensor);
     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-        src_nodes[src_idx].tensor = *parent_tensor.src[src_idx];
+        ggml_hsa_shallow_copy(*parent_tensor.src[src_idx], src_nodes[src_idx].tensor);
         node.tensor.src[src_idx] = &src_nodes[src_idx].tensor;
     }
     assert(ggml_hsa_nsrcs(node.tensor) == nsrcs);
@@ -1191,6 +1199,25 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     ggml_status status = GGML_STATUS_SUCCESS;
 
     const std::int32_t node_count = ggml_graph_n_nodes(cgraph);
+
+    // shallow copies may not have been fully initialized when the graph was created, so we need to
+    // make sure all nodes have their source tensor pointers set before we can start dispatching
+    // kernels
+    for (std::int32_t i = 0; i < node_count; ++i) {
+        ggml_tensor * node = ggml_graph_node(cgraph, i);
+
+        if (ggml_op_is_empty(node->op) || ggml_is_empty(node)) {
+            continue;
+        }
+
+        auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+        for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
+            if (tensor_extra.src_nodes[src_idx].tensor.data == nullptr) {
+                tensor_extra.src_nodes[src_idx].tensor.data = node->src[src_idx]->data;
+            }
+        }
+    }
+
     for (std::int32_t i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
         ggml_tensor * node = ggml_graph_node(cgraph, i);
 
