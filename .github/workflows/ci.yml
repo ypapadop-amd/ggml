@@ -230,18 +230,19 @@ jobs:
           vulkaninfo --summary
           GG_BUILD_VULKAN=1 bash ./ci/run.sh ~/results/ggml /mnt/ggml
 
-  ggml-ci-x64-cpu-amx:
-    runs-on: [self-hosted, Linux, X64, CPU, AMX]
+  # TODO: provision AMX-compatible machine
+  #ggml-ci-x64-cpu-amx:
+  #  runs-on: [self-hosted, Linux, X64, CPU, AMX]
 
-    steps:
-      - name: Clone
-        id: checkout
-        uses: actions/checkout@v6
+  #  steps:
+  #    - name: Clone
+  #      id: checkout
+  #      uses: actions/checkout@v6
 
-      - name: Test
-        id: ggml-ci
-        run: |
-          bash ./ci/run.sh ~/results/ggml /mnt/ggml
+  #    - name: Test
+  #      id: ggml-ci
+  #      run: |
+  #        bash ./ci/run.sh ~/results/ggml /mnt/ggml
 
   ggml-ci-mac-metal:
     runs-on: [self-hosted, macOS, ARM64]
