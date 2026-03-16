@@ -2995,6 +2995,15 @@ struct test_bin_bcast : public test_case {
             bool perm1 = false)
         : op(op), type(type), ne(ne), nr(nr), nf(nf), perm1(perm1) {}
 
+    double max_nmse_err(ggml_backend_t backend) override {
+        // HSA backend converts F16 to BF16, which has lower precision (7-bit mantissa)
+        if ((type == GGML_TYPE_F16 || type == GGML_TYPE_BF16) &&
+            backend_has_feature(backend, "SUBSTITUTE_FP16_BF16")) {
+            return 1e-4;  // BF16 precision limit
+        }
+        return 1e-7;
+    }
+
     ggml_tensor * build_graph(ggml_context * ctx) override {
         GGML_ASSERT(nf <= 16);
 
@@ -8335,6 +8344,24 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {30000, 1, 1, 1}));
     test_cases.emplace_back(new test_cross_entropy_loss_back(GGML_TYPE_F32, {   10, 5, 4, 3}));
     test_cases.emplace_back(new test_cross_entropy_loss_back(GGML_TYPE_F32, {30000, 1, 1, 1}));
+
+    // MNIST layer tests (FP32)
+    // Layer 1: input [784] x weights [784, 500] -> [500, 500]
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 500, 500, 784, {1, 1}, {1, 1}));
+    // Layer 1: add bias [500, 500] + [500, 1] -> [500, 500] (broadcast)
+    test_cases.emplace_back(new test_bin_bcast(ggml_add, GGML_TYPE_F32, {500, 1, 1, 1}, {1, 500, 1, 1}));
+    // Layer 1: ReLU activation [500] -> [500]
+    test_cases.emplace_back(new test_unary(GGML_UNARY_OP_RELU, GGML_TYPE_F32, {500, 1, 1, 1}));
+    // Layer 2: hidden [500] x weights [500, 10] -> [10, 500]
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 10, 500, 500, {1, 1}, {1, 1}));
+    // Layer 2: add bias [10, 500] + [10, 1] -> [10, 500] (broadcast)
+    test_cases.emplace_back(new test_bin_bcast(ggml_add, GGML_TYPE_F32, {10, 1, 1, 1}, {1, 500, 1, 1}));
+    // Layer 2: argmax [10, 500] -> [500, 1]
+    test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {10, 500, 1, 1}));
+    // Cross entropy loss: [10, 500] x [10, 500] -> [1, 1]
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 500, 1, 1}));
+    // Cross entropy loss: [500, 1] x [500, 1] -> [1, 1]
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {500, 1, 1, 1}));
 
     test_cases.emplace_back(new test_opt_step_adamw(GGML_TYPE_F32, {10, 5, 4, 3}));
     test_cases.emplace_back(new test_opt_step_sgd(GGML_TYPE_F32, {10, 5, 4, 3}));
