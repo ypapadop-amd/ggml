@@ -3,11 +3,105 @@
     SPDX-License-Identifier: MIT
 */
 
-#include "ggml-aie.hpp"
-#include <aie_api/aie.hpp>
+#ifndef AIE_KERNEL_MATH
+#define AIE_KERNEL_MATH
 
-#ifndef _AIE_KERNEL_MATH_
-#define _AIE_KERNEL_MATH_
+#include <aie_api/aie.hpp>
+#include <cstdint>
+
+#include "ggml-aie.hpp"
+
+/**
+ * @brief Computes exp(x) using range reduction.
+ *
+ * Uses the identity exp(x) = 2^(x * log2(e)) = 2^n * 2^f
+ * where n = floor(x * log2(e)) and f is the fractional part.
+ *
+ * @param[in] x The input value.
+ * @return The computed value of exp(x).
+ */
+inline float scalar_exp(float x) {
+    // Clamp to avoid overflow/underflow
+    if (x < -88.0f)
+        x = -88.0f;
+    if (x > 88.0f)
+        x = 88.0f;
+
+    constexpr float log2e = 1.4426950408889634f;
+    float t = x * log2e;
+
+    // n = floor(t)
+    int n = static_cast<int>(t);
+    if (t < static_cast<float>(n))
+        n--;
+
+    float f = t - static_cast<float>(n);
+
+    // Compute 2^f using polynomial approximation for exp(f * ln2)
+    // where f is in [0, 1), so f*ln2 is in [0, 0.693)
+    constexpr float ln2 = 0.6931471805599453f;
+    float y = f * ln2;
+
+    // Taylor series for exp(y) with more terms for better precision
+    // exp(y) = 1 + y + y^2/2! + y^3/3! + y^4/4! + y^5/5! + y^6/6! + y^7/7!
+    float exp_f =
+        1.0f + y * (1.0f + y * (0.5f + y * (0.16666666666666666f +
+                                            y * (0.041666666666666664f +
+                                                 y * (0.008333333333333333f +
+                                                      y * (0.001388888888888889f +
+                                                           y * 0.0001984126984126984f))))));
+
+    // Compute 2^n using IEEE 754 bit manipulation
+    if (n < -126)
+        n = -126;
+    if (n > 127)
+        n = 127;
+    int32_t bits = (127 + n) << 23;
+    float scale = reinterpret_cast<float &>(bits);
+
+    return exp_f * scale;
+}
+
+/**
+ * @brief Computes floor(log2(x)) for positive integers.
+ */
+inline uint32_t floor_log2(uint32_t x) {
+    uint32_t result = 0;
+    while (x > 1) {
+        x >>= 1;
+        result++;
+    }
+    return result;
+}
+
+/**
+ * @brief Computes 2^x for ALiBi slope calculation.
+ */
+inline float pow2(float x) {
+    int i = static_cast<int>(x);
+    if (x < static_cast<float>(i))
+        i--;
+    float f = x - static_cast<float>(i);
+
+    // 2^f = exp(f * ln2) using polynomial
+    constexpr float ln2 = 0.6931471805599453f;
+    float y = f * ln2;
+    float exp_f =
+        1.0f + y * (1.0f + y * (0.5f + y * (0.16666666666666666f +
+                                            y * (0.041666666666666664f +
+                                                 y * (0.008333333333333333f +
+                                                      y * (0.001388888888888889f +
+                                                           y * 0.0001984126984126984f))))));
+
+    if (i < -126)
+        i = -126;
+    if (i > 127)
+        i = 127;
+    int32_t bits = (127 + i) << 23;
+    float scale = reinterpret_cast<float &>(bits);
+
+    return exp_f * scale;
+}
 
 /**
  * @brief Computes the vectorized exponential function exp(x) for AIE.
@@ -22,7 +116,7 @@
  *   approximately 6e-13 peak error.
  * - IEEE 754 bit manipulation to compute 2^n efficiently.
  *
- * @tparam VecSize The SIMD vector width. Defaults to KERN_VEC_SIZE.
+ * @tparam VecSize The SIMD vector width.
  *
  * @param[in,out] x Input vector of float values. The input is clamped to
  *                  [-88, 88] to avoid overflow/underflow in float32. The
@@ -32,7 +126,7 @@
  *         Results are clamped to a minimum of 1e-38 to avoid exact zero
  *         from underflow.
  */
-template <int VecSize = KERN_VEC_SIZE>
+template <int32_t VecSize>
 inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
     constexpr float log2e = 1.4426950408889634f; // log2(e)
     // Cody-Waite split of ln(2) for accurate range reduction
@@ -83,13 +177,13 @@ inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
         1.0f,                // 1/1!
         1.0f                 // 1/0!
     };
-    constexpr int NUM_EXP_COEFFS = sizeof(exp_coeffs) / sizeof(exp_coeffs[0]);
+    constexpr int32_t NUM_EXP_COEFFS = sizeof(exp_coeffs) / sizeof(exp_coeffs[0]);
 
     aie::vector<float, VecSize> poly = aie::broadcast<float, VecSize>(exp_coeffs[0]);
     aie::accum<accfloat, VecSize> tmp;
 
 #pragma unroll
-    for (int i = 1; i < NUM_EXP_COEFFS; ++i) {
+    for (int32_t i = 1; i < NUM_EXP_COEFFS; ++i) {
         tmp = aie::mul(poly, r);
         poly = aie::add(tmp.template to_vector<float>(),
                         aie::broadcast<float, VecSize>(exp_coeffs[i]));
@@ -115,4 +209,4 @@ inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
     return result;
 }
 
-#endif
+#endif // AIE_KERNEL_MATH
