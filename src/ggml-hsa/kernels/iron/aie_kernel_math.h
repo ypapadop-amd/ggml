@@ -64,6 +64,12 @@ inline float scalar_exp(float x) {
 
 /**
  * @brief Computes floor(log2(x)) for positive integers.
+ *
+ * Finds the position of the most significant bit set in x.
+ *
+ * @param[in] x The input value (must be > 0 for meaningful result).
+ *
+ * @return The floor of log base 2 of x. Returns 0 for x <= 1.
  */
 inline uint32_t floor_log2(uint32_t x) {
     uint32_t result = 0;
@@ -75,7 +81,20 @@ inline uint32_t floor_log2(uint32_t x) {
 }
 
 /**
- * @brief Computes 2^x for ALiBi slope calculation.
+ * @brief Computes 2^x using range reduction for improved precision.
+ *
+ * Horner's method suffers from precision loss for large input values.
+ * This function applies range reduction by splitting x into integer (i) and
+ * fractional (f) parts where i = floor(x) and f is in [0, 1).
+ * Formula: 2^x = 2^i * 2^f
+ *
+ * The fractional part 2^f is computed using a degree-10 Taylor series
+ * approximation of exp(f * ln(2)) via Horner's method. The integer part 2^i
+ * is computed using IEEE 754 bit manipulation.
+ *
+ * @param[in] x The exponent value.
+ *
+ * @return The computed value of 2^x.
  */
 inline float pow2(float x) {
     int i = static_cast<int>(x);
