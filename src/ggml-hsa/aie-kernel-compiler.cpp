@@ -85,15 +85,21 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
         // convert a GGML tensor to input and output TensorDesc objects
         auto tensor_desc_mod = py::module_::import("tensor_desc");
         auto create_tensor_desc = tensor_desc_mod.attr("ggml_tensor_to_tensordesc");
-        const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
-        auto input_tensors = py::list(src_tensor_count);
-        for (auto i = 0; i < src_tensor_count; ++i) {
+
+        // we iterate through all possible sources to handle "holes", e.g., for SOFT_MAX src[0] =
+        // input, src[1] = mask (can be nullptr), src[2] = sinks (can be non-null)
+        const auto nsrcs = ggml_hsa_nsrcs(tensor);
+        py::list input_tensors;
+        for (auto i = 0; i < nsrcs; ++i) {
             const auto src_tensor = tensor.src[i];
-            input_tensors[i] =
-                create_tensor_desc("dtype"_a = ggml_type_name(src_tensor->type),
-                                   "ne"_a = ggml_hsa_tensor_ne_as_pytuple(*src_tensor),
-                                   "nb"_a = ggml_hsa_tensor_nb_as_pytuple(*src_tensor),
-                                   "contiguous"_a = ggml_is_contiguous(src_tensor));
+            auto tensor_desc =
+                src_tensor != nullptr
+                    ? create_tensor_desc("dtype"_a = ggml_type_name(src_tensor->type),
+                                         "ne"_a = ggml_hsa_tensor_ne_as_pytuple(*src_tensor),
+                                         "nb"_a = ggml_hsa_tensor_nb_as_pytuple(*src_tensor),
+                                         "contiguous"_a = ggml_is_contiguous(src_tensor))
+                    : py::none();
+            input_tensors.append(std::move(tensor_desc));
         }
         auto output_tensor = create_tensor_desc("dtype"_a = ggml_type_name(tensor.type),
                                                 "ne"_a = ggml_hsa_tensor_ne_as_pytuple(tensor),
