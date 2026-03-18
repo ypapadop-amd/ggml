@@ -78,6 +78,9 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
                       int32_t N,
                       float scale,
                       float max_bias) {
+    static_assert(std::is_same<INPUT_DTYPE, float>::value, "INPUT_DTYPE must be float");
+    static_assert(std::is_same<OUTPUT_DTYPE, float>::value, "OUTPUT_DTYPE must be float");
+
     event0();
 
     const float * input = reinterpret_cast<const float *>(in);
@@ -144,12 +147,9 @@ void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
                                 int32_t n_head,
                                 int32_t tile_idx,
                                 int32_t rows_per_head) {
-    static_assert(std::is_same<INPUT_DTYPE, float>::value,
-                  "ggml_op_soft_max_with_mask expects INPUT_DTYPE to be float");
-    static_assert(std::is_same<MASK_DTYPE, float>::value,
-                  "ggml_op_soft_max_with_mask expects MASK_DTYPE to be float");
-    static_assert(std::is_same<OUTPUT_DTYPE, float>::value,
-                  "ggml_op_soft_max_with_mask expects OUTPUT_DTYPE to be float");
+    static_assert(std::is_same<INPUT_DTYPE, float>::value, "INPUT_DTYPE must be float");
+    static_assert(std::is_same<MASK_DTYPE, float>::value, "MASK_DTYPE must be float");
+    static_assert(std::is_same<OUTPUT_DTYPE, float>::value, "OUTPUT_DTYPE must be float");
 
     event0();
 
@@ -225,6 +225,12 @@ void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
                                           int32_t rows_per_head,
                                           float scale,
                                           float max_bias) {
+
+    static_assert(std::is_same<INPUT_DTYPE, float>::value, "INPUT_DTYPE must be float");
+    static_assert(std::is_same<MASK_DTYPE, float>::value, "MASK_DTYPE must be float");
+    static_assert(std::is_same<SINK_DTYPE, float>::value, "SINK_DTYPE must be float");
+    static_assert(std::is_same<OUTPUT_DTYPE, float>::value, "OUTPUT_DTYPE must be float");
+
     event0();
 
     const auto * input = reinterpret_cast<const float *>(in);
