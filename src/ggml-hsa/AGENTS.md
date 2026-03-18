@@ -27,7 +27,7 @@ the kernel compilation pipeline.
 
 ## Codebase Structure
 
-```
+```text
 src/ggml-hsa/
 ├── ggml-hsa.cpp                 # Backend implementation (HSA runtime integration)
 ├── common.hpp                   # Common utilities and type definitions
@@ -57,15 +57,15 @@ src/ggml-hsa/
 │       ├── binary_ops.py/cc     # Binary ops (ADD, SUB, MUL, DIV) - multiple ops per file
 │       ├── unary_ops.py/cc      # Unary ops (ABS, NEG, RELU, SILU, etc.) - multiple ops per file
 │       ├── scale.py/cc          # Scale IRON design + AIE core function
-│       ├── softmax.py/cc        # Softmax IRON design + AIE core function
+│       ├── softmax.py/cc        # Softmax IRON design + AIE core function (unary/masked/ternary variants)
 │       ├── clamp.py/cc          # Clamp IRON design + AIE core function
 │       ├── argmax.py/cc         # Argmax IRON design + AIE core function
 │       ├── count_equal.py/cc    # Count equal IRON design + AIE core function
 │       ├── cross_entropy_loss.py/cc  # Cross entropy loss IRON design + AIE core function
 │       ├── gemm.py              # Matrix multiplication IRON design
 │       ├── ggml-aie.hpp         # Common AIE type definitions
-│       ├── aie_kernel_utils.h   # AIE kernel utility macros
-│       ├── aie_kernel_math.h    # AIE math utility functions (vec_exp)
+│       ├── aie_kernel_utils.h   # AIE kernel utility macros (profiling, event markers)
+│       ├── aie_kernel_math.h    # AIE math utility functions (scalar_exp, vec_exp, softmax)
 │       ├── aie2/                # aie2-specific core functions (use only when shared won't work)
 │       └── aie2p/               # aie2p-specific core functions (use only when shared won't work)
 └── cmake/                       # CMake utilities
@@ -142,7 +142,7 @@ The compilation flow in `ggml_compile_op`:
 4. Look up compiler function via `get_compiler(backend)`
 5. Invoke the backend-specific compiler
 
-```
+```text
 ggml_compile_op("SCALE", ...)
     └─> get_kernel("SCALE") -> Kernel("ggml_op_scale", "scale.py")
     └─> import_from_path("ggml_op_scale", "scale.py")
@@ -222,6 +222,36 @@ int32_t j3 = i3 % src1_ne3;
 
 // Compute linear src1 index
 int32_t idx_src1 = j0 + j1 * s1 + j2 * s2 + j3 * s3;
+```
+
+### Nullable Source Tensors
+
+Some operations (e.g., `SOFT_MAX`) have optional input tensors. The compilation system
+handles these as follows:
+
+- **Host side**: The `input_tensors` list may contain `None` for optional tensors that
+  are not provided. The list length matches GGML's source array size, preserving indices.
+- **Dispatch functions**: Check for `None` before accessing tensor properties:
+
+  ```python
+  def ggml_op_soft_max(arch, input_tensors, output_tensor, op_params) -> KernelSpec:
+      input_tensor = input_tensors[0]           # Required
+      mask_tensor = input_tensors[1] if len(input_tensors) >= 2 else None  # Optional
+      sink_tensor = input_tensors[2] if len(input_tensors) >= 3 else None  # Optional
+  ```
+
+- **IRON kernels**: Branch on tensor presence to generate different program structures
+  (e.g., different numbers of ObjectFifos and DMA transfers)
+
+Example in `softmax.py`:
+
+```python
+if input_tensor_count == 1:
+    return create_unary_program(...)     # Just input → output
+elif input_tensor_count == 2:
+    return create_binary_program(...)    # input + mask → output
+else:
+    return create_ternary_program(...)   # input + mask + sink → output
 ```
 
 ## Kernel Development Pattern
