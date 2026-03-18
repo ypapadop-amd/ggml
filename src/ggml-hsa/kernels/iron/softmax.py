@@ -70,22 +70,16 @@ def get_softmax_dimensions(tensor) -> Tuple[int, int]:
         raise ValueError(f"Unsupported tensor rank: {len(shape)}")
 
 
-# Vector size for AIE kernel vector operations.
-# This must match the vector width used in the C++ kernel implementation
-# and constrains row lengths to be multiples of this value.
-KERN_VEC_SIZE = 8
-
-
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     IRON design for softmax.
 
     Parameters:
         arch (str): Target architecture.
-        input_tensors (list): List of 1-3 input tensors:
+        input_tensors (list): List of input tensors:
             - input_tensors[0]: Input tensor (required)
-            - input_tensors[1]: Mask tensor (optional)
-            - input_tensors[2]: Sink tensor (optional)
+            - input_tensors[1]: Mask tensor (optional; may be None)
+            - input_tensors[2]: Sink tensor (optional; may be None)
         output_tensor: Output tensor.
         op_params (bytearray): Operation parameters (scale, max_bias).
     """
@@ -101,27 +95,30 @@ def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     if not input_tensor.contiguous:
         raise ValueError("Input tensor must be contiguous in memory.")
+
     if not output_tensor.contiguous:
         raise ValueError("Output tensor must be contiguous in memory.")
-    if mask_tensor is not None and not mask_tensor.contiguous:
-        raise ValueError("Mask tensor must be contiguous in memory.")
 
-    if sink_tensor is not None:
+    if input_tensor.shape != output_tensor.shape:
+        raise ValueError(
+            f"Input and output tensors must have the same shape: {input_tensor.shape} vs {output_tensor.shape}"
+        )
+
+    if mask_tensor and not mask_tensor.contiguous:
+        raise ValueError("Mask tensor must be contiguous in memory.")
+    if sink_tensor and not sink_tensor.contiguous:
+        raise ValueError("Sink tensor must be contiguous in memory.")
+
+    if sink_tensor:
         raise ValueError(
             "Softmax with sink tensor is not supported on AIE. "
             "AIE tiles are limited to 2 input DMA channels, but softmax with "
             "mask and sink requires 3 input streams."
         )
-    # Uncomment when the DMA-channel issue is resolved
-    # if sink_tensor is not None and not sink_tensor.contiguous:
-    #    raise ValueError("Sink tensor must be contiguous in memory.")
 
     # Currently f16 mask is not supported as we use f32 vector instructions.
-    if mask_tensor is not None and mask_tensor.dtype == np.dtype("bfloat16"):
-        raise ValueError("Softmax with bfloat16 mask is not supported on AIE.")
-
-    if input_tensor.shape != output_tensor.shape:
-        raise ValueError("Input and output tensors must have the same shape.")
+    if mask_tensor and mask_tensor.dtype != np.dtype("float32"):
+        raise ValueError(f"Softmax with {mask_tensor.dtype} mask is not supported.")
 
     # Unpack op_params: scale and max_bias
     scale = struct.unpack_from("f", op_params, 0)[0]
@@ -239,7 +236,7 @@ def create_binary_program(
     num_elements_in = func_result[1]
     tile_size_in = func_result[2]
     tile_size_mask = func_result[3]
-    func_result[4]
+    func_result[4]  # num_rows_mask (unused)
     num_elements_mask = func_result[5]
     n_head = func_result[6]
     rows_per_head = func_result[7]
@@ -335,7 +332,7 @@ def create_ternary_program(
     num_elements_in = func_result[1]
     tile_size_in = func_result[2]
     tile_size_mask = func_result[3]
-    func_result[4]
+    func_result[4]  # num_rows_mask (unused)
     num_elements_mask = func_result[5]
     num_sinks = func_result[6]
     rows_per_head = func_result[7]
@@ -436,40 +433,25 @@ def _create_external_function(
     """
     row_length_in, num_rows_in = get_softmax_dimensions(input_tensor)
 
-    # Probably aligning doesn't make sense as we already do not allow unaligned
-    # inputs but keeping this as we'll need it in the future
-    tile_size_in = align_to_arch(arch, row_length_in, input_tensor.dtype, KERN_VEC_SIZE)
+    # Use actual row length - no padding. The host data is contiguous with
+    # row_length elements per row, so tile_size must match.
+    # The C++ kernel is a pure scalar implementation that works with any size.
+    tile_size_in = row_length_in
 
-    # Currently we do not support unaligned row sizes as we use vector
-    # instructions with a fixed length.
-    if row_length_in % KERN_VEC_SIZE != 0:
-        raise ValueError(
-            f"Input row length ({row_length_in}) must be a multiple of {KERN_VEC_SIZE}. "
-        )
     num_elements_in = tile_size_in * num_rows_in
 
     arg_types = [np.ndarray[(tile_size_in,), np.dtype[input_tensor.dtype]]]
     compile_flags = [
         f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
-        f"-DKERN_VEC_SIZE={KERN_VEC_SIZE}",
     ]
 
     result_extra = []
 
-    if mask_tensor is not None:
+    if mask_tensor:
         row_length_mask, num_rows_mask = get_softmax_dimensions(mask_tensor)
-        tile_size_mask = align_to_arch(
-            arch, row_length_mask, mask_tensor.dtype, KERN_VEC_SIZE
-        )
-        tile_size_mask = align_to_arch(
-            arch, row_length_mask, mask_tensor.dtype, KERN_VEC_SIZE
-        )
+        # Use actual row length - no padding (same reason as input tensor)
+        tile_size_mask = row_length_mask
         num_elements_mask = tile_size_mask * num_rows_mask
-
-        if row_length_mask % KERN_VEC_SIZE != 0:
-            raise ValueError(
-                f"Mask row length ({row_length_mask}) must be a multiple of {KERN_VEC_SIZE}. "
-            )
 
         arg_types.append(np.ndarray[(tile_size_mask,), np.dtype[mask_tensor.dtype]])
         compile_flags.append(f"-DMASK_DTYPE={dtype_to_str(mask_tensor.dtype)}")
@@ -486,14 +468,14 @@ def _create_external_function(
         rows_per_head = num_rows_in // n_head if n_head > 0 else 1
         result_extra.extend([n_head, rows_per_head])
 
-    if sink_tensor is not None:
+    if sink_tensor:
         # sink is 1D: one value per head
         num_sinks = sink_tensor.shape[0]
         rows_per_head = num_rows_in // num_sinks if num_sinks > 0 else 1
 
         arg_types.append(np.ndarray[(num_sinks,), np.dtype[sink_tensor.dtype]])
         compile_flags.append(f"-DSINK_DTYPE={dtype_to_str(sink_tensor.dtype)}")
-        if mask_tensor is not None:
+        if mask_tensor:
             result_extra = result_extra[:-2]
         result_extra.extend([num_sinks, rows_per_head])
 
@@ -518,10 +500,10 @@ def _create_external_function(
         arg_types.append(np.int32)  # rows_per_head
     # determine function name and compile directive
     function_name = op_name.lower()
-    if mask_tensor is not None and sink_tensor is not None:
+    if mask_tensor and sink_tensor:
         function_name = function_name + "_with_mask_and_sinks"
         compile_flags.append(f"-D{op_name}_WITH_MASK_AND_SINKS=1")
-    elif mask_tensor is not None:
+    elif mask_tensor:
         function_name = function_name + "_with_mask"
         compile_flags.append(f"-D{op_name}_WITH_MASK=1")
     else:
