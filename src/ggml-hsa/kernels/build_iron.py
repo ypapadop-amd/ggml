@@ -35,7 +35,6 @@ def _compile_aie_core_kernels(
         arch: Target architecture (e.g., "aie2", "aie2p").
         functions: Iterable of ExternalFunction objects to compile.
         work_dir: Working directory for intermediate files.
-        verbose: If True, enables verbose compilation output.
     """
     for func in functions:
         compile_cxx_core_function(
