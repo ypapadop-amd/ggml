@@ -65,6 +65,46 @@ inline float scalar_exp(float x) {
 }
 
 /**
+ * @brief Computes the natural logarithm using IEEE 754 range reduction.
+ *
+ * Implements ln(x) = ln(m * 2^e) = ln(m) + e * ln(2), where m is the mantissa
+ * normalized to [1, 2). The ln(m) is computed using a 2*atanh series:
+ * ln(m) = 2 * atanh((m-1)/(m+1)) with a polynomial approximation.
+ *
+ * @param[in] x The input value (must be positive).
+ *
+ * @return The natural logarithm of x. Returns -88.0f for x <= 0.
+ */
+inline float scalar_log(float x) {
+    if (x <= 0.0f)
+        return -88.0f;
+
+    int32_t bits;
+    std::memcpy(&bits, &x, sizeof(float)); // Avoid strict aliasing issues
+
+    const int32_t e_int = ((bits >> 23) & 0xFF) - 127;
+    float e = static_cast<float>(e_int);
+
+    const int32_t m_bits = (bits & 0x007FFFFF) | 0x3F800000;
+    float m;
+    std::memcpy(&m, &m_bits, sizeof(float));
+
+    const float z = (m - 1.0f) / (m + 1.0f);
+    const float z2 = z * z;
+
+    float poly = 0.0909090909f;       // 1/11
+    poly = poly * z2 + 0.1111111111f; // 1/9
+    poly = poly * z2 + 0.1428571429f; // 1/7
+    poly = poly * z2 + 0.2000000000f; // 1/5
+    poly = poly * z2 + 0.3333333333f; // 1/3
+    poly = poly * z2 + 1.0f;
+
+    const auto ln_m = 2.0f * (z * poly);
+    constexpr float ln2 = 0.6931471805599453f;
+    return ln_m + (e * ln2);
+}
+
+/**
  * @brief Computes floor(log2(x)) for positive integers.
  *
  * Finds the position of the most significant bit set in x.
