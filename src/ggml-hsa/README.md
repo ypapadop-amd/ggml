@@ -30,6 +30,7 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 ### Broadcasting
 
 Binary operations support GGML-style broadcasting where `src1` can be repeated to match `dst`:
+
 - `dst->ne[i] % src1->ne[i] == 0` must hold for all dimensions
 - Examples: `(10,5,4,3) + (10,5,4,3)` (element-wise), `(20,5,4,3) + (10,5,4,3)` (broadcast in dim0)
 - Multi-dimensional broadcasting: `(20,10,8,6) + (10,5,4,3)` (broadcast in all dims)
