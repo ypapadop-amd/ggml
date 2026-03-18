@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <cmath>
 
 #include "ggml-aie.hpp"
 
@@ -78,6 +79,18 @@ inline float scalar_exp(float x) {
  *         Returns -inf for x == 0, and quiet NaN for x < 0, matching logf().
  */
 inline float scalar_log(float x) {
+    // Handle NaN and infinities explicitly to match logf() behavior
+    if (std::isnan(x)) {
+        return x;
+    }
+    if (std::isinf(x)) {
+        if (x > 0.0f) {
+            return x; // +inf
+        } else {
+            return std::numeric_limits<float>::quiet_NaN(); // logf(-inf) -> NaN
+        }
+    }
+
     if (x == 0.0f) {
         return -std::numeric_limits<float>::infinity();
     }
