@@ -67,6 +67,16 @@ inline float scalar_exp(float x) {
 }
 
 /**
+ * @brief Checks if a floating-point value is infinite.
+ *
+ * @param x The input value.
+ * @return @c true if x is infinite, @c false otherwise.
+ */
+inline bool is_infinite(float x) {
+    return x != 0.0f && x + x == x;
+}
+
+/**
  * @brief Computes the natural logarithm using IEEE 754 range reduction.
  *
  * Implements ln(x) = ln(m * 2^e) = ln(m) + e * ln(2), where m is the mantissa
@@ -83,7 +93,7 @@ inline float scalar_log(float x) {
     if (std::isnan(x)) {
         return x;
     }
-    if (std::isinf(x)) {
+    if (is_infinite(x)) {
         if (x > 0.0f) {
             return x; // +inf
         } else {
