@@ -119,7 +119,8 @@ inline float pow2(float x) {
     if (i > 127)
         i = 127;
     int32_t bits = (127 + i) << 23;
-    float scale = reinterpret_cast<float &>(bits);
+    float scale;
+    std::memcpy(&scale, &bits, sizeof(scale));
 
     return exp_f * scale;
 }
