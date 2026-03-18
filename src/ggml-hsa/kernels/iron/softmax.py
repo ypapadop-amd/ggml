@@ -10,13 +10,13 @@ IRON kernel implementation for the softmax operation.
 """
 
 import struct
-from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
 import numpy as np
 
 from .utils import (
+    align_to_arch,
     arch_to_device,
     suppress_import_pyxrt_msg,
 )
@@ -70,22 +70,13 @@ def get_softmax_dimensions(tensor) -> Tuple[int, int]:
         raise ValueError(f"Unsupported tensor rank: {len(shape)}")
 
 
-class SoftmaxVariant(Enum):
-    """Enumeration of softmax variants based on input tensors."""
-
-    UNKNOWN = auto()
-    BASIC = auto()
-    MASKED = auto()
-    MASKED_WITH_SINK = auto()
-
-
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """
     IRON design for softmax.
 
     Parameters:
         arch (str): Target architecture.
-        input_tensors (list): List of 3 input tensors:
+        input_tensors (list): List of input tensors:
             - input_tensors[0]: Input tensor (required)
             - input_tensors[1]: Mask tensor (optional; may be None)
             - input_tensors[2]: Sink tensor (optional; may be None)
@@ -95,51 +86,39 @@ def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     input_tensor_count = len(input_tensors)
 
-    if input_tensor_count != 1 and input_tensor_count != 3:
-        raise ValueError(f"Operation requires 1 or 3 tensors, got {input_tensor_count}")
+    if input_tensor_count < 1 or input_tensor_count > 3:
+        raise ValueError(f"Operation requires 1, 2, or 3 tensors: {input_tensor_count}")
 
-    softmax_variant = SoftmaxVariant.UNKNOWN
-    if input_tensor_count == 1:
-        softmax_variant = SoftmaxVariant.BASIC
-    elif input_tensor_count == 3:
-        if not input_tensors[2]:
-            raise ValueError(
-                "Sink tensor is required when 3 input tensors are provided."
-            )
-        if not input_tensors[1]:
-            softmax_variant = SoftmaxVariant.MASKED
-        else:
-            softmax_variant = SoftmaxVariant.MASKED_WITH_SINK
+    input_tensor = input_tensors[0]
+    mask_tensor = input_tensors[1] if input_tensor_count >= 2 else None
+    sink_tensor = input_tensors[2] if input_tensor_count >= 3 else None
+
+    if not input_tensor.contiguous:
+        raise ValueError("Input tensor must be contiguous in memory.")
 
     if not output_tensor.contiguous:
         raise ValueError("Output tensor must be contiguous in memory.")
 
-    input_tensor = input_tensors[0]
-    if not input_tensor.contiguous:
-        raise ValueError("Input tensor must be contiguous in memory.")
     if input_tensor.shape != output_tensor.shape:
         raise ValueError(
             f"Input and output tensors must have the same shape: {input_tensor.shape} vs {output_tensor.shape}"
         )
 
-    mask_tensor = input_tensors[1]
-    if mask_tensor:
-        if not mask_tensor.contiguous:
-            raise ValueError("Mask tensor must be contiguous in memory.")
-        # Currently f16 mask is not supported as we use f32 vector instructions.
-        if mask_tensor.dtype != np.dtype("float32"):
-            raise ValueError(f"Softmax with {mask_tensor.dtype} mask is not supported.")
+    if mask_tensor and not mask_tensor.contiguous:
+        raise ValueError("Mask tensor must be contiguous in memory.")
+    if sink_tensor and not sink_tensor.contiguous:
+        raise ValueError("Sink tensor must be contiguous in memory.")
 
-    sink_tensor = input_tensors[2]
-    if sink_tensor is not None:
+    if sink_tensor:
         raise ValueError(
             "Softmax with sink tensor is not supported on AIE. "
             "AIE tiles are limited to 2 input DMA channels, but softmax with "
             "mask and sink requires 3 input streams."
         )
-    # Uncomment when the DMA-channel issue is resolved
-    # if sink_tensor and not sink_tensor.contiguous:
-    #    raise ValueError("Sink tensor must be contiguous in memory.")
+
+    # Currently f16 mask is not supported as we use f32 vector instructions.
+    if mask_tensor and mask_tensor.dtype != np.dtype("float32"):
+        raise ValueError(f"Softmax with {mask_tensor.dtype} mask is not supported.")
 
     # Unpack op_params: scale and max_bias
     scale = struct.unpack_from("f", op_params, 0)[0]
@@ -147,15 +126,15 @@ def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     op_name = "GGML_OP_SOFT_MAX"
 
-    if softmax_variant == SoftmaxVariant.BASIC:
+    if input_tensor_count == 1:
         return create_unary_program(
             arch, op_name, input_tensor, output_tensor, scale, max_bias
         )
-    elif softmax_variant == SoftmaxVariant.MASKED:
+    elif input_tensor_count == 2:
         return create_binary_program(
             arch, op_name, input_tensor, mask_tensor, output_tensor, scale, max_bias
         )
-    elif softmax_variant == SoftmaxVariant.MASKED_WITH_SINK:
+    else:  # input_tensor_count == 3
         return create_ternary_program(
             arch,
             op_name,
@@ -166,8 +145,6 @@ def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
             scale,
             max_bias,
         )
-    else:
-        raise ValueError(f"Unsupported softmax variant: {softmax_variant}")
 
 
 def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_bias):
