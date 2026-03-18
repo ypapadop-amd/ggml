@@ -113,13 +113,6 @@ def cross_entropy_loss(
 
     row_length, num_rows = get_cross_entropy_loss_dimensions(logits_tensor)
 
-    # Currently we do not support unaligned row sizes as we use vector
-    # instructions with a fixed length.
-    if row_length % KERN_VEC_SIZE != 0:
-        raise ValueError(
-            f"Row length ({row_length}) must be a multiple of {KERN_VEC_SIZE}."
-        )
-
     # Align tile size to architecture requirements
     tile_size = align_to_arch(arch, row_length, logits_tensor.dtype, KERN_VEC_SIZE)
 
@@ -309,10 +302,7 @@ def create_external_function(
         np.int32,  # tile_size (N)
     ]
 
-    compile_flags = [
-        f"-DKERN_VEC_SIZE={KERN_VEC_SIZE}",
-        "-DCOMPILE_GGML_OP_CROSS_ENTROPY_LOSS",
-    ]
+    compile_flags = []
 
     current_dir = path.dirname(path.realpath(__file__))
     func = ExternalFunction(
