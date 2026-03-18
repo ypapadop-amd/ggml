@@ -8,6 +8,7 @@
 
 #include <aie_api/aie.hpp>
 #include <cstdint>
+#include <cstring>
 
 #include "ggml-aie.hpp"
 
@@ -57,7 +58,8 @@ inline float scalar_exp(float x) {
     if (n > 127)
         n = 127;
     int32_t bits = (127 + n) << 23;
-    float scale = reinterpret_cast<float &>(bits);
+    float scale;
+    std::memcpy(&scale, &bits, sizeof(scale));
 
     return exp_f * scale;
 }

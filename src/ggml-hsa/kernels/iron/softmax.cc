@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include <limits>
+#include <type_traits>
 
 #include <aie_api/aie.hpp>
 
@@ -83,7 +84,7 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
     float * output = reinterpret_cast<float *>(out);
 
     // Step 1: Find max for numerical stability
-    float global_max = std::numeric_limits<float>::min();
+    float global_max = std::numeric_limits<float>::lowest();
     for (int32_t i = 0; i < N; ++i) {
         float val = input[i] * scale;
         if (val > global_max) {
@@ -143,6 +144,13 @@ void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
                                 int32_t n_head,
                                 int32_t tile_idx,
                                 int32_t rows_per_head) {
+    static_assert(std::is_same<INPUT_DTYPE, float>::value,
+                  "ggml_op_soft_max_with_mask expects INPUT_DTYPE to be float");
+    static_assert(std::is_same<MASK_DTYPE, float>::value,
+                  "ggml_op_soft_max_with_mask expects MASK_DTYPE to be float");
+    static_assert(std::is_same<OUTPUT_DTYPE, float>::value,
+                  "ggml_op_soft_max_with_mask expects OUTPUT_DTYPE to be float");
+
     event0();
 
     const auto * input = reinterpret_cast<const float *>(in);
@@ -154,7 +162,7 @@ void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
     const auto slope = compute_alibi_slope(max_bias, n_head, head_idx);
 
     // Step 1: Find max for numerical stability
-    float global_max = std::numeric_limits<float>::min();
+    float global_max = std::numeric_limits<float>::lowest();
     for (int32_t i = 0; i < N; ++i) {
         float val = input[i] * scale + mask_input[i] * slope;
         if (val > global_max) {
