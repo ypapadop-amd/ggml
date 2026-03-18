@@ -6,8 +6,10 @@ This document provides guidance for AI agents working on the ggml-hsa codebase.
 
 The ggml-hsa backend enables GGML tensor operations to run on AMD XDNA NPUs (AI Engines). It supports:
 
-- **aie2** architecture (Phoenix, Hawk Point)
-- **aie2p** architecture (Strix Halo, Krackan)
+| Architecture | IRON Device | Example Platforms |
+| ------------ | ----------- | ----------------- |
+| **aie2** | NPU1 | Phoenix, Hawk Point |
+| **aie2p** | NPU2 | Strix Halo, Krackan |
 
 The backend uses a multi-backend kernel compilation system with per-operation dispatch. Currently supported backends:
 
@@ -54,8 +56,8 @@ src/ggml-hsa/
 │   └── iron/                    # IRON kernel implementations
 │       ├── __init__.py          # Subpackage init
 │       ├── utils.py             # Shared utilities (alignment, device mapping)
-│       ├── binary_ops.py/cc     # Binary ops (ADD, SUB, MUL, DIV) - multiple ops per file
-│       ├── unary_ops.py/cc      # Unary ops (ABS, NEG, RELU, SILU, etc.) - multiple ops per file
+│       ├── binary_ops.py/cc     # Binary ops (ADD, SUB, MUL, DIV) with broadcast support
+│       ├── unary_ops.py/cc      # Unary ops - see "Supported Operations" section for details
 │       ├── scale.py/cc          # Scale IRON design + AIE core function
 │       ├── softmax.py/cc        # Softmax IRON design + AIE core function (unary/masked/ternary variants)
 │       ├── clamp.py/cc          # Clamp IRON design + AIE core function
@@ -64,17 +66,22 @@ src/ggml-hsa/
 │       ├── cross_entropy_loss.py/cc  # Cross entropy loss IRON design + AIE core function
 │       ├── gemm.py              # Matrix multiplication IRON design
 │       ├── ggml-aie.hpp         # Common AIE type definitions
-│       ├── aie_kernel_utils.h   # AIE kernel utility macros (profiling, event markers)
-│       ├── aie_kernel_math.h    # AIE math utility functions (scalar_exp, vec_exp, softmax)
-│       ├── aie2/                # aie2-specific core functions (use only when shared won't work)
-│       └── aie2p/               # aie2p-specific core functions (use only when shared won't work)
+│       ├── aie_kernel_utils.h   # Loop optimization macros (AIE_LOOP_UNROLL, AIE_PREPARE_FOR_PIPELINING, etc.)
+│       ├── aie_kernel_math.h    # AIE math utility functions (scalar_exp, scalar_log, pow2, vec_exp)
+│       ├── aie2/                # aie2-specific core functions
+│       │   ├── mm.cc            # Matrix multiply kernels for aie2
+│       │   └── zero.cc          # Zero-initialization helpers for aie2
+│       └── aie2p/               # aie2p-specific core functions
+│           ├── mm.cc            # Matrix multiply kernels for aie2p
+│           └── zero.cc          # Zero-initialization helpers for aie2p
 └── cmake/                       # CMake utilities
 ```
 
 **Note:** Related operations are grouped in the same file (e.g., all unary ops in `unary_ops.py/cc`,
-all binary ops in `binary_ops.py/cc`). Architecture-specific directories (`aie2/`, `aie2p/`) should
-only be used when a shared implementation cannot work across architectures; prefer shared
-implementations in the parent `iron/` directory.
+all binary ops in `binary_ops.py/cc`). Architecture-specific directories (`aie2/`, `aie2p/`) contain
+kernels that require different implementations per architecture (e.g., matrix multiply uses
+architecture-specific intrinsics). Prefer shared implementations in the parent `iron/` directory
+when possible.
 
 ### Two-Layer Dispatch Architecture
 
@@ -402,9 +409,12 @@ To add a new backend (e.g., Triton):
 
 ### C++ (Kernel Code)
 
-- Include `ggml-aie.hpp` for common type definitions
-- Use `event0()` / `event1()` for profiling regions
-- Prefer vectorized operations from `aie_api/aie.hpp`
+- Include `ggml-aie.hpp` for type aliases (`i8`, `i16`, `i32`, `bf16`, `f32`) and `is_floating_point_v<T>`
+- Include `aie_api/aie.hpp` for AIE intrinsics and vector types
+- Use `event0()` / `event1()` (from aie_api) to mark profiling regions
+- Use loop macros from `aie_kernel_utils.h` for optimization hints
+- Use `INPUT_DTYPE` / `OUTPUT_DTYPE` macros (set by compiler) for type flexibility
+- Prefer vectorized operations using `aie::vector<T, N>` and `aie::accum<T, N>`
 - Keep kernels simple and focused on compute
 - Follow existing formatting (see `.clang-format`)
 
@@ -413,14 +423,37 @@ To add a new backend (e.g., Triton):
 - Follow existing patterns in `iron/unary_ops.py` / `iron/binary_ops.py`
 - Use `CoreFunctionSpec` dataclass for external function specifications
 - Import utilities from `iron/utils.py`:
-  - `arch_to_device()` - Convert arch string to IRON device object
+  - `arch_to_device()` - Convert arch string to IRON device object (`"aie2"` → `NPU1()`, `"aie2p"` → `NPU2()`)
   - `arch_aligned_num_elements()` - Align tensor sizes to architecture requirements
-  - `align_to_arch()` - Align arbitrary sizes to byte boundaries
-  - `max_tile_size()` - Calculate optimal tile size for vectorization
-  - `suppress_import_pyxrt_msg()` - Suppress noisy pyxrt import messages
+  - `align_to_arch()` - Align arbitrary sizes to byte boundaries (default 4-byte alignment)
+  - `max_tile_size()` - Calculate optimal tile size based on 512-bit vector register width
+  - `suppress_import_pyxrt_msg()` - Returns pre-imported `aie.utils` with pyxrt messages suppressed
 - Top-level wrappers import from `.iron.<module>` subpackage
 - Follow existing formatting using `black`
 - Add module docstrings to all Python files
+
+## Supported Operations
+
+### Fully Implemented
+
+These operations have complete AIE kernel implementations:
+
+| Category | Operations |
+| -------- | ---------- |
+| Binary | `ADD`, `SUB`, `MUL`, `DIV` (with broadcast support) |
+| Unary | `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `SQR`, `LOG` |
+| Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
+| Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE) |
+
+### Registered but Not Implemented
+
+These operations are registered in `build.py` but raise `NotImplementedError`:
+
+- `SQRT`, `SIN`, `COS` (require math library functions)
+- `TANH`, `ELU`, `SIGMOID`, `SILU`, `EXP` (require exp/transcendental functions)
+- `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` (require erf or approximations)
+
+These are placeholders for future implementation.
 
 ## Data Types
 
@@ -431,11 +464,14 @@ Supported GGML types and their mappings:
 | `GGML_TYPE_I8` | Yes | Native AIE type |
 | `GGML_TYPE_I16` | Yes | Native AIE type |
 | `GGML_TYPE_I32` | Yes | Native AIE type |
-| `GGML_TYPE_BF16` | Yes | Native AIE type |
-| `GGML_TYPE_F16` | Via BF16 | Converted internally |
-| `GGML_TYPE_F32` | Emulated | Slower than native |
+| `GGML_TYPE_BF16` | Yes | Native AIE type (preferred for float ops) |
+| `GGML_TYPE_F16` | Via BF16 | Reinterpreted as BF16 by host; no conversion |
+| `GGML_TYPE_F32` | Emulated | Software emulation on AIE; slower than native |
 
 ## Environment Setup
+
+**Important:** A Python virtual environment with IRON/MLIR-AIE dependencies must be active.
+If Python cannot find the `aie` package, the virtual environment is not set up or not activated.
 
 ```bash
 # Set up Python environment with IRON dependencies
@@ -495,7 +531,7 @@ GGML_HSA_KERNEL_CACHE_CLEAR=1 GGML_HSA_ENABLE_LOG=1 ./bin/test-backend-ops -o MU
    ```
 
 3. **Check compilation output**: JIT artifacts are stored in the cache directory
-   (default: `~/.cache/ggml-hsa-kernels/` or `GGML_HSA_KERNEL_CACHE_DIR`)
+   (default: `~/.cache/ggml` or `GGML_HSA_KERNEL_CACHE_DIR`)
 
 4. **Inspect generated MLIR**: With `GGML_HSA_JIT_VERBOSE=1`, the compilation log shows
    the generated MLIR and any compilation errors
