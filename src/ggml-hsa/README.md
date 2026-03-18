@@ -17,15 +17,15 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 | Category  | Operations                                                     |
 |-----------|----------------------------------------------------------------|
 | Binary    | `ADD`, `SUB`, `MUL`, `DIV` (with multi-dimensional broadcast)  |
-| Unary     | `SQR`, `SQRT`, `LOG`, `SIN`, `COS`, `EXP`                      |
-| Unary     | `ABS`, `SGN`, `NEG`, `STEP`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` |
-| Unary     | `RELU`, `TANH`, `ELU`, `SIGMOID`, `SILU`                       |
-| Unary     | `GELU`, `GELU_QUICK`, `GELU_ERF`, `HARDSWISH`, `HARDSIGMOID`   |
-| Unary     | `XIELU`                                                        |
+| Unary     | `SQR`, `LOG`, `ABS`, `SGN`, `NEG`, `STEP`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `RELU`, `HARDSWISH`, `HARDSIGMOID` |
 | Matrix    | `MUL_MAT`                                                      |
 | Reduction | `ARGMAX`, `COUNT_EQUAL`                                        |
 | Loss      | `CROSS_ENTROPY_LOSS`                                           |
 | Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                   |
+| Host-only | `DUP`, `CPY`, `CONT` (CPU execution)                           |
+
+> **Note:** Operations like `SQRT`, `SIN`, `COS`, `EXP`, `TANH`, `ELU`, `SIGMOID`, `SILU`,
+> `GELU`, `GELU_QUICK`, `GELU_ERF`, and `XIELU` are registered but not yet implemented.
 
 ### Broadcasting
 
@@ -129,7 +129,7 @@ JIT compilation generates kernels on-the-fly. Precompiled kernels in `GGML_HSA_K
 **Cache Location** (in order of precedence):
 
 1. `GGML_HSA_KERNEL_CACHE_DIR`
-2. `${XDG_CACHE_HOME}/.ggml/`
+2. `${XDG_CACHE_HOME}/ggml`
 3. `$HOME/.cache/ggml`
 4. `/tmp/ggml/ggml-hsa`
 
