@@ -59,11 +59,13 @@ void ggml_hsa_error(
     GGML_ABORT("HSA error");
 }
 
-std::int64_t ggml_hsa_nsrcs(const ggml_tensor & tensor) {
-    std::int64_t nsrcs = 0;
-    for (; (nsrcs < GGML_MAX_SRC) && (tensor.src[nsrcs] != nullptr); ++nsrcs)
-        ;
-    return nsrcs;
+std::int32_t ggml_hsa_nsrcs(const ggml_tensor & tensor) {
+    // count backwards to handles "holes" in the src[] array - e.g., for SOFT_MAX with mask=nullptr
+    // but sinks!=nullptr has src[0]=input, src[1]=nullptr, src[2]=sinks
+    std::int32_t last_src_idx = GGML_MAX_SRC - 1;
+    for (; (last_src_idx >= 0) && (tensor.src[last_src_idx] == nullptr); --last_src_idx) {
+    }
+    return last_src_idx + 1;
 }
 
 /**
@@ -122,12 +124,16 @@ static std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor,
     ggml_hsa_output_tensor(tensor, oss);
 
     // input tensors
-    for (std::int32_t i = 0; i < GGML_MAX_SRC; ++i) {
-        if (tensor.src[i] == nullptr) {
-            break;
-        }
+    const auto nsrcs = ggml_hsa_nsrcs(tensor);
+    for (std::int32_t i = 0; i < nsrcs; ++i) {
         oss << '-';
-        ggml_hsa_output_tensor(*(tensor.src[i]), oss);
+        if (tensor.src[i] == nullptr) {
+            // a source may be nullptr, e.g., for SOFT_MAX with src[0]=input, src[1]=nullptr,
+            // src[2]=sinks
+            oss << "null";
+        } else {
+            ggml_hsa_output_tensor(*(tensor.src[i]), oss);
+        }
     }
 
     // determine if op_params need to be encoded in the kernel name
@@ -555,6 +561,10 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // initialize internal nodes
     ggml_hsa_shallow_copy(parent_tensor, node.tensor);
     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+        if (parent_tensor.src[src_idx] == nullptr) {
+            throw std::runtime_error{std::string("Source tensor ") + std::to_string(src_idx) +
+                                     " is null. Holes are not supported."};
+        }
         ggml_hsa_shallow_copy(*parent_tensor.src[src_idx], src_nodes[src_idx].tensor);
         node.tensor.src[src_idx] = &src_nodes[src_idx].tensor;
     }
