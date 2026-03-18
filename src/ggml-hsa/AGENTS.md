@@ -531,7 +531,7 @@ GGML_HSA_KERNEL_CACHE_CLEAR=1 GGML_HSA_ENABLE_LOG=1 ./bin/test-backend-ops -o MU
    ```
 
 3. **Check compilation output**: JIT artifacts are stored in the cache directory
-   (default: `~/.cache/ggml-hsa-kernels/` or `GGML_HSA_KERNEL_CACHE_DIR`)
+   (default: `~/.cache/ggml` or `GGML_HSA_KERNEL_CACHE_DIR`)
 
 4. **Inspect generated MLIR**: With `GGML_HSA_JIT_VERBOSE=1`, the compilation log shows
    the generated MLIR and any compilation errors
