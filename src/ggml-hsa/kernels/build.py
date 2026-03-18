@@ -183,7 +183,7 @@ def import_from_path(module_name: str, path: str | Path):
 def ggml_compile_op(
     op_name: str,
     arch: str,
-    input_tensors: list[TensorDesc],
+    input_tensors: list[TensorDesc | None],
     output_tensor: TensorDesc,
     op_params: bytearray,
     exported_name: str,
