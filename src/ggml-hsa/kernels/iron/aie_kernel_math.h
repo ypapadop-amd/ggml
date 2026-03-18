@@ -7,10 +7,10 @@
 #define AIE_KERNEL_MATH
 
 #include <aie_api/aie.hpp>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <cmath>
 
 #include "ggml-aie.hpp"
 
