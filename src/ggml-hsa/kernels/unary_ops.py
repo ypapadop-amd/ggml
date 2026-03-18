@@ -131,6 +131,7 @@ def ggml_op_log(
         arch, input_tensors, output_tensor, op_params, "GGML_OP_LOG"
     )
 
+
 def ggml_op_sin(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
