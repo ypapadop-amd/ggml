@@ -829,6 +829,6 @@ def gemm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
             trace_size=0,
             zero_fn=zero_fn._name,
             matmul_fn=matmul_fn._name,
-            object_file=matmul_fn.bin_name,
+            object_file=matmul_fn.object_file_name,
         )
         return ctx.module
