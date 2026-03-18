@@ -3,12 +3,9 @@
 /**
  * @file unary_ops.cc
  * @brief Scalar unary operations for AIE kernels.
- *
- * This file implements various element-wise unary operations such as
- * sqr, sqrt, abs, sgn, neg, step, relu, hardsigmoid, hardswish,
- * floor, ceil, round, and trunc.
  */
 
+#include "aie_kernel_math.h"
 #include "ggml-aie.hpp"
 
 /**
@@ -48,6 +45,23 @@ void ggml_op_sqr(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict ou
 }
 
 #endif // GGML_OP_SQR
+
+#ifdef GGML_OP_LOG
+
+/**
+ * @brief Computes the natural logarithm of each element: out[i] = log(in[i]).
+ *
+ * @param[in]  in  Input array of N elements.
+ * @param[out] out Output array of N elements.
+ * @param[in]  N   Number of elements to process.
+ */
+void ggml_op_log(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    static_assert(std::is_same_v<INPUT_DTYPE, float>, "Input type must be float32");
+    static_assert(std::is_same_v<OUTPUT_DTYPE, float>, "Output type must be float32");
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return scalar_log(v); });
+}
+
+#endif // GGML_OP_LOG
 
 #ifdef GGML_OP_SQRT
 

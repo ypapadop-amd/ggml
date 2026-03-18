@@ -127,7 +127,9 @@ def ggml_op_log(
     Returns:
         KernelSpec for the LOG operation.
     """
-    raise NotImplementedError
+    return _make_unary_kernel_spec(
+        arch, input_tensors, output_tensor, op_params, "GGML_OP_LOG"
+    )
 
 
 def ggml_op_sin(
