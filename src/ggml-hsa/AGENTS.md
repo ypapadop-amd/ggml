@@ -437,6 +437,9 @@ Supported GGML types and their mappings:
 
 ## Environment Setup
 
+**Important:** A Python virtual environment with IRON/MLIR-AIE dependencies must be active.
+If Python cannot find the `aie` package, the virtual environment is not set up or not activated.
+
 ```bash
 # Set up Python environment with IRON dependencies
 source ./env_setup.sh
