@@ -23,7 +23,6 @@ def _compile_aie_core_kernels(
     arch: str,
     functions: Iterable[ExternalFunction],
     work_dir: Path,
-    verbose: bool,
 ) -> None:
     """
     Compile AIE core functions to object files.
@@ -36,17 +35,15 @@ def _compile_aie_core_kernels(
         arch: Target architecture (e.g., "aie2", "aie2p").
         functions: Iterable of ExternalFunction objects to compile.
         work_dir: Working directory for intermediate files.
-        verbose: If True, enables verbose compilation output.
     """
     for func in functions:
         compile_cxx_core_function(
             source_path=func._source_file,
             target_arch=arch,
-            output_path=func.bin_name,
+            output_path=func.object_file_name,
             include_dirs=func._include_dirs,
             compile_args=func._compile_flags,
             cwd=str(work_dir),
-            verbose=verbose,
         )
 
 
@@ -91,7 +88,6 @@ def compile_iron_kernel(
         arch=kernel_spec.arch,
         functions=ExternalFunction._instances,
         work_dir=work_dir,
-        verbose=verbose,
     )
 
     # Clear external functions after compilation
