@@ -72,9 +72,7 @@ inline float scalar_exp(float x) {
  * @param x The input value.
  * @return @c true if x is infinite, @c false otherwise.
  */
-inline bool is_infinite(float x) {
-    return x != 0.0f && x + x == x;
-}
+inline bool is_infinite(float x) { return x != 0.0f && x + x == x; }
 
 /**
  * @brief Computes the natural logarithm using IEEE 754 range reduction.
