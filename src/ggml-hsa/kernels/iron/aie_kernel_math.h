@@ -9,6 +9,7 @@
 #include <aie_api/aie.hpp>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 #include "ggml-aie.hpp"
 
@@ -71,13 +72,18 @@ inline float scalar_exp(float x) {
  * normalized to [1, 2). The ln(m) is computed using a 2*atanh series:
  * ln(m) = 2 * atanh((m-1)/(m+1)) with a polynomial approximation.
  *
- * @param[in] x The input value (must be positive).
+ * @param[in] x The input value.
  *
- * @return The natural logarithm of x. Returns -88.0f for x <= 0.
+ * @return The natural logarithm of x.
+ *         Returns -inf for x == 0, and quiet NaN for x < 0, matching logf().
  */
 inline float scalar_log(float x) {
-    if (x <= 0.0f)
-        return -88.0f;
+    if (x == 0.0f) {
+        return -std::numeric_limits<float>::infinity();
+    }
+    if (x < 0.0f) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
 
     int32_t bits;
     std::memcpy(&bits, &x, sizeof(float)); // Avoid strict aliasing issues
