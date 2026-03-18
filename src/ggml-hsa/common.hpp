@@ -104,9 +104,9 @@ void ggml_hsa_error(
     } while (false)
 
 /**
- * @brief Returns the number of sources of @p tensor.
+ * @brief Returns the number of sources of @p tensor including holes (null sources).
  */
-std::int64_t ggml_hsa_nsrcs(const ggml_tensor & tensor);
+std::int32_t ggml_hsa_nsrcs(const ggml_tensor & tensor);
 
 /**
  * @brief Creates a string representation of the tensor shape.
@@ -294,7 +294,7 @@ struct ggml_backend_hsa_tensor_extra {
         bool convert_dtype{};      ///< True if data conversion is necessary.
     };
 
-    std::int64_t nsrcs{};                         ///< Number of source tensors.
+    std::int32_t nsrcs{};                         ///< Number of source tensors.
     node_t node{};                                ///< Internal graph node.
     std::array<node_t, GGML_MAX_SRC> src_nodes{}; ///< Internal graph node sources.
     std::shared_ptr<ggml_hsa_kernel> kernel;      ///< Kernel associated with the tensor.
