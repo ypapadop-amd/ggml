@@ -13,7 +13,8 @@ The ggml-hsa backend enables GGML tensor operations to run on AMD XDNA NPUs (AI 
 
 The backend uses a multi-backend kernel compilation system with per-operation dispatch. Currently supported backends:
 
-- **IRON** (MLIR-AIE framework) - Optimized AIE kernels
+- **IRON** (MLIR-AIE framework) - Optimized AIE kernels (default)
+- **TRITON** (Triton-XDNA) - Compiler-driven kernel generation via MLIR-AIR/AIE (optional)
 
 The system supports both JIT and AOT compilation.
 
@@ -166,6 +167,11 @@ Each backend has a dedicated compiler module:
   - Calls the `KernelSpec.function` to generate an MLIR module
   - Compiles any C++ core functions to object files
   - Produces final `.pdi` and `_insts.bin` files
+
+- **TRITON** (`build_triton.py`): Compiles Triton kernels via MLIR-AIR/AIE
+  - Calls the `KernelSpec.function` to generate Triton kernel code
+  - Compiles through Triton-XDNA toolchain
+  - Produces PDI and instructions for AIE execution
 
 Compilers are registered in `build.py`:
 
@@ -369,7 +375,7 @@ Implements the core computation using the AIE API:
 
 ## Adding a New Compilation Backend
 
-To add a new backend (e.g., Triton):
+To add a new backend, follow the pattern used for the Triton backend. This example shows how Triton was added:
 
 1. **Add to the Backend enum** in `kernels/kernel.py`:
 
@@ -492,14 +498,19 @@ Supported GGML types and their mappings:
 
 ## Environment Setup
 
-**Important:** A Python virtual environment with IRON/MLIR-AIE dependencies must be active.
-If Python cannot find the `aie` package, the virtual environment is not set up or not activated.
+**Important:** A Python virtual environment with backend dependencies must be active.
+If Python cannot find the `aie` package (IRON) or `triton` package (Triton), the virtual environment is not set up or not activated.
 
 ```bash
-# Set up Python environment with IRON dependencies
-source ./env_setup.sh
+# Set up Python environment with IRON dependencies (default)
+source ./env_setup.sh iron
 # Or manually:
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r requirements-iron.txt
+
+# Set up Python environment with Triton dependencies (includes IRON)
+source ./env_setup.sh triton
+# Or manually:
+python3 -m pip install -r requirements-triton.txt
 ```
 
 ### MLIR-AIE Version
