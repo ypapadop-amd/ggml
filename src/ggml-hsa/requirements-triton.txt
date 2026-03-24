@@ -1,0 +1,15 @@
+# Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+# Triton-XDNA provides AMD XDNA NPU compilation via Triton and MLIR-AIR/AIE.
+# Installing triton-xdna automatically provides IRON dependencies (mlir-aie,
+# llvm-aie) so no need to install requirements-iron.txt separately.
+
+--extra-index-url https://pypi.org/simple
+
+triton-xdna
+--find-links https://github.com/amd/Triton-XDNA/releases/expanded_assets/latest-wheels
+--find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti
+--find-links https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+--find-links https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels-no-rtti
+
+black
