@@ -55,13 +55,13 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 | OS          | [Ubuntu 24.04.2], [Ubuntu 25.10]                                     |
 | ROCm        | [7.2.0][ROCm 7.2.0]                                                  |
 | XDNA Driver | [1.6][XDNA Driver 1.6]                                               |
-| MLIR-AIE    | [1.2.1][MLIR-AIE 1.2.1]                                              |
+| MLIR-AIE    | [1.3.1][MLIR-AIE 1.3.1]                                              |
 
 [Ubuntu 24.04.2]: https://releases.ubuntu.com/noble/
 [Ubuntu 25.10]: https://releases.ubuntu.com/questing/
 [ROCm 7.2.0]: https://rocm.docs.amd.com/en/docs-7.2.0/
 [XDNA Driver 1.6]: https://github.com/amd/xdna-driver/tree/1.6
-[MLIR-AIE 1.2.1]: https://github.com/Xilinx/mlir-aie/tree/v1.2.1
+[MLIR-AIE 1.3.1]: https://github.com/Xilinx/mlir-aie/tree/v1.3.1
 
 ### ROCm
 
