@@ -6,10 +6,10 @@ This document provides guidance for AI agents working on the ggml-hsa codebase.
 
 The ggml-hsa backend enables GGML tensor operations to run on AMD XDNA NPUs (AI Engines). It supports:
 
-| Architecture | IRON Device | Example Platforms |
-| ------------ | ----------- | ----------------- |
-| **aie2** | NPU1 | Phoenix, Hawk Point |
-| **aie2p** | NPU2 | Strix Halo, Krackan |
+| Architecture | IRON Device | AIE Array | Example Platforms |
+| ------------ | ----------- | --------- | ----------------- |
+| **aie2** | NPU1 | 4×4 cores | Phoenix, Hawk Point |
+| **aie2p** | NPU2 | 4×8 cores | Strix Point, Strix Halo, Krackan |
 
 The backend uses a multi-backend kernel compilation system with per-operation dispatch. Currently supported backends:
 
@@ -39,7 +39,7 @@ src/ggml-hsa/
 ├── aie-kernel-compiler.cpp/hpp  # JIT compilation interface
 ├── type-traits.hpp              # GGML type to C++ type mapping
 ├── kernels/                     # AIE kernel implementations (two-layer architecture)
-│   ├── __init__.py              # Package exports (ggml_compile_op, TensorDesc)
+│   ├── __init__.py              # Package exports (ggml_compile_op, Kernel, TensorDesc, ggml_tensor_to_tensordesc)
 │   ├── build.py                 # Kernel compilation orchestrator
 │   ├── build_iron.py            # IRON backend compiler
 │   ├── kernel.py                # Core types: Backend enum, Kernel, KernelSpec
@@ -189,6 +189,27 @@ IRON kernels (`kernels/iron/*.py`) define:
 
 These are paired with C++ core functions (`kernels/iron/*.cc`) that implement
 the actual vectorized computations using the AIE API.
+
+### Matrix Multiplication (`MUL_MAT`)
+
+The matrix multiplication kernel uses a sophisticated tiled design that distributes
+computation across the AIE array:
+
+- **Tiling**: Matrices are divided into tiles of size (m, k) for A, (k, n) for B, and (m, n) for C
+- **Array utilization**: Uses 4 rows × N columns (N=4 for NPU1/aie2, N=8 for NPU2/aie2p)
+- **Data flow**:
+  - Matrix A tiles are broadcast across columns, distributed across rows
+  - Matrix B tiles are broadcast across rows, distributed across columns
+  - Output C tiles are joined from compute cores back through memory hierarchy
+- **MAC dimensions**: Architecture-specific microkernel dimensions (r, s, t) determine tile constraints
+  - NPU1 bf16: (4, 8, 4), i8: (4, 8, 8), i16: (4, 4, 4)
+  - NPU2 bf16: (4, 8, 8) or (8, 8, 8) with bfp16 emulation, i8: (8, 8, 8), i16: (4, 4, 8)
+- **Memory hierarchy**: L3 (host) → L2 (mem tiles) → L1 (compute cores) with ObjectFifos
+- **Core functions**: Architecture-specific kernels in `aie2/mm.cc` and `aie2p/mm.cc`
+
+The implementation in `gemm.py` includes both a standalone CLI tool and a `gemm()` function
+callable from the dispatch layer. Key parameters include tile sizes (m, k, n), number of
+columns, data types, and layout (row-major vs column-major).
 
 ### Broadcasting Support
 
@@ -363,16 +384,13 @@ To add a new backend (e.g., Triton):
    ```python
    def compile_triton_kernel(
        kernel_spec: KernelSpec,
-       arch: str,
-       input_tensors: list[TensorDesc],
-       output_tensor: TensorDesc,
-       op_params: bytearray,
        work_dir: Path,
        exported_name: str,
        output_directory: Path,
        logger: logging.Logger,
        verbose: bool,
    ) -> None:
+       # Access kernel_spec.arch, kernel_spec.input_tensors, etc. as needed
        # Call kernel_spec.function to generate Triton IR
        # Compile to PDI and instructions
        pass
@@ -413,7 +431,7 @@ To add a new backend (e.g., Triton):
 - Include `aie_api/aie.hpp` for AIE intrinsics and vector types
 - Use `event0()` / `event1()` (from aie_api) to mark profiling regions
 - Use loop macros from `aie_kernel_utils.h` for optimization hints
-- Use `INPUT_DTYPE` / `OUTPUT_DTYPE` macros (set by compiler) for type flexibility
+- Use `INPUT_DTYPE` / `OUTPUT_DTYPE` macros (set by compiler) for type flexibility; binary ops use `INPUT0_DTYPE` / `INPUT1_DTYPE` / `OUTPUT_DTYPE`
 - Prefer vectorized operations using `aie::vector<T, N>` and `aie::accum<T, N>`
 - Keep kernels simple and focused on compute
 - Follow existing formatting (see `.clang-format`)
@@ -441,7 +459,8 @@ These operations have complete AIE kernel implementations:
 | Category | Operations |
 | -------- | ---------- |
 | Binary | `ADD`, `SUB`, `MUL`, `DIV` (with broadcast support) |
-| Unary | `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `SQR`, `LOG` |
+| Unary (GGML_UNARY_OP) | `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` |
+| Unary (GGML_OP) | `SQR`, `LOG` (with scalar_log kernel) |
 | Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
 | Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE) |
 
@@ -453,7 +472,9 @@ These operations are registered in `build.py` but raise `NotImplementedError`:
 - `TANH`, `ELU`, `SIGMOID`, `SILU`, `EXP` (require exp/transcendental functions)
 - `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` (require erf or approximations)
 
-These are placeholders for future implementation.
+These are placeholders for future implementation. Note that the `aie_kernel_math.h` header provides
+utility functions like `scalar_exp`, `scalar_log`, `pow2`, and `vec_exp` that can be used as building
+blocks for implementing these operations.
 
 ## Data Types
 
@@ -480,11 +501,20 @@ source ./env_setup.sh
 python3 -m pip install -r requirements.txt
 ```
 
+### MLIR-AIE Version
+
+The project currently uses **mlir-aie v1.3.1**. Ensure your environment
+matches this version to avoid compatibility issues with:
+
+- IRON API changes
+- ObjectFifo semantics
+- Compiler flags and build system updates
+
 ## Testing
 
 - Ensure that an IRON environment is present and active
 - Build with `GGML_HSA=ON` and optionally `GGML_HSA_JIT_COMPILE=ON`
-- Test files are in `tests` and `tests/ggml-hsa/`
+- Test files are in `tests/test-backend-ops.cpp` (shared) and `tests/ggml-hsa/` (HSA-specific: `test-mul-mat-hsa.cpp`, `test-vector-hsa.cpp`, `test-backend-ops-mnist.cpp`)
 - Ensure kernels work for both `aie2` and `aie2p` architectures
 - **Success:** Look for `<N>/<N> tests passed`.
 - **Failure:** Look for `0/0 tests passed` or `Could not create kernel for tensor`.
