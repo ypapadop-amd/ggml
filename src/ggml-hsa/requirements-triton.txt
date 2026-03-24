@@ -12,4 +12,4 @@ triton-xdna
 --find-links https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 --find-links https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels-no-rtti
 
-black
+ruff
