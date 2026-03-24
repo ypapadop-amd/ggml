@@ -28,12 +28,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 from build_iron import compile_iron_kernel
+from build_triton import compile_triton_kernel
 from kernel import Backend, Kernel, KernelSpec
 from tensor_desc import TensorDesc
 
 # Compiler registry mapping Backend enum to compile functions
 _compilers: dict[Backend, Callable] = {
     Backend.IRON: compile_iron_kernel,
+    Backend.TRITON: compile_triton_kernel,
 }
 
 # Mapping of GGML operations to kernel source files.
