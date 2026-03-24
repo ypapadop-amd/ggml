@@ -76,23 +76,45 @@ Due to ongoing NPU support work in [ROCR](https://github.com/ROCm/rocm-systems/t
 - Via IRON: [build_drivers.sh](https://github.com/Xilinx/mlir-aie/blob/main/utils/build_drivers.sh)
 - Direct: [xdna-driver README](https://github.com/amd/xdna-driver#linux-compilation-and-installation)
 
-### MLIR-AIE (IRON)
+### Compilation Backends
 
-`ggml-hsa` supports JIT compilation via the [IRON framework](https://github.com/Xilinx/mlir-aie).
+`ggml-hsa` supports multiple compilation backends for generating AIE kernels. Each operation selects its backend at runtime based on tensor configuration.
 
-Install dependencies:
+#### IRON (MLIR-AIE)
+
+The default backend using the [IRON framework](https://github.com/Xilinx/mlir-aie).
+
+Install IRON dependencies:
 
 ```bash
-python3 -m pip install -r src/ggml-hsa/requirements.txt
+python3 -m pip install -r src/ggml-hsa/requirements-iron.txt
 ```
 
 Or use the setup script to create a virtual environment:
 
 ```bash
-source src/ggml-hsa/env_setup.sh
+source src/ggml-hsa/env_setup.sh iron
 ```
 
 > **Note:** IRON environments consume considerable storage. For pre-generated kernels, set `GGML_HSA_KERNEL_DIR` and disable JIT at compile time.
+
+#### Triton-XDNA
+
+An optional backend using [Triton-XDNA](https://github.com/ROCm/Triton-XDNA) for compiler-driven kernel generation via MLIR-AIR/AIE.
+
+Install Triton dependencies (includes IRON):
+
+```bash
+python3 -m pip install -r src/ggml-hsa/requirements-triton.txt
+```
+
+Or use the setup script:
+
+```bash
+source src/ggml-hsa/env_setup.sh triton
+```
+
+> **Note:** The Triton backend is currently in development. Most operations use the IRON backend by default.
 
 ## Building
 
