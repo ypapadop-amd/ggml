@@ -30,9 +30,11 @@ class Backend(Enum):
 
     Each backend has its own compilation pipeline:
     - IRON: Uses MLIR-AIE/IRON framework for optimized AIE kernels
+    - TRITON: Uses Triton-XDNA for compiler-driven kernel generation via MLIR-AIR/AIE
     """
 
     IRON = auto()
+    TRITON = auto()
 
 
 @dataclass(frozen=True)
