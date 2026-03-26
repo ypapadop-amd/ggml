@@ -5,9 +5,7 @@
 #
 # (c) Copyright 2025-2026 AMD Inc.
 
-"""
-Top-level entry point for the GGML matrix multiplication operation (GGML_OP_MUL_MAT).
-"""
+"""Top-level entry point for the GGML matrix multiplication operation (GGML_OP_MUL_MAT)."""
 
 from .kernel import Backend, KernelSpec
 
@@ -15,17 +13,19 @@ from .kernel import Backend, KernelSpec
 def ggml_op_mul_mat(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """
-    GGML_OP_MUL_MAT implementation.
+    """GGML_OP_MUL_MAT implementation.
 
-    Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        input_tensors (list): List of two input tensors (A and B).
+    Parameters
+    ----------
+        arch: Target architecture (e.g., "aie2", "aie2p").
+        input_tensors: List of two input tensors (A and B).
         output_tensor: Output tensor (C).
-        op_params (bytearray): Operation-specific parameters.
+        op_params: Operation-specific parameters.
 
-    Returns:
+    Returns
+    -------
         KernelSpec for the MUL_MAT operation.
+
     """
     from .iron.gemm import gemm
 

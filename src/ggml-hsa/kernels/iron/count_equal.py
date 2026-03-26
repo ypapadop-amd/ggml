@@ -5,8 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""
-IRON kernel implementation for the count_equal operation.
+"""IRON kernel implementation for the count_equal operation.
 
 Counts the number of elements that are equal between two I32 input tensors.
 The output is a single I64 value, but since IRON doesn't support I64 in ObjectFifos,
@@ -16,12 +15,6 @@ we use two I32 values (low and high parts) for the transfer.
 from pathlib import Path
 
 import numpy as np
-
-from .utils import (
-    arch_to_device,
-    max_tile_size,
-)
-
 from aie.dialects.arith import index_cast
 from aie.ir import IntegerType
 from aie.iron import (
@@ -35,10 +28,14 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
 
+from .utils import (
+    arch_to_device,
+    max_tile_size,
+)
+
 
 def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """
-    IRON design for count_equal.
+    """IRON design for count_equal.
 
     Counts elements that are equal between two I32 input tensors and outputs
     a single I64 scalar with the count. Processes data in tiles.
@@ -47,25 +44,29 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
     as two I32 values (low and high 32 bits). The C++ kernel writes the 64-bit
     count as these two I32 lanes to the ObjectFifo output buffer, which together
     bitwise represent a single I64 value.
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List containing exactly two input tensors.
+
+    Parameters
+    ----------
+        arch: Target architecture.
+        input_tensors: List containing exactly two input tensors.
             Both tensors must be I32 with the same shape.
         output_tensor: Output tensor of type I64 with shape [1,1,1,1]
             containing the count of equal elements.
-        op_params (bytearray): Operation parameters (unused for COUNT_EQUAL).
+        op_params: Operation parameters (unused for COUNT_EQUAL).
 
-    Returns:
+    Returns
+    -------
         MLIR module representing the IRON program for count_equal.
 
-    Raises:
+    Raises
+    ------
         ValueError: If input_tensors does not contain exactly two tensors.
         ValueError: If input tensors have different shapes.
         ValueError: If input or output tensors are not contiguous in memory.
         ValueError: If input tensor dtype is not int32.
         ValueError: If output tensor dtype is not int64.
-    """
 
+    """
     if len(input_tensors) != 2:
         raise ValueError("Operation requires exactly two input tensors.")
 
@@ -190,22 +191,23 @@ def _create_external_function(
     input_tensor,
     tile_size: int,
 ) -> ExternalFunction:
-    """
-    Creates an ExternalFunction specification for count_equal.
+    """Creates an ExternalFunction specification for count_equal.
 
     The external function wraps the C++ kernel that performs the actual count_equal
     computation on the AIE tile.
 
-    Parameters:
-        op_name (str): Operation name used for function naming and compile flags.
+    Parameters
+    ----------
+        op_name: Operation name used for function naming and compile flags.
         input_tensor: Input tensor.
-        tile_size (int): Size of each tile in elements.
+        tile_size: Size of each tile in elements.
 
-    Returns:
+    Returns
+    -------
         ExternalFunction: Configured external function specification that references
             the count_equal.cc source file with appropriate compile flags.
-    """
 
+    """
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
         name=f"{op_name.lower()}",

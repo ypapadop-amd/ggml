@@ -1,7 +1,6 @@
 # Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-"""
-GGML HSA backend kernel build system.
+"""GGML HSA backend kernel build system.
 
 This module provides the infrastructure for compiling kernels to executable code
 for AMD XDNA / XDNA2 devices. It handles mapping GGML operations to their corresponding
@@ -22,14 +21,14 @@ Usage:
 
 import importlib.util
 import logging
-from collections.abc import Callable
-from pathlib import Path
 import sys
 import types
+from collections.abc import Callable
+from pathlib import Path
 
-from kernel import Kernel, KernelSpec, Backend
-from tensor_desc import TensorDesc
 from build_iron import compile_iron_kernel
+from kernel import Backend, Kernel, KernelSpec
+from tensor_desc import TensorDesc
 
 # Compiler registry mapping Backend enum to compile functions
 _compilers: dict[Backend, Callable] = {
@@ -81,22 +80,25 @@ _op_to_kernel_map: dict[str, Kernel] = {
 
 
 def get_compiler(backend: Backend) -> Callable:
-    """
-    Get the compiler function for the given backend.
+    """Get the compiler function for the given backend.
 
-    Parameters:
+    Parameters
+    ----------
         backend: The compilation backend to use.
 
-    Returns:
+    Returns
+    -------
         The compiler function for the specified backend.
 
-    Raises:
+    Raises
+    ------
         NotImplementedError: If the backend is not implemented.
 
     Note:
         Uses backend.name for lookup to handle the case where Backend enums
         from dynamically imported modules have different identity than those
         in this module.
+
     """
     # Lookup by name to handle different enum class identities from dynamic imports
     for registered_backend, compiler in _compilers.items():
@@ -106,17 +108,20 @@ def get_compiler(backend: Backend) -> Callable:
 
 
 def get_kernel(op_name: str) -> Kernel:
-    """
-    Get the kernel for the given operation.
+    """Get the kernel for the given operation.
 
-    Parameters:
+    Parameters
+    ----------
         op_name: Operation name.
 
-    Returns:
+    Returns
+    -------
         The Kernel object associated with the operation.
 
-    Raises:
+    Raises
+    ------
         NotImplementedError: If the Kernel is not found.
+
     """
     kernel = _op_to_kernel_map.get(op_name)
     if kernel is None:
@@ -125,21 +130,24 @@ def get_kernel(op_name: str) -> Kernel:
 
 
 def import_from_path(module_name: str, path: str | Path):
-    """
-    Import a module by name from the specified file path.
+    """Import a module by name from the specified file path.
 
     This function handles the complexity of importing Python modules dynamically,
     including setting up the package structure for relative imports.
 
-    Parameters:
+    Parameters
+    ----------
         module_name: Name of the module to import.
         path: Path to the Python file containing the module.
 
-    Returns:
+    Returns
+    -------
         The imported module object.
 
-    Raises:
+    Raises
+    ------
         ImportError: If the module cannot be found or loaded.
+
     """
     path = Path(path).resolve()
     parent_dir = path.parent
@@ -190,15 +198,15 @@ def ggml_compile_op(
     output_directory: str | Path,
     verbose: bool = False,
 ):
-    """
-    Compile a GGML operation kernel to PDI and instruction files.
+    """Compile a GGML operation kernel to PDI and instruction files.
 
     This is the main entry point for kernel compilation. It:
     1. Looks up the kernel dispatch module for the operation
     2. Calls the dispatch function to get a KernelSpec (backend + function)
     3. Invokes the appropriate backend compiler
 
-    Parameters:
+    Parameters
+    ----------
         op_name: Operation name (e.g., "ADD", "MUL_MAT").
         arch: Target architecture (e.g., "aie2", "aie2p").
         input_tensors: List of input tensor descriptions.
@@ -208,9 +216,11 @@ def ggml_compile_op(
         output_directory: Directory to save the compiled PDI and instruction files.
         verbose: If True, enables verbose logging output.
 
-    Raises:
+    Raises
+    ------
         ValueError: If the operation is not supported.
         NotImplementedError: If the selected backend is not implemented.
+
     """
     # Setup logging
     logger = logging.getLogger(__name__)
@@ -295,17 +305,20 @@ def ggml_compile_op(
 
 
 def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
-    """
-    Convert a string of the form "(x,y,z,w)" to a tuple of integers.
+    """Convert a string of the form "(x,y,z,w)" to a tuple of integers.
 
-    Parameters:
+    Parameters
+    ----------
         string: String representation of a 4-element tuple.
 
-    Returns:
+    Returns
+    -------
         A tuple of 4 integers.
 
-    Raises:
+    Raises
+    ------
         ValueError: If the string does not represent exactly 4 integers.
+
     """
     string = string.replace("(", "").replace(")", "").strip(",")
     ints = map(int, string.split(","))
@@ -316,14 +329,16 @@ def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
 
 
 def to_tensordesc(string: str) -> TensorDesc:
-    """
-    Create a TensorDesc from a string representation.
+    """Create a TensorDesc from a string representation.
 
-    Parameters:
+    Parameters
+    ----------
         string: String of the form "(shape)/dtype", e.g., "(1024,1,1,1)/f32".
 
-    Returns:
+    Returns
+    -------
         A TensorDesc instance with the specified shape and dtype.
+
     """
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
@@ -331,17 +346,20 @@ def to_tensordesc(string: str) -> TensorDesc:
 
 
 def file_path(string: str):
-    """
-    Validate that a string represents an existing file path.
+    """Validate that a string represents an existing file path.
 
-    Parameters:
+    Parameters
+    ----------
         string: The file path to validate.
 
-    Returns:
+    Returns
+    -------
         The validated file path string.
 
-    Raises:
+    Raises
+    ------
         FileNotFoundError: If the file does not exist.
+
     """
     if not Path(string).is_file():
         raise FileNotFoundError(string)

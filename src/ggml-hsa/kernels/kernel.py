@@ -1,7 +1,6 @@
 # Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-"""
-Kernel specification types for the GGML HSA backend.
+"""Kernel specification types for the GGML HSA backend.
 
 This module defines the core data structures used for kernel dispatch and
 compilation backend selection. The two-layer architecture separates:
@@ -16,6 +15,7 @@ Example:
 
     # At runtime, ggml_op_add() returns:
     KernelSpec(backend=Backend.IRON, function=iron_add_fn)
+
 """
 
 from collections.abc import Callable
@@ -26,8 +26,7 @@ from typing import Any
 
 
 class Backend(Enum):
-    """
-    Supported kernel compilation backends.
+    """Supported kernel compilation backends.
 
     Each backend has its own compilation pipeline:
     - IRON: Uses MLIR-AIE/IRON framework for optimized AIE kernels
@@ -38,16 +37,16 @@ class Backend(Enum):
 
 @dataclass(frozen=True)
 class Kernel:
-    """
-    Static mapping entry from GGML operation to dispatch module.
+    """Static mapping entry from GGML operation to dispatch module.
 
     This dataclass represents an entry in op_to_kernel_map. It identifies
     which Python module contains the dispatch function for a given operation.
 
     Attributes:
-        name (str): Name of the dispatch function to call (e.g., "ggml_op_add").
-        source_file (str | Path): Path to the Python module containing the
+        name: Name of the dispatch function to call (e.g., "ggml_op_add").
+        source_file: Path to the Python module containing the
             dispatch function.
+
     """
 
     name: str
@@ -56,8 +55,7 @@ class Kernel:
 
 @dataclass(frozen=True)
 class KernelSpec:
-    """
-    Specification returned by kernel dispatch functions.
+    """Specification returned by kernel dispatch functions.
 
     When a kernel dispatch function (e.g., ggml_op_add) is called, it examines
     the input parameters and returns a KernelSpec that tells the build system:
@@ -68,13 +66,14 @@ class KernelSpec:
     dtypes, and other runtime parameters.
 
     Attributes:
-        backend (Backend): The compilation backend to use.
-        op_name (str): Name of the operation.
-        arch (str): Target architecture for the kernel.
-        input_tensors (list): List of input tensors for the operation.
-        output_tensor (Any): Output tensor for the operation.
-        op_params (bytearray): Operation parameters.
-        function (Callable): Callable that generates the backend-specific IR.
+        backend: The compilation backend to use.
+        op_name: Name of the operation.
+        arch: Target architecture for the kernel.
+        input_tensors: List of input tensors for the operation.
+        output_tensor: Output tensor for the operation.
+        op_params: Operation parameters.
+        function: Callable that generates the backend-specific IR.
+
     """
 
     backend: Backend

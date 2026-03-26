@@ -5,15 +5,22 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""
-IRON kernel implementation for the clamp operation.
-"""
+"""IRON kernel implementation for the clamp operation."""
 
 import struct
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
+from aie.iron import (
+    ExternalFunction,
+    ObjectFifo,
+    Program,
+    Runtime,
+    Worker,
+    dtype_to_str,
+)
+from aie.iron.controlflow import range_
+from aie.iron.placers import SequentialPlacer
 
 from .utils import (
     arch_aligned_num_elements,
@@ -21,40 +28,30 @@ from .utils import (
     max_tile_size,
 )
 
-from aie.iron import (
-    ObjectFifo,
-    Program,
-    Runtime,
-    Worker,
-    dtype_to_str,
-    ExternalFunction,
-)
-from aie.iron.placers import SequentialPlacer
-from aie.iron.controlflow import range_
-
 
 def _create_external_function(
     arch: str,
     op_name: str,
     input_tensor,
     output_tensor,
-) -> Tuple[ExternalFunction, int, int]:
-    """
-    Creates an ExternalFunction specification for the clamp operation.
+) -> tuple[ExternalFunction, int, int]:
+    """Creates an ExternalFunction specification for the clamp operation.
 
-    Parameters:
-        arch (str): Target architecture.
-        op_name (str): Operation name used for function naming and compile flags.
+    Parameters
+    ----------
+        arch: Target architecture.
+        op_name: Operation name used for function naming and compile flags.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
 
-    Returns:
+    Returns
+    -------
         Tuple[ExternalFunction, int, int]: A tuple containing:
             - func: The configured ExternalFunction specification.
             - num_elements: Architecture-aligned number of elements.
             - tile_size: Size of each processing tile.
-    """
 
+    """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
     tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
 
@@ -79,19 +76,19 @@ def _create_external_function(
 
 
 def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """
-    IRON design for clamp.
+    """IRON design for clamp.
 
     Clamps each element of the input tensor to the range [min_val, max_val].
     output[i] = max(min_val, min(input[i], max_val))
 
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of one input tensor.
+    Parameters
+    ----------
+        arch: Target architecture.
+        input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-        op_params (bytearray): Operation parameters containing min and max values.
-    """
+        op_params: Operation parameters containing min and max values.
 
+    """
     if len(input_tensors) != 1:
         raise ValueError("Operation requires exactly one input tensor.")
 

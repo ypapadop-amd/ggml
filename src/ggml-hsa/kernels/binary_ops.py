@@ -5,8 +5,7 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""
-Top-level entry points for GGML binary operations (GGML_OP_ADD, GGML_OP_SUB,
+"""Top-level entry points for GGML binary operations (GGML_OP_ADD, GGML_OP_SUB,
 GGML_OP_MUL, GGML_OP_DIV).
 """
 
@@ -22,18 +21,20 @@ def _iron_binary_kernel(
     output_tensor,
     op_params: bytearray,
 ):
-    """
-    Wrapper for IRON binary operations matching the KernelFunction protocol.
+    """Wrapper for IRON binary operations matching the KernelFunction protocol.
 
-    Parameters:
-        op_name (str): Name of the binary operation.
-        arch (str): Target architecture.
-        input_tensors (list): List of two input tensors.
+    Parameters
+    ----------
+        op_name: Name of the binary operation.
+        arch: Target architecture.
+        input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params (bytearray): Operation parameters (unused for binary ops).
+        op_params: Operation parameters (unused for binary ops).
 
-    Returns:
+    Returns
+    -------
         MLIR module for the binary operation.
+
     """
     from .iron.binary_ops import binary_op
 
@@ -52,21 +53,24 @@ def _make_binary_kernel_spec(
     op_params: bytearray,
     op_name: str,
 ) -> KernelSpec:
-    """
-    Create a KernelSpec for a binary operation.
+    """Create a KernelSpec for a binary operation.
 
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of two input tensors.
+    Parameters
+    ----------
+        arch: Target architecture.
+        input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params (bytearray): Operation parameters.
-        op_name (str): Name of the operation.
+        op_params: Operation parameters.
+        op_name: Name of the operation.
 
-    Returns:
+    Returns
+    -------
         KernelSpec configured for IRON backend.
 
-    Raises:
+    Raises
+    ------
         ValueError: If input_tensors does not contain exactly two tensors.
+
     """
     if len(input_tensors) != 2:
         raise ValueError("Operation requires exactly two input tensors.")
@@ -85,17 +89,19 @@ def _make_binary_kernel_spec(
 def ggml_op_add(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """
-    GGML_OP_ADD implementation.
+    """GGML_OP_ADD implementation.
 
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of two input tensors.
+    Parameters
+    ----------
+        arch: Target architecture.
+        input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params (bytearray): Operation parameters.
+        op_params: Operation parameters.
 
-    Returns:
+    Returns
+    -------
         KernelSpec for the ADD operation.
+
     """
     return _make_binary_kernel_spec(
         arch, input_tensors, output_tensor, op_params, "GGML_OP_ADD"
@@ -105,17 +111,19 @@ def ggml_op_add(
 def ggml_op_sub(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """
-    GGML_OP_SUB implementation.
+    """GGML_OP_SUB implementation.
 
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of two input tensors.
+    Parameters
+    ----------
+        arch: Target architecture.
+        input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params (bytearray): Operation parameters.
+        op_params: Operation parameters.
 
-    Returns:
+    Returns
+    -------
         KernelSpec for the SUB operation.
+
     """
     return _make_binary_kernel_spec(
         arch, input_tensors, output_tensor, op_params, "GGML_OP_SUB"
@@ -125,17 +133,19 @@ def ggml_op_sub(
 def ggml_op_mul(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """
-    GGML_OP_MUL implementation.
+    """GGML_OP_MUL implementation.
 
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of two input tensors.
+    Parameters
+    ----------
+        arch: Target architecture.
+        input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params (bytearray): Operation parameters.
+        op_params: Operation parameters.
 
-    Returns:
+    Returns
+    -------
         KernelSpec for the MUL operation.
+
     """
     return _make_binary_kernel_spec(
         arch, input_tensors, output_tensor, op_params, "GGML_OP_MUL"
@@ -145,17 +155,19 @@ def ggml_op_mul(
 def ggml_op_div(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """
-    GGML_OP_DIV implementation.
+    """GGML_OP_DIV implementation.
 
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of two input tensors.
+    Parameters
+    ----------
+        arch: Target architecture.
+        input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params (bytearray): Operation parameters.
+        op_params: Operation parameters.
 
-    Returns:
+    Returns
+    -------
         KernelSpec for the DIV operation.
+
     """
     return _make_binary_kernel_spec(
         arch, input_tensors, output_tensor, op_params, "GGML_OP_DIV"

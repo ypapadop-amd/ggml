@@ -5,9 +5,7 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""
-Top-level entry point for the GGML scale operation (GGML_OP_SCALE).
-"""
+"""Top-level entry point for the GGML scale operation (GGML_OP_SCALE)."""
 
 from .kernel import Backend, KernelSpec
 
@@ -15,17 +13,19 @@ from .kernel import Backend, KernelSpec
 def ggml_op_scale(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """
-    GGML_OP_SCALE implementation.
+    """GGML_OP_SCALE implementation.
 
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of one input tensor.
+    Parameters
+    ----------
+        arch: Target architecture.
+        input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-        op_params (bytearray): Operation parameters containing the scale factor.
+        op_params: Operation parameters containing the scale factor.
 
-    Returns:
+    Returns
+    -------
         KernelSpec for the SCALE operation.
+
     """
     from .iron.scale import scale
 

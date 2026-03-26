@@ -5,33 +5,30 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""
-IRON kernel implementation for binary element-wise operations.
-"""
+"""IRON kernel implementation for binary element-wise operations."""
 
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from aie.dialects.arith import index_cast
+from aie.ir import IntegerType
+from aie.iron import (
+    ExternalFunction,
+    ObjectFifo,
+    Program,
+    Runtime,
+    Worker,
+    dtype_to_str,
+)
+from aie.iron.controlflow import range_
+from aie.iron.placers import SequentialPlacer
 
 from .utils import (
     arch_aligned_num_elements,
     arch_to_device,
     max_tile_size,
 )
-
-from aie.iron import (
-    ObjectFifo,
-    Program,
-    Runtime,
-    Worker,
-    dtype_to_str,
-    ExternalFunction,
-)
-from aie.iron.placers import SequentialPlacer
-from aie.iron.controlflow import range_
-from aie.dialects.arith import index_cast
-from aie.ir import IntegerType
 
 
 def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
@@ -48,12 +45,15 @@ def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
                    (t1->ne[3]%t0->ne[3] == 0);
         }
 
-    Parameters:
+    Parameters
+    ----------
         t0_shape: Shape of the smaller tensor to be repeated.
         t1_shape: Shape of the larger tensor to fill.
 
-    Returns:
+    Returns
+    -------
         True if t0 can be repeated to fill t1.
+
     """
     for i in range(4):
         if t1_shape[i] % t0_shape[i] != 0:
@@ -66,8 +66,9 @@ class CoreFunctionSpec:
     """Specification for a core function to be used in binary operations.
 
     Attributes:
-        external_function (ExternalFunction): The external function to be called for the binary operation.
-        num_elements (int): The total number of elements in the input/output tensors.
+        external_function: The external function to be called for the binary operation.
+        num_elements: The total number of elements in the input/output tensors.
+
     """
 
     external_function: ExternalFunction
@@ -85,16 +86,16 @@ def _binary_op(
     function_spec: CoreFunctionSpec,
     output_tensor,
 ):
-    """
-    Implements output_tensor = op(*input_tensors)
+    """Implements output_tensor = op(*input_tensors)
 
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): Input tensors.
-        function_spec (CoreFunctionSpec): Binary operator specification.
+    Parameters
+    ----------
+        arch: Target architecture.
+        input_tensors: Input tensors.
+        function_spec: Binary operator specification.
         output_tensor: Output tensor.
-    """
 
+    """
     # Tile size and number of tiles
     num_elements = function_spec.num_elements
     tile_size = function_spec.tile_size
@@ -159,19 +160,20 @@ def _create_external_function(
     input_tensors: list,
     output_tensor,
 ) -> CoreFunctionSpec:
-    """
-    Creates a specification for binary ops.
+    """Creates a specification for binary ops.
 
-    Parameters:
-        arch (str): Target architecture.
-        op_name (str): Name of the operation.
-        input_tensors (list): List of input tensors.
+    Parameters
+    ----------
+        arch: Target architecture.
+        op_name: Name of the operation.
+        input_tensors: List of input tensors.
         output_tensor: Output tensor.
 
-    Returns:
+    Returns
+    -------
         CoreFunctionSpec: Specification for the core function to be used in binary ops.
-    """
 
+    """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
     tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
 
@@ -201,18 +203,19 @@ class BroadcastFunctionSpec:
     """Specification for a broadcast binary operation.
 
     Attributes:
-        external_function (ExternalFunction): The external function for broadcast op.
-        num_elements_out (int): Total number of elements in output (and src0).
-        num_elements_src1 (int): Total number of elements in src1 (smaller).
-        src1_ne (tuple): Shape of src1 as 4-element tuple (ne0, ne1, ne2, ne3).
-        dst_ne (tuple): Shape of dst as 4-element tuple (ne0, ne1, ne2, ne3).
+        external_function: The external function for broadcast op.
+        num_elements_out: Total number of elements in output (and src0).
+        num_elements_src1: Total number of elements in src1 (smaller).
+        src1_ne: Shape of src1 as 4-element tuple (ne0, ne1, ne2, ne3).
+        dst_ne: Shape of dst as 4-element tuple (ne0, ne1, ne2, ne3).
+
     """
 
     external_function: ExternalFunction
     num_elements_out: int
     num_elements_src1: int
-    src1_ne: tuple  # (ne0, ne1, ne2, ne3)
-    dst_ne: tuple  # (ne0, ne1, ne2, ne3)
+    src1_ne: tuple[int, int, int, int]  # (ne0, ne1, ne2, ne3)
+    dst_ne: tuple[int, int, int, int]  # (ne0, ne1, ne2, ne3)
 
     @property
     def tile_size(self) -> int:
@@ -226,20 +229,22 @@ def _create_broadcast_external_function(
     input_tensors: list,
     output_tensor,
 ) -> BroadcastFunctionSpec:
-    """
-    Creates a specification for broadcast binary ops.
+    """Creates a specification for broadcast binary ops.
 
     In broadcast mode, src1 is smaller than src0/dst and gets repeated.
     The kernel receives the full src1 buffer and uses modulo indexing.
 
-    Parameters:
-        arch (str): Target architecture.
-        op_name (str): Name of the operation.
-        input_tensors (list): List of input tensors [src0, src1].
+    Parameters
+    ----------
+        arch: Target architecture.
+        op_name: Name of the operation.
+        input_tensors: List of input tensors [src0, src1].
         output_tensor: Output tensor.
 
-    Returns:
+    Returns
+    -------
         BroadcastFunctionSpec: Specification for broadcast binary ops.
+
     """
     num_elements_out = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
     num_elements_src1 = arch_aligned_num_elements(arch=arch, tensor=input_tensors[1])
@@ -292,14 +297,15 @@ def _binary_op_broadcast(
     function_spec: BroadcastFunctionSpec,
     output_tensor,
 ):
-    """
-    Binary op with broadcasting - src1 loaded fully once, src0 streamed in tiles.
+    """Binary op with broadcasting - src1 loaded fully once, src0 streamed in tiles.
 
-    Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): Input tensors [src0, src1].
-        function_spec (BroadcastFunctionSpec): Broadcast operation specification.
+    Parameters
+    ----------
+        arch: Target architecture.
+        input_tensors: Input tensors [src0, src1].
+        function_spec: Broadcast operation specification.
         output_tensor: Output tensor.
+
     """
     num_elements_out = function_spec.num_elements_out
     num_elements_src1 = function_spec.num_elements_src1
@@ -380,19 +386,19 @@ def binary_op(
     input_tensors: list,
     output_tensor,
 ):
-    """
-    IRON generic design for binary operations.
+    """IRON generic design for binary operations.
 
     Supports both element-wise operations (same shape) and broadcasting
     (src1 smaller, gets repeated to match src0/dst).
 
-    Parameters:
-        arch (str): Target architecture.
-        op_name (str): Name of the operation.
-        input_tensors (list): List of two input tensors [src0, src1].
+    Parameters
+    ----------
+        arch: Target architecture.
+        op_name: Name of the operation.
+        input_tensors: List of two input tensors [src0, src1].
         output_tensor: Output tensor.
-    """
 
+    """
     if len(input_tensors) != 2:
         raise ValueError("Operation requires exactly two input tensors.")
 
@@ -432,18 +438,17 @@ def binary_op(
             function_spec=function_spec,
             output_tensor=output_tensor,
         )
-    else:
-        # Non-broadcast path: standard element-wise operation
-        function_spec = _create_external_function(
-            arch=arch,
-            op_name=op_name,
-            input_tensors=input_tensors,
-            output_tensor=output_tensor,
-        )
+    # Non-broadcast path: standard element-wise operation
+    function_spec = _create_external_function(
+        arch=arch,
+        op_name=op_name,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+    )
 
-        return _binary_op(
-            arch=arch,
-            input_tensors=input_tensors,
-            function_spec=function_spec,
-            output_tensor=output_tensor,
-        )
+    return _binary_op(
+        arch=arch,
+        input_tensors=input_tensors,
+        function_spec=function_spec,
+        output_tensor=output_tensor,
+    )
