@@ -15,15 +15,13 @@ def ggml_op_mul_mat(
 ) -> KernelSpec:
     """GGML_OP_MUL_MAT implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture (e.g., "aie2", "aie2p").
         input_tensors: List of two input tensors (A and B).
         output_tensor: Output tensor (C).
         op_params: Operation-specific parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the MUL_MAT operation.
 
     """

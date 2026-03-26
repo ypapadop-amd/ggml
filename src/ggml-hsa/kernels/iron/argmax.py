@@ -35,8 +35,7 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
     Uses row-by-row processing where each kernel invocation processes one row and
     outputs a single I32 index.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List containing exactly one input tensor.
             The tensor must be F32 with shape [ne0, ne1, ne2, ne3] where ne0 is the
@@ -46,12 +45,10 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
             containing one index per row indicating the position of the maximum value.
         op_params: Operation parameters (unused for ARGMAX).
 
-    Returns
-    -------
+    Returns:
         MLIR module representing the IRON program for argmax.
 
-    Raises
-    ------
+    Raises:
         ValueError: If input_tensors does not contain exactly one tensor.
         ValueError: If input or output tensors are not contiguous in memory.
         ValueError: If output tensor size does not match the number of input rows.
@@ -139,15 +136,13 @@ def _create_external_function(
     computation on the AIE tile. The kernel receives one row of input data and
     outputs a single I32 index.
 
-    Parameters
-    ----------
+    Parameters:
         op_name: Operation name used for function naming and compile flags.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
         row_length: Number of elements per row (ne0 dimension).
 
-    Returns
-    -------
+    Returns:
         ExternalFunction: Configured external function specification that references
             the argmax.cc source file with appropriate compile flags for dtype and
             vector size configuration.

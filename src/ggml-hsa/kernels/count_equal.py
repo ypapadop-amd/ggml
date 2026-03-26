@@ -19,8 +19,7 @@ def ggml_op_count_equal(
     Both input tensors must have the same shape and be of type I32.
     The output is a single I64 scalar containing the count.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List containing exactly two input tensors. Both tensors must be I32 type and contiguous in memory.
         output_tensor: Output tensor of type I64 with
@@ -28,8 +27,7 @@ def ggml_op_count_equal(
         op_params: Operation parameters as a 64-byte buffer (unused
             for COUNT_EQUAL, but required by the dispatch interface).
 
-    Returns
-    -------
+    Returns:
         KernelSpec: Kernel specification with backend=IRON and the count_equal_op
             function for generating the MLIR module.
 

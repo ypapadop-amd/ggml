@@ -12,15 +12,13 @@ def align_to_arch(
 ) -> int:
     """Align a size to architecture requirements.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         size: Size to align (number of elements).
         dtype: Data type of elements.
         alignment_bytes: Alignment in bytes.
 
-    Returns
-    -------
+    Returns:
         int: Aligned size.
 
     """
@@ -44,13 +42,11 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
     Return the number of elements in the tensor aligned to what the architecture
     expects for the data type of the tensor.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         tensor: Tensor.
 
-    Returns
-    -------
+    Returns:
         int: Number of elements aligned to architecture requirements.
 
     """
@@ -60,14 +56,12 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """Return the maximum tile size based on device, data type and number of elements.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         dtype: Data type of the tensor elements.
         num_elements: Total number of elements in the tensor.
 
-    Returns
-    -------
+    Returns:
         int: Maximum tile size.
 
     """
@@ -93,16 +87,13 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
 def arch_to_device(device):
     """Convert an architecture string to an IRON device object.
 
-    Parameters
-    ----------
+    Parameters:
         device: Architecture string ("aie2" or "aie2p") or an existing device object.
 
-    Returns
-    -------
+    Returns:
         NPU1 for "aie2", NPU2 for "aie2p", or the input if already a device object.
 
-    Raises
-    ------
+    Raises:
         ValueError: If the architecture string is not supported.
 
     """

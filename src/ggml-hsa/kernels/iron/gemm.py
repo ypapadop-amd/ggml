@@ -137,8 +137,7 @@ def my_matmul(
     This function creates the complete AIE design including tile declarations,
     object FIFOs for data movement, compute core logic, and runtime DMA sequences.
 
-    Parameters
-    ----------
+    Parameters:
         dev: Device type ("npu" or "npu2").
         M: Number of rows in matrix A and C.
         K: Inner dimension (columns of A, rows of B).
@@ -159,8 +158,7 @@ def my_matmul(
         object_file: Name of the compiled object file containing kernels.
         generate_taps: If True, return TensorAccessPattern objects for visualization.
 
-    Returns
-    -------
+    Returns:
         If generate_taps is True, returns a tuple of TensorAccessSequence objects
         for A, B, and C matrices. Otherwise returns None.
 

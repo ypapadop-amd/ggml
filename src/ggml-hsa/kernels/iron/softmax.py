@@ -34,12 +34,10 @@ def get_softmax_dimensions(tensor) -> tuple[int, int]:
     GGML convention: softmax is over dimension 0 (ne00).
     GGML shape ordering: (ne00, ne01, ne02, ne03) where ne00 is innermost.
 
-    Parameters
-    ----------
+    Parameters:
         tensor: Input tensor with shape in GGML order.
 
-    Returns
-    -------
+    Returns:
         Tuple of (row_length, num_rows) where:
             - row_length = ne00 (dimension over which softmax is computed)
             - num_rows = ne01 * ne02 * ne03 (number of independent rows)
@@ -66,8 +64,7 @@ def get_softmax_dimensions(tensor) -> tuple[int, int]:
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """IRON design for softmax.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of input tensors:
             - input_tensors[0]: Input tensor (required)
@@ -152,8 +149,7 @@ def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_bias):
     """Create an IRON program for basic softmax without mask or sink tensors.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         op_name: Operation name for the external function.
         input_tensor: Input tensor.
@@ -161,8 +157,7 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
         scale: Scaling factor applied before exponentiation.
         max_bias: Maximum bias (unused in unary variant).
 
-    Returns
-    -------
+    Returns:
         MLIR module representing the softmax program.
 
     """
@@ -214,8 +209,7 @@ def create_binary_program(
     before computing softmax. It also supports ALiBi positional encoding when
     max_bias > 0.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         op_name: Operation name for the external function.
         input_tensor: Input tensor.
@@ -224,8 +218,7 @@ def create_binary_program(
         scale: Scaling factor applied before exponentiation.
         max_bias: Maximum bias for ALiBi positional encoding.
 
-    Returns
-    -------
+    Returns:
         MLIR module representing the masked softmax program.
 
     """

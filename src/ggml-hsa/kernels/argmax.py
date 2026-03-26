@@ -19,8 +19,7 @@ def ggml_op_argmax(
     For a tensor with shape [ne0, ne1, ne2, ne3], computes argmax over ne0 for each
     of the ne1 * ne2 * ne3 rows, producing an I32 output tensor with shape [ne1, ne2, ne3].
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List containing exactly one input tensor.
         output_tensor: Output tensor of type I32. Shape is
@@ -28,8 +27,7 @@ def ggml_op_argmax(
         op_params: Operation parameters (unused for ARGMAX, but required
             by the dispatch interface).
 
-    Returns
-    -------
+    Returns:
         KernelSpec: Kernel specification for the ARGMAX operation.
 
     """

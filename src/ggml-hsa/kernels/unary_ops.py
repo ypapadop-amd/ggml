@@ -22,16 +22,14 @@ def _iron_unary_kernel(
 ):
     """Return rapper for IRON unary operations matching the KernelFunction protocol.
 
-    Parameters
-    ----------
+    Parameters:
         op_name: Name of the unary operation.
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters (unused for unary ops).
 
-    Returns
-    -------
+    Returns:
         MLIR module for the unary operation.
 
     """
@@ -52,16 +50,14 @@ def _make_unary_kernel_spec(
 ) -> KernelSpec:
     """Create a KernelSpec for a unary operation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
         op_name: Name of the unary operation.
 
-    Returns
-    -------
+    Returns:
         KernelSpec configured for IRON backend.
 
     """
@@ -81,15 +77,13 @@ def ggml_op_sqr(
 ) -> KernelSpec:
     """GGML_OP_SQR implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the SQR operation.
 
     """
@@ -103,15 +97,13 @@ def ggml_op_sqrt(
 ) -> KernelSpec:
     """GGML_OP_SQRT implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the SQRT operation.
 
     """
@@ -123,15 +115,13 @@ def ggml_op_log(
 ) -> KernelSpec:
     """GGML_OP_LOG implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the LOG operation.
 
     """
@@ -145,15 +135,13 @@ def ggml_op_sin(
 ) -> KernelSpec:
     """GGML_OP_SIN implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the SIN operation.
 
     """
@@ -165,15 +153,13 @@ def ggml_op_cos(
 ) -> KernelSpec:
     """GGML_OP_COS implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the COS operation.
 
     """
@@ -185,15 +171,13 @@ def ggml_unary_op_abs(
 ) -> KernelSpec:
     """GGML_UNARY_OP_ABS implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the ABS operation.
 
     """
@@ -207,15 +191,13 @@ def ggml_unary_op_sgn(
 ) -> KernelSpec:
     """GGML_UNARY_OP_SGN implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the SGN operation.
 
     """
@@ -229,15 +211,13 @@ def ggml_unary_op_neg(
 ) -> KernelSpec:
     """GGML_UNARY_OP_NEG implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the NEG operation.
 
     """
@@ -251,15 +231,13 @@ def ggml_unary_op_step(
 ) -> KernelSpec:
     """GGML_UNARY_OP_STEP implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the STEP operation.
 
     """
@@ -273,15 +251,13 @@ def ggml_unary_op_tanh(
 ) -> KernelSpec:
     """GGML_UNARY_OP_TANH implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the TANH operation.
 
     """
@@ -293,15 +269,13 @@ def ggml_unary_op_elu(
 ) -> KernelSpec:
     """GGML_UNARY_OP_ELU implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the ELU operation.
 
     """
@@ -313,15 +287,13 @@ def ggml_unary_op_relu(
 ) -> KernelSpec:
     """GGML_UNARY_OP_RELU implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the RELU operation.
 
     """
@@ -335,15 +307,13 @@ def ggml_unary_op_sigmoid(
 ) -> KernelSpec:
     """GGML_UNARY_OP_SIGMOID implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the SIGMOID operation.
 
     """
@@ -355,15 +325,13 @@ def ggml_unary_op_gelu(
 ) -> KernelSpec:
     """GGML_UNARY_OP_GELU implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the GELU operation.
 
     """
@@ -375,15 +343,13 @@ def ggml_unary_op_gelu_quick(
 ) -> KernelSpec:
     """GGML_UNARY_OP_GELU_QUICK implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the GELU_QUICK operation.
 
     """
@@ -395,15 +361,13 @@ def ggml_unary_op_silu(
 ) -> KernelSpec:
     """GGML_UNARY_OP_SILU implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the SILU operation.
 
     """
@@ -415,15 +379,13 @@ def ggml_unary_op_hardswish(
 ) -> KernelSpec:
     """GGML_UNARY_OP_HARDSWISH implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the HARDSWISH operation.
 
     """
@@ -437,15 +399,13 @@ def ggml_unary_op_hardsigmoid(
 ) -> KernelSpec:
     """GGML_UNARY_OP_HARDSIGMOID implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the HARDSIGMOID operation.
 
     """
@@ -459,15 +419,13 @@ def ggml_unary_op_exp(
 ) -> KernelSpec:
     """GGML_UNARY_OP_EXP implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor : Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the EXP operation.
 
     """
@@ -479,15 +437,13 @@ def ggml_unary_op_gelu_erf(
 ) -> KernelSpec:
     """GGML_UNARY_OP_GELU_ERF implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the GELU_ERF operation.
 
     """
@@ -499,15 +455,13 @@ def ggml_unary_op_xielu(
 ) -> KernelSpec:
     """GGML_UNARY_OP_XIELU implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the XIELU operation.
 
     """
@@ -519,15 +473,13 @@ def ggml_unary_op_floor(
 ) -> KernelSpec:
     """GGML_UNARY_OP_FLOOR implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the FLOOR operation.
 
     """
@@ -541,15 +493,13 @@ def ggml_unary_op_ceil(
 ) -> KernelSpec:
     """GGML_UNARY_OP_CEIL implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the CEIL operation.
 
     """
@@ -563,15 +513,13 @@ def ggml_unary_op_round(
 ) -> KernelSpec:
     """GGML_UNARY_OP_ROUND implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the ROUND operation.
 
     """
@@ -585,15 +533,13 @@ def ggml_unary_op_trunc(
 ) -> KernelSpec:
     """GGML_UNARY_OP_TRUNC implementation.
 
-    Parameters
-    ----------
+    Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the TRUNC operation.
 
     """

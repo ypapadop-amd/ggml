@@ -45,13 +45,11 @@ def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
                    (t1->ne[3]%t0->ne[3] == 0);
         }
 
-    Parameters
-    ----------
+    Parameters:
         t0_shape: Shape of the smaller tensor to be repeated.
         t1_shape: Shape of the larger tensor to fill.
 
-    Returns
-    -------
+    Returns:
         True if t0 can be repeated to fill t1.
 
     """
@@ -85,8 +83,7 @@ def _binary_op(
 ):
     """Implement output_tensor = op(*input_tensors).
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: Input tensors.
         function_spec: Binary operator specification.
@@ -158,15 +155,13 @@ def _create_external_function(
 ) -> CoreFunctionSpec:
     """Create a specification for binary ops.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         op_name: Name of the operation.
         input_tensors: List of input tensors.
         output_tensor: Output tensor.
 
-    Returns
-    -------
+    Returns:
         CoreFunctionSpec: Specification for the core function to be used in binary ops.
 
     """
@@ -230,15 +225,13 @@ def _create_broadcast_external_function(
     In broadcast mode, src1 is smaller than src0/dst and gets repeated.
     The kernel receives the full src1 buffer and uses modulo indexing.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         op_name: Name of the operation.
         input_tensors: List of input tensors [src0, src1].
         output_tensor: Output tensor.
 
-    Returns
-    -------
+    Returns:
         BroadcastFunctionSpec: Specification for broadcast binary ops.
 
     """
@@ -295,8 +288,7 @@ def _binary_op_broadcast(
 ):
     """Binary op with broadcasting - src1 loaded fully once, src0 streamed in tiles.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: Input tensors [src0, src1].
         function_spec: Broadcast operation specification.
@@ -386,8 +378,7 @@ def binary_op(
     Supports both element-wise operations (same shape) and broadcasting
     (src1 smaller, gets repeated to match src0/dst).
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         op_name: Name of the operation.
         input_tensors: List of two input tensors [src0, src1].

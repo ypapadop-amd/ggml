@@ -45,8 +45,7 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
     count as these two I32 lanes to the ObjectFifo output buffer, which together
     bitwise represent a single I64 value.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List containing exactly two input tensors.
             Both tensors must be I32 with the same shape.
@@ -54,12 +53,10 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
             containing the count of equal elements.
         op_params: Operation parameters (unused for COUNT_EQUAL).
 
-    Returns
-    -------
+    Returns:
         MLIR module representing the IRON program for count_equal.
 
-    Raises
-    ------
+    Raises:
         ValueError: If input_tensors does not contain exactly two tensors.
         ValueError: If input tensors have different shapes.
         ValueError: If input or output tensors are not contiguous in memory.
@@ -198,14 +195,12 @@ def _create_external_function(
     The external function wraps the C++ kernel that performs the actual count_equal
     computation on the AIE tile.
 
-    Parameters
-    ----------
+    Parameters:
         op_name: Operation name used for function naming and compile flags.
         input_tensor: Input tensor.
         tile_size: Size of each tile in elements.
 
-    Returns
-    -------
+    Returns:
         ExternalFunction: Configured external function specification that references
             the count_equal.cc source file with appropriate compile flags.
 

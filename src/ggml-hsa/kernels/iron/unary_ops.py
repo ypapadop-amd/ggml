@@ -56,8 +56,7 @@ def _unary_op(
 ):
     """Implement output_tensor = op(input_tensors[0]).
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: Input tensors.
         function_spec: Unary operator specification.
@@ -120,15 +119,13 @@ def _create_external_function(
 ) -> CoreFunctionSpec:
     """Create a specification for unary ops.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         op_name: Name of the operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
 
-    Returns
-    -------
+    Returns:
         CoreFunctionSpec: Specification for the core function to be used in unary ops.
 
     """
@@ -162,8 +159,7 @@ def unary_op(
 ):
     """IRON design for unary operations.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         op_name: Name of the unary operation.
         input_tensors: List of one input tensor.

@@ -15,8 +15,7 @@ def ggml_op_soft_max(
 ) -> KernelSpec:
     """GGML_OP_SOFT_MAX implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of 1-3 input tensors:
             - input_tensors[0]: Input tensor (required)
@@ -25,8 +24,7 @@ def ggml_op_soft_max(
         output_tensor: Output tensor.
         op_params: Operation parameters (scale, max_bias).
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the SOFT_MAX operation.
 
     """

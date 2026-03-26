@@ -23,8 +23,7 @@ def _compile_aie_core_kernels(
     (core compute kernels) into object files that will be linked into
     the final PDI.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture (e.g., "aie2", "aie2p").
         functions: Iterable of ExternalFunction objects to compile.
         work_dir: Working directory for intermediate files.
@@ -56,8 +55,7 @@ def compile_iron_kernel(
     2. Compiles any external C++ core functions to object files
     3. Compiles the MLIR module to produce PDI and instructions binaries
 
-    Parameters
-    ----------
+    Parameters:
         kernel_spec: The KernelSpec containing the IRON kernel function.
         work_dir: Working directory for intermediate files.
         exported_name: Name for the exported kernel files.

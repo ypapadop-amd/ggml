@@ -97,8 +97,7 @@ def ggml_tensor_to_tensordesc(
 ) -> TensorDesc:
     """Create a TensorDesc from the ggml_tensor parameters.
 
-    Parameters
-    ----------
+    Parameters:
         dtype: Tensor data type.
         ne: Number of elements in each dimension. Dimensions
             are from innermost to outermost (reverse of PyTorch).
@@ -106,8 +105,7 @@ def ggml_tensor_to_tensordesc(
             Dimensions are from innermost to outermost (reverse of PyTorch).
         contiguous: Indicates if the tensor is contiguous in memory.
 
-    Returns
-    -------
+    Returns:
         TensorDesc: A new TensorDesc instance.
 
     """

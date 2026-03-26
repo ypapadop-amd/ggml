@@ -32,8 +32,7 @@ from .utils import (
 def scale(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """IRON design for scale.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
@@ -107,15 +106,13 @@ def _create_external_function(
 ) -> tuple[ExternalFunction, int, int]:
     """Create an ExternalFunction specification for the scale operation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture (e.g., "aie2", "aie2p").
         op_name: Operation name used for function naming and compile flags.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
 
-    Returns
-    -------
+    Returns:
         Tuple[ExternalFunction, int, int]: A tuple containing:
             - func: The configured ExternalFunction specification.
             - num_elements: Architecture-aligned number of elements.

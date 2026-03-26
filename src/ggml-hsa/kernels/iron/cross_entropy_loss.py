@@ -35,12 +35,10 @@ def get_cross_entropy_loss_dimensions(tensor) -> tuple[int, int]:
     GGML convention: cross entropy loss is computed over dimension 0 (ne00).
     GGML shape ordering: (ne00, ne01, ne02, ne03) where ne00 is innermost.
 
-    Parameters
-    ----------
+    Parameters:
         tensor: Input tensor with shape in GGML order.
 
-    Returns
-    -------
+    Returns:
         Tuple of (row_length, num_rows) where:
             - row_length = ne00 (dimension over which loss is computed per row)
             - num_rows = ne01 * ne02 * ne03 (number of independent rows)
@@ -76,8 +74,7 @@ def cross_entropy_loss(
     Cross entropy loss computes: -sum(labels * log(softmax(logits))) / num_rows
     where the softmax is computed with numerical stability.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of 2 input tensors:
             - input_tensors[0]: Logits tensor (predictions before softmax)
@@ -164,8 +161,7 @@ def create_reduction_program(
         3. After all rows: divide by num_rows and release.
         4. DMA drains exactly 1 float to the host.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture (e.g., "aie2", "aie2p").
         function: The external function for per-row loss.
         logits_tensor: Logits tensor.
@@ -174,8 +170,7 @@ def create_reduction_program(
         tile_size: Number of elements per tile (row length).
         num_rows: Number of rows to process.
 
-    Returns
-    -------
+    Returns:
         MLIR module representing the cross entropy loss program.
 
     """
@@ -280,15 +275,13 @@ def _create_external_function(
     loss = -sum(labels * log_softmax(logits)) using numerically stable
     log-softmax with max subtraction.
 
-    Parameters
-    ----------
+    Parameters:
         logits_tensor: Logits tensor.
         labels_tensor: Labels tensor.
         output_tensor: Output tensor.
         tile_size: Number of elements per tile (equals row length).
 
-    Returns
-    -------
+    Returns:
         ExternalFunction: Configured external function specification that
             references cross_entropy_loss.cc with appropriate compile flags.
 

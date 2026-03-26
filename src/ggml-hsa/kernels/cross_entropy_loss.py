@@ -15,8 +15,7 @@ def ggml_op_cross_entropy_loss(
 ) -> KernelSpec:
     """GGML_OP_CROSS_ENTROPY_LOSS implementation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of 2 input tensors:
             - input_tensors[0]: Logits tensor (predictions before softmax)
@@ -24,8 +23,7 @@ def ggml_op_cross_entropy_loss(
         output_tensor: Output scalar tensor containing the loss value.
         op_params: Operation parameters (currently unused).
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the CROSS_ENTROPY_LOSS operation.
 
     """

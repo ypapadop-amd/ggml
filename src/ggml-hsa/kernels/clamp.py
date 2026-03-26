@@ -18,15 +18,13 @@ def ggml_op_clamp(
     Clamps each element of the input tensor to the range [min_val, max_val].
     output[i] = max(min_val, min(input[i], max_val))
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: Operation parameters containing min and max values.
 
-    Returns
-    -------
+    Returns:
         KernelSpec for the CLAMP operation.
 
     """

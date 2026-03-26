@@ -37,15 +37,13 @@ def _create_external_function(
 ) -> tuple[ExternalFunction, int, int]:
     """Create an ExternalFunction specification for the clamp operation.
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         op_name: Operation name used for function naming and compile flags.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
 
-    Returns
-    -------
+    Returns:
         Tuple[ExternalFunction, int, int]: A tuple containing:
             - func: The configured ExternalFunction specification.
             - num_elements: Architecture-aligned number of elements.
@@ -81,8 +79,7 @@ def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     Clamps each element of the input tensor to the range [min_val, max_val].
     output[i] = max(min_val, min(input[i], max_val))
 
-    Parameters
-    ----------
+    Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
