@@ -80,6 +80,96 @@ def _make_binary_kernel_spec(
     )
 
 
+def _create_triton_kernel_config(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+    op_params: bytearray,
+):
+    """
+    Generate Triton vecadd kernel configuration.
+
+    Parameters:
+        arch (str): Target architecture (aie2, aie2p).
+        input_tensors (list): Two input tensors.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters (unused).
+
+    Returns:
+        Tuple of (kernel_function, config_dict).
+    """
+    # Calculate total elements from output tensor
+    n_elements = output_tensor.numel()
+
+    # Choose block size based on architecture
+    if arch == "aie2":
+        block_size = min(256, n_elements)
+    if arch == "aie2p":
+        block_size = min(1024, n_elements)
+    else:
+        raise ValueError(f"Unsupported architecture for Triton kernel: {arch}")
+
+    # Ensure block size divides n_elements evenly
+    if n_elements % block_size != 0:
+        for candidate in [512, 256, 128, 64, 32, 16]:
+            if n_elements % candidate == 0:
+                block_size = candidate
+                break
+
+    # Return constexpr parameters
+    config = {
+        "n_elements": n_elements,
+        "block_size": block_size,
+    }
+
+    return config
+
+
+def _make_triton_add_kernel_spec(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+    op_params: bytearray,
+) -> KernelSpec:
+    """
+    Create a KernelSpec for Triton ADD operation.
+
+    Parameters:
+        arch (str): Target architecture.
+        input_tensors (list): Two input tensors.
+        output_tensor (TensorDesc): Output tensor.
+        op_params (bytearray): Operation parameters.
+
+    Returns:
+        KernelSpec configured for TRITON backend.
+
+    Raises:
+        ValueError: If input_tensors does not contain exactly two tensors.
+    """
+    from .triton.vecadd import vecadd
+
+    if len(input_tensors) != 2:
+        raise ValueError("Operation requires exactly two input tensors.")
+
+    config = _create_triton_kernel_config(
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        op_params=op_params,
+    )
+
+    return KernelSpec(
+        backend=Backend.TRITON,
+        op_name="GGML_OP_ADD",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        op_params=op_params,
+        function=vecadd,
+        config=config,
+    )
+
+
 def ggml_op_add(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
@@ -95,9 +185,10 @@ def ggml_op_add(
         KernelSpec for the ADD operation.
 
     """
-    return _make_binary_kernel_spec(
-        arch, input_tensors, output_tensor, op_params, "GGML_OP_ADD"
-    )
+    return _make_triton_add_kernel_spec(arch, input_tensors, output_tensor, op_params)
+    # return _make_binary_kernel_spec(
+    #    arch, input_tensors, output_tensor, op_params, "GGML_OP_ADD"
+    # )
 
 
 def ggml_op_sub(
