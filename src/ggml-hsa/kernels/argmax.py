@@ -26,8 +26,8 @@ def ggml_op_argmax(
 
     Parameters:
         arch (str): Target architecture.
-        input_tensors (list): List containing exactly one input tensor descriptor.
-        output_tensor: Output tensor descriptor of type I32. Shape is
+        input_tensors (list): List containing exactly one input tensor.
+        output_tensor: Output tensor of type I32. Shape is
             the input shape with the first dimension removed.
         op_params (bytearray): Operation parameters (unused for ARGMAX, but required
             by the dispatch interface).

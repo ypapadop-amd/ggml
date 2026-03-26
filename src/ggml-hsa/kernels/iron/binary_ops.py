@@ -15,13 +15,10 @@ from pathlib import Path
 import numpy as np
 
 from .utils import (
-    suppress_import_pyxrt_msg,
     arch_aligned_num_elements,
     arch_to_device,
     max_tile_size,
 )
-
-suppress_import_pyxrt_msg()
 
 from aie.iron import (
     ObjectFifo,

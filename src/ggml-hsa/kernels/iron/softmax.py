@@ -16,12 +16,8 @@ from typing import Any, Optional, Tuple
 import numpy as np
 
 from .utils import (
-    align_to_arch,
     arch_to_device,
-    suppress_import_pyxrt_msg,
 )
-
-suppress_import_pyxrt_msg()
 
 from aie.dialects.arith import index_cast
 from aie.ir import IntegerType
@@ -154,8 +150,8 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
     Parameters:
         arch (str): Target architecture.
         op_name (str): Operation name for the external function.
-        input_tensor: Input tensor description.
-        output_tensor: Output tensor description.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
         scale (float): Scaling factor applied before exponentiation.
         max_bias (float): Maximum bias (unused in unary variant).
 
@@ -215,9 +211,9 @@ def create_binary_program(
     Parameters:
         arch (str): Target architecture.
         op_name (str): Operation name for the external function.
-        input_tensor: Input tensor description.
-        mask_tensor: Mask tensor description (added to input before softmax).
-        output_tensor: Output tensor description.
+        input_tensor: Input tensor.
+        mask_tensor: Mask tensor (added to input before softmax).
+        output_tensor: Output tensor.
         scale (float): Scaling factor applied before exponentiation.
         max_bias (float): Maximum bias for ALiBi positional encoding.
 

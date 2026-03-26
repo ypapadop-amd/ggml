@@ -253,7 +253,8 @@ def ggml_compile_op(
 
     logger.info(
         (
-            "Compiling op: %s for arch %s\n"
+            "Compiling op: %s\n"
+            "  Architecture:         %s\n"
             "  Backend:              %s\n"
             "  Op name:              %s\n"
             "  Kernel source:        %s\n"

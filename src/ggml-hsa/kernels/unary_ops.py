@@ -29,7 +29,7 @@ def _iron_unary_kernel(
         op_name (str): Name of the unary operation.
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters (unused for unary ops).
 
     Returns:
@@ -56,7 +56,7 @@ def _make_unary_kernel_spec(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
         op_name (str): Name of the unary operation.
 
@@ -83,7 +83,7 @@ def ggml_op_sqr(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -103,7 +103,7 @@ def ggml_op_sqrt(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -121,7 +121,7 @@ def ggml_op_log(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -141,7 +141,7 @@ def ggml_op_sin(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -159,7 +159,7 @@ def ggml_op_cos(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -177,7 +177,7 @@ def ggml_unary_op_abs(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -197,7 +197,7 @@ def ggml_unary_op_sgn(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -217,7 +217,7 @@ def ggml_unary_op_neg(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -237,7 +237,7 @@ def ggml_unary_op_step(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -257,7 +257,7 @@ def ggml_unary_op_tanh(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -275,7 +275,7 @@ def ggml_unary_op_elu(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -293,7 +293,7 @@ def ggml_unary_op_relu(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -313,7 +313,7 @@ def ggml_unary_op_sigmoid(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -331,7 +331,7 @@ def ggml_unary_op_gelu(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -349,7 +349,7 @@ def ggml_unary_op_gelu_quick(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -367,7 +367,7 @@ def ggml_unary_op_silu(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -385,7 +385,7 @@ def ggml_unary_op_hardswish(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -405,7 +405,7 @@ def ggml_unary_op_hardsigmoid(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -425,7 +425,7 @@ def ggml_unary_op_exp(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor : Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -443,7 +443,7 @@ def ggml_unary_op_gelu_erf(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -461,7 +461,7 @@ def ggml_unary_op_xielu(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -479,7 +479,7 @@ def ggml_unary_op_floor(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -499,7 +499,7 @@ def ggml_unary_op_ceil(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -519,7 +519,7 @@ def ggml_unary_op_round(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -539,7 +539,7 @@ def ggml_unary_op_trunc(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:

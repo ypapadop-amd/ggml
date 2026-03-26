@@ -16,13 +16,10 @@ from typing import Tuple
 import numpy as np
 
 from .utils import (
-    suppress_import_pyxrt_msg,
     arch_aligned_num_elements,
     arch_to_device,
     max_tile_size,
 )
-
-suppress_import_pyxrt_msg()
 
 from aie.iron import (
     ObjectFifo,
@@ -46,10 +43,10 @@ def _create_external_function(
     Creates an ExternalFunction specification for the clamp operation.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
+        arch (str): Target architecture.
         op_name (str): Operation name used for function naming and compile flags.
-        input_tensor (TensorDesc): Input tensor descriptor providing dtype and size.
-        output_tensor (TensorDesc): Output tensor descriptor providing dtype.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
 
     Returns:
         Tuple[ExternalFunction, int, int]: A tuple containing:

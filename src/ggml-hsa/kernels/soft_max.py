@@ -27,7 +27,7 @@ def ggml_op_soft_max(
             - input_tensors[0]: Input tensor (required)
             - input_tensors[1]: Mask tensor (optional)
             - input_tensors[2]: Sink tensor (optional)
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters (scale, max_bias).
 
     Returns:

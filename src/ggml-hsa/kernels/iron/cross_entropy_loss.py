@@ -20,10 +20,7 @@ from aie.iron.placers import SequentialPlacer
 from .utils import (
     align_to_arch,
     arch_to_device,
-    suppress_import_pyxrt_msg,
 )
-
-suppress_import_pyxrt_msg()
 
 from aie.dialects import arith as arith_dialect
 from aie.dialects import memref as memref_dialect
@@ -34,7 +31,6 @@ from aie.iron import (
     Program,
     Runtime,
     Worker,
-    dtype_to_str,
 )
 
 
@@ -125,8 +121,7 @@ def cross_entropy_loss(
         )
 
     # Create external function
-    function = create_external_function(
-        arch=arch,
+    function = _create_external_function(
         logits_tensor=logits_tensor,
         labels_tensor=labels_tensor,
         output_tensor=output_tensor,
@@ -172,9 +167,9 @@ def create_reduction_program(
     Parameters:
         arch (str): Target architecture (e.g., "aie2", "aie2p").
         function (ExternalFunction): The external function for per-row loss.
-        logits_tensor (TensorDesc): Logits tensor descriptor.
-        labels_tensor (TensorDesc): Labels tensor descriptor.
-        output_tensor (TensorDesc): Output tensor descriptor.
+        logits_tensor: Logits tensor.
+        labels_tensor: Labels tensor.
+        output_tensor: Output tensor.
         tile_size (int): Number of elements per tile (row length).
         num_rows (int): Number of rows to process.
 
@@ -270,8 +265,7 @@ def create_reduction_program(
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
-def create_external_function(
-    arch: str,
+def _create_external_function(
     logits_tensor,
     labels_tensor,
     output_tensor,
@@ -285,10 +279,9 @@ def create_external_function(
     log-softmax with max subtraction.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        logits_tensor (TensorDesc): Logits tensor descriptor providing dtype.
-        labels_tensor (TensorDesc): Labels tensor descriptor providing dtype.
-        output_tensor (TensorDesc): Output tensor descriptor providing dtype.
+        logits_tensor: Logits tensor.
+        labels_tensor: Labels tensor.
+        output_tensor: Output tensor.
         tile_size (int): Number of elements per tile (equals row length).
 
     Returns:

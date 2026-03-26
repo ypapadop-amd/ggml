@@ -20,10 +20,7 @@ import numpy as np
 from .utils import (
     arch_to_device,
     max_tile_size,
-    suppress_import_pyxrt_msg,
 )
-
-suppress_import_pyxrt_msg()
 
 from aie.dialects.arith import index_cast
 from aie.ir import IntegerType
@@ -51,10 +48,10 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
     count as these two I32 lanes to the ObjectFifo output buffer, which together
     bitwise represent a single I64 value.
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        input_tensors (list[TensorDesc]): List containing exactly two input tensors.
+        arch (str): Target architecture.
+        input_tensors (list): List containing exactly two input tensors.
             Both tensors must be I32 with the same shape.
-        output_tensor (TensorDesc): Output tensor of type I64 with shape [1,1,1,1]
+        output_tensor: Output tensor of type I64 with shape [1,1,1,1]
             containing the count of equal elements.
         op_params (bytearray): Operation parameters (unused for COUNT_EQUAL).
 
@@ -123,7 +120,6 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
     num_tiles = total_elements // tile_size
 
     function = _create_external_function(
-        arch=arch,
         op_name="GGML_OP_COUNT_EQUAL",
         input_tensor=input_tensor0,
         tile_size=tile_size,
@@ -190,7 +186,6 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
 
 
 def _create_external_function(
-    arch: str,
     op_name: str,
     input_tensor,
     tile_size: int,
@@ -202,10 +197,8 @@ def _create_external_function(
     computation on the AIE tile.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        op_name (str): Operation name used for function naming and compile flags
-            (e.g., "GGML_OP_COUNT_EQUAL").
-        input_tensor (TensorDesc): Input tensor descriptor providing dtype information.
+        op_name (str): Operation name used for function naming and compile flags.
+        input_tensor: Input tensor.
         tile_size (int): Size of each tile in elements.
 
     Returns:

@@ -11,7 +11,6 @@ Top-level entry point for the GGML count equal operation (GGML_OP_COUNT_EQUAL).
 Returns a KernelSpec specifying the compilation backend and kernel function.
 """
 
-from .iron.count_equal import count_equal_op
 from .kernel import Backend, KernelSpec
 
 
@@ -26,11 +25,9 @@ def ggml_op_count_equal(
     The output is a single I64 scalar containing the count.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2" for Phoenix/Hawk Point,
-            "aie2p" for Strix Halo/Krackan).
-        input_tensors (list[TensorDesc]): List containing exactly two input tensor
-            descriptors. Both tensors must be I32 type and contiguous in memory.
-        output_tensor (TensorDesc): Output tensor descriptor of type I64 with
+        arch (str): Target architecture.
+        input_tensors (list): List containing exactly two input tensors. Both tensors must be I32 type and contiguous in memory.
+        output_tensor: Output tensor of type I64 with
             shape [1, 1, 1, 1] containing the count of equal elements.
         op_params (bytearray): Operation parameters as a 64-byte buffer (unused
             for COUNT_EQUAL, but required by the dispatch interface).
@@ -39,6 +36,8 @@ def ggml_op_count_equal(
         KernelSpec: Kernel specification with backend=IRON and the count_equal_op
             function for generating the MLIR module.
     """
+    from .iron.count_equal import count_equal_op
+
     return KernelSpec(
         backend=Backend.IRON,
         op_name="GGML_OP_COUNT_EQUAL",

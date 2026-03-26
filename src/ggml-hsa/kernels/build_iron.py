@@ -9,9 +9,6 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from kernel import KernelSpec
-from iron.utils import suppress_import_pyxrt_msg
-
-suppress_import_pyxrt_msg()
 
 from aie.iron import ExternalFunction
 from aie.utils.compile import compile_cxx_core_function
@@ -55,7 +52,7 @@ def compile_iron_kernel(
     verbose: bool,
 ) -> None:
     """
-    Compile an IRON kernel to PDI and instructions files.
+    Compile an IRON kernel.
 
     This function executes the IRON compilation pipeline:
     1. Executes the kernel's Python function to generate an MLIR module

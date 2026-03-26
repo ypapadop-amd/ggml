@@ -14,10 +14,6 @@ from pathlib import Path
 
 import numpy as np
 
-from .utils import suppress_import_pyxrt_msg
-
-suppress_import_pyxrt_msg()
-
 from aie.extras.context import mlir_mod_ctx
 
 from aie.dialects.aie import *

@@ -24,7 +24,7 @@ def ggml_op_scale(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of one input tensor.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters containing the scale factor.
 
     Returns:

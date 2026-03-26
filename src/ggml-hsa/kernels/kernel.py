@@ -84,6 +84,7 @@ class KernelSpec:
     output_tensor: Any
     op_params: bytearray
     function: Callable[..., Any]
+    config: dict | None = None  # Optional field for additional configuration parameters
 
     def __post_init__(self):
         """Validate that backend is a Backend enum instance."""
