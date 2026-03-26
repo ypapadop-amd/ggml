@@ -93,7 +93,7 @@ def compile_iron_kernel(
     logger.info(
         "Writing MLIR module for operation %s in %s", kernel_spec.op_name, mlir_path
     )
-    with open(mlir_path, "w", encoding="utf-8") as file:
+    with mlir_path.open("w", encoding="utf-8") as file:
         file.write(str(mlir_module))
 
     # Generate PDI and instructions files from MLIR

@@ -34,9 +34,7 @@ from .utils import (
 )
 
 
-def count_equal_op(
-    arch: str, input_tensors: list, output_tensor, _op_params: bytearray
-):
+def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """IRON design for count_equal.
 
     Counts elements that are equal between two I32 input tensors and outputs
@@ -54,7 +52,7 @@ def count_equal_op(
             Both tensors must be I32 with the same shape.
         output_tensor: Output tensor of type I64 with shape [1,1,1,1]
             containing the count of equal elements.
-        _op_params: Operation parameters (unused for COUNT_EQUAL).
+        op_params: Operation parameters (unused for COUNT_EQUAL).
 
     Returns
     -------

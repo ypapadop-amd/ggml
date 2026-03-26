@@ -18,7 +18,7 @@ def _iron_unary_kernel(
     arch: str,
     input_tensors: list,
     output_tensor,
-    _op_params: bytearray,
+    op_params: bytearray,
 ):
     """Return rapper for IRON unary operations matching the KernelFunction protocol.
 
@@ -28,7 +28,7 @@ def _iron_unary_kernel(
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-        _op_params: Operation parameters (unused for unary ops).
+        op_params: Operation parameters (unused for unary ops).
 
     Returns
     -------

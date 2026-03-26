@@ -28,7 +28,7 @@ from .softmax import get_softmax_dimensions
 from .utils import arch_to_device
 
 
-def argmax_op(arch: str, input_tensors: list, output_tensor, _op_params: bytearray):
+def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """IRON design for argmax.
 
     Computes the index of the maximum value along the first dimension for each row.
@@ -44,7 +44,7 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, _op_params: bytearr
             ne1 * ne2 * ne3 is the number of rows.
         output_tensor: Output tensor of type I32 with shape [ne1, ne2, ne3]
             containing one index per row indicating the position of the maximum value.
-        _op_params: Operation parameters (unused for ARGMAX).
+        op_params: Operation parameters (unused for ARGMAX).
 
     Returns
     -------

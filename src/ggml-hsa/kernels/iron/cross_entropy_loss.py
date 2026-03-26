@@ -7,7 +7,7 @@
 
 """IRON kernel implementation for the cross entropy loss operation."""
 
-from os import path
+from pathlib import Path
 
 import numpy as np
 from aie.dialects import arith as arith_dialect
@@ -69,7 +69,7 @@ KERN_VEC_SIZE = 8
 
 
 def cross_entropy_loss(
-    arch: str, input_tensors: list, output_tensor, _op_params: bytearray
+    arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ):
     """IRON design for GGML_OP_CROSS_ENTROPY_LOSS implementation.
 
@@ -83,7 +83,7 @@ def cross_entropy_loss(
             - input_tensors[0]: Logits tensor (predictions before softmax)
             - input_tensors[1]: Labels tensor (ground truth, often one-hot encoded)
         output_tensor: Output scalar tensor containing the loss value.
-        _op_params: Operation parameters (currently unused).
+        op_params: Operation parameters (currently unused).
 
     """
     if len(input_tensors) != 2:
@@ -302,11 +302,11 @@ def _create_external_function(
 
     compile_flags = []
 
-    current_dir = path.dirname(path.realpath(__file__))
+    current_dir = Path(__file__).resolve().parent
     return ExternalFunction(
         name="ggml_op_cross_entropy_loss",
         object_file_name="cross_entropy_loss_core_function.o",
-        source_file=path.join(current_dir, "cross_entropy_loss.cc"),
+        source_file=str(current_dir / "cross_entropy_loss.cc"),
         arg_types=arg_types,
         compile_flags=compile_flags,
     )

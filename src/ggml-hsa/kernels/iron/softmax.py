@@ -167,7 +167,6 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
 
     """
     function, num_elements, tile_size = _create_external_function(
-        arch=arch,
         op_name=op_name,
         input_tensor=input_tensor,
         mask_tensor=None,
@@ -231,7 +230,6 @@ def create_binary_program(
 
     """
     func_result = _create_external_function(
-        arch=arch,
         op_name=op_name,
         input_tensor=input_tensor,
         mask_tensor=mask_tensor,
@@ -325,7 +323,6 @@ def create_ternary_program(
     sink array and indexes into it based on tile_idx and rows_per_head.
     """
     func_result = _create_external_function(
-        arch=arch,
         op_name=op_name,
         input_tensor=input_tensor,
         mask_tensor=mask_tensor,
@@ -418,7 +415,6 @@ def create_ternary_program(
 
 
 def _create_external_function(
-    _arch: str,
     op_name: str,
     input_tensor,
     mask_tensor: Any | None,
