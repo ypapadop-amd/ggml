@@ -5,56 +5,51 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""
-IRON kernel implementation for the scale operation.
-"""
+"""IRON kernel implementation for the scale operation."""
 
 import struct
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
-
-from .utils import (
-    suppress_import_pyxrt_msg,
-    arch_aligned_num_elements,
-    arch_to_device,
-    max_tile_size,
-)
-
-suppress_import_pyxrt_msg()
-
 from aie.iron import (
+    ExternalFunction,
     ObjectFifo,
     Program,
     Runtime,
     Worker,
     dtype_to_str,
-    ExternalFunction,
 )
-from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
+from aie.iron.placers import SequentialPlacer
+
+from .utils import (
+    arch_aligned_num_elements,
+    arch_to_device,
+    max_tile_size,
+)
 
 
 def scale(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """
-    IRON design for scale.
+    """IRON design for scale.
 
     Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): List of one input tensor.
+        arch: Target architecture.
+        input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-        op_params (op_params): Operation parameters.
-    """
+        op_params: Operation parameters.
 
+    """
     if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+        msg = "Operation requires exactly one input tensor."
+        raise ValueError(msg)
 
     if input_tensors[0].contiguous is False or output_tensor.contiguous is False:
-        raise ValueError("Input and output tensors must be contiguous in memory.")
+        msg = "Input and output tensors must be contiguous in memory."
+        raise ValueError(msg)
 
     if input_tensors[0].shape != output_tensor.shape:
-        raise ValueError("Input and output tensors must have the same shape.")
+        msg = "Input and output tensors must have the same shape."
+        raise ValueError(msg)
 
     input_tensor = input_tensors[0]
 
@@ -99,7 +94,7 @@ def scale(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         rt.fill(of_in.prod(), a_in)
         rt.drain(of_out.cons(), b_out, wait=True)
 
-    # Place program components (assign them resources on the device) and generate an MLIR module
+    # Place program components (assign them resources on the device) and generate MLIR
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
@@ -108,23 +103,22 @@ def _create_external_function(
     op_name: str,
     input_tensor,
     output_tensor,
-) -> Tuple[ExternalFunction, int, int]:
-    """
-    Creates an ExternalFunction specification for the scale operation.
+) -> tuple[ExternalFunction, int, int]:
+    """Create an ExternalFunction specification for the scale operation.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        op_name (str): Operation name used for function naming and compile flags.
-        input_tensor (TensorDesc): Input tensor descriptor providing dtype and size.
-        output_tensor (TensorDesc): Output tensor descriptor providing dtype.
+        arch: Target architecture (e.g., "aie2", "aie2p").
+        op_name: Operation name used for function naming and compile flags.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
 
     Returns:
         Tuple[ExternalFunction, int, int]: A tuple containing:
             - func: The configured ExternalFunction specification.
             - num_elements: Architecture-aligned number of elements.
             - tile_size: Size of each processing tile.
-    """
 
+    """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
     tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
 
