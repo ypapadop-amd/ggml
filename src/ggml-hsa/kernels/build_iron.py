@@ -1,22 +1,15 @@
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""
-IRON backend compiler for GGML HSA kernels.
-"""
+"""IRON backend compiler for GGML HSA kernels."""
 
 import logging
 from collections.abc import Iterable
 from pathlib import Path
 
-from kernel import KernelSpec
-from tensor_desc import TensorDesc
-from iron.utils import suppress_import_pyxrt_msg
-
-suppress_import_pyxrt_msg()
-
 from aie.iron import ExternalFunction
-from aie.utils.compile import compile_cxx_core_function
-from aie.utils.compile import compile_mlir_module
+from aie.utils.compile import compile_cxx_core_function, compile_mlir_module
+
+from kernel import KernelSpec
 
 
 def _compile_aie_core_kernels(
@@ -24,8 +17,7 @@ def _compile_aie_core_kernels(
     functions: Iterable[ExternalFunction],
     work_dir: Path,
 ) -> None:
-    """
-    Compile AIE core functions to object files.
+    """Compile AIE core functions to object files.
 
     This function compiles the C++ source files for external functions
     (core compute kernels) into object files that will be linked into
@@ -35,6 +27,7 @@ def _compile_aie_core_kernels(
         arch: Target architecture (e.g., "aie2", "aie2p").
         functions: Iterable of ExternalFunction objects to compile.
         work_dir: Working directory for intermediate files.
+
     """
     for func in functions:
         compile_cxx_core_function(
@@ -55,8 +48,7 @@ def compile_iron_kernel(
     logger: logging.Logger,
     verbose: bool,
 ) -> None:
-    """
-    Compile an IRON kernel to PDI and instructions files.
+    """Compile an IRON kernel.
 
     This function executes the IRON compilation pipeline:
     1. Executes the kernel's Python function to generate an MLIR module
@@ -70,6 +62,7 @@ def compile_iron_kernel(
         output_directory: Directory for output PDI and instruction files.
         logger: Logger for status messages.
         verbose: If True, enables verbose compilation output.
+
     """
     # Clear any existing external functions from previous compilations
     ExternalFunction._instances.clear()
@@ -98,7 +91,7 @@ def compile_iron_kernel(
     logger.info(
         "Writing MLIR module for operation %s in %s", kernel_spec.op_name, mlir_path
     )
-    with open(mlir_path, "wt", encoding="utf-8") as file:
+    with mlir_path.open("w", encoding="utf-8") as file:
         file.write(str(mlir_module))
 
     # Generate PDI and instructions files from MLIR
