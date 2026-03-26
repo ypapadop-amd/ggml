@@ -5,26 +5,18 @@
 #
 # (c) Copyright 2025-2026 AMD Inc.
 
-"""
-IRON kernel implementation for matrix multiplication (GEMM).
-"""
+"""IRON kernel implementation for matrix multiplication (GEMM)."""
 
 import argparse
 from pathlib import Path
 
 import numpy as np
-
-from .utils import suppress_import_pyxrt_msg
-
-suppress_import_pyxrt_msg()
-
-from aie.extras.context import mlir_mod_ctx
-
 from aie.dialects.aie import *
 from aie.dialects.aiex import *
+from aie.extras.context import mlir_mod_ctx
 from aie.helpers.taplib import TensorAccessPattern, TensorAccessSequence
+from aie.iron import ExternalFunction, dtype_to_str, str_to_dtype
 from aie.iron.controlflow import range_
-from aie.iron import dtype_to_str, str_to_dtype, ExternalFunction
 
 microkernel_mac_dim_map = {
     "npu": {
@@ -45,8 +37,7 @@ microkernel_mac_dim_map = {
 
 
 def main():
-    """
-    Command-line entry point for generating matrix multiplication MLIR.
+    """Command-line entry point for generating matrix multiplication MLIR.
 
     Parses command-line arguments and generates MLIR code for a matrix
     multiplication design with the specified dimensions and configuration.
@@ -85,7 +76,7 @@ def main():
         "of the input/output matrices. These objects can be used for visualization.",
     )
     args = argparser.parse_args()
-    with mlir_mod_ctx() as ctx:
+    with mlir_mod_ctx():
         maybe_taps = my_matmul(
             args.dev,
             args.M,
@@ -112,10 +103,11 @@ def main():
 
     if args.generate_taps:
         return maybe_taps
+    return None
 
 
 def ceildiv(a, b):
-    """Returns the ceiling of integer division a/b."""
+    """Return the ceiling of integer division a/b."""
     return (a + b - 1) // b
 
 
@@ -140,36 +132,36 @@ def my_matmul(
     object_file,
     generate_taps=False,
 ):
-    """
-    Generates MLIR for tiled matrix multiplication across an AIE array.
+    """Generate MLIR for tiled matrix multiplication across an AIE array.
 
     This function creates the complete AIE design including tile declarations,
     object FIFOs for data movement, compute core logic, and runtime DMA sequences.
 
     Parameters:
-        dev (str): Device type ("npu" or "npu2").
-        M (int): Number of rows in matrix A and C.
-        K (int): Inner dimension (columns of A, rows of B).
-        N (int): Number of columns in matrix B and C.
-        m (int): Tile size in M dimension per core.
-        k (int): Tile size in K dimension (shared across all cores).
-        n (int): Tile size in N dimension per core.
-        n_aie_cols (int): Number of AIE columns to use (1, 2, 4, or 8).
-        dtype_in_str (str): Input data type ("bf16", "i8", or "i16").
-        dtype_out_str (str): Output data type ("bf16", "i8", "i16", "f32", or "i32").
-        b_col_maj (bool): If True, matrix B is in column-major layout.
-        c_col_maj (bool): If True, matrix C is in column-major layout.
-        use_scalar (bool): If True, use scalar kernels (for debugging small sizes).
-        emulate_bf16_mmul_with_bfp16 (bool): If True, use bfp16 emulation for bf16.
-        trace_size (int): Size of trace buffer (0 to disable tracing).
-        zero_fn (str): Name of the zero initialization function.
-        matmul_fn (str): Name of the matrix multiply accumulate function.
-        object_file (str): Name of the compiled object file containing kernels.
-        generate_taps (bool): If True, return TensorAccessPattern objects for visualization.
+        dev: Device type ("npu" or "npu2").
+        M: Number of rows in matrix A and C.
+        K: Inner dimension (columns of A, rows of B).
+        N: Number of columns in matrix B and C.
+        m: Tile size in M dimension per core.
+        k: Tile size in K dimension (shared across all cores).
+        n: Tile size in N dimension per core.
+        n_aie_cols: Number of AIE columns to use (1, 2, 4, or 8).
+        dtype_in_str: Input data type ("bf16", "i8", or "i16").
+        dtype_out_str: Output data type ("bf16", "i8", "i16", "f32", or "i32").
+        b_col_maj: If True, matrix B is in column-major layout.
+        c_col_maj: If True, matrix C is in column-major layout.
+        use_scalar: If True, use scalar kernels (for debugging small sizes).
+        emulate_bf16_mmul_with_bfp16: If True, use bfp16 emulation for bf16.
+        trace_size: Size of trace buffer (0 to disable tracing).
+        zero_fn: Name of the zero initialization function.
+        matmul_fn: Name of the matrix multiply accumulate function.
+        object_file: Name of the compiled object file containing kernels.
+        generate_taps: If True, return TensorAccessPattern objects for visualization.
 
     Returns:
         If generate_taps is True, returns a tuple of TensorAccessSequence objects
         for A, B, and C matrices. Otherwise returns None.
+
     """
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
@@ -178,13 +170,11 @@ def my_matmul(
     dtype_out = str_to_dtype(dtype_out_str)
 
     if np.issubdtype(dtype_in, np.integer) != np.issubdtype(dtype_out, np.integer):
-        raise ValueError(
-            f"Input dtype ({dtype_in}) and output dtype ({dtype_out}) must either both be integral or both be float"
-        )
+        msg = f"Input dtype ({dtype_in}) and output dtype ({dtype_out}) must either both be integral or both be float"
+        raise ValueError(msg)
     if np.dtype(dtype_out).itemsize < np.dtype(dtype_in).itemsize:
-        raise ValueError(
-            f"Output dtype ({dtype_out}) must be equal or larger to input dtype ({dtype_in})"
-        )
+        msg = f"Output dtype ({dtype_out}) must be equal or larger to input dtype ({dtype_in})"
+        raise ValueError(msg)
 
     # r, s, t are the dimensions required by the microkernel MAC instructions.
     mac_dims = microkernel_mac_dim_map[dev][dtype_in_str]
@@ -195,21 +185,21 @@ def my_matmul(
 
     # npu is a 4 row x 4 col array
     if dev == "npu" and n_aie_cols > 4:
-        raise AssertionError("Invalid configuration: NPU (Phoenix/Hawk) has 4 columns")
+        msg = "Invalid configuration: NPU (Phoenix/Hawk) has 4 columns"
+        raise AssertionError(msg)
     # npu2 is a 4 row x 8 col array
     if dev == "npu2" and n_aie_cols > 8:
-        raise AssertionError(
-            "Invalid configuration: NPU2 (Strix/Strix Halo/Krackan) has 8 columns"
-        )
+        msg = "Invalid configuration: NPU2 (Strix/Strix Halo/Krackan) has 8 columns"
+        raise AssertionError(msg)
 
     # Input matrix A:
     # Conceptually, we divide input A into (m * n_rows, k)-sized blocks. These
     # blocks are _broadcast_ across AIE core columns, then _distributed_ across
     # rows, s.t. each of the n_rows compute cores in a column receives a
     # contiguous (m, k)-sized block of A.
-    assert (
-        M % (m * n_aie_rows) == 0
-    ), """A must be tileable into (m * n_aie_rows, k)-sized blocks"""
+    assert M % (m * n_aie_rows) == 0, (
+        """A must be tileable into (m * n_aie_rows, k)-sized blocks"""
+    )
 
     # Both A and B are tiled in the K dimension into size k.
     assert K % k == 0
@@ -217,9 +207,9 @@ def my_matmul(
     # Input matrix B:
     # Conceptually, we do the same as with A, but instead of broadcasting
     # across columns we broadcast across rows and distribute across columns.
-    assert (
-        N % (n * n_aie_cols) == 0
-    ), """B must be tileable into (k, n * n_aie_cols)-sized blocks"""
+    assert N % (n * n_aie_cols) == 0, (
+        """B must be tileable into (k, n * n_aie_cols)-sized blocks"""
+    )
 
     # r, s, t are the dimensions required by the microkernel MAC instructions.
     if not use_scalar:
@@ -280,9 +270,7 @@ def my_matmul(
         matmul = external_func(matmul_fn, inputs=[A_l1_ty, B_l1_ty, C_l1_ty])
 
         # Tile declarations as tile[row][col]
-        tiles = [
-            [tile(col, row) for col in range(0, n_aie_cols)] for row in range(0, 6)
-        ]
+        tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(6)]
         shim_tiles = tiles[0]
         mem_tiles = tiles[1]
         core_tiles = tiles[2:]
@@ -671,6 +659,7 @@ def my_matmul(
             TensorAccessSequence.from_taps(B_taps),
             TensorAccessSequence.from_taps(C_taps),
         )
+    return None
 
 
 if __name__ == "__main__":
@@ -682,11 +671,10 @@ def create_mat_mul_external_functions(
     input_tensors: list,
     output_tensor,
 ):
-    """
-    Returns the parameters and names of the external functions for matrix multiplication.
+    """Create parameters and names of external functions for matrix multiplication.
 
     Args:
-        arch (str): Target architecture.
+        arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
 
@@ -698,6 +686,7 @@ def create_mat_mul_external_functions(
             - use_scalar: Boolean indicating if scalar multiplication is used.
             - mm_fn: The name of the matrix multiplication function.
             - zero_fn: The name of the zeroing function.
+
     """
     use_scalar = False
     scalar_suffix = "_scalar" if use_scalar else ""
@@ -714,7 +703,8 @@ def create_mat_mul_external_functions(
         n = 16
         k = 16
     else:
-        raise ValueError(f"Unsupported architecture: {arch}")
+        msg = f"Unsupported architecture: {arch}"
+        raise ValueError(msg)
 
     current_dir = Path(__file__).resolve().parent
     source_file = str(current_dir / arch / "mm.cc")
@@ -760,43 +750,49 @@ def create_mat_mul_external_functions(
 
 
 def gemm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """
-    IRON design for matrix multiplication.
+    """IRON design for matrix multiplication.
 
     Args:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        input_tensors (list): List of two input tensors (A and B).
+        arch: Target architecture (e.g., "aie2", "aie2p").
+        input_tensors: List of two input tensors (A and B).
         output_tensor: Output tensor (C).
-        op_params (bytearray): Operation-specific parameters as a bytearray.
+        op_params: Operation-specific parameters as a bytearray.
 
     Returns:
         The MLIR module representing the matrix multiplication operation.
+
     """
     if len(input_tensors) != 2:
-        raise ValueError("Requires two input tensors")
+        msg = "Requires two input tensors"
+        raise ValueError(msg)
 
     A = input_tensors[0]  # MxK = A.shape(1) x A.shape(0)
     B = input_tensors[1]  # KxN = B.shape(0) x B.shape(1)
     C = output_tensor  # MxN = C.shape(0) x C.shape(1)
 
     if not A.contiguous or not B.contiguous or not C.contiguous:
-        raise ValueError("Tensors must be contiguous")
+        msg = "Tensors must be contiguous"
+        raise ValueError(msg)
 
     if A.shape[1] != C.shape[0]:
-        raise ValueError(f"Incompatible M for A and C: {A.shape[1]} != {C.shape[0]}")
+        msg = f"Incompatible M for A and C: {A.shape[1]} != {C.shape[0]}"
+        raise ValueError(msg)
 
     if B.shape[1] != C.shape[1]:
-        raise ValueError(f"Incompatible N for B and C: {B.shape[1]} != {C.shape[1]}")
+        msg = f"Incompatible N for B and C: {B.shape[1]} != {C.shape[1]}"
+        raise ValueError(msg)
 
     if A.shape[0] != B.shape[0]:
-        raise ValueError(f"Incompatible K for A and B: {A.shape[0]} != {B.shape[0]}")
+        msg = f"Incompatible K for A and B: {A.shape[0]} != {B.shape[0]}"
+        raise ValueError(msg)
 
     if arch == "aie2":
         dev = "npu"
     elif arch == "aie2p":
         dev = "npu2"
     else:
-        raise ValueError(f"Unsupported architecture: {arch}")
+        msg = f"Unsupported architecture: {arch}"
+        raise ValueError(msg)
 
     (
         m,
