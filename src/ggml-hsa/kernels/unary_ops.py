@@ -20,7 +20,7 @@ def _iron_unary_kernel(
     output_tensor,
     op_params: bytearray,
 ):
-    """Return rapper for IRON unary operations matching the KernelFunction protocol.
+    """Return wrapper for IRON unary operations matching the KernelFunction protocol.
 
     Parameters:
         op_name: Name of the unary operation.
