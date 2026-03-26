@@ -5,34 +5,28 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""
-IRON kernel implementation for unary element-wise operations.
-"""
+"""IRON kernel implementation for unary element-wise operations."""
 
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-
-from .utils import (
-    suppress_import_pyxrt_msg,
-    arch_aligned_num_elements,
-    arch_to_device,
-    max_tile_size,
-)
-
-suppress_import_pyxrt_msg()
-
 from aie.iron import (
+    ExternalFunction,
     ObjectFifo,
     Program,
     Runtime,
     Worker,
     dtype_to_str,
-    ExternalFunction,
 )
-from aie.iron.placers import SequentialPlacer
 from aie.iron.controlflow import range_
+from aie.iron.placers import SequentialPlacer
+
+from .utils import (
+    arch_aligned_num_elements,
+    arch_to_device,
+    max_tile_size,
+)
 
 
 @dataclass(frozen=True)
@@ -40,8 +34,9 @@ class CoreFunctionSpec:
     """Specification for a core function to be used in unary operations.
 
     Attributes:
-        external_function (ExternalFunction): The external function to be called for the unary operation.
-        num_elements (int): The total number of elements in the input/output tensors.
+        external_function: The external function to be called for the unary operation.
+        num_elements: The total number of elements in the input/output tensors.
+
     """
 
     external_function: ExternalFunction
@@ -59,16 +54,15 @@ def _unary_op(
     function_spec: CoreFunctionSpec,
     output_tensor,
 ):
-    """
-    Implements output_tensor = op(input_tensors[0])
+    """Implement output_tensor = op(input_tensors[0]).
 
     Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): Input tensors.
-        function_spec (CoreFunctionSpec): Unary operator specification.
+        arch: Target architecture.
+        input_tensors: Input tensors.
+        function_spec: Unary operator specification.
         output_tensor: Output tensor.
-    """
 
+    """
     input_tensor = input_tensors[0]
 
     # Tile size and number of tiles
@@ -76,10 +70,11 @@ def _unary_op(
     tile_size = function_spec.tile_size
     num_tiles = num_elements // tile_size
     if num_elements % tile_size != 0:
-        raise ValueError(
-            f"num_elements ({num_elements}) must be divisible by tile_size ({tile_size}) "
-            "for correct tiling"
+        msg = (
+            f"num_elements ({num_elements}) must be divisible by "
+            f"tile_size ({tile_size}) for correct tiling"
         )
+        raise ValueError(msg)
 
     # AIE-array data movement with object fifos
     input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
@@ -112,7 +107,7 @@ def _unary_op(
         rt.fill(of_in.prod(), t[0])
         rt.drain(of_out.cons(), t[-1], wait=True)
 
-    # Place program components (assign them resources on the device) and generate an MLIR module
+    # Place program components (assign them resources on the device) and generate MLIR
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
@@ -122,19 +117,18 @@ def _create_external_function(
     input_tensor,
     output_tensor,
 ) -> CoreFunctionSpec:
-    """
-    Creates a specification for unary ops.
+    """Create a specification for unary ops.
 
     Parameters:
-        arch (str): Target architecture.
-        op_name (str): Name of the operation.
+        arch: Target architecture.
+        op_name: Name of the operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
 
     Returns:
         CoreFunctionSpec: Specification for the core function to be used in unary ops.
-    """
 
+    """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
     tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
 
@@ -163,27 +157,30 @@ def unary_op(
     input_tensors: list,
     output_tensor,
 ):
-    """
-    IRON design for unary operations.
+    """IRON design for unary operations.
 
     Parameters:
-        arch (str): Target architecture.
-        op_name (str): Name of the unary operation.
-        input_tensors (list): List of one input tensor.
+        arch: Target architecture.
+        op_name: Name of the unary operation.
+        input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-    """
 
+    """
     if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+        msg = "Operation requires exactly one input tensor."
+        raise ValueError(msg)
 
     if input_tensors[0].contiguous is False or output_tensor.contiguous is False:
-        raise ValueError("Input and output tensors must be contiguous in memory.")
+        msg = "Input and output tensors must be contiguous in memory."
+        raise ValueError(msg)
 
     if input_tensors[0].shape != output_tensor.shape:
-        raise ValueError("Input and output tensors must have the same shape.")
+        msg = "Input and output tensors must have the same shape."
+        raise ValueError(msg)
 
     if output_tensor.shape[1:4] != (1, 1, 1):
-        raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
+        msg = f"Unsupported shape ({output_tensor.shape})."
+        raise ValueError(msg)
 
     function_spec = _create_external_function(
         arch=arch,
