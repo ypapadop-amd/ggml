@@ -5,8 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""
-IRON kernel implementation for the argmax operation.
+"""IRON kernel implementation for the argmax operation.
 
 Finds the index of the maximum value along the first dimension (columns) for each row.
 """
@@ -14,15 +13,6 @@ Finds the index of the maximum value along the first dimension (columns) for eac
 from pathlib import Path
 
 import numpy as np
-
-from .softmax import get_softmax_dimensions
-from .utils import (
-    arch_to_device,
-    suppress_import_pyxrt_msg,
-)
-
-suppress_import_pyxrt_msg()
-
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
@@ -34,24 +24,26 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
 
+from .softmax import get_softmax_dimensions
+from .utils import arch_to_device
+
 
 def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """
-    IRON design for argmax.
+    """IRON design for argmax.
 
     Computes the index of the maximum value along the first dimension for each row.
     Uses row-by-row processing where each kernel invocation processes one row and
     outputs a single I32 index.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        input_tensors (list[TensorDesc]): List containing exactly one input tensor.
+        arch: Target architecture.
+        input_tensors: List containing exactly one input tensor.
             The tensor must be F32 with shape [ne0, ne1, ne2, ne3] where ne0 is the
             row length (dimension over which argmax is computed) and the product
             ne1 * ne2 * ne3 is the number of rows.
-        output_tensor (TensorDesc): Output tensor of type I32 with shape [ne1, ne2, ne3]
+        output_tensor: Output tensor of type I32 with shape [ne1, ne2, ne3]
             containing one index per row indicating the position of the maximum value.
-        op_params (bytearray): Operation parameters (unused for ARGMAX).
+        op_params: Operation parameters (unused for ARGMAX).
 
     Returns:
         MLIR module representing the IRON program for argmax.
@@ -61,33 +53,35 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
         ValueError: If input or output tensors are not contiguous in memory.
         ValueError: If output tensor size does not match the number of input rows.
         ValueError: If output tensor dtype is not int32.
-    """
 
+    """
     if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+        msg = "Operation requires exactly one input tensor."
+        raise ValueError(msg)
 
     input_tensor = input_tensors[0]
 
     if not input_tensor.contiguous:
-        raise ValueError("Input tensor must be contiguous in memory.")
+        msg = "Input tensor must be contiguous in memory."
+        raise ValueError(msg)
     if not output_tensor.contiguous:
-        raise ValueError("Output tensor must be contiguous in memory.")
+        msg = "Output tensor must be contiguous in memory."
+        raise ValueError(msg)
 
     row_length, num_rows = get_softmax_dimensions(input_tensor)
 
     if output_tensor.numel() != num_rows:
-        raise ValueError(
+        msg = (
             f"Output tensor size ({output_tensor.numel()}) does not match the number "
             f"of input rows ({num_rows})."
         )
+        raise ValueError(msg)
 
     if output_tensor.dtype != np.int32:
-        raise ValueError(
-            f"Output tensor dtype must be int32, got {output_tensor.dtype}."
-        )
+        msg = f"Output tensor dtype must be int32, got {output_tensor.dtype}."
+        raise ValueError(msg)
 
     function = _create_external_function(
-        arch=arch,
         op_name="GGML_OP_ARGMAX",
         input_tensor=input_tensor,
         output_tensor=output_tensor,
@@ -131,35 +125,31 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
 
 
 def _create_external_function(
-    arch: str,
     op_name: str,
     input_tensor,
     output_tensor,
     row_length: int,
 ) -> ExternalFunction:
-    """
-    Creates an ExternalFunction specification for argmax.
+    """Create an ExternalFunction specification for argmax.
 
     The external function wraps the C++ kernel that performs the actual argmax
     computation on the AIE tile. The kernel receives one row of input data and
     outputs a single I32 index.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        op_name (str): Operation name used for function naming and compile flags
-            (e.g., "GGML_OP_ARGMAX").
-        input_tensor (TensorDesc): Input tensor descriptor providing dtype information.
-        output_tensor (TensorDesc): Output tensor descriptor providing dtype information.
-        row_length (int): Number of elements per row (ne0 dimension).
+        op_name: Operation name used for function naming and compile flags.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
+        row_length: Number of elements per row (ne0 dimension).
 
     Returns:
         ExternalFunction: Configured external function specification that references
             the argmax.cc source file with appropriate compile flags for dtype and
             vector size configuration.
-    """
 
+    """
     current_dir = Path(__file__).resolve().parent
-    func = ExternalFunction(
+    return ExternalFunction(
         name=f"{op_name.lower()}",
         object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=str(current_dir / "argmax.cc"),
@@ -173,4 +163,3 @@ def _create_external_function(
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
         ],
     )
-    return func

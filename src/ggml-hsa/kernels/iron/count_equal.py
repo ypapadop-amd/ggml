@@ -5,8 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""
-IRON kernel implementation for the count_equal operation.
+"""IRON kernel implementation for the count_equal operation.
 
 Counts the number of elements that are equal between two I32 input tensors.
 The output is a single I64 value, but since IRON doesn't support I64 in ObjectFifos,
@@ -16,15 +15,6 @@ we use two I32 values (low and high parts) for the transfer.
 from pathlib import Path
 
 import numpy as np
-
-from .utils import (
-    arch_to_device,
-    max_tile_size,
-    suppress_import_pyxrt_msg,
-)
-
-suppress_import_pyxrt_msg()
-
 from aie.dialects.arith import index_cast
 from aie.ir import IntegerType
 from aie.iron import (
@@ -38,10 +28,14 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
 
+from .utils import (
+    arch_to_device,
+    max_tile_size,
+)
+
 
 def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """
-    IRON design for count_equal.
+    """IRON design for count_equal.
 
     Counts elements that are equal between two I32 input tensors and outputs
     a single I64 scalar with the count. Processes data in tiles.
@@ -50,13 +44,14 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
     as two I32 values (low and high 32 bits). The C++ kernel writes the 64-bit
     count as these two I32 lanes to the ObjectFifo output buffer, which together
     bitwise represent a single I64 value.
+
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        input_tensors (list[TensorDesc]): List containing exactly two input tensors.
+        arch: Target architecture.
+        input_tensors: List containing exactly two input tensors.
             Both tensors must be I32 with the same shape.
-        output_tensor (TensorDesc): Output tensor of type I64 with shape [1,1,1,1]
+        output_tensor: Output tensor of type I64 with shape [1,1,1,1]
             containing the count of equal elements.
-        op_params (bytearray): Operation parameters (unused for COUNT_EQUAL).
+        op_params: Operation parameters (unused for COUNT_EQUAL).
 
     Returns:
         MLIR module representing the IRON program for count_equal.
@@ -67,53 +62,55 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
         ValueError: If input or output tensors are not contiguous in memory.
         ValueError: If input tensor dtype is not int32.
         ValueError: If output tensor dtype is not int64.
-    """
 
+    """
     if len(input_tensors) != 2:
-        raise ValueError("Operation requires exactly two input tensors.")
+        msg = "Operation requires exactly two input tensors."
+        raise ValueError(msg)
 
     input_tensor0 = input_tensors[0]
     input_tensor1 = input_tensors[1]
 
     if not input_tensor0.contiguous:
-        raise ValueError("First input tensor must be contiguous in memory.")
+        msg = "First input tensor must be contiguous in memory."
+        raise ValueError(msg)
     if not input_tensor1.contiguous:
-        raise ValueError("Second input tensor must be contiguous in memory.")
+        msg = "Second input tensor must be contiguous in memory."
+        raise ValueError(msg)
     if not output_tensor.contiguous:
-        raise ValueError("Output tensor must be contiguous in memory.")
+        msg = "Output tensor must be contiguous in memory."
+        raise ValueError(msg)
 
     if input_tensor0.shape != input_tensor1.shape:
-        raise ValueError(
-            f"Input tensor shapes must match: {input_tensor0.shape} != {input_tensor1.shape}"
-        )
+        msg = f"Input tensor shapes must match: {input_tensor0.shape} != {input_tensor1.shape}"
+        raise ValueError(msg)
 
     if input_tensor0.dtype != np.int32:
-        raise ValueError(
-            f"First input tensor dtype must be int32, got {input_tensor0.dtype}."
-        )
+        msg = f"First input tensor dtype must be int32, got {input_tensor0.dtype}."
+        raise ValueError(msg)
     if input_tensor1.dtype != np.int32:
-        raise ValueError(
-            f"Second input tensor dtype must be int32, got {input_tensor1.dtype}."
-        )
+        msg = f"Second input tensor dtype must be int32, got {input_tensor1.dtype}."
+        raise ValueError(msg)
 
     if output_tensor.dtype != np.int64:
-        raise ValueError(
-            f"Output tensor dtype must be int64, got {output_tensor.dtype}."
-        )
+        msg = f"Output tensor dtype must be int64, got {output_tensor.dtype}."
+        raise ValueError(msg)
 
     # Validate output tensor is a scalar
     if output_tensor.numel() != 1:
-        raise ValueError(
+        msg = (
             "Output tensor must be a single-element I64 scalar (shape [1, 1, 1, 1]), "
             f"but has {output_tensor.numel()} elements."
         )
+        raise ValueError(msg)
 
     shape = output_tensor.shape
     if len(shape) != 4 or any(dim != 1 for dim in shape):
-        raise ValueError(
+        msg = (
             "Output tensor must have GGML scalar shape [1, 1, 1, 1], "
             f"but has shape {shape}."
         )
+        raise ValueError(msg)
 
     total_elements = input_tensor0.numel()
 
@@ -123,7 +120,6 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
     num_tiles = total_elements // tile_size
 
     function = _create_external_function(
-        arch=arch,
         op_name="GGML_OP_COUNT_EQUAL",
         input_tensor=input_tensor0,
         tile_size=tile_size,
@@ -190,31 +186,27 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
 
 
 def _create_external_function(
-    arch: str,
     op_name: str,
     input_tensor,
     tile_size: int,
 ) -> ExternalFunction:
-    """
-    Creates an ExternalFunction specification for count_equal.
+    """Create an ExternalFunction specification for count_equal.
 
     The external function wraps the C++ kernel that performs the actual count_equal
     computation on the AIE tile.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        op_name (str): Operation name used for function naming and compile flags
-            (e.g., "GGML_OP_COUNT_EQUAL").
-        input_tensor (TensorDesc): Input tensor descriptor providing dtype information.
-        tile_size (int): Size of each tile in elements.
+        op_name: Operation name used for function naming and compile flags.
+        input_tensor: Input tensor.
+        tile_size: Size of each tile in elements.
 
     Returns:
         ExternalFunction: Configured external function specification that references
             the count_equal.cc source file with appropriate compile flags.
-    """
 
+    """
     current_dir = Path(__file__).resolve().parent
-    func = ExternalFunction(
+    return ExternalFunction(
         name=f"{op_name.lower()}",
         object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=str(current_dir / "count_equal.cc"),
@@ -229,4 +221,3 @@ def _create_external_function(
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
         ],
     )
-    return func

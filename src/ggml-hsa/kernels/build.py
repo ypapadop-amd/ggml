@@ -1,7 +1,6 @@
 # Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-"""
-GGML HSA backend kernel build system.
+"""GGML HSA backend kernel build system.
 
 This module provides the infrastructure for compiling kernels to executable code
 for AMD XDNA / XDNA2 devices. It handles mapping GGML operations to their corresponding
@@ -20,16 +19,17 @@ Usage:
         python build.py --ggml_op ADD --arch aie2 --input_tensors "(1024,1,1,1)/f32" ...
 """
 
+import contextlib
 import importlib.util
 import logging
-from collections.abc import Callable
-from pathlib import Path
 import sys
 import types
+from collections.abc import Callable
+from pathlib import Path
 
-from kernel import Kernel, KernelSpec, Backend
-from tensor_desc import TensorDesc
 from build_iron import compile_iron_kernel
+from kernel import Backend, Kernel, KernelSpec
+from tensor_desc import TensorDesc
 
 # Compiler registry mapping Backend enum to compile functions
 _compilers: dict[Backend, Callable] = {
@@ -81,8 +81,7 @@ _op_to_kernel_map: dict[str, Kernel] = {
 
 
 def get_compiler(backend: Backend) -> Callable:
-    """
-    Get the compiler function for the given backend.
+    """Get the compiler function for the given backend.
 
     Parameters:
         backend: The compilation backend to use.
@@ -97,17 +96,18 @@ def get_compiler(backend: Backend) -> Callable:
         Uses backend.name for lookup to handle the case where Backend enums
         from dynamically imported modules have different identity than those
         in this module.
+
     """
     # Lookup by name to handle different enum class identities from dynamic imports
     for registered_backend, compiler in _compilers.items():
         if registered_backend.name == backend.name:
             return compiler
-    raise NotImplementedError(f"Backend {backend.name} not implemented.")
+    msg = f"Backend {backend.name} not implemented."
+    raise NotImplementedError(msg)
 
 
 def get_kernel(op_name: str) -> Kernel:
-    """
-    Get the kernel for the given operation.
+    """Get the kernel for the given operation.
 
     Parameters:
         op_name: Operation name.
@@ -117,16 +117,17 @@ def get_kernel(op_name: str) -> Kernel:
 
     Raises:
         NotImplementedError: If the Kernel is not found.
+
     """
     kernel = _op_to_kernel_map.get(op_name)
     if kernel is None:
-        raise NotImplementedError(f"Operation {op_name} not implemented.")
+        msg = f"Operation {op_name} not implemented."
+        raise NotImplementedError(msg)
     return kernel
 
 
 def import_from_path(module_name: str, path: str | Path):
-    """
-    Import a module by name from the specified file path.
+    """Import a module by name from the specified file path.
 
     This function handles the complexity of importing Python modules dynamically,
     including setting up the package structure for relative imports.
@@ -140,6 +141,7 @@ def import_from_path(module_name: str, path: str | Path):
 
     Raises:
         ImportError: If the module cannot be found or loaded.
+
     """
     path = Path(path).resolve()
     parent_dir = path.parent
@@ -169,9 +171,11 @@ def import_from_path(module_name: str, path: str | Path):
         submodule_search_locations=[parent_dir_str],
     )
     if spec is None:
-        raise ImportError(f"Cannot find module spec for {module_name} at path {path}")
+        msg = f"Cannot find module spec for {module_name} at path {path}"
+        raise ImportError(msg)
     if spec.loader is None:
-        raise ImportError(f"Cannot find loader for module {module_name} at path {path}")
+        msg = f"Cannot find loader for module {module_name} at path {path}"
+        raise ImportError(msg)
     module = importlib.util.module_from_spec(spec)
     # Set __package__ to enable relative imports
     module.__package__ = package_name
@@ -189,9 +193,8 @@ def ggml_compile_op(
     exported_name: str,
     output_directory: str | Path,
     verbose: bool = False,
-):
-    """
-    Compile a GGML operation kernel to PDI and instruction files.
+) -> None:
+    """Compile a GGML operation kernel to PDI and instruction files.
 
     This is the main entry point for kernel compilation. It:
     1. Looks up the kernel dispatch module for the operation
@@ -211,16 +214,15 @@ def ggml_compile_op(
     Raises:
         ValueError: If the operation is not supported.
         NotImplementedError: If the selected backend is not implemented.
+
     """
     # Setup logging
     logger = logging.getLogger(__name__)
     # remove all existing handlers
     for handler in logger.handlers.copy():
-        try:
+        # ignore double removals
+        with contextlib.suppress(ValueError):
             logger.removeHandler(handler)
-        except ValueError:
-            # ignore double removals
-            pass
     if verbose:
         logger.setLevel(logging.DEBUG)
         ch = logging.StreamHandler()
@@ -253,7 +255,8 @@ def ggml_compile_op(
 
     logger.info(
         (
-            "Compiling op: %s for arch %s\n"
+            "Compiling op: %s\n"
+            "  Architecture:         %s\n"
             "  Backend:              %s\n"
             "  Op name:              %s\n"
             "  Kernel source:        %s\n"
@@ -294,8 +297,7 @@ def ggml_compile_op(
 
 
 def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
-    """
-    Convert a string of the form "(x,y,z,w)" to a tuple of integers.
+    """Convert a string of the form "(x,y,z,w)" to a tuple of integers.
 
     Parameters:
         string: String representation of a 4-element tuple.
@@ -305,24 +307,26 @@ def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
 
     Raises:
         ValueError: If the string does not represent exactly 4 integers.
+
     """
     string = string.replace("(", "").replace(")", "").strip(",")
     ints = map(int, string.split(","))
     t = tuple(ints)
     if len(t) != 4:
-        raise ValueError(f"Shape must have 4 dimensions, got {len(t)}.")
+        msg = f"Shape must have 4 dimensions, got {len(t)}."
+        raise ValueError(msg)
     return t
 
 
 def to_tensordesc(string: str) -> TensorDesc:
-    """
-    Create a TensorDesc from a string representation.
+    """Create a TensorDesc from a string representation.
 
     Parameters:
         string: String of the form "(shape)/dtype", e.g., "(1024,1,1,1)/f32".
 
     Returns:
         A TensorDesc instance with the specified shape and dtype.
+
     """
     shape, dtype = string.split("/")
     shape = to_tuple_of_ints(shape)
@@ -330,8 +334,7 @@ def to_tensordesc(string: str) -> TensorDesc:
 
 
 def file_path(string: str):
-    """
-    Validate that a string represents an existing file path.
+    """Validate that a string represents an existing file path.
 
     Parameters:
         string: The file path to validate.
@@ -341,14 +344,15 @@ def file_path(string: str):
 
     Raises:
         FileNotFoundError: If the file does not exist.
+
     """
     if not Path(string).is_file():
         raise FileNotFoundError(string)
     return string
 
 
-def main():
-    """Main entry point for command-line AOT compilation."""
+def main() -> None:
+    """Entry point for command-line AOT compilation."""
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
