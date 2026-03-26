@@ -73,6 +73,7 @@ class KernelSpec:
         output_tensor: Output tensor for the operation.
         op_params: Operation parameters.
         function: Callable that generates the backend-specific IR.
+        config: Optional dictionary for additional configuration parameters.
 
     """
 
@@ -83,7 +84,7 @@ class KernelSpec:
     output_tensor: Any
     op_params: bytearray
     function: Callable[..., Any]
-    config: dict | None = None  # Optional field for additional configuration parameters
+    config: dict | None = None
 
     def __post_init__(self) -> None:
         """Validate that backend is a Backend enum instance."""
