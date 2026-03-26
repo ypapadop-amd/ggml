@@ -7,11 +7,8 @@
 
 """
 Top-level entry point for the GGML softmax operation (GGML_OP_SOFT_MAX).
-
-Returns a KernelSpec specifying the compilation backend and kernel function.
 """
 
-from .iron.softmax import softmax
 from .kernel import Backend, KernelSpec
 
 
@@ -33,6 +30,8 @@ def ggml_op_soft_max(
     Returns:
         KernelSpec for the SOFT_MAX operation.
     """
+    from .iron.softmax import softmax
+
     return KernelSpec(
         backend=Backend.IRON,
         op_name="GGML_OP_SOFT_MAX",

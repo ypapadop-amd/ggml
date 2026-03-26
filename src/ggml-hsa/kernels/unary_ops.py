@@ -6,7 +6,7 @@
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
 """
-Top-level entry points for GGML unary operations.
+Top-level entry points for GGML unary operations (GGML_OP_SQR, GGML_OP_SQRT, GGML_OP_LOG, GGML_OP_SIN, etc.).
 """
 
 from functools import partial

@@ -7,8 +7,6 @@
 
 """
 Top-level entry point for the GGML argmax operation (GGML_OP_ARGMAX).
-
-Returns a KernelSpec specifying the compilation backend and kernel function.
 """
 
 from .kernel import Backend, KernelSpec

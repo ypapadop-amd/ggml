@@ -7,11 +7,8 @@
 
 """
 Top-level entry point for the GGML scale operation (GGML_OP_SCALE).
-
-Returns a KernelSpec specifying the compilation backend and kernel function.
 """
 
-from .iron.scale import scale
 from .kernel import Backend, KernelSpec
 
 
@@ -30,6 +27,8 @@ def ggml_op_scale(
     Returns:
         KernelSpec for the SCALE operation.
     """
+    from .iron.scale import scale
+
     return KernelSpec(
         backend=Backend.IRON,
         op_name="GGML_OP_SCALE",

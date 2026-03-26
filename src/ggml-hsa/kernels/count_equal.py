@@ -7,8 +7,6 @@
 
 """
 Top-level entry point for the GGML count equal operation (GGML_OP_COUNT_EQUAL).
-
-Returns a KernelSpec specifying the compilation backend and kernel function.
 """
 
 from .kernel import Backend, KernelSpec

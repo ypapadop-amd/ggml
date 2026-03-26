@@ -9,7 +9,6 @@
 Top-level entry point for the GGML matrix multiplication operation (GGML_OP_MUL_MAT).
 """
 
-from .iron.gemm import gemm
 from .kernel import Backend, KernelSpec
 
 
@@ -28,6 +27,8 @@ def ggml_op_mul_mat(
     Returns:
         KernelSpec for the MUL_MAT operation.
     """
+    from .iron.gemm import gemm
+
     return KernelSpec(
         backend=Backend.IRON,
         op_name="GGML_OP_MUL_MAT",
