@@ -12,7 +12,6 @@ GGML_OP_MUL, GGML_OP_DIV).
 
 from functools import partial
 
-from .iron.binary_ops import binary_op
 from .kernel import Backend, KernelSpec
 
 
@@ -30,12 +29,14 @@ def _iron_binary_kernel(
         op_name (str): Name of the binary operation.
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters (unused for binary ops).
 
     Returns:
         MLIR module for the binary operation.
     """
+    from .iron.binary_ops import binary_op
+
     return binary_op(
         arch=arch,
         op_name=op_name,
@@ -57,7 +58,7 @@ def _make_binary_kernel_spec(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
         op_name (str): Name of the operation.
 
@@ -90,7 +91,7 @@ def ggml_op_add(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -110,7 +111,7 @@ def ggml_op_sub(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -130,7 +131,7 @@ def ggml_op_mul(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:
@@ -150,7 +151,7 @@ def ggml_op_div(
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): List of two input tensors.
-        output_tensor (TensorDesc): Output tensor.
+        output_tensor: Output tensor.
         op_params (bytearray): Operation parameters.
 
     Returns:

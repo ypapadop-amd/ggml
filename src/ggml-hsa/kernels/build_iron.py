@@ -9,7 +9,6 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from kernel import KernelSpec
-from tensor_desc import TensorDesc
 from iron.utils import suppress_import_pyxrt_msg
 
 suppress_import_pyxrt_msg()
