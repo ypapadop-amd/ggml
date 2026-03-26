@@ -131,8 +131,8 @@ The `KernelSpec` specifies:
 - `backend`: Which compilation backend to use (`Backend.IRON`)
 - `op_name`: Name of the operation (e.g., `"GGML_OP_SCALE"`)
 - `arch`: Target architecture string (`"aie2"` or `"aie2p"`)
-- `input_tensors`: List of input tensor descriptors
-- `output_tensor`: Output tensor descriptor
+- `input_tensors`: List of input tensors
+- `output_tensor`: Output tensor
 - `op_params`: Operation-specific parameters as a bytearray
 - `function`: The callable that generates backend-specific IR
 
@@ -445,9 +445,10 @@ To add a new backend (e.g., Triton):
   - `arch_aligned_num_elements()` - Align tensor sizes to architecture requirements
   - `align_to_arch()` - Align arbitrary sizes to byte boundaries (default 4-byte alignment)
   - `max_tile_size()` - Calculate optimal tile size based on 512-bit vector register width
-  - `suppress_import_pyxrt_msg()` - Returns pre-imported `aie.utils` with pyxrt messages suppressed
 - Top-level wrappers import from `.iron.<module>` subpackage
-- Follow existing formatting using `black`
+- Follow existing formatting using `ruff` (see `kernels/ruff.toml`)
+- Use Google-style docstrings (`Parameters:`, `Returns:`, `Raises:`) — not numpy-style
+- Do not duplicate type annotations in docstrings; types belong in function signatures
 - Add module docstrings to all Python files
 
 ## Supported Operations

@@ -39,16 +39,16 @@ jobs:
         echo "deb [signed-by=/etc/apt/keyrings/llvm-snapshot.gpg] http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm-toolchain-22.list
         sudo apt-get update
         sudo apt-get install -y clang-format-22
-        pip install black
+        pip install ruff
 
     - name: Format C++ code with clang-format
       run: |
         find src/ggml-hsa -type f \( -name '*.cpp' -o -name '*.cc' -o -name '*.hpp' -o -name '*.h' \) \
           -exec clang-format-22 -i --style=file:src/ggml-hsa/.clang-format {} +
 
-    - name: Format Python code with black
+    - name: Format Python code with ruff
       run: |
-        black src/ggml-hsa
+        ruff format src/ggml-hsa
 
     - name: Check for changes
       id: verify
@@ -68,7 +68,7 @@ jobs:
         git commit -m "Auto-format code in src/ggml-hsa
 
         - Format C++ code with clang-format
-        - Format Python code with black
+        - Format Python code with ruff
 
         Co-Authored-By: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
         git push
