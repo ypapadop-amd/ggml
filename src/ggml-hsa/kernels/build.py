@@ -19,6 +19,7 @@ Usage:
         python build.py --ggml_op ADD --arch aie2 --input_tensors "(1024,1,1,1)/f32" ...
 """
 
+import contextlib
 import importlib.util
 import logging
 import sys
@@ -104,7 +105,8 @@ def get_compiler(backend: Backend) -> Callable:
     for registered_backend, compiler in _compilers.items():
         if registered_backend.name == backend.name:
             return compiler
-    raise NotImplementedError(f"Backend {backend.name} not implemented.")
+    msg = f"Backend {backend.name} not implemented."
+    raise NotImplementedError(msg)
 
 
 def get_kernel(op_name: str) -> Kernel:
@@ -125,7 +127,8 @@ def get_kernel(op_name: str) -> Kernel:
     """
     kernel = _op_to_kernel_map.get(op_name)
     if kernel is None:
-        raise NotImplementedError(f"Operation {op_name} not implemented.")
+        msg = f"Operation {op_name} not implemented."
+        raise NotImplementedError(msg)
     return kernel
 
 
@@ -177,9 +180,11 @@ def import_from_path(module_name: str, path: str | Path):
         submodule_search_locations=[parent_dir_str],
     )
     if spec is None:
-        raise ImportError(f"Cannot find module spec for {module_name} at path {path}")
+        msg = f"Cannot find module spec for {module_name} at path {path}"
+        raise ImportError(msg)
     if spec.loader is None:
-        raise ImportError(f"Cannot find loader for module {module_name} at path {path}")
+        msg = f"Cannot find loader for module {module_name} at path {path}"
+        raise ImportError(msg)
     module = importlib.util.module_from_spec(spec)
     # Set __package__ to enable relative imports
     module.__package__ = package_name
@@ -197,7 +202,7 @@ def ggml_compile_op(
     exported_name: str,
     output_directory: str | Path,
     verbose: bool = False,
-):
+) -> None:
     """Compile a GGML operation kernel to PDI and instruction files.
 
     This is the main entry point for kernel compilation. It:
@@ -226,11 +231,9 @@ def ggml_compile_op(
     logger = logging.getLogger(__name__)
     # remove all existing handlers
     for handler in logger.handlers.copy():
-        try:
+        # ignore double removals
+        with contextlib.suppress(ValueError):
             logger.removeHandler(handler)
-        except ValueError:
-            # ignore double removals
-            pass
     if verbose:
         logger.setLevel(logging.DEBUG)
         ch = logging.StreamHandler()
@@ -324,7 +327,8 @@ def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
     ints = map(int, string.split(","))
     t = tuple(ints)
     if len(t) != 4:
-        raise ValueError(f"Shape must have 4 dimensions, got {len(t)}.")
+        msg = f"Shape must have 4 dimensions, got {len(t)}."
+        raise ValueError(msg)
     return t
 
 
@@ -366,8 +370,8 @@ def file_path(string: str):
     return string
 
 
-def main():
-    """Main entry point for command-line AOT compilation."""
+def main() -> None:
+    """Entry point for command-line AOT compilation."""
     from argparse import ArgumentParser
 
     parser = ArgumentParser(

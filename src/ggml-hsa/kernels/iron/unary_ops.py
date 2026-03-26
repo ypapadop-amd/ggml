@@ -54,7 +54,7 @@ def _unary_op(
     function_spec: CoreFunctionSpec,
     output_tensor,
 ):
-    """Implements output_tensor = op(input_tensors[0])
+    """Implement output_tensor = op(input_tensors[0]).
 
     Parameters
     ----------
@@ -71,10 +71,11 @@ def _unary_op(
     tile_size = function_spec.tile_size
     num_tiles = num_elements // tile_size
     if num_elements % tile_size != 0:
-        raise ValueError(
-            f"num_elements ({num_elements}) must be divisible by tile_size ({tile_size}) "
-            "for correct tiling"
+        msg = (
+            f"num_elements ({num_elements}) must be divisible by "
+            f"tile_size ({tile_size}) for correct tiling"
         )
+        raise ValueError(msg)
 
     # AIE-array data movement with object fifos
     input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
@@ -107,7 +108,7 @@ def _unary_op(
         rt.fill(of_in.prod(), t[0])
         rt.drain(of_out.cons(), t[-1], wait=True)
 
-    # Place program components (assign them resources on the device) and generate an MLIR module
+    # Place program components (assign them resources on the device) and generate MLIR
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
@@ -117,7 +118,7 @@ def _create_external_function(
     input_tensor,
     output_tensor,
 ) -> CoreFunctionSpec:
-    """Creates a specification for unary ops.
+    """Create a specification for unary ops.
 
     Parameters
     ----------
@@ -170,16 +171,20 @@ def unary_op(
 
     """
     if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+        msg = "Operation requires exactly one input tensor."
+        raise ValueError(msg)
 
     if input_tensors[0].contiguous is False or output_tensor.contiguous is False:
-        raise ValueError("Input and output tensors must be contiguous in memory.")
+        msg = "Input and output tensors must be contiguous in memory."
+        raise ValueError(msg)
 
     if input_tensors[0].shape != output_tensor.shape:
-        raise ValueError("Input and output tensors must have the same shape.")
+        msg = "Input and output tensors must have the same shape."
+        raise ValueError(msg)
 
     if output_tensor.shape[1:4] != (1, 1, 1):
-        raise ValueError(f"Unsupported shape ({output_tensor.shape}).")
+        msg = f"Unsupported shape ({output_tensor.shape})."
+        raise ValueError(msg)
 
     function_spec = _create_external_function(
         arch=arch,

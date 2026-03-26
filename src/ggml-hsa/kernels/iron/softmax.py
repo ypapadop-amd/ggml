@@ -59,7 +59,8 @@ def get_softmax_dimensions(tensor) -> tuple[int, int]:
     if len(shape) == 4:
         # shape = (ne00, ne01, ne02, ne03)
         return shape[0], shape[1] * shape[2] * shape[3]
-    raise ValueError(f"Unsupported tensor rank: {len(shape)}")
+    msg = f"Unsupported tensor rank: {len(shape)}"
+    raise ValueError(msg)
 
 
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -79,38 +80,47 @@ def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     input_tensor_count = len(input_tensors)
 
     if input_tensor_count < 1 or input_tensor_count > 3:
-        raise ValueError(f"Operation requires 1, 2, or 3 tensors: {input_tensor_count}")
+        msg = f"Operation requires 1, 2, or 3 tensors: {input_tensor_count}"
+        raise ValueError(msg)
 
     input_tensor = input_tensors[0]
     mask_tensor = input_tensors[1] if input_tensor_count >= 2 else None
     sink_tensor = input_tensors[2] if input_tensor_count >= 3 else None
 
     if not input_tensor.contiguous:
-        raise ValueError("Input tensor must be contiguous in memory.")
+        msg = "Input tensor must be contiguous in memory."
+        raise ValueError(msg)
 
     if not output_tensor.contiguous:
-        raise ValueError("Output tensor must be contiguous in memory.")
+        msg = "Output tensor must be contiguous in memory."
+        raise ValueError(msg)
 
     if input_tensor.shape != output_tensor.shape:
-        raise ValueError(
-            f"Input and output tensors must have the same shape: {input_tensor.shape} vs {output_tensor.shape}"
+        msg = (
+            f"Input and output tensors must have the same shape: {input_tensor.shape} "
+            f"vs {output_tensor.shape}"
         )
+        raise ValueError(msg)
 
     if mask_tensor and not mask_tensor.contiguous:
-        raise ValueError("Mask tensor must be contiguous in memory.")
+        msg = "Mask tensor must be contiguous in memory."
+        raise ValueError(msg)
     if sink_tensor and not sink_tensor.contiguous:
-        raise ValueError("Sink tensor must be contiguous in memory.")
+        msg = "Sink tensor must be contiguous in memory."
+        raise ValueError(msg)
 
     if sink_tensor:
-        raise ValueError(
+        msg = (
             "Softmax with sink tensor is not supported on AIE. "
             "AIE tiles are limited to 2 input DMA channels, but softmax with "
             "mask and sink requires 3 input streams."
         )
+        raise ValueError(msg)
 
     # Currently f16 mask is not supported as we use f32 vector instructions.
     if mask_tensor and mask_tensor.dtype != np.dtype("float32"):
-        raise ValueError(f"Softmax with {mask_tensor.dtype} mask is not supported.")
+        msg = f"Softmax with {mask_tensor.dtype} mask is not supported."
+        raise ValueError(msg)
 
     # Unpack op_params: scale and max_bias
     scale = struct.unpack_from("f", op_params, 0)[0]
@@ -140,7 +150,7 @@ def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
 
 def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_bias):
-    """Creates an IRON program for basic softmax without mask or sink tensors.
+    """Create an IRON program for basic softmax without mask or sink tensors.
 
     Parameters
     ----------
@@ -199,7 +209,7 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
 def create_binary_program(
     arch, op_name, input_tensor, mask_tensor, output_tensor, scale, max_bias
 ):
-    """Creates an IRON program for softmax with a mask tensor.
+    """Create an IRON program for softmax with a mask tensor.
 
     This variant supports attention masking where the mask is added to the input
     before computing softmax. It also supports ALiBi positional encoding when
@@ -408,22 +418,24 @@ def create_ternary_program(
 
 
 def _create_external_function(
-    arch: str,
+    _arch: str,
     op_name: str,
-    input_tensor: Any,
+    input_tensor,
     mask_tensor: Any | None,
     sink_tensor: Any | None,
-    output_tensor: Any,
+    output_tensor,
 ) -> tuple:
-    """Creates an external function specification for softmax variants.
+    """Create an external function specification for softmax variants.
 
     Returns:
         If no mask or sink tensor:
             (func, num_elements_in, tile_size_in)
         If mask tensor only:
-            (func, num_elements_in, tile_size_in, tile_size_mask, num_rows_mask, num_elements_mask, n_head, rows_per_head)
+            (func, num_elements_in, tile_size_in, tile_size_mask, num_rows_mask,
+                num_elements_mask, n_head, rows_per_head)
         If mask and sink tensor:
-            (func, num_elements_in, tile_size_in, tile_size_mask, num_rows_mask, num_elements_mask, num_sinks, rows_per_head)
+            (func, num_elements_in, tile_size_in, tile_size_mask, num_rows_mask,
+                num_elements_mask, num_sinks, rows_per_head)
 
     """
     row_length_in, num_rows_in = get_softmax_dimensions(input_tensor)

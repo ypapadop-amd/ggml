@@ -60,7 +60,8 @@ def get_cross_entropy_loss_dimensions(tensor) -> tuple[int, int]:
     if len(shape) == 4:
         # shape = (ne00, ne01, ne02, ne03)
         return shape[0], shape[1] * shape[2] * shape[3]
-    raise ValueError(f"Unsupported tensor rank: {len(shape)}")
+    msg = f"Unsupported tensor rank: {len(shape)}"
+    raise ValueError(msg)
 
 
 # Vector size for AIE kernel vector operations
@@ -68,7 +69,7 @@ KERN_VEC_SIZE = 8
 
 
 def cross_entropy_loss(
-    arch: str, input_tensors: list, output_tensor, op_params: bytearray
+    arch: str, input_tensors: list, output_tensor, _op_params: bytearray
 ):
     """IRON design for GGML_OP_CROSS_ENTROPY_LOSS implementation.
 
@@ -82,26 +83,29 @@ def cross_entropy_loss(
             - input_tensors[0]: Logits tensor (predictions before softmax)
             - input_tensors[1]: Labels tensor (ground truth, often one-hot encoded)
         output_tensor: Output scalar tensor containing the loss value.
-        op_params: Operation parameters (currently unused).
+        _op_params: Operation parameters (currently unused).
 
     """
     if len(input_tensors) != 2:
-        raise ValueError(
-            f"Cross entropy loss requires 2 input tensors: {len(input_tensors)}"
-        )
+        msg = f"Cross entropy loss requires 2 input tensors: {len(input_tensors)}"
+        raise ValueError(msg)
 
     logits_tensor = input_tensors[0]
     labels_tensor = input_tensors[1]
 
     if not logits_tensor.contiguous:
-        raise ValueError("Logits tensor must be contiguous in memory.")
+        msg = "Logits tensor must be contiguous in memory."
+        raise ValueError(msg)
     if not labels_tensor.contiguous:
-        raise ValueError("Labels tensor must be contiguous in memory.")
+        msg = "Labels tensor must be contiguous in memory."
+        raise ValueError(msg)
     if not output_tensor.contiguous:
-        raise ValueError("Output tensor must be contiguous in memory.")
+        msg = "Output tensor must be contiguous in memory."
+        raise ValueError(msg)
 
     if logits_tensor.shape != labels_tensor.shape:
-        raise ValueError("Logits and labels tensors must have the same shape.")
+        msg = "Logits and labels tensors must have the same shape."
+        raise ValueError(msg)
 
     row_length, num_rows = get_cross_entropy_loss_dimensions(logits_tensor)
 
@@ -111,10 +115,11 @@ def cross_entropy_loss(
     # For cross entropy loss, we process one row at a time
     # Each tile contains one row of data
     if tile_size != row_length:
-        raise ValueError(
+        msg = (
             f"Tile size ({tile_size}) must equal row length ({row_length}) "
             "for cross entropy loss."
         )
+        raise ValueError(msg)
 
     # Create external function
     function = _create_external_function(
@@ -145,7 +150,7 @@ def create_reduction_program(
     tile_size: int,
     num_rows: int,
 ):
-    """Creates an IRON program for cross entropy loss with on-tile reduction.
+    """Create an IRON program for cross entropy loss with on-tile reduction.
 
     The C++ kernel computes per-row loss: loss_row = -sum(labels * log_softmax).
     The worker accumulates all per-row losses on-tile and outputs a single
@@ -269,7 +274,7 @@ def _create_external_function(
     output_tensor,
     tile_size: int,
 ):
-    """Creates an external function specification for cross entropy loss.
+    """Create an external function specification for cross entropy loss.
 
     The external function wraps the C++ kernel that computes per-row loss:
     loss = -sum(labels * log_softmax(logits)) using numerically stable
@@ -298,12 +303,10 @@ def _create_external_function(
     compile_flags = []
 
     current_dir = path.dirname(path.realpath(__file__))
-    func = ExternalFunction(
+    return ExternalFunction(
         name="ggml_op_cross_entropy_loss",
         object_file_name="cross_entropy_loss_core_function.o",
         source_file=path.join(current_dir, "cross_entropy_loss.cc"),
         arg_types=arg_types,
         compile_flags=compile_flags,
     )
-
-    return func

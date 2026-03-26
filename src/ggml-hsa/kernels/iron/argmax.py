@@ -28,7 +28,7 @@ from .softmax import get_softmax_dimensions
 from .utils import arch_to_device
 
 
-def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def argmax_op(arch: str, input_tensors: list, output_tensor, _op_params: bytearray):
     """IRON design for argmax.
 
     Computes the index of the maximum value along the first dimension for each row.
@@ -44,7 +44,7 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
             ne1 * ne2 * ne3 is the number of rows.
         output_tensor: Output tensor of type I32 with shape [ne1, ne2, ne3]
             containing one index per row indicating the position of the maximum value.
-        op_params: Operation parameters (unused for ARGMAX).
+        _op_params: Operation parameters (unused for ARGMAX).
 
     Returns
     -------
@@ -59,27 +59,30 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
 
     """
     if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+        msg = "Operation requires exactly one input tensor."
+        raise ValueError(msg)
 
     input_tensor = input_tensors[0]
 
     if not input_tensor.contiguous:
-        raise ValueError("Input tensor must be contiguous in memory.")
+        msg = "Input tensor must be contiguous in memory."
+        raise ValueError(msg)
     if not output_tensor.contiguous:
-        raise ValueError("Output tensor must be contiguous in memory.")
+        msg = "Output tensor must be contiguous in memory."
+        raise ValueError(msg)
 
     row_length, num_rows = get_softmax_dimensions(input_tensor)
 
     if output_tensor.numel() != num_rows:
-        raise ValueError(
+        msg = (
             f"Output tensor size ({output_tensor.numel()}) does not match the number "
             f"of input rows ({num_rows})."
         )
+        raise ValueError(msg)
 
     if output_tensor.dtype != np.int32:
-        raise ValueError(
-            f"Output tensor dtype must be int32, got {output_tensor.dtype}."
-        )
+        msg = f"Output tensor dtype must be int32, got {output_tensor.dtype}."
+        raise ValueError(msg)
 
     function = _create_external_function(
         op_name="GGML_OP_ARGMAX",
@@ -130,7 +133,7 @@ def _create_external_function(
     output_tensor,
     row_length: int,
 ) -> ExternalFunction:
-    """Creates an ExternalFunction specification for argmax.
+    """Create an ExternalFunction specification for argmax.
 
     The external function wraps the C++ kernel that performs the actual argmax
     computation on the AIE tile. The kernel receives one row of input data and
@@ -151,7 +154,7 @@ def _create_external_function(
 
     """
     current_dir = Path(__file__).resolve().parent
-    func = ExternalFunction(
+    return ExternalFunction(
         name=f"{op_name.lower()}",
         object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=str(current_dir / "argmax.cc"),
@@ -165,4 +168,3 @@ def _create_external_function(
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
         ],
     )
-    return func

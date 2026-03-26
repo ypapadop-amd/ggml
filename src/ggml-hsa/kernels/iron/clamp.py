@@ -35,7 +35,7 @@ def _create_external_function(
     input_tensor,
     output_tensor,
 ) -> tuple[ExternalFunction, int, int]:
-    """Creates an ExternalFunction specification for the clamp operation.
+    """Create an ExternalFunction specification for the clamp operation.
 
     Parameters
     ----------
@@ -90,13 +90,16 @@ def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
 
     """
     if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+        msg = "Operation requires exactly one input tensor."
+        raise ValueError(msg)
 
     if input_tensors[0].contiguous is False or output_tensor.contiguous is False:
-        raise ValueError("Input and output tensors must be contiguous in memory.")
+        msg = "Input and output tensors must be contiguous in memory."
+        raise ValueError(msg)
 
     if input_tensors[0].shape != output_tensor.shape:
-        raise ValueError("Input and output tensors must have the same shape.")
+        msg = "Input and output tensors must have the same shape."
+        raise ValueError(msg)
 
     input_tensor = input_tensors[0]
 

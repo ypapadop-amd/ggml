@@ -5,9 +5,7 @@
 #
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""Top-level entry points for GGML binary operations (GGML_OP_ADD, GGML_OP_SUB,
-GGML_OP_MUL, GGML_OP_DIV).
-"""
+"""Top-level entry points for GGML binary operations."""
 
 from functools import partial
 
@@ -21,7 +19,7 @@ def _iron_binary_kernel(
     output_tensor,
     op_params: bytearray,
 ):
-    """Wrapper for IRON binary operations matching the KernelFunction protocol.
+    """Return wrapper for IRON binary operations matching the KernelFunction protocol.
 
     Parameters
     ----------
@@ -73,7 +71,8 @@ def _make_binary_kernel_spec(
 
     """
     if len(input_tensors) != 2:
-        raise ValueError("Operation requires exactly two input tensors.")
+        msg = "Operation requires exactly two input tensors."
+        raise ValueError(msg)
 
     return KernelSpec(
         backend=Backend.IRON,

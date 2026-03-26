@@ -55,10 +55,7 @@ def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
         True if t0 can be repeated to fill t1.
 
     """
-    for i in range(4):
-        if t1_shape[i] % t0_shape[i] != 0:
-            return False
-    return True
+    return all(t1_shape[i] % t0_shape[i] == 0 for i in range(4))
 
 
 @dataclass(frozen=True)
@@ -86,7 +83,7 @@ def _binary_op(
     function_spec: CoreFunctionSpec,
     output_tensor,
 ):
-    """Implements output_tensor = op(*input_tensors)
+    """Implement output_tensor = op(*input_tensors).
 
     Parameters
     ----------
@@ -101,9 +98,8 @@ def _binary_op(
     tile_size = function_spec.tile_size
     num_tiles = num_elements // tile_size
     if num_elements % tile_size != 0:
-        raise ValueError(
-            f"Number of elements ({num_elements}) must be divisible by tile size ({tile_size})."
-        )
+        msg = f"Number of elements ({num_elements}) must be divisible by tile size ({tile_size})."
+        raise ValueError(msg)
 
     # AIE-array data movement with object fifos
     input_tile_tys = [
@@ -160,7 +156,7 @@ def _create_external_function(
     input_tensors: list,
     output_tensor,
 ) -> CoreFunctionSpec:
-    """Creates a specification for binary ops.
+    """Create a specification for binary ops.
 
     Parameters
     ----------
@@ -229,7 +225,7 @@ def _create_broadcast_external_function(
     input_tensors: list,
     output_tensor,
 ) -> BroadcastFunctionSpec:
-    """Creates a specification for broadcast binary ops.
+    """Create a specification for broadcast binary ops.
 
     In broadcast mode, src1 is smaller than src0/dst and gets repeated.
     The kernel receives the full src1 buffer and uses modulo indexing.
@@ -315,9 +311,8 @@ def _binary_op_broadcast(
     dst_ne = function_spec.dst_ne
 
     if num_elements_out % tile_size != 0:
-        raise ValueError(
-            f"Number of elements ({num_elements_out}) must be divisible by tile size ({tile_size})."
-        )
+        msg = f"Number of elements ({num_elements_out}) must be divisible by tile size ({tile_size})."
+        raise ValueError(msg)
 
     # ObjectFifos for data movement
     src0_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]]
@@ -400,13 +395,15 @@ def binary_op(
 
     """
     if len(input_tensors) != 2:
-        raise ValueError("Operation requires exactly two input tensors.")
+        msg = "Operation requires exactly two input tensors."
+        raise ValueError(msg)
 
     if (
         any(t.contiguous is False for t in input_tensors)
         or output_tensor.contiguous is False
     ):
-        raise ValueError("Input and output tensors must be contiguous in memory.")
+        msg = "Input and output tensors must be contiguous in memory."
+        raise ValueError(msg)
 
     src0_shape = input_tensors[0].shape
     src1_shape = input_tensors[1].shape
@@ -414,7 +411,8 @@ def binary_op(
 
     # src0 must match output shape
     if src0_shape != dst_shape:
-        raise ValueError(f"src0 shape must match output: {src0_shape} != {dst_shape}")
+        msg = f"src0 shape must match output: {src0_shape} != {dst_shape}"
+        raise ValueError(msg)
 
     # Check if broadcasting is needed
     needs_broadcast = src1_shape != dst_shape
@@ -423,7 +421,8 @@ def binary_op(
         # Validate broadcasting is supported per GGML semantics
         # ggml_can_repeat(src1, dst) checks if src1 can be repeated to fill dst
         if not _ggml_can_repeat(src1_shape, dst_shape):
-            raise ValueError(f"Cannot broadcast: {src1_shape} -> {dst_shape}")
+            msg = f"Cannot broadcast: {src1_shape} -> {dst_shape}"
+            raise ValueError(msg)
 
         function_spec = _create_broadcast_external_function(
             arch=arch,

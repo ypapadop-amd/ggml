@@ -28,18 +28,21 @@ def align_to_arch(
         dtype_size = dtype.itemsize
         data_size = size * dtype_size
         if data_size % alignment_bytes != 0:
-            aligned_size = (
+            return (
                 alignment_bytes
                 * ((data_size + (alignment_bytes - 1)) // alignment_bytes)
                 // dtype_size
             )
-            return aligned_size
         return size
-    raise ValueError(f"Unsupported architecture: {arch}")
+    msg = f"Unsupported architecture: {arch}"
+    raise ValueError(msg)
 
 
 def arch_aligned_num_elements(arch: str, tensor) -> int:
-    """Returns the number of elements in the tensor aligned to what the architecture expects for the data type of the tensor.
+    """Align number of elements to architecture requirements.
+
+    Return the number of elements in the tensor aligned to what the architecture
+    expects for the data type of the tensor.
 
     Parameters
     ----------
@@ -55,7 +58,7 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
 
 
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
-    """Returns the maximum tile size based on device, data type and number of elements.
+    """Return the maximum tile size based on device, data type and number of elements.
 
     Parameters
     ----------
@@ -69,24 +72,26 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
 
     """
     vector_register_width = 0
-    if arch == "aie2" or arch == "aie2p":
+    if arch in {"aie2", "aie2p"}:
         vector_register_width = 512  # bits
     else:
-        raise ValueError(f"Unsupported architecture: {arch}")
+        msg = f"Unsupported architecture: {arch}"
+        raise ValueError(msg)
     tile_size = int(vector_register_width / dtype.itemsize)
 
     while num_elements % tile_size != 0 and tile_size > 1:
         tile_size //= 2
 
     assert num_elements % tile_size == 0, (
-        f"Number of elements ({num_elements}) must be a multiple of tile size ({tile_size})."
+        f"Number of elements ({num_elements}) must be a multiple of "
+        f"tile size ({tile_size})."
     )
 
     return tile_size
 
 
 def arch_to_device(device):
-    """Converts an architecture string to an IRON device object.
+    """Convert an architecture string to an IRON device object.
 
     Parameters
     ----------
@@ -106,5 +111,6 @@ def arch_to_device(device):
             return NPU1()
         if device == "aie2p":
             return NPU2()
-        raise ValueError(f"Unsupported device: {device}")
+        msg = f"Unsupported device: {device}"
+        raise ValueError(msg)
     return device

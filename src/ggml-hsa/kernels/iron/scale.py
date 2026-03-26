@@ -41,13 +41,16 @@ def scale(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
 
     """
     if len(input_tensors) != 1:
-        raise ValueError("Operation requires exactly one input tensor.")
+        msg = "Operation requires exactly one input tensor."
+        raise ValueError(msg)
 
     if input_tensors[0].contiguous is False or output_tensor.contiguous is False:
-        raise ValueError("Input and output tensors must be contiguous in memory.")
+        msg = "Input and output tensors must be contiguous in memory."
+        raise ValueError(msg)
 
     if input_tensors[0].shape != output_tensor.shape:
-        raise ValueError("Input and output tensors must have the same shape.")
+        msg = "Input and output tensors must have the same shape."
+        raise ValueError(msg)
 
     input_tensor = input_tensors[0]
 
@@ -92,7 +95,7 @@ def scale(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         rt.fill(of_in.prod(), a_in)
         rt.drain(of_out.cons(), b_out, wait=True)
 
-    # Place program components (assign them resources on the device) and generate an MLIR module
+    # Place program components (assign them resources on the device) and generate MLIR
     return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
 
 
@@ -102,7 +105,7 @@ def _create_external_function(
     input_tensor,
     output_tensor,
 ) -> tuple[ExternalFunction, int, int]:
-    """Creates an ExternalFunction specification for the scale operation.
+    """Create an ExternalFunction specification for the scale operation.
 
     Parameters
     ----------

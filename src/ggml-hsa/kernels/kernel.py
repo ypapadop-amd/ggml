@@ -85,8 +85,9 @@ class KernelSpec:
     function: Callable[..., Any]
     config: dict | None = None  # Optional field for additional configuration parameters
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate that backend is a Backend enum instance."""
         if not isinstance(self.backend, Backend):
             backend_type = type(self.backend).__name__
-            raise TypeError(f"backend must be a Backend enum, got {backend_type}")
+            msg = f"backend must be a Backend enum, got {backend_type}"
+            raise TypeError(msg)

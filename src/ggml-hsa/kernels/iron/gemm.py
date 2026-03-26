@@ -76,7 +76,7 @@ def main():
         "of the input/output matrices. These objects can be used for visualization.",
     )
     args = argparser.parse_args()
-    with mlir_mod_ctx() as ctx:
+    with mlir_mod_ctx():
         maybe_taps = my_matmul(
             args.dev,
             args.M,
@@ -103,10 +103,11 @@ def main():
 
     if args.generate_taps:
         return maybe_taps
+    return None
 
 
 def ceildiv(a, b):
-    """Returns the ceiling of integer division a/b."""
+    """Return the ceiling of integer division a/b."""
     return (a + b - 1) // b
 
 
@@ -131,7 +132,7 @@ def my_matmul(
     object_file,
     generate_taps=False,
 ):
-    """Generates MLIR for tiled matrix multiplication across an AIE array.
+    """Generate MLIR for tiled matrix multiplication across an AIE array.
 
     This function creates the complete AIE design including tile declarations,
     object FIFOs for data movement, compute core logic, and runtime DMA sequences.
@@ -171,13 +172,11 @@ def my_matmul(
     dtype_out = str_to_dtype(dtype_out_str)
 
     if np.issubdtype(dtype_in, np.integer) != np.issubdtype(dtype_out, np.integer):
-        raise ValueError(
-            f"Input dtype ({dtype_in}) and output dtype ({dtype_out}) must either both be integral or both be float"
-        )
+        msg = f"Input dtype ({dtype_in}) and output dtype ({dtype_out}) must either both be integral or both be float"
+        raise ValueError(msg)
     if np.dtype(dtype_out).itemsize < np.dtype(dtype_in).itemsize:
-        raise ValueError(
-            f"Output dtype ({dtype_out}) must be equal or larger to input dtype ({dtype_in})"
-        )
+        msg = f"Output dtype ({dtype_out}) must be equal or larger to input dtype ({dtype_in})"
+        raise ValueError(msg)
 
     # r, s, t are the dimensions required by the microkernel MAC instructions.
     mac_dims = microkernel_mac_dim_map[dev][dtype_in_str]
@@ -188,12 +187,12 @@ def my_matmul(
 
     # npu is a 4 row x 4 col array
     if dev == "npu" and n_aie_cols > 4:
-        raise AssertionError("Invalid configuration: NPU (Phoenix/Hawk) has 4 columns")
+        msg = "Invalid configuration: NPU (Phoenix/Hawk) has 4 columns"
+        raise AssertionError(msg)
     # npu2 is a 4 row x 8 col array
     if dev == "npu2" and n_aie_cols > 8:
-        raise AssertionError(
-            "Invalid configuration: NPU2 (Strix/Strix Halo/Krackan) has 8 columns"
-        )
+        msg = "Invalid configuration: NPU2 (Strix/Strix Halo/Krackan) has 8 columns"
+        raise AssertionError(msg)
 
     # Input matrix A:
     # Conceptually, we divide input A into (m * n_rows, k)-sized blocks. These
@@ -662,6 +661,7 @@ def my_matmul(
             TensorAccessSequence.from_taps(B_taps),
             TensorAccessSequence.from_taps(C_taps),
         )
+    return None
 
 
 if __name__ == "__main__":
@@ -673,7 +673,7 @@ def create_mat_mul_external_functions(
     input_tensors: list,
     output_tensor,
 ):
-    """Returns the parameters and names of the external functions for matrix multiplication.
+    """Create parameters and names of external functions for matrix multiplication.
 
     Args:
         arch: Target architecture.
@@ -705,7 +705,8 @@ def create_mat_mul_external_functions(
         n = 16
         k = 16
     else:
-        raise ValueError(f"Unsupported architecture: {arch}")
+        msg = f"Unsupported architecture: {arch}"
+        raise ValueError(msg)
 
     current_dir = Path(__file__).resolve().parent
     source_file = str(current_dir / arch / "mm.cc")
@@ -764,30 +765,36 @@ def gemm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
 
     """
     if len(input_tensors) != 2:
-        raise ValueError("Requires two input tensors")
+        msg = "Requires two input tensors"
+        raise ValueError(msg)
 
     A = input_tensors[0]  # MxK = A.shape(1) x A.shape(0)
     B = input_tensors[1]  # KxN = B.shape(0) x B.shape(1)
     C = output_tensor  # MxN = C.shape(0) x C.shape(1)
 
     if not A.contiguous or not B.contiguous or not C.contiguous:
-        raise ValueError("Tensors must be contiguous")
+        msg = "Tensors must be contiguous"
+        raise ValueError(msg)
 
     if A.shape[1] != C.shape[0]:
-        raise ValueError(f"Incompatible M for A and C: {A.shape[1]} != {C.shape[0]}")
+        msg = f"Incompatible M for A and C: {A.shape[1]} != {C.shape[0]}"
+        raise ValueError(msg)
 
     if B.shape[1] != C.shape[1]:
-        raise ValueError(f"Incompatible N for B and C: {B.shape[1]} != {C.shape[1]}")
+        msg = f"Incompatible N for B and C: {B.shape[1]} != {C.shape[1]}"
+        raise ValueError(msg)
 
     if A.shape[0] != B.shape[0]:
-        raise ValueError(f"Incompatible K for A and B: {A.shape[0]} != {B.shape[0]}")
+        msg = f"Incompatible K for A and B: {A.shape[0]} != {B.shape[0]}"
+        raise ValueError(msg)
 
     if arch == "aie2":
         dev = "npu"
     elif arch == "aie2p":
         dev = "npu2"
     else:
-        raise ValueError(f"Unsupported architecture: {arch}")
+        msg = f"Unsupported architecture: {arch}"
+        raise ValueError(msg)
 
     (
         m,

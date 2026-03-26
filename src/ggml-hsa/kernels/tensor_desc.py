@@ -16,7 +16,8 @@ import numpy as np
 from aie.iron import str_to_dtype
 
 # Mapping for dtypes not natively supported by IRON but still valid GGML types.
-# These tensors can still be described, but kernels need to have special handling for them.
+# These tensors can still be described, but kernels need to have special handling for
+# them.
 _FALLBACK_DTYPE_MAP = {
     "i64": np.int64,
     "u64": np.uint64,
@@ -43,7 +44,8 @@ class TensorDesc:
     stride: tuple[int, int, int, int] | None = None
     contiguous: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate and compute derived properties of the tensor descriptor."""
         # convert dtype to np.dtype if it's a string
         if isinstance(self.dtype, str):
             # First try AIE-supported dtypes, then fall back to numpy for others
@@ -69,7 +71,7 @@ class TensorDesc:
 
     @property
     def size(self):
-        """Returns the number of elements in the tensor.
+        """Return the number of elements in the tensor.
 
         Returns:
             int: The total number of elements in the tensor.
@@ -78,7 +80,7 @@ class TensorDesc:
         return int(np.prod(self.shape))
 
     def numel(self):
-        """Returns the number of elements in the tensor.
+        """Return the number of elements in the tensor.
 
         Returns:
             int: The total number of elements in the tensor.
