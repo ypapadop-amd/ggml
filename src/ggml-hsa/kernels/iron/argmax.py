@@ -16,12 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from .softmax import get_softmax_dimensions
-from .utils import (
-    arch_to_device,
-    suppress_import_pyxrt_msg,
-)
-
-suppress_import_pyxrt_msg()
+from .utils import arch_to_device
 
 from aie.iron import (
     ExternalFunction,
@@ -44,12 +39,12 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
     outputs a single I32 index.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        input_tensors (list[TensorDesc]): List containing exactly one input tensor.
+        arch (str): Target architecture.
+        input_tensors (list): List containing exactly one input tensor.
             The tensor must be F32 with shape [ne0, ne1, ne2, ne3] where ne0 is the
             row length (dimension over which argmax is computed) and the product
             ne1 * ne2 * ne3 is the number of rows.
-        output_tensor (TensorDesc): Output tensor of type I32 with shape [ne1, ne2, ne3]
+        output_tensor: Output tensor of type I32 with shape [ne1, ne2, ne3]
             containing one index per row indicating the position of the maximum value.
         op_params (bytearray): Operation parameters (unused for ARGMAX).
 
@@ -87,7 +82,6 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
         )
 
     function = _create_external_function(
-        arch=arch,
         op_name="GGML_OP_ARGMAX",
         input_tensor=input_tensor,
         output_tensor=output_tensor,
@@ -131,7 +125,6 @@ def argmax_op(arch: str, input_tensors: list, output_tensor, op_params: bytearra
 
 
 def _create_external_function(
-    arch: str,
     op_name: str,
     input_tensor,
     output_tensor,
@@ -145,11 +138,9 @@ def _create_external_function(
     outputs a single I32 index.
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2", "aie2p").
-        op_name (str): Operation name used for function naming and compile flags
-            (e.g., "GGML_OP_ARGMAX").
-        input_tensor (TensorDesc): Input tensor descriptor providing dtype information.
-        output_tensor (TensorDesc): Output tensor descriptor providing dtype information.
+        op_name (str): Operation name used for function naming and compile flags.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
         row_length (int): Number of elements per row (ne0 dimension).
 
     Returns:

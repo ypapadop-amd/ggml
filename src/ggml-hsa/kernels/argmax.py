@@ -11,7 +11,6 @@ Top-level entry point for the GGML argmax operation (GGML_OP_ARGMAX).
 Returns a KernelSpec specifying the compilation backend and kernel function.
 """
 
-from .iron.argmax import argmax_op
 from .kernel import Backend, KernelSpec
 
 
@@ -26,19 +25,18 @@ def ggml_op_argmax(
     of the ne1 * ne2 * ne3 rows, producing an I32 output tensor with shape [ne1, ne2, ne3].
 
     Parameters:
-        arch (str): Target architecture (e.g., "aie2" for Phoenix/Hawk Point,
-            "aie2p" for Strix Halo/Krackan).
-        input_tensors (list[TensorDesc]): List containing exactly one input tensor
-            descriptor. The tensor must be F32 type and contiguous in memory.
-        output_tensor (TensorDesc): Output tensor descriptor of type I32. Shape is
+        arch (str): Target architecture.
+        input_tensors (list): List containing exactly one input tensor descriptor.
+        output_tensor: Output tensor descriptor of type I32. Shape is
             the input shape with the first dimension removed.
-        op_params (bytearray): Operation parameters as a 64-byte buffer (unused
-            for ARGMAX, but required by the dispatch interface).
+        op_params (bytearray): Operation parameters (unused for ARGMAX, but required
+            by the dispatch interface).
 
     Returns:
-        KernelSpec: Kernel specification with backend=IRON and the argmax_op function
-            for generating the MLIR module.
+        KernelSpec: Kernel specification for the ARGMAX operation.
     """
+    from .iron.argmax import argmax_op
+
     return KernelSpec(
         backend=Backend.IRON,
         op_name="GGML_OP_ARGMAX",
