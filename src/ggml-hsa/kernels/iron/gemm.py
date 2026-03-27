@@ -266,8 +266,10 @@ def my_matmul(
         C_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
         # AIE Core Function declarations
-        zero = external_func(zero_fn, inputs=[C_l1_ty])
-        matmul = external_func(matmul_fn, inputs=[A_l1_ty, B_l1_ty, C_l1_ty])
+        zero = external_func(zero_fn, inputs=[C_l1_ty], link_with=object_file)
+        matmul = external_func(
+            matmul_fn, inputs=[A_l1_ty, B_l1_ty, C_l1_ty], link_with=object_file
+        )
 
         # Tile declarations as tile[row][col]
         tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(6)]
@@ -437,7 +439,7 @@ def my_matmul(
                 # Exceding the stack size leads to wrong results from the kernel, but no error is triggered.
                 # Stack usage can be checked as explained here:
                 # https://github.com/Xilinx/llvm-aie/issues/487#issuecomment-2969438585
-                @core(core_tiles[row][col], object_file, stack_size=0xD00)
+                @core(core_tiles[row][col], stack_size=0xD00)
                 def core_body():
                     for _ in range_(0xFFFFFFFF):
                         loop = (
