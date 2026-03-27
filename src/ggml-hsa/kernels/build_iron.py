@@ -8,7 +8,6 @@ from pathlib import Path
 
 from aie.iron import ExternalFunction
 from aie.utils.compile import compile_cxx_core_function, compile_mlir_module
-
 from kernel import KernelSpec
 
 
