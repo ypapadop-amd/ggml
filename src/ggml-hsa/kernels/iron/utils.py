@@ -1,5 +1,4 @@
-# suppress stderr from aie imports until https://github.com/Xilinx/mlir-aie/issues/2833
-# is resolved
+# (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
 """Utility functions for IRON kernel implementations."""
 

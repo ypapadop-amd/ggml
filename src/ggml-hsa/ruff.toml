@@ -40,6 +40,7 @@ target-version = "py310"
 select = ["ALL"]
 ignore = [
     "ANN001",  # no type annotation for function argument
+    "ANN002",  # no type annotation for *args
     "ANN201",  # missing return type annotation
     "ANN202",  # missing return type annotation
     "ANN401",  # dynamic type annotation
