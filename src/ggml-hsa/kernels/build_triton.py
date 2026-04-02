@@ -1,11 +1,10 @@
 # Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-"""
-Triton-XDNA backend compiler for GGML HSA kernels.
-"""
+"""Triton-XDNA backend compiler for GGML HSA kernels."""
 
 import logging
 from pathlib import Path
+from xml.dom import NotFoundErr
 
 from kernel import KernelSpec
 
@@ -19,8 +18,7 @@ _numpy_to_triton_dtype_map = {
 
 
 def _map_dtype_to_triton(dtype) -> str:
-    """
-    Map a numpy dtype to a Triton type string.
+    """Map a numpy dtype to a Triton type string.
 
     Parameters:
         dtype: A numpy dtype object.
@@ -31,8 +29,8 @@ def _map_dtype_to_triton(dtype) -> str:
     dtype_str = str(dtype)
     if dtype_str in _numpy_to_triton_dtype_map:
         return _numpy_to_triton_dtype_map[dtype_str]
-    else:
-        raise ValueError(f"Unsupported dtype for Triton kernel: {dtype_str}")
+    msg = f"Unsupported dtype for Triton kernel: {dtype_str}"
+    raise ValueError(msg)
 
 
 def compile_triton_kernel(
@@ -43,8 +41,7 @@ def compile_triton_kernel(
     logger: logging.Logger,
     verbose: bool,
 ) -> None:
-    """
-    Compile a Triton kernel.
+    """Compile a Triton kernel.
 
     This function executes the Triton-XDNA compilation pipeline:
     1. Translates the kernel specification into a Triton kernel
@@ -57,18 +54,16 @@ def compile_triton_kernel(
         output_directory: Directory for output PDI and instruction files.
         logger: Logger for status messages.
         verbose: If True, enables verbose compilation output.
-    """
 
-    # Import Triton compilation modules
+    """
+    # Import Triton
     try:
         import triton
         import triton.backends
         from triton.compiler import compile as triton_compile
     except ImportError as e:
-        raise ImportError(
-            f"Failed to import Triton compilation modules: {e}\n"
-            "Ensure triton-xdna is installed correctly."
-        ) from e
+        msg = f"Failed to import Triton compilation modules: {e}"
+        raise ImportError(msg) from e
 
     # Get kernel from KernelSpec
     kernel_fn, kernel_config = kernel_spec.function(
@@ -78,26 +73,27 @@ def compile_triton_kernel(
         op_params=kernel_spec.op_params,
     )
 
-    # Step 3: Extract compilation parameters
+    # Extract compilation parameters
     n_elements = kernel_config["n_elements"]
     block_size = kernel_config["block_size"]
     grid = (n_elements // block_size,)
 
-    logger.info(f"Compiling Triton kernel: {kernel_spec.op_name}")
-    logger.info(f"  Architecture: {kernel_spec.arch}")
-    logger.info(f"  Exported name: {exported_name}")
-    logger.info(f"  Total elements: {n_elements}")
-    logger.info(f"  Block size: {block_size}")
-    logger.info(f"  Grid size: {grid}")
+    logger.info("Compiling Triton kernel: %s", kernel_spec.op_name)
+    logger.info("  Architecture: %s", kernel_spec.arch)
+    logger.info("  Exported name: %s", exported_name)
+    logger.info("  Total elements: %d", n_elements)
+    logger.info("  Block size: %d", block_size)
+    logger.info("  Grid size: %s", grid)
 
-    # Step 4: Configure kernel signature and constexprs
+    # TODO this doesn't work for the general case, it only can do vecadd
+    # Configure kernel signature and constexprs
     # The signature maps arg names to their types
     # For vecadd(A, B, C, n_elements, block_size):
     #   A, B, C are pointers
     #   n_elements, block_size are constexpr (compile-time constants)
 
     input_dtype = kernel_spec.input_tensors[0].dtype
-    output_dtype = kernel_spec.output_tensor.dtype
+    # TODO output_dtype = kernel_spec.output_tensor.dtype
 
     # Map numpy dtypes to Triton type strings
     ptr_type = _map_dtype_to_triton(input_dtype)
@@ -113,94 +109,82 @@ def compile_triton_kernel(
         elif i < 3:  # A, B, C pointers
             signature[name] = ptr_type
 
-    logger.info(f"  Kernel arg names: {arg_names}")
-    logger.info(f"  Kernel signature: {signature}")
-    logger.info(f"  Constexprs: {kernel_config}")
+    logger.info("  Kernel arg names: %s", arg_names)
+    logger.info("  Kernel signature: %s", signature)
+    logger.info("  Constexprs: %s", kernel_config)
 
-    # Step 5: Invoke Triton AOT compilation
-    try:
-        # Create ASTSource directly without create_binder()
-        # create_binder() requires an active GPU driver which we don't have for AOT
-        # Instead, use triton.compiler.ASTSource directly
-        src = triton.compiler.ASTSource(
-            fn=kernel_fn,
-            signature=signature,
-            constexprs=kernel_config,
-            attrs={},  # No special attributes for now
-        )
+    # Invoke Triton AOT compilation
+    # Create ASTSource directly without create_binder()
+    # create_binder() requires an active GPU driver which we don't have for AOT
+    # Instead, use triton.compiler.ASTSource directly
+    src = triton.compiler.ASTSource(
+        fn=kernel_fn,
+        signature=signature,
+        constexprs=kernel_config,
+        attrs={},  # No special attributes for now
+    )
 
-        # Create target for XDNA backend
-        # The backend is registered as "amd_triton_npu" but expects target.backend == "npu"
-        registry_name = "amd_triton_npu"
-        backend_name = "npu"  # What NPUBackend.supports_target() expects
+    # Create target for XDNA backend
+    # The backend is registered as "amd_triton_npu" but expects target.backend == "npu"
+    registry_name = "amd_triton_npu"
+    backend_name = "npu"  # What NPUBackend.supports_target() expects
 
-        if registry_name not in triton.backends.backends:
-            raise RuntimeError(
-                f"Backend '{registry_name}' not found in registered backends.\n"
-                f"Available backends: {list(triton.backends.backends.keys())}"
-            )
+    if registry_name not in triton.backends.backends:
+        msg = f"Backend '{registry_name}' not found in registered Triton backends."
+        raise ValueError(msg)
 
-        # Create target and backend
-        target = triton.backends.compiler.GPUTarget(backend_name, kernel_spec.arch, "1")
-        backend_info = triton.backends.backends[registry_name]
-        backend = backend_info.compiler(target)
-        num_warps = 1
-        num_stages = 1
-        kwargs = {"num_warps": num_warps, "num_stages": num_stages}
-        options = backend.parse_options(kwargs)
+    # Create target and backend
+    target = triton.backends.compiler.GPUTarget(backend_name, kernel_spec.arch, "1")
+    backend_info = triton.backends.backends[registry_name]
+    backend = backend_info.compiler(target)
+    num_warps = 1
+    num_stages = 1
+    kwargs = {"num_warps": num_warps, "num_stages": num_stages}
+    options = backend.parse_options(kwargs)
 
-        logger.info(f"  Target: {backend_name}:{kernel_spec.arch}:1")
-        logger.info(f"  Num warps: {num_warps}, Num stages: {num_stages}")
+    logger.info("  Target: %s:%s:1", backend_name, kernel_spec.arch)
+    logger.info("  Num warps: %d, Num stages: %d", num_warps, num_stages)
 
-        # Compile the kernel
-        compiled = triton_compile(src, target=target, options=options.__dict__)
+    # Compile the kernel
+    compiled = triton_compile(src, target=target, options=options.__dict__)
 
-        logger.info("Triton compilation successful")
-
-    except Exception as e:
-        logger.error(f"Triton compilation failed: {e}")
-        import traceback
-
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
-        raise RuntimeError(
-            f"Failed to compile Triton kernel '{exported_name}': {e}"
-        ) from e
-
-    # Step 6: Extract binary artifacts from compiled kernel
+    # Extract binary artifacts from compiled kernel
     # The compiled object has: .asm dict, .metadata, etc.
-    logger.info(f"Compiled kernel type: {type(compiled)}")
+    logger.info("Compiled kernel type: %s", type(compiled))
     logger.info(
-        f"Compiled kernel attributes: {[a for a in dir(compiled) if not a.startswith('_')]}"
+        "Compiled kernel attributes: %s",
+        [a for a in dir(compiled) if not a.startswith("_")],
     )
 
     # Extract the binary from the asm dictionary
     # backend.binary_ext gives us the key to use (e.g., 'pdi', 'xclbin', etc.)
     binary_ext = backend.binary_ext
-    logger.info(f"Backend binary extension: {binary_ext}")
+    logger.info("Backend binary extension: %s", binary_ext)
 
     if hasattr(compiled, "asm") and binary_ext in compiled.asm:
         binary_data = compiled.asm[binary_ext]
-        logger.info(f"Extracted binary data: {len(binary_data)} bytes")
+        logger.info("Extracted binary data: %d bytes", len(binary_data))
     else:
         available_keys = list(compiled.asm.keys()) if hasattr(compiled, "asm") else []
-        raise NotImplementedError(
+        msg = (
             f"Cannot extract binary from compiled Triton kernel.\n"
             f"Expected key '{binary_ext}' in compiled.asm\n"
             f"Available keys: {available_keys}\n"
             f"Compiled object type: {type(compiled)}"
         )
+        raise NotImplementedError(msg)
 
     # Write PDI file
     pdi_path = output_directory / f"{exported_name}.pdi"
-    logger.info(f"Writing PDI to {pdi_path}")
-    with open(pdi_path, "wb") as f:
+    logger.info("Writing PDI to %s", pdi_path)
+    with pdi_path.open("wb") as f:
         f.write(binary_data)
 
     # For XDNA/AIE, the instruction buffer is typically part of the PDI
     # or in a separate metadata field. For now, create a placeholder
     # instruction file that matches the IRON convention.
     insts_path = output_directory / f"{exported_name}_insts.bin"
-    logger.info(f"Writing instructions to {insts_path}")
+    logger.info("Writing instructions to %s", insts_path)
 
     # Check if there's separate instruction data
     if hasattr(compiled.metadata, "instr") or hasattr(
@@ -210,19 +194,15 @@ def compile_triton_kernel(
             compiled.metadata, "instructions", None
         )
         if insts_data:
-            with open(insts_path, "wb") as f:
+            with insts_path.open("wb") as f:
                 f.write(insts_data)
-            logger.info(f"  Instructions size: {len(insts_data)} bytes")
+            logger.info("  Instructions size: %d bytes", len(insts_data))
         else:
-            # Create empty instruction file for compatibility
-            with open(insts_path, "wb") as f:
-                f.write(b"")
-            logger.info("  Instructions: empty (embedded in PDI)")
+            msg = "Instructions are empty"
+            raise ValueError(msg)
     else:
-        # Create empty instruction file for compatibility
-        with open(insts_path, "wb") as f:
-            f.write(b"")
-        logger.info("  Instructions: empty (embedded in PDI)")
+        msg = "No separate instruction data found in compiled metadata."
+        raise NotFoundErr(msg)
 
-    logger.info(f"Compilation complete: {exported_name}")
-    logger.info(f"  PDI size: {len(binary_data)} bytes")
+    logger.info("Compilation complete: %s", exported_name)
+    logger.info("  PDI size: %d bytes", len(binary_data))

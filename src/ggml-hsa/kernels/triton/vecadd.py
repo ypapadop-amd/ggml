@@ -1,6 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
+"""Triton kernel for vector addition: C = A + B."""
+
 import triton
 import triton.language as tl
 
@@ -13,6 +15,15 @@ def vecadd(
     n_elements: tl.constexpr,
     block_size: tl.constexpr,
 ):
+    """Triton kernel for vector addition: C = A + B.
+
+    Parameters:
+        A: Pointer to input vector A
+        B: Pointer to input vector B
+        C: Pointer to output vector C
+        n_elements: Total number of elements in the vectors
+        block_size: Number of elements processed by each block
+    """
     pid = tl.program_id(0)  # block row id
     block_start = pid * block_size
     offsets = block_start + tl.arange(0, block_size)

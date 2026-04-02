@@ -86,8 +86,7 @@ def _create_triton_kernel_config(
     output_tensor,
     op_params: bytearray,
 ):
-    """
-    Generate Triton vecadd kernel configuration.
+    """Generate Triton vecadd kernel configuration.
 
     Parameters:
         arch (str): Target architecture (aie2, aie2p).
@@ -107,7 +106,8 @@ def _create_triton_kernel_config(
     if arch == "aie2p":
         block_size = min(1024, n_elements)
     else:
-        raise ValueError(f"Unsupported architecture for Triton kernel: {arch}")
+        msg = f"Unsupported architecture for Triton kernel: {arch}"
+        raise ValueError(msg)
 
     # Ensure block size divides n_elements evenly
     if n_elements % block_size != 0:
@@ -117,12 +117,10 @@ def _create_triton_kernel_config(
                 break
 
     # Return constexpr parameters
-    config = {
+    return {
         "n_elements": n_elements,
         "block_size": block_size,
     }
-
-    return config
 
 
 def _make_triton_add_kernel_spec(
@@ -131,8 +129,7 @@ def _make_triton_add_kernel_spec(
     output_tensor,
     op_params: bytearray,
 ) -> KernelSpec:
-    """
-    Create a KernelSpec for Triton ADD operation.
+    """Create a KernelSpec for Triton ADD operation.
 
     Parameters:
         arch (str): Target architecture.
@@ -149,7 +146,8 @@ def _make_triton_add_kernel_spec(
     from .triton.vecadd import vecadd
 
     if len(input_tensors) != 2:
-        raise ValueError("Operation requires exactly two input tensors.")
+        msg = f"Operation requires exactly two input tensors, got {len(input_tensors)}."
+        raise ValueError(msg)
 
     config = _create_triton_kernel_config(
         arch=arch,
