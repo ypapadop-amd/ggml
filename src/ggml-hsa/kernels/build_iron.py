@@ -41,7 +41,6 @@ def _compile_aie_core_kernels(
 
 def compile_iron_kernel(
     kernel_spec: KernelSpec,
-    work_dir: Path,
     exported_name: str,
     output_directory: Path,
     logger: logging.Logger,
@@ -56,13 +55,15 @@ def compile_iron_kernel(
 
     Parameters:
         kernel_spec: The KernelSpec containing the IRON kernel function.
-        work_dir: Working directory for intermediate files.
         exported_name: Name for the exported kernel files.
         output_directory: Directory for output PDI and instruction files.
         logger: Logger for status messages.
         verbose: If True, enables verbose compilation output.
 
     """
+    work_dir = output_directory / f"{exported_name}-iron-artifacts"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
     # Clear any existing external functions from previous compilations
     ExternalFunction._instances.clear()
 

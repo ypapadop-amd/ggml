@@ -252,8 +252,6 @@ def ggml_compile_op(
     # Create output and work directories
     output_dir = Path(output_directory)
     output_dir.mkdir(parents=True, exist_ok=True)
-    work_dir = output_dir / f"{exported_name}-artifacts"
-    work_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(
         (
@@ -266,8 +264,7 @@ def ggml_compile_op(
             "  Output tensor:        %s\n"
             "  Operation parameters: %s\n"
             "  Exported name:        %s\n"
-            "  Output directory:     %s\n"
-            "  Working directory:    %s"
+            "  Output directory:     %s"
         ),
         op_name,
         arch,
@@ -278,15 +275,13 @@ def ggml_compile_op(
         kernel_spec.output_tensor,
         kernel_spec.op_params,
         exported_name,
-        str(output_dir),
-        str(work_dir),
+        str(output_dir)
     )
 
     # Get compiler for the selected backend and compile
     compile_fn = get_compiler(kernel_spec.backend)
     compile_fn(
         kernel_spec=kernel_spec,
-        work_dir=work_dir,
         exported_name=exported_name,
         output_directory=output_dir,
         logger=logger,
