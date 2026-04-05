@@ -103,7 +103,7 @@ def _create_triton_kernel_config(
     # Choose block size based on architecture
     if arch == "aie2":
         block_size = min(256, n_elements)
-    if arch == "aie2p":
+    elif arch == "aie2p":
         block_size = min(1024, n_elements)
     else:
         msg = f"Unsupported architecture for Triton kernel: {arch}"
