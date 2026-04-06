@@ -115,12 +115,7 @@ def compile_triton_kernel(
         # Invoke Triton AOT compilation
 
         # Get kernel from KernelSpec
-        kernel_fn = kernel_spec.function(
-            arch=kernel_spec.arch,
-            input_tensors=kernel_spec.input_tensors,
-            output_tensor=kernel_spec.output_tensor,
-            op_params=kernel_spec.op_params,
-        )
+        kernel_fn = kernel_spec.function()
 
         # Extract compilation parameters
         n_elements = kernel_config["n_elements"]

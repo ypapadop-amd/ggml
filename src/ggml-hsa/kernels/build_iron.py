@@ -68,13 +68,8 @@ def compile_iron_kernel(
     ExternalFunction._instances.clear()
 
     # Generate MLIR module by calling the kernel function
-    # (this also populates ExternalFunction._instances)
-    mlir_module = kernel_spec.function(
-        arch=kernel_spec.arch,
-        input_tensors=kernel_spec.input_tensors,
-        output_tensor=kernel_spec.output_tensor,
-        op_params=kernel_spec.op_params,
-    )
+    # (this populates ExternalFunction._instances)
+    mlir_module = kernel_spec.function()
 
     # Compile any external C++ core functions
     _compile_aie_core_kernels(

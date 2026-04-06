@@ -21,6 +21,7 @@ Example:
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -89,8 +90,19 @@ class KernelSpec:
     config: dict | None = None
 
     def __post_init__(self) -> None:
-        """Validate that backend is a Backend enum instance."""
+        """Validate backend and bind function arguments."""
         if not isinstance(self.backend, Backend):
             backend_type = type(self.backend).__name__
             msg = f"backend must be a Backend enum, got {backend_type}"
             raise TypeError(msg)
+        object.__setattr__(
+            self,
+            "function",
+            partial(
+                self.function,
+                arch=self.arch,
+                input_tensors=self.input_tensors,
+                output_tensor=self.output_tensor,
+                op_params=self.op_params,
+            ),
+        )
