@@ -275,7 +275,7 @@ def ggml_compile_op(
         kernel_spec.output_tensor,
         kernel_spec.op_params,
         exported_name,
-        str(output_dir)
+        str(output_dir),
     )
 
     # Get compiler for the selected backend and compile

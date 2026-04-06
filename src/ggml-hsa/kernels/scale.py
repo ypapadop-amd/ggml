@@ -7,6 +7,8 @@
 
 """Top-level entry point for the GGML scale operation (GGML_OP_SCALE)."""
 
+from functools import partial
+
 from .kernel import Backend, KernelSpec
 
 
@@ -34,5 +36,11 @@ def ggml_op_scale(
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
-        function=scale,
+        function=partial(
+            scale,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            op_params=op_params,
+        ),
     )

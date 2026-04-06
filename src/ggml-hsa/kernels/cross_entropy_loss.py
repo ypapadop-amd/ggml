@@ -7,6 +7,8 @@
 
 """Top-level entry point for the GGML cross entropy loss operation (GGML_OP_CROSS_ENTROPY_LOSS)."""
 
+from functools import partial
+
 from .kernel import Backend, KernelSpec
 
 
@@ -35,6 +37,10 @@ def ggml_op_cross_entropy_loss(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=cross_entropy_loss,
+        function=partial(
+            cross_entropy_loss,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+        ),
     )

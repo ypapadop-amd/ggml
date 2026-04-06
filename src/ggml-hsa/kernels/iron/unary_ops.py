@@ -22,11 +22,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
 
-from .utils import (
-    arch_aligned_num_elements,
-    arch_to_device,
-    max_tile_size,
-)
+from .utils import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
 @dataclass(frozen=True)

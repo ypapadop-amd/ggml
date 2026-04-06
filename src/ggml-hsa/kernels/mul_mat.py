@@ -7,6 +7,8 @@
 
 """Top-level entry point for the matrix multiplication operation (GGML_OP_MUL_MAT)."""
 
+from functools import partial
+
 from .kernel import Backend, KernelSpec
 
 
@@ -33,6 +35,7 @@ def ggml_op_mul_mat(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=gemm,
+        function=partial(
+            gemm, arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
+        ),
     )

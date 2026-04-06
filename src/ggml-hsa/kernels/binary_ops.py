@@ -17,7 +17,6 @@ def _iron_binary_kernel(
     arch: str,
     input_tensors: list,
     output_tensor,
-    op_params: bytearray,
 ):
     """Return wrapper for IRON binary operations matching the KernelFunction protocol.
 
@@ -26,7 +25,6 @@ def _iron_binary_kernel(
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params: Operation parameters (unused for binary ops).
 
     Returns:
         MLIR module for the binary operation.
@@ -46,7 +44,6 @@ def _make_binary_kernel_spec(
     arch: str,
     input_tensors: list,
     output_tensor,
-    op_params: bytearray,
     op_name: str,
 ) -> KernelSpec:
     """Create a KernelSpec for a binary operation.
@@ -55,7 +52,6 @@ def _make_binary_kernel_spec(
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params: Operation parameters.
         op_name: Name of the operation.
 
     Returns:
@@ -75,8 +71,13 @@ def _make_binary_kernel_spec(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=partial(_iron_binary_kernel, op_name=op_name),
+        function=partial(
+            _iron_binary_kernel,
+            op_name=op_name,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+        ),
     )
 
 
@@ -84,7 +85,6 @@ def _create_triton_kernel_config(
     arch: str,
     input_tensors: list,
     output_tensor,
-    op_params: bytearray,
 ):
     """Generate Triton vecadd kernel configuration.
 
@@ -92,7 +92,6 @@ def _create_triton_kernel_config(
         arch (str): Target architecture (aie2, aie2p).
         input_tensors (list): Two input tensors.
         output_tensor (TensorDesc): Output tensor.
-        op_params (bytearray): Operation parameters (unused).
 
     Returns:
         Tuple of (kernel_function, config_dict).
@@ -127,7 +126,6 @@ def _make_triton_add_kernel_spec(
     arch: str,
     input_tensors: list,
     output_tensor,
-    op_params: bytearray,
 ) -> KernelSpec:
     """Create a KernelSpec for Triton ADD operation.
 
@@ -153,7 +151,6 @@ def _make_triton_add_kernel_spec(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
     )
 
     return KernelSpec(
@@ -162,8 +159,7 @@ def _make_triton_add_kernel_spec(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=vecadd,
+        function=partial(vecadd, *input_tensors, *output_tensor, **config),
         config=config,
     )
 
@@ -177,15 +173,16 @@ def ggml_op_add(
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params: Operation parameters.
+        op_params: Operation parameters (unused for ADD, but required
+            by the dispatch interface).
 
     Returns:
         KernelSpec for the ADD operation.
 
     """
-    return _make_triton_add_kernel_spec(arch, input_tensors, output_tensor, op_params)
+    return _make_triton_add_kernel_spec(arch, input_tensors, output_tensor)
     # return _make_binary_kernel_spec(
-    #    arch, input_tensors, output_tensor, op_params, "GGML_OP_ADD"
+    #    arch, input_tensors, output_tensor, "GGML_OP_ADD"
     # )
 
 
@@ -198,15 +195,14 @@ def ggml_op_sub(
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params: Operation parameters.
+        op_params: Operation parameters (unused for SUB, but required
+            by the dispatch interface).
 
     Returns:
         KernelSpec for the SUB operation.
 
     """
-    return _make_binary_kernel_spec(
-        arch, input_tensors, output_tensor, op_params, "GGML_OP_SUB"
-    )
+    return _make_binary_kernel_spec(arch, input_tensors, output_tensor, "GGML_OP_SUB")
 
 
 def ggml_op_mul(
@@ -218,15 +214,14 @@ def ggml_op_mul(
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params: Operation parameters.
+        op_params: Operation parameters (unused for MUL, but required
+            by the dispatch interface).
 
     Returns:
         KernelSpec for the MUL operation.
 
     """
-    return _make_binary_kernel_spec(
-        arch, input_tensors, output_tensor, op_params, "GGML_OP_MUL"
-    )
+    return _make_binary_kernel_spec(arch, input_tensors, output_tensor, "GGML_OP_MUL")
 
 
 def ggml_op_div(
@@ -238,12 +233,11 @@ def ggml_op_div(
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params: Operation parameters.
+        op_params: Operation parameters (unused for DIV, but required
+            by the dispatch interface).
 
     Returns:
         KernelSpec for the DIV operation.
 
     """
-    return _make_binary_kernel_spec(
-        arch, input_tensors, output_tensor, op_params, "GGML_OP_DIV"
-    )
+    return _make_binary_kernel_spec(arch, input_tensors, output_tensor, "GGML_OP_DIV")

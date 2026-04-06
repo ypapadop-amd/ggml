@@ -2,9 +2,9 @@
 
 """Triton-XDNA backend compiler for GGML HSA kernels."""
 
-from contextlib import ContextDecorator
 import logging
 import os
+from contextlib import ContextDecorator
 from pathlib import Path
 
 from kernel import KernelSpec

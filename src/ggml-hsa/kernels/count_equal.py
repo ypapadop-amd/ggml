@@ -7,6 +7,8 @@
 
 """Top-level entry point for the GGML count equal operation (GGML_OP_COUNT_EQUAL)."""
 
+from functools import partial
+
 from .kernel import Backend, KernelSpec
 
 
@@ -40,6 +42,10 @@ def ggml_op_count_equal(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=count_equal_op,
+        function=partial(
+            count_equal_op,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+        ),
     )

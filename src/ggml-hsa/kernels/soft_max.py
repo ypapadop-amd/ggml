@@ -7,6 +7,8 @@
 
 """Top-level entry point for the GGML softmax operation (GGML_OP_SOFT_MAX)."""
 
+from functools import partial
+
 from .kernel import Backend, KernelSpec
 
 
@@ -37,5 +39,11 @@ def ggml_op_soft_max(
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
-        function=softmax,
+        function=partial(
+            softmax,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            op_params=op_params,
+        ),
     )

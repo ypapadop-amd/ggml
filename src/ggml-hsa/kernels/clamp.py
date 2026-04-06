@@ -7,6 +7,8 @@
 
 """Top-level entry point for the GGML clamp operation (GGML_OP_CLAMP)."""
 
+from functools import partial
+
 from .kernel import Backend, KernelSpec
 
 
@@ -36,6 +38,7 @@ def ggml_op_clamp(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=clamp,
+        function=partial(
+            clamp, arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
+        ),
     )

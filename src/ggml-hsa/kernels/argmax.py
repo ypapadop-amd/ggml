@@ -7,6 +7,8 @@
 
 """Top-level entry point for the GGML argmax operation (GGML_OP_ARGMAX)."""
 
+from functools import partial
+
 from .kernel import Backend, KernelSpec
 
 
@@ -39,6 +41,10 @@ def ggml_op_argmax(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=argmax_op,
+        function=partial(
+            argmax_op,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+        ),
     )
