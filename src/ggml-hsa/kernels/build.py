@@ -256,9 +256,9 @@ def ggml_compile_op(
     logger.info(
         (
             "Compiling op: %s\n"
+            "  Op name:              %s\n"
             "  Architecture:         %s\n"
             "  Backend:              %s\n"
-            "  Op name:              %s\n"
             "  Kernel source:        %s\n"
             "  Input tensors:        %s\n"
             "  Output tensor:        %s\n"
@@ -267,9 +267,9 @@ def ggml_compile_op(
             "  Output directory:     %s"
         ),
         op_name,
+        kernel_spec.op_name,
         arch,
         kernel_spec.backend.name,
-        kernel_spec.op_name,
         str(kernel_source_file),
         kernel_spec.input_tensors,
         kernel_spec.output_tensor,

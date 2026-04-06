@@ -159,8 +159,7 @@ def _make_triton_add_kernel_spec(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        function=partial(vecadd, *input_tensors, *output_tensor, **config),
-        config=config,
+        function=partial(vecadd, *input_tensors, output_tensor, **config),
     )
 
 

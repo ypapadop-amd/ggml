@@ -87,7 +87,7 @@ class KernelSpec:
     op_params: bytearray | None = None
 
     def __post_init__(self) -> None:
-        """Validate backend and bind function arguments."""
+        """Validate backend."""
         if not isinstance(self.backend, Backend):
             backend_type = type(self.backend).__name__
             msg = f"backend must be a Backend enum, got {backend_type}"

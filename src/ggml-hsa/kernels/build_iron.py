@@ -64,6 +64,8 @@ def compile_iron_kernel(
     work_dir = output_directory / f"{exported_name}-iron-artifacts"
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    logger.info("Working directory: %s", str(work_dir))
+
     # Clear any existing external functions from previous compilations
     ExternalFunction._instances.clear()
 
@@ -84,7 +86,9 @@ def compile_iron_kernel(
     # Write MLIR module to file for debugging/inspection
     mlir_path = work_dir / f"{exported_name}.mlir"
     logger.info(
-        "Writing MLIR module for operation %s in %s", kernel_spec.op_name, mlir_path
+        "Writing MLIR module for operation %s in %s",
+        kernel_spec.op_name,
+        mlir_path,
     )
     with mlir_path.open("w", encoding="utf-8") as file:
         file.write(str(mlir_module))
