@@ -9,29 +9,7 @@
 
 from functools import partial
 
-from .iron.unary_ops import unary_op
 from .kernel import Backend, KernelSpec
-
-
-def _iron_unary_kernel(op_name: str, arch: str, input_tensors: list, output_tensor):
-    """Return wrapper for IRON unary operations matching the KernelFunction protocol.
-
-    Parameters:
-        op_name: Name of the unary operation.
-        arch: Target architecture.
-        input_tensors: List of one input tensor.
-        output_tensor: Output tensor.
-
-    Returns:
-        MLIR module for the unary operation.
-
-    """
-    return unary_op(
-        arch=arch,
-        input_tensors=input_tensors,
-        output_tensor=output_tensor,
-        op_name=op_name,
-    )
 
 
 def _make_unary_kernel_spec(
@@ -52,6 +30,8 @@ def _make_unary_kernel_spec(
         KernelSpec configured for IRON backend.
 
     """
+    from .iron.unary_ops import unary_op
+
     return KernelSpec(
         backend=Backend.IRON,
         op_name=op_name,
@@ -59,7 +39,7 @@ def _make_unary_kernel_spec(
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         function=partial(
-            _iron_unary_kernel,
+            unary_op,
             op_name=op_name,
             arch=arch,
             input_tensors=input_tensors,
