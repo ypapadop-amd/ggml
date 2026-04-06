@@ -7,8 +7,6 @@
 
 """Top-level entry point for the GGML clamp operation (GGML_OP_CLAMP)."""
 
-from functools import partial
-
 from .kernel import Backend, KernelSpec
 
 
@@ -30,6 +28,8 @@ def ggml_op_clamp(
         KernelSpec for the CLAMP operation.
 
     """
+    from functools import partial
+
     from .iron.clamp import clamp
 
     return KernelSpec(

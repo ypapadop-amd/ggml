@@ -7,8 +7,6 @@
 
 """Top-level entry point for the GGML count equal operation (GGML_OP_COUNT_EQUAL)."""
 
-from functools import partial
-
 from .kernel import Backend, KernelSpec
 
 
@@ -34,6 +32,8 @@ def ggml_op_count_equal(
             function for generating the MLIR module.
 
     """
+    from functools import partial
+
     from .iron.count_equal import count_equal_op
 
     return KernelSpec(

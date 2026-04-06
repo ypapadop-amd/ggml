@@ -7,8 +7,6 @@
 
 """Top-level entry point for the GGML scale operation (GGML_OP_SCALE)."""
 
-from functools import partial
-
 from .kernel import Backend, KernelSpec
 
 
@@ -27,6 +25,8 @@ def ggml_op_scale(
         KernelSpec for the SCALE operation.
 
     """
+    from functools import partial
+
     from .iron.scale import scale
 
     return KernelSpec(

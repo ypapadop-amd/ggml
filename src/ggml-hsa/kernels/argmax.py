@@ -7,8 +7,6 @@
 
 """Top-level entry point for the GGML argmax operation (GGML_OP_ARGMAX)."""
 
-from functools import partial
-
 from .kernel import Backend, KernelSpec
 
 
@@ -33,6 +31,8 @@ def ggml_op_argmax(
         KernelSpec: Kernel specification for the ARGMAX operation.
 
     """
+    from functools import partial
+
     from .iron.argmax import argmax_op
 
     return KernelSpec(

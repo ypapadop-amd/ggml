@@ -7,8 +7,6 @@
 
 """Top-level entry point for the GGML softmax operation (GGML_OP_SOFT_MAX)."""
 
-from functools import partial
-
 from .kernel import Backend, KernelSpec
 
 
@@ -30,6 +28,8 @@ def ggml_op_soft_max(
         KernelSpec for the SOFT_MAX operation.
 
     """
+    from functools import partial
+
     from .iron.softmax import softmax
 
     return KernelSpec(

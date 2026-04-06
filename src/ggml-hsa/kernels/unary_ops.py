@@ -7,8 +7,6 @@
 
 """Top-level entry points for GGML unary operations."""
 
-from functools import partial
-
 from .kernel import Backend, KernelSpec
 
 
@@ -30,6 +28,8 @@ def _make_unary_kernel_spec(
         KernelSpec configured for IRON backend.
 
     """
+    from functools import partial
+
     from .iron.unary_ops import unary_op
 
     return KernelSpec(

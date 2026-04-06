@@ -7,8 +7,6 @@
 
 """Top-level entry point for the matrix multiplication operation (GGML_OP_MUL_MAT)."""
 
-from functools import partial
-
 from .kernel import Backend, KernelSpec
 
 
@@ -27,6 +25,8 @@ def ggml_op_mul_mat(
         KernelSpec for the MUL_MAT operation.
 
     """
+    from functools import partial
+
     from .iron.gemm import gemm
 
     return KernelSpec(

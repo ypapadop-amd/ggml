@@ -4,70 +4,59 @@
 
 import logging
 import os
+import shutil
+import subprocess
 from contextlib import ContextDecorator
 from pathlib import Path
 
 from kernel import KernelSpec
 
-# Map numpy dtypes to Triton type strings
-_numpy_to_triton_dtype_map = {
-    "int32": "*i32",
-    "float32": "*fp32",
-    "float16": "*fp16",
-    "bfloat16": "*bf16",
-}
 
-
-def _map_dtype_to_triton(dtype) -> str:
-    """Map a numpy dtype to a Triton type string.
-
-    Parameters:
-        dtype: A numpy dtype object.
-
-    Returns:
-        A string representing the corresponding Triton type.
-    """
-    dtype_str = str(dtype)
-    if dtype_str in _numpy_to_triton_dtype_map:
-        return _numpy_to_triton_dtype_map[dtype_str]
-    msg = f"Unsupported dtype for Triton kernel: {dtype_str}"
-    raise ValueError(msg)
-
-
-class tritoncachedir(ContextDecorator):
-    """Context manager to set TRITON_CACHE_DIR environment variable.
+class TempEnvSet(ContextDecorator):
+    """Context manager to temporarily set an environment variable.
 
     This ensures that Triton uses a specific cache directory for compiled artifacts,
     which helps with organization and cleanup.
 
     Parameters:
-        cache_dir: Path to the directory to use for Triton cache.
+        env_var: Name of the environment variable to set.
+        value: Value to set for the environment variable.
 
     Usage:
-        with tritoncachedir(Path("/path/to/cache")):
+        with tempenvset("TRITON_CACHE_DIR", str(Path("/path/to/cache"))):
             # Triton compilation code here
     """
 
-    def __init__(self, cache_dir: Path) -> None:
-        """Initialize the context manager with the desired cache directory.
+    env_var: str
+    value: str | None
+    old_value: str | None = None
+
+    def __init__(self, env_var: str, value: str | None) -> None:
+        """Initialize the context manager with the desired environment variable and value.
 
         Parameters:
-            cache_dir: Path to the directory to use for Triton cache.
+            env_var: Name of the environment variable to set.
+            value: Value to set for the environment variable. If None, the variable will not be set.
         """
-        self.cache_dir = cache_dir
-        self.old_cache_env = None
+        self.env_var = env_var
+        self.value = value
+        self.old_value = None
 
     def __enter__(self) -> None:
-        """Set the TRITON_CACHE_DIR environment variable to the specified cache directory."""
-        self.old_cache_env = os.environ.get("TRITON_CACHE_DIR", None)
-        os.environ["TRITON_CACHE_DIR"] = str(self.cache_dir)
+        """Set the environment variable to the specified value."""
+        if self.value is None:
+            return
+        self.old_value = os.environ.get(self.env_var, None)
+        os.environ[self.env_var] = str(self.value)
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Restore the original TRITON_CACHE_DIR environment variable after exiting the context."""
-        if self.old_cache_env is not None:
-            os.environ["TRITON_CACHE_DIR"] = self.old_cache_env
+        """Restore the original environment variable after exiting the context."""
+        if self.value is None:
+            return
+        if self.old_value is not None:
+            os.environ[self.env_var] = self.old_value
         else:
-            del os.environ["TRITON_CACHE_DIR"]
+            del os.environ[self.env_var]
 
 
 def compile_triton_kernel(
@@ -91,156 +80,77 @@ def compile_triton_kernel(
         verbose: If True, enables verbose compilation output.
 
     """
+    import triton
+    from triton.backends.amd_triton_npu.driver import NPUDriver
+
+    # Determine Triton cache directory
     cache_dir = output_directory / f"{exported_name}-triton-artifacts"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Compiling Triton kernel: %s", kernel_spec.op_name)
-    logger.info("  Architecture: %s", kernel_spec.arch)
-    logger.info("  Exported name: %s", exported_name)
-    # logger.info("  Total elements: %d", n_elements)
-    # logger.info("  Block size: %d", block_size)
-    # logger.info("  Grid size: %s", grid)
-    logger.info("  Cache directory: %s", cache_dir)
+    logger.info("Triton cache directory: %s", cache_dir)
 
-    # Import Triton
-    try:
-        import triton
-        import triton.backends
-        from triton.compiler import compile as triton_compile
-    except ImportError as e:
-        msg = f"Failed to import Triton compilation modules: {e}"
-        raise ImportError(msg) from e
+    # Set active driver based on architecture
+    if kernel_spec.arch in ["aie2", "aie2p"]:
+        triton.runtime.driver.set_active(NPUDriver())
+    else:
+        msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"
+        raise ValueError(msg)
 
-    with tritoncachedir(cache_dir):
-        # Invoke Triton AOT compilation
-
-        # Get kernel from KernelSpec
-        kernel_fn = kernel_spec.function()
-
-        # Extract compilation parameters
-        n_elements = kernel_config["n_elements"]
-        block_size = kernel_config["block_size"]
-        grid = (n_elements // block_size,)
-
-        # TODO this doesn't work for the general case, it only can do vecadd
-        # Configure kernel signature and constexprs
-        # The signature maps arg names to their types
-        # For vecadd(A, B, C, n_elements, block_size):
-        #   A, B, C are pointers
-        #   n_elements, block_size are constexpr (compile-time constants)
-
-        input_dtype = kernel_spec.input_tensors[0].dtype
-        # TODO output_dtype = kernel_spec.output_tensor.dtype
-
-        # Map numpy dtypes to Triton type strings
-        ptr_type = _map_dtype_to_triton(input_dtype)
-
-        # Build signature dictionary mapping arg names to types
-        # Get arg names from the kernel function
-        arg_names = kernel_fn.arg_names
-        signature = {}
-        for i, name in enumerate(arg_names):
-            if name in kernel_config:
-                # This is a constexpr parameter
-                signature[name] = "constexpr"
-            elif i < 3:  # A, B, C pointers
-                signature[name] = ptr_type
-
-        logger.info("  Kernel arg names: %s", arg_names)
-        logger.info("  Kernel signature: %s", signature)
-        logger.info("  Constexprs: %s", kernel_config)
-
-        # Create ASTSource directly without create_binder()
-        # create_binder() requires an active GPU driver which we don't have for AOT
-        # Instead, use triton.compiler.ASTSource directly
-        src = triton.compiler.ASTSource(
-            fn=kernel_fn,
-            signature=signature,
-            constexprs=kernel_config,
-            attrs={},  # No special attributes for now
-        )
-
-        # Create target for XDNA backend
-        # The backend is registered as "amd_triton_npu" but expects target.backend == "npu"
-        registry_name = "amd_triton_npu"
-        backend_name = "npu"  # What NPUBackend.supports_target() expects
-
-        if registry_name not in triton.backends.backends:
-            msg = f"Backend '{registry_name}' not found in registered Triton backends."
-            raise ValueError(msg)
-
-        # Create target and backend
-        target = triton.backends.compiler.GPUTarget(backend_name, kernel_spec.arch, "1")
-        backend_info = triton.backends.backends[registry_name]
-        backend = backend_info.compiler(target)
-        num_warps = 1
-        num_stages = 1
-        kwargs = {"num_warps": num_warps, "num_stages": num_stages}
-        options = backend.parse_options(kwargs)
-
-        logger.info("  Target: %s:%s:1", backend_name, kernel_spec.arch)
-        logger.info("  Num warps: %d, Num stages: %d", num_warps, num_stages)
-
-        # Compile the kernel
-        compiled = triton_compile(src, target=target, options=options.__dict__)
-
-        # Extract binary artifacts from compiled kernel
-        # The compiled object has: .asm dict, .metadata, etc.
-        logger.info("Compiled kernel type: %s", type(compiled))
+    with (
+        TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
+        TempEnvSet(
+            "AIR_TRANSFORM_TILING_SCRIPT",
+            kernel_spec.config.get("transform_script", None),
+        ),
+        TempEnvSet("AMD_TRITON_NPU_COMPILE_ONLY", "1"),
+    ):
+        compiled_kernel = kernel_spec.function()
+        xclbin_path = next(cache_dir.glob("**/aie.xclbin")).parent
         logger.info(
-            "Compiled kernel attributes: %s",
-            [a for a in dir(compiled) if not a.startswith("_")],
+            (
+                "Triton compilation successful\n"
+                "  Metadata:           %s\n"
+                "  Metadata Group:     %s\n"
+                "  XCLBIN Parent Path: %s"
+            ),
+            compiled_kernel.metadata,
+            compiled_kernel.metadata_group,
+            xclbin_path,
         )
+        with Path(xclbin_path / "tt.shared.mlir").open("w", encoding="utf-8") as f:
+            f.write(str(compiled_kernel.asm["ttsharedir"]))
+            logger.info("Triton Shared MLIR written to %s", f.name)
 
-        # Extract the binary from the asm dictionary
-        # backend.binary_ext gives us the key to use (e.g., 'pdi', 'xclbin', etc.)
-        binary_ext = backend.binary_ext
-        logger.info("Backend binary extension: %s", binary_ext)
-
-        if hasattr(compiled, "asm") and binary_ext in compiled.asm:
-            binary_data = compiled.asm[binary_ext]
-            logger.info("Extracted binary data: %d bytes", len(binary_data))
-        else:
-            available_keys = (
-                list(compiled.asm.keys()) if hasattr(compiled, "asm") else []
-            )
-            msg = (
-                f"Cannot extract binary from compiled Triton kernel.\n"
-                f"Expected key '{binary_ext}' in compiled.asm\n"
-                f"Available keys: {available_keys}\n"
-                f"Compiled object type: {type(compiled)}"
-            )
-            raise NotImplementedError(msg)
-
-        # Write PDI file
+        # Create PDI from Triton cache xclbin
         pdi_path = output_directory / f"{exported_name}.pdi"
-        logger.info("Writing PDI to %s", pdi_path)
-        with pdi_path.open("wb") as f:
-            f.write(binary_data)
+        cmd = [
+            "/opt/xilinx/xrt/bin/xclbinutil",
+            "--dump-section",
+            "AIE_PARTITION:JSON:partition.json",
+            "--force",
+            "--input",
+            str(xclbin_path / "aie.xclbin"),
+        ]
+        subprocess.run(
+            cmd,
+            check=True,
+            text=True,
+            capture_output=True,
+            cwd=str(xclbin_path),
+        )
+        pdi_src_path = next(xclbin_path.glob("**/*.pdi"))
+        shutil.copy(pdi_src_path, pdi_path)
 
-        # For XDNA/AIE, the instruction buffer is typically part of the PDI
-        # or in a separate metadata field. For now, create a placeholder
-        # instruction file that matches the IRON convention.
+        # Copy instructions file from Triton cache
         insts_path = output_directory / f"{exported_name}_insts.bin"
-        logger.info("Writing instructions to %s", insts_path)
+        shutil.copy(xclbin_path / "insts.bin", insts_path)
 
-        # Check if there's separate instruction data
-        if hasattr(compiled.metadata, "instr") or hasattr(
-            compiled.metadata, "instructions"
-        ):
-            insts_data = getattr(compiled.metadata, "instr", None) or getattr(
-                compiled.metadata, "instructions", None
-            )
-            if insts_data:
-                with insts_path.open("wb") as f:
-                    f.write(insts_data)
-                logger.info("  Instructions size: %d bytes", len(insts_data))
-            else:
-                msg = "Instructions are empty"
-                raise ValueError(msg)
-        else:
-            msg = "No separate instruction data found in compiled metadata."
-            raise ValueError(msg)
-
-        logger.info("Compilation complete: %s", exported_name)
-        logger.info("  PDI size: %d bytes", len(binary_data))
+        logger.info(
+            (
+                "Triton compilation successful\n"
+                "  PDI Path:          %s\n"
+                "  Instructions Path: %s"
+            ),
+            pdi_path,
+            insts_path,
+        )

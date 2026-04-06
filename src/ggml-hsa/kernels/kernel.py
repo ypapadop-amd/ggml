@@ -19,7 +19,7 @@ Example:
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any
@@ -75,6 +75,7 @@ class KernelSpec:
         output_tensor: Output tensor for the operation.
         op_params: Operation parameters.
         function: Callable that generates the backend-specific IR.
+        config: Dictionary for additional configuration parameters.
 
     """
 
@@ -85,6 +86,7 @@ class KernelSpec:
     output_tensor: Any
     function: Callable[..., Any]
     op_params: bytearray | None = None
+    config: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Validate backend."""
