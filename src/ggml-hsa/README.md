@@ -25,7 +25,7 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 | Host-only | `DUP`, `CPY`, `CONT` (CPU execution)                           |
 
 > **Note:** Operations like `SQRT`, `SIN`, `COS`, `EXP`, `TANH`, `ELU`, `SIGMOID`, `SILU`,
-> `GELU`, `GELU_QUICK`, `GELU_ERF`, and `XIELU` are registered but not yet implemented.
+> `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` are registered but not yet implemented.
 
 ### Broadcasting
 

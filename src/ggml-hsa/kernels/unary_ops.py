@@ -10,13 +10,13 @@
 from .kernel import Backend, KernelSpec
 
 
-def _make_unary_kernel_spec(
+def _make_iron_unary_kernel_spec(
     arch: str,
     input_tensors: list,
     output_tensor,
     op_name: str,
 ) -> KernelSpec:
-    """Create a KernelSpec for a unary operation.
+    """Create a KernelSpec for a unary operation targetting the IRON backend.
 
     Parameters:
         arch: Target architecture.
@@ -63,7 +63,9 @@ def ggml_op_sqr(
         KernelSpec for the SQR operation.
 
     """
-    return _make_unary_kernel_spec(arch, input_tensors, output_tensor, "GGML_OP_SQR")
+    return _make_iron_unary_kernel_spec(
+        arch, input_tensors, output_tensor, "GGML_OP_SQR"
+    )
 
 
 def ggml_op_sqrt(
@@ -99,7 +101,9 @@ def ggml_op_log(
         KernelSpec for the LOG operation.
 
     """
-    return _make_unary_kernel_spec(arch, input_tensors, output_tensor, "GGML_OP_LOG")
+    return _make_iron_unary_kernel_spec(
+        arch, input_tensors, output_tensor, "GGML_OP_LOG"
+    )
 
 
 def ggml_op_sin(
@@ -153,7 +157,7 @@ def ggml_unary_op_abs(
         KernelSpec for the ABS operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_ABS"
     )
 
@@ -173,7 +177,7 @@ def ggml_unary_op_sgn(
         KernelSpec for the SGN operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_SGN"
     )
 
@@ -193,7 +197,7 @@ def ggml_unary_op_neg(
         KernelSpec for the NEG operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_NEG"
     )
 
@@ -213,7 +217,7 @@ def ggml_unary_op_step(
         KernelSpec for the STEP operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_STEP"
     )
 
@@ -269,7 +273,7 @@ def ggml_unary_op_relu(
         KernelSpec for the RELU operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_RELU"
     )
 
@@ -361,7 +365,7 @@ def ggml_unary_op_hardswish(
         KernelSpec for the HARDSWISH operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_HARDSWISH"
     )
 
@@ -381,7 +385,7 @@ def ggml_unary_op_hardsigmoid(
         KernelSpec for the HARDSIGMOID operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_HARDSIGMOID"
     )
 
@@ -455,7 +459,7 @@ def ggml_unary_op_floor(
         KernelSpec for the FLOOR operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_FLOOR"
     )
 
@@ -475,7 +479,7 @@ def ggml_unary_op_ceil(
         KernelSpec for the CEIL operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_CEIL"
     )
 
@@ -495,7 +499,7 @@ def ggml_unary_op_round(
         KernelSpec for the ROUND operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_ROUND"
     )
 
@@ -515,6 +519,6 @@ def ggml_unary_op_trunc(
         KernelSpec for the TRUNC operation.
 
     """
-    return _make_unary_kernel_spec(
+    return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_TRUNC"
     )
