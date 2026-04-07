@@ -13,7 +13,7 @@ def vecadd(
     B,
     C,
     n_elements: tl.constexpr,
-    block_size: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
 ):
     """Triton kernel for vector addition: C = A + B.
 
@@ -22,11 +22,13 @@ def vecadd(
         B: Pointer to input vector B
         C: Pointer to output vector C
         n_elements: Total number of elements in the vectors
-        block_size: Number of elements processed by each block
+        BLOCK_SIZE_N: Number of elements processed by each block
     """
     pid = tl.program_id(0)  # block row id
-    block_start = pid * block_size
-    offsets = block_start + tl.arange(0, block_size)
+    block_start = pid * BLOCK_SIZE_N
+    offsets = block_start + tl.arange(0, BLOCK_SIZE_N)
+
+    # mask = offsets < n_elements    #AMK - in triton example, do we need?
 
     a_block = tl.load(A + offsets[:])
     b_block = tl.load(B + offsets[:])

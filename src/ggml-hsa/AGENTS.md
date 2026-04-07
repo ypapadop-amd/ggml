@@ -43,6 +43,7 @@ src/ggml-hsa/
 │   ├── __init__.py              # Package exports (ggml_compile_op, Kernel, TensorDesc, ggml_tensor_to_tensordesc)
 │   ├── build.py                 # Kernel compilation orchestrator
 │   ├── build_iron.py            # IRON backend compiler
+│   ├── build_triton.py          # Triton backend compiler
 │   ├── kernel.py                # Core types: Backend enum, Kernel, KernelSpec
 │   ├── tensor_desc.py           # Tensor descriptor dataclass
 │   ├── binary_ops.py            # Top-level GGML binary op dispatch
@@ -54,6 +55,10 @@ src/ggml-hsa/
 │   ├── argmax.py                # Top-level argmax op dispatch
 │   ├── count_equal.py           # Top-level count_equal op dispatch
 │   ├── cross_entropy_loss.py    # Top-level cross entropy loss op dispatch
+│   ├── triton/                  # Triton kernel implementations
+│   │   ├── __init__.py          # Subpackage init
+│   │   ├── vecadd.py            # Vector addition Triton kernel
+│   │   └── vecadd_aie2.mlir     # MLIR transform/tiling script for AIE2
 │   └── iron/                    # IRON kernel implementations
 │       ├── __init__.py          # Subpackage init
 │       ├── utils.py             # Shared utilities (alignment, device mapping)
@@ -112,6 +117,7 @@ The `Kernel` dataclass identifies:
 Dispatch functions examine tensor parameters and return a `KernelSpec`:
 
 ```python
+from functools import partial
 from kernel import Backend, KernelSpec
 from .iron.scale import scale
 
@@ -123,19 +129,29 @@ def ggml_op_scale(arch, input_tensors, output_tensor, op_params) -> KernelSpec:
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
-        function=scale,
+        function=partial(
+            scale,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            op_params=op_params,
+        ),
     )
 ```
 
+The `function` field uses `functools.partial` to bind all arguments at dispatch time,
+so the backend compiler can call it with no arguments to generate the IR.
+
 The `KernelSpec` specifies:
 
-- `backend`: Which compilation backend to use (`Backend.IRON`)
+- `backend`: Which compilation backend to use (`Backend.IRON` or `Backend.TRITON`)
 - `op_name`: Name of the operation (e.g., `"GGML_OP_SCALE"`)
 - `arch`: Target architecture string (`"aie2"` or `"aie2p"`)
 - `input_tensors`: List of input tensors
 - `output_tensor`: Output tensor
-- `op_params`: Operation-specific parameters as a bytearray
 - `function`: The callable that generates backend-specific IR
+- `op_params`: Operation-specific parameters as a bytearray (optional, defaults to `None`)
+- `config`: Dictionary for additional backend-specific configuration (optional, defaults to `{}`)
 
 This enables per-invocation backend selection based on tensor shapes, dtypes,
 or other runtime parameters.
@@ -166,21 +182,24 @@ Each backend has a dedicated compiler module:
 - **IRON** (`build_iron.py`): Compiles IRON Python designs to PDI/instructions
   - Calls the `KernelSpec.function` to generate an MLIR module
   - Compiles any C++ core functions to object files
-  - Produces final `.pdi` and `_insts.bin` files
+  - Produces PDI `.pdi` and instructions `_insts.bin` files for AIE execution
 
 - **TRITON** (`build_triton.py`): Compiles Triton kernels via MLIR-AIR/AIE
-  - Calls the `KernelSpec.function` to generate Triton kernel code
-  - Compiles through Triton-XDNA toolchain
-  - Produces PDI and instructions for AIE execution
+  - Sets up environment: `TRITON_CACHE_DIR`, `AIR_TRANSFORM_TILING_SCRIPT` (from `kernel_spec.config["transform_script"]`), `AMD_TRITON_NPU_COMPILE_ONLY=1`
+  - Calls `kernel_spec.function()` to trigger Triton compilation
+  - Extracts PDI and instructions from the generated `aie.xclbin` via `xclbinutil`
+  - Produces PDI `.pdi` and instructions `_insts.bin` files for AIE execution
 
 Compilers are registered in `build.py`:
 
 ```python
 from kernel import Backend
 from build_iron import compile_iron_kernel
+from build_triton import compile_triton_kernel
 
 _compilers = {
     Backend.IRON: compile_iron_kernel,
+    Backend.TRITON: compile_triton_kernel,
 }
 ```
 
@@ -298,8 +317,9 @@ Returns a `KernelSpec` specifying backend, function, and tensor context:
 
 - Imports the kernel function from the appropriate backend subpackage
 - Provides the standard GGML dispatch signature
-- Returns `KernelSpec` with all fields: `backend`, `op_name`, `arch`, `input_tensors`, `output_tensor`, `op_params`, `function`
-- May use `functools.partial` to bind operation-specific parameters
+- Returns `KernelSpec` with all fields: `backend`, `op_name`, `arch`, `input_tensors`, `output_tensor`, `function`
+- Uses `functools.partial` to bind all arguments to the kernel function at dispatch time
+- `op_params` and `config` are optional (included only when the operation requires them)
 
 ### 2. IRON Design (e.g., `kernels/iron/unary_ops.py`)
 
@@ -335,21 +355,27 @@ Implements the core computation using the AIE API:
 
    ```python
    """Top-level entry point for GGML_OP_NEW_OP."""
-   from .iron.new_op import new_op
    from .kernel import Backend, KernelSpec
 
    def ggml_op_new_op(
        arch: str, input_tensors: list, output_tensor, op_params: bytearray
    ) -> KernelSpec:
        """GGML_OP_NEW_OP implementation."""
+       from functools import partial
+       from .iron.new_op import new_op
+
        return KernelSpec(
            backend=Backend.IRON,
            op_name="GGML_OP_NEW_OP",
            arch=arch,
            input_tensors=input_tensors,
            output_tensor=output_tensor,
-           op_params=op_params,
-           function=new_op,
+           function=partial(
+               new_op,
+               arch=arch,
+               input_tensors=input_tensors,
+               output_tensor=output_tensor,
+           ),
        )
    ```
 
@@ -390,7 +416,6 @@ To add a new backend, follow the pattern used for the Triton backend. This examp
    ```python
    def compile_triton_kernel(
        kernel_spec: KernelSpec,
-       work_dir: Path,
        exported_name: str,
        output_directory: Path,
        logger: logging.Logger,
@@ -418,9 +443,16 @@ To add a new backend, follow the pattern used for the Triton backend. This examp
    ```python
    def ggml_op_new_op(...) -> KernelSpec:
        if some_condition:
-           return KernelSpec(backend=Backend.TRITON, function=triton_new_op)
-       return KernelSpec(backend=Backend.IRON, function=iron_new_op)
+           return KernelSpec(
+               backend=Backend.TRITON,
+               function=partial(triton_new_op, ...),
+               config={"transform_script": "/path/to/transform.mlir"},
+           )
+       return KernelSpec(backend=Backend.IRON, function=partial(iron_new_op, ...))
    ```
+
+   The `config` dict passes backend-specific parameters (e.g., MLIR transform scripts)
+   that the compiler needs but are not part of the standard kernel specification.
 
 ## Code Conventions
 
@@ -467,7 +499,7 @@ These operations have complete AIE kernel implementations:
 | -------- | ---------- |
 | Binary | `ADD`, `SUB`, `MUL`, `DIV` (with broadcast support) |
 | Unary (GGML_UNARY_OP) | `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` |
-| Unary (GGML_OP) | `SQR`, `LOG` (with scalar_log kernel) |
+| Unary (GGML_OP) | `SQR`, `LOG` |
 | Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
 | Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE) |
 
@@ -479,7 +511,7 @@ These operations are registered in `build.py` but raise `NotImplementedError`:
 - `TANH`, `ELU`, `SIGMOID`, `SILU`, `EXP` (require exp/transcendental functions)
 - `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` (require erf or approximations)
 
-These are placeholders for future implementation. Note that the `aie_kernel_math.h` header provides
+These are placeholders for future implementation. The `aie_kernel_math.h` header provides
 utility functions like `scalar_exp`, `scalar_log`, `pow2`, and `vec_exp` that can be used as building
 blocks for implementing these operations.
 
