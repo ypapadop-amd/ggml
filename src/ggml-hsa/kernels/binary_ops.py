@@ -99,7 +99,7 @@ def _make_triton_add_kernel_spec(
 
     # Ensure block size divides n_elements evenly
     if n_elements % block_size != 0:
-        for candidate in [512, 256, 128, 64, 32, 16]:
+        for candidate in [512, 256, 128, 64, 32, 16, 8, 4, 2, 1]:
             if n_elements % candidate == 0:
                 block_size = candidate
                 break
@@ -141,7 +141,7 @@ def _make_triton_add_kernel_spec(
 
 def ggml_op_add(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
-) -> KernelSpec:
+) -> list[KernelSpec]:
     """GGML_OP_ADD implementation.
 
     Parameters:
@@ -155,10 +155,12 @@ def ggml_op_add(
         KernelSpec for the ADD operation.
 
     """
-    return _make_triton_add_kernel_spec(arch, input_tensors, output_tensor)
-    # return _make_iron_binary_kernel_spec(
-    #    arch, input_tensors, output_tensor, "GGML_OP_ADD"
-    # )
+    return [
+        _make_iron_binary_kernel_spec(
+            arch, input_tensors, output_tensor, "GGML_OP_ADD"
+        ),
+        _make_triton_add_kernel_spec(arch, input_tensors, output_tensor),
+    ]
 
 
 def ggml_op_sub(

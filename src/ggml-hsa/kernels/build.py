@@ -293,11 +293,16 @@ def ggml_compile_op(
                 verbose=verbose,
             )
         except Exception:
-            logger.exception("Compilation failed for kernel %s", kernel.name)
+            logger.exception(
+                "Compilation failed for operation %s, kernel %s with backend %s",
+                op_name,
+                kernel.name,
+                kernel_spec.backend.name,
+            )
         else:
             return
 
-        logger.error("Could not compile kernel %s", kernel.name)
+    logger.error("Could not compile kernel %s with any backend", kernel.name)
 
 
 def _to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
