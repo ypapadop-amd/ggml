@@ -4,10 +4,10 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 
 ## Supported Devices
 
-| Architecture | NPU Generation | Example Platforms       |
-|--------------|----------------|-------------------------|
-| `aie2`       | [AMD XDNA]     | Phoenix, Hawk Point     |
-| `aie2p`      | [AMD XDNA2]    | Strix Halo, Krackan     |
+| Architecture | NPU Generation | Example Platforms                  |
+|--------------|----------------|------------------------------------|
+| `aie2`       | [AMD XDNA]     | Phoenix, Hawk Point                |
+| `aie2p`      | [AMD XDNA2]    | Strix Point, Strix Halo, Krackan   |
 
 [AMD XDNA]: https://www.amd.com/en/technologies/xdna.html
 [AMD XDNA2]: https://www.amd.com/en/technologies/xdna.html#xdna2

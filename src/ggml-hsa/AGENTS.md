@@ -57,6 +57,7 @@ src/ggml-hsa/
 │   ├── cross_entropy_loss.py    # Top-level cross entropy loss op dispatch
 │   ├── triton/                  # Triton kernel implementations
 │   │   ├── __init__.py          # Subpackage init
+│   │   ├── utils.py             # Shared utilities (dtype conversion)
 │   │   ├── vecadd.py            # Vector addition Triton kernel
 │   │   └── vecadd_aie2.mlir     # MLIR transform/tiling script for AIE2
 │   └── iron/                    # IRON kernel implementations
@@ -96,12 +97,12 @@ static operation mapping from runtime backend selection:
 
 #### Layer 1: Static Mapping (Kernel)
 
-The `_op_to_kernel_map` in `build.py` maps GGML operation names to `Kernel` objects:
+The `_OP_KERNEL_MAP` in `build.py` maps GGML operation names to `Kernel` objects:
 
 ```python
 from kernel import Kernel
 
-_op_to_kernel_map = {
+_OP_KERNEL_MAP = {
     "ADD": Kernel("ggml_op_add", "binary_ops.py"),
     "SCALE": Kernel("ggml_op_scale", "scale.py"),
 }
@@ -154,26 +155,43 @@ The `KernelSpec` specifies:
 - `config`: Dictionary for additional backend-specific configuration (optional, defaults to `{}`)
 
 This enables per-invocation backend selection based on tensor shapes, dtypes,
-or other runtime parameters.
+or other runtime parameters. Dispatch functions can return a single `KernelSpec`
+or a `list[KernelSpec]` for multi-backend fallback (see "Multi-Backend Fallback").
 
 ### Compilation Pipeline
 
 The compilation flow in `ggml_compile_op`:
 
-1. Look up `Kernel` from `_op_to_kernel_map`
+1. Look up `Kernel` from `_OP_KERNEL_MAP`
 2. Dynamically import the dispatch module
-3. Call dispatch function to get `KernelSpec` (includes all tensor/op context)
-4. Look up compiler function via `get_compiler(backend)`
-5. Invoke the backend-specific compiler
+3. Call dispatch function to get `KernelSpec` or `list[KernelSpec]`
+4. Iterate through specs, look up compiler via `_get_compiler(backend)`
+5. Invoke the backend-specific compiler; on success, stop; on failure, try next spec
 
 ```text
 ggml_compile_op("SCALE", ...)
-    └─> get_kernel("SCALE") -> Kernel("ggml_op_scale", "scale.py")
-    └─> import_from_path("ggml_op_scale", "scale.py")
+    └─> _get_kernel("SCALE") -> Kernel("ggml_op_scale", "scale.py")
+    └─> _import_from_path("ggml_op_scale", "scale.py")
     └─> ggml_op_scale(...) -> KernelSpec(backend=IRON, function=scale)
-    └─> get_compiler(Backend.IRON) -> compile_iron_kernel
+    └─> _get_compiler(Backend.IRON) -> compile_iron_kernel
     └─> compile_iron_kernel(kernel_spec, ...)
 ```
+
+### Multi-Backend Fallback
+
+Dispatch functions can return a `list[KernelSpec]` to enable fallback across backends.
+The compilation pipeline tries each spec in order, stopping at the first success:
+
+```text
+ggml_compile_op("ADD", ...)
+    └─> ggml_op_add(...) -> [KernelSpec(IRON, ...), KernelSpec(TRITON, ...)]
+    └─> try compile_iron_kernel(spec[0]) -> success? done
+    └─> try compile_triton_kernel(spec[1]) -> success? done
+    └─> all failed? log error
+```
+
+This allows operations to prefer one backend but gracefully fall back to another.
+For example, `ggml_op_add` returns IRON as first priority and Triton as fallback.
 
 ### Backend Compilers
 
@@ -197,11 +215,15 @@ from kernel import Backend
 from build_iron import compile_iron_kernel
 from build_triton import compile_triton_kernel
 
-_compilers = {
+_BACKENDS: dict[Backend, Callable] = {
     Backend.IRON: compile_iron_kernel,
     Backend.TRITON: compile_triton_kernel,
 }
 ```
+
+The `_get_compiler()` function looks up compilers by `backend.name` (string comparison)
+rather than identity, to handle the case where `Backend` enums from dynamically imported
+modules have different class identity.
 
 ### IRON Kernel Implementations
 
@@ -313,11 +335,12 @@ Each kernel consists of three files across two layers:
 
 ### 1. Dispatch Function (e.g., `kernels/unary_ops.py`)
 
-Returns a `KernelSpec` specifying backend, function, and tensor context:
+Returns a `KernelSpec` (or `list[KernelSpec]` for multi-backend fallback) specifying backend, function, and tensor context:
 
 - Imports the kernel function from the appropriate backend subpackage
 - Provides the standard GGML dispatch signature
 - Returns `KernelSpec` with all fields: `backend`, `op_name`, `arch`, `input_tensors`, `output_tensor`, `function`
+- Returns `list[KernelSpec]` when the operation supports fallback across backends (tried in order)
 - Uses `functools.partial` to bind all arguments to the kernel function at dispatch time
 - `op_params` and `config` are optional (included only when the operation requires them)
 
@@ -346,12 +369,15 @@ Implements the core computation using the AIE API:
 1. **Register the operation** in `kernels/build.py`:
 
    ```python
-   _op_to_kernel_map = {
+   _OP_KERNEL_MAP = {
        "NEW_OP": Kernel("ggml_op_new_op", "new_op.py"),
    }
    ```
 
 2. **Create the dispatch function** (`kernels/new_op.py`):
+
+   The dispatch function can return a single `KernelSpec` or a `list[KernelSpec]`
+   for multi-backend fallback:
 
    ```python
    """Top-level entry point for GGML_OP_NEW_OP."""
@@ -432,7 +458,7 @@ To add a new backend, follow the pattern used for the Triton backend. This examp
    ```python
    from build_triton import compile_triton_kernel
 
-   _compilers = {
+   _BACKENDS: dict[Backend, Callable] = {
        Backend.IRON: compile_iron_kernel,
        Backend.TRITON: compile_triton_kernel,
    }
@@ -440,15 +466,24 @@ To add a new backend, follow the pattern used for the Triton backend. This examp
 
 4. **Update dispatch functions** to return the new backend when appropriate:
 
+   Return a single `KernelSpec` for exclusive backend use, or a `list[KernelSpec]`
+   for multi-backend fallback (tried in order):
+
    ```python
-   def ggml_op_new_op(...) -> KernelSpec:
-       if some_condition:
+   def ggml_op_new_op(...) -> KernelSpec | list[KernelSpec]:
+       # Single backend
+       if exclusive:
            return KernelSpec(
                backend=Backend.TRITON,
                function=partial(triton_new_op, ...),
                config={"transform_script": "/path/to/transform.mlir"},
            )
-       return KernelSpec(backend=Backend.IRON, function=partial(iron_new_op, ...))
+       # Multi-backend fallback (IRON first, Triton fallback)
+       return [
+           KernelSpec(backend=Backend.IRON, function=partial(iron_new_op, ...)),
+           KernelSpec(backend=Backend.TRITON, function=partial(triton_new_op, ...),
+                      config={"transform_script": "/path/to/transform.mlir"}),
+       ]
    ```
 
    The `config` dict passes backend-specific parameters (e.g., MLIR transform scripts)
