@@ -109,11 +109,7 @@ def compile_iron_kernel(
     )
 
     logger.info(
-        (
-            "IRON compilation successful\n",
-            "  PDI Path: %s\n",
-            "  Instructions Path: %s",
-        ),
+        "IRON compilation successful\n  PDI Path: %s\n  Instructions Path: %s",
         pdi_path,
         insts_path,
     )
