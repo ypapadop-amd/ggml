@@ -29,7 +29,7 @@ from pathlib import Path
 
 from build_iron import compile_iron_kernel
 from build_triton import compile_triton_kernel
-from kernel import Backend, Kernel, KernelSpec
+from kernel import Backend, Kernel
 from tensor_desc import TensorDesc
 
 # Compiler registry mapping Backend enum to compile functions
@@ -242,56 +242,62 @@ def ggml_compile_op(
     module = _import_from_path(kernel.name, kernel_source_file)
     dispatch_fn = getattr(module, kernel.name)
 
-    # Dispatch to get KernelSpec (determines backend and function)
-    kernel_spec: KernelSpec = dispatch_fn(
+    # Create output and work directories
+    output_dir = Path(output_directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Dispatch to get KernelSpec or list[KernelSpec]
+    result = dispatch_fn(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
     )
+    kernel_specs = result if isinstance(result, list) else [result]
 
-    # Create output and work directories
-    output_dir = Path(output_directory)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    for kernel_spec in kernel_specs:
+        logger.info(
+            (
+                "Compiling op: %s\n"
+                "  Op name:              %s\n"
+                "  Architecture:         %s\n"
+                "  Backend:              %s\n"
+                "  Kernel source:        %s\n"
+                "  Input tensors:        %s\n"
+                "  Output tensor:        %s\n"
+                "  Operation parameters: %s\n"
+                "  Exported name:        %s\n"
+                "  Output directory:     %s"
+            ),
+            op_name,
+            kernel_spec.op_name,
+            arch,
+            kernel_spec.backend.name,
+            str(kernel_source_file),
+            kernel_spec.input_tensors,
+            kernel_spec.output_tensor,
+            kernel_spec.op_params,
+            exported_name,
+            str(output_dir),
+        )
 
-    logger.info(
-        (
-            "Compiling op: %s\n"
-            "  Op name:              %s\n"
-            "  Architecture:         %s\n"
-            "  Backend:              %s\n"
-            "  Kernel source:        %s\n"
-            "  Input tensors:        %s\n"
-            "  Output tensor:        %s\n"
-            "  Operation parameters: %s\n"
-            "  Exported name:        %s\n"
-            "  Output directory:     %s"
-        ),
-        op_name,
-        kernel_spec.op_name,
-        arch,
-        kernel_spec.backend.name,
-        str(kernel_source_file),
-        kernel_spec.input_tensors,
-        kernel_spec.output_tensor,
-        kernel_spec.op_params,
-        exported_name,
-        str(output_dir),
-    )
+        # Get compiler for the selected backend and compile
+        compile_fn = _get_compiler(kernel_spec.backend)
 
-    # Get compiler for the selected backend and compile
-    compile_fn = _get_compiler(kernel_spec.backend)
-    compile_fn(
-        kernel_spec=kernel_spec,
-        exported_name=exported_name,
-        output_directory=output_dir,
-        logger=logger,
-        verbose=verbose,
-    )
+        try:
+            compile_fn(
+                kernel_spec=kernel_spec,
+                exported_name=exported_name,
+                output_directory=output_dir,
+                logger=logger,
+                verbose=verbose,
+            )
+        except Exception:
+            logger.exception("Compilation failed for kernel %s", kernel.name)
+        else:
+            return
 
-    logger.info(
-        "Finished compilation for kernel %s in %s", kernel.name, output_directory
-    )
+        logger.error("Could not compile kernel %s", kernel.name)
 
 
 def _to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
