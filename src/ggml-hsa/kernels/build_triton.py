@@ -81,7 +81,8 @@ def compile_triton_kernel(
 
     """
     import triton
-    from triton.backends.amd_triton_npu.driver import NPUDriver
+    from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
+    from triton.backends.amd_triton_npu.config import config_context, _UNSET
 
     # Determine Triton cache directory
     cache_dir = output_directory / f"{exported_name}-triton-artifacts"
@@ -97,15 +98,16 @@ def compile_triton_kernel(
         raise ValueError(msg)
 
     with (
-        TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
-        TempEnvSet(
-            "AIR_TRANSFORM_TILING_SCRIPT",
-            kernel_spec.config.get("transform_script", None),
+        TempEnvSet("AMD_TRITON_NPU_DEBUG", "1" if verbose else "0"),
+        config_context(
+            compile_only=True,
+            transform_tiling_script=kernel_spec.config.get("transform_script", _UNSET),
+            output_format="xclbin",
         ),
-        TempEnvSet("AMD_TRITON_NPU_COMPILE_ONLY", "1"),
+        TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
     ):
         compiled_kernel = kernel_spec.function()
-        xclbin_path = next(cache_dir.glob("**/aie.xclbin")).parent
+        xclbin_path = get_npu_cache_dir()
         logger.info(
             (
                 "Triton compilation successful\n"
