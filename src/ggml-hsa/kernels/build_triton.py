@@ -59,6 +59,29 @@ class TempEnvSet(ContextDecorator):
             del os.environ[self.env_var]
 
 
+def _get_triton_target(kernel_spec: KernelSpec) -> str:
+    """Returns Triton target names for a given KernelSpec architecture.
+
+    Parameters:
+        kernel_spec: The KernelSpec containing the architecture information.
+
+    Returns:
+        A string representing the Triton target name corresponding to the kernel's architecture.
+
+    Raises:
+        ValueError: If the architecture specified in the kernel_spec is not supported.
+    """
+    mapping = {
+        "aie2": "npu1",
+        "aie2p": "npu2",
+    }
+    try:
+        return mapping[kernel_spec.arch]
+    except KeyError:
+        msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"
+        raise ValueError(msg) from None
+
+
 def compile_triton_kernel(
     kernel_spec: KernelSpec,
     exported_name: str,
@@ -81,8 +104,8 @@ def compile_triton_kernel(
 
     """
     import triton
+    from triton.backends.amd_triton_npu.config import _UNSET, config_context
     from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
-    from triton.backends.amd_triton_npu.config import config_context, _UNSET
 
     # Determine Triton cache directory
     cache_dir = output_directory / f"{exported_name}-triton-artifacts"
@@ -91,14 +114,16 @@ def compile_triton_kernel(
     logger.info("Triton cache directory: %s", cache_dir)
 
     # Set active driver based on architecture
-    if kernel_spec.arch in ["aie2", "aie2p"]:
+    arch = _get_triton_target(kernel_spec)
+    if arch in ["npu1", "npu2"]:
         triton.runtime.driver.set_active(NPUDriver())
     else:
-        msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"
+        msg = f"Unsupported architecture for Triton kernel: {arch}"
         raise ValueError(msg)
 
     with (
         TempEnvSet("AMD_TRITON_NPU_DEBUG", "1" if verbose else "0"),
+        TempEnvSet("AMD_TRITON_NPU_TARGET", arch),
         config_context(
             compile_only=True,
             transform_tiling_script=kernel_spec.config.get("transform_script", _UNSET),
@@ -107,7 +132,7 @@ def compile_triton_kernel(
         TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
     ):
         compiled_kernel = kernel_spec.function()
-        xclbin_path = get_npu_cache_dir()
+        xclbin_path = Path(get_npu_cache_dir(compiled_kernel))
         logger.info(
             (
                 "Triton compilation successful\n"
@@ -117,7 +142,7 @@ def compile_triton_kernel(
             ),
             compiled_kernel.metadata,
             compiled_kernel.metadata_group,
-            xclbin_path,
+            str(xclbin_path),
         )
         with Path(xclbin_path / "tt.shared.mlir").open("w", encoding="utf-8") as f:
             f.write(str(compiled_kernel.asm["ttsharedir"]))
