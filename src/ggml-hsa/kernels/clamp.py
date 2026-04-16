@@ -28,6 +28,8 @@ def ggml_op_clamp(
         KernelSpec for the CLAMP operation.
 
     """
+    from functools import partial
+
     from .iron.clamp import clamp
 
     return KernelSpec(
@@ -36,6 +38,11 @@ def ggml_op_clamp(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=clamp,
+        function=partial(
+            clamp,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            op_params=op_params,
+        ),
     )
