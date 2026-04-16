@@ -156,10 +156,10 @@ def ggml_op_add(
 
     """
     return [
-        _make_triton_add_kernel_spec(arch, input_tensors, output_tensor),
         _make_iron_binary_kernel_spec(
             arch, input_tensors, output_tensor, "GGML_OP_ADD"
         ),
+        _make_triton_add_kernel_spec(arch, input_tensors, output_tensor),
     ]
 
 
