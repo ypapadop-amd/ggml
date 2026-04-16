@@ -32,6 +32,8 @@ def ggml_op_count_equal(
             function for generating the MLIR module.
 
     """
+    from functools import partial
+
     from .iron.count_equal import count_equal_op
 
     return KernelSpec(
@@ -40,6 +42,10 @@ def ggml_op_count_equal(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=count_equal_op,
+        function=partial(
+            count_equal_op,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+        ),
     )

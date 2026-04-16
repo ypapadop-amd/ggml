@@ -28,17 +28,46 @@ from collections.abc import Callable
 from pathlib import Path
 
 from build_iron import compile_iron_kernel
-from kernel import Backend, Kernel, KernelSpec
+from build_triton import compile_triton_kernel
+from kernel import Backend, Kernel
 from tensor_desc import TensorDesc
 
 # Compiler registry mapping Backend enum to compile functions
-_compilers: dict[Backend, Callable] = {
+_BACKENDS: dict[Backend, Callable] = {
     Backend.IRON: compile_iron_kernel,
+    Backend.TRITON: compile_triton_kernel,
 }
+
+
+def _get_compiler(backend: Backend) -> Callable:
+    """Get the compiler function for the given backend.
+
+    Parameters:
+        backend: The compiler backend to use.
+
+    Returns:
+        The compiler function for the specified backend.
+
+    Raises:
+        NotImplementedError: If the backend is not implemented.
+
+    Note:
+        Uses backend.name for lookup to handle the case where Backend enums
+        from dynamically imported modules have different identity than those
+        in this module.
+
+    """
+    # Lookup by name to handle different enum class identities from dynamic imports
+    for registered_backend, compiler in _BACKENDS.items():
+        if registered_backend.name == backend.name:
+            return compiler
+    msg = f"Backend {backend.name} not implemented."
+    raise NotImplementedError(msg)
+
 
 # Mapping of GGML operations to kernel source files.
 # Each entry maps an operation name to a Kernel that identifies the dispatch module.
-_op_to_kernel_map: dict[str, Kernel] = {
+_OP_KERNEL_MAP: dict[str, Kernel] = {
     # unary operation to kernel source mapping
     "ABS": Kernel("ggml_unary_op_abs", "unary_ops.py"),
     "SGN": Kernel("ggml_unary_op_sgn", "unary_ops.py"),
@@ -80,33 +109,7 @@ _op_to_kernel_map: dict[str, Kernel] = {
 }
 
 
-def get_compiler(backend: Backend) -> Callable:
-    """Get the compiler function for the given backend.
-
-    Parameters:
-        backend: The compilation backend to use.
-
-    Returns:
-        The compiler function for the specified backend.
-
-    Raises:
-        NotImplementedError: If the backend is not implemented.
-
-    Note:
-        Uses backend.name for lookup to handle the case where Backend enums
-        from dynamically imported modules have different identity than those
-        in this module.
-
-    """
-    # Lookup by name to handle different enum class identities from dynamic imports
-    for registered_backend, compiler in _compilers.items():
-        if registered_backend.name == backend.name:
-            return compiler
-    msg = f"Backend {backend.name} not implemented."
-    raise NotImplementedError(msg)
-
-
-def get_kernel(op_name: str) -> Kernel:
+def _get_kernel(op_name: str) -> Kernel:
     """Get the kernel for the given operation.
 
     Parameters:
@@ -119,14 +122,14 @@ def get_kernel(op_name: str) -> Kernel:
         NotImplementedError: If the Kernel is not found.
 
     """
-    kernel = _op_to_kernel_map.get(op_name)
-    if kernel is None:
+    try:
+        return _OP_KERNEL_MAP[op_name]
+    except KeyError:
         msg = f"Operation {op_name} not implemented."
-        raise NotImplementedError(msg)
-    return kernel
+        raise NotImplementedError(msg) from None
 
 
-def import_from_path(module_name: str, path: str | Path):
+def _import_from_path(module_name: str, path: str | Path):
     """Import a module by name from the specified file path.
 
     This function handles the complexity of importing Python modules dynamically,
@@ -231,72 +234,80 @@ def ggml_compile_op(
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
-    # Get kernel mapping
-    kernel = get_kernel(op_name)
+    # Get kernel mapping for the operation
+    kernel = _get_kernel(op_name)
 
     # Load dispatch module and get dispatch function
     kernel_source_file = Path(__file__).resolve().parent / kernel.source_file
-    module = import_from_path(kernel.name, kernel_source_file)
+    module = _import_from_path(kernel.name, kernel_source_file)
     dispatch_fn = getattr(module, kernel.name)
 
-    # Dispatch to get KernelSpec (determines backend and function)
-    kernel_spec: KernelSpec = dispatch_fn(
+    # Create output and work directories
+    output_dir = Path(output_directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Dispatch to get KernelSpec or list[KernelSpec]
+    result = dispatch_fn(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
     )
+    kernel_specs = result if isinstance(result, list) else [result]
 
-    # Create output and work directories
-    output_dir = Path(output_directory)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    work_dir = output_dir / f"{exported_name}-artifacts"
-    work_dir.mkdir(parents=True, exist_ok=True)
+    for kernel_spec in kernel_specs:
+        logger.info(
+            (
+                "Compiling op: %s\n"
+                "  Op name:              %s\n"
+                "  Architecture:         %s\n"
+                "  Backend:              %s\n"
+                "  Kernel source:        %s\n"
+                "  Input tensors:        %s\n"
+                "  Output tensor:        %s\n"
+                "  Operation parameters: %s\n"
+                "  Exported name:        %s\n"
+                "  Output directory:     %s"
+            ),
+            op_name,
+            kernel_spec.op_name,
+            arch,
+            kernel_spec.backend.name,
+            str(kernel_source_file),
+            kernel_spec.input_tensors,
+            kernel_spec.output_tensor,
+            kernel_spec.op_params,
+            exported_name,
+            str(output_dir),
+        )
 
-    logger.info(
-        (
-            "Compiling op: %s\n"
-            "  Architecture:         %s\n"
-            "  Backend:              %s\n"
-            "  Op name:              %s\n"
-            "  Kernel source:        %s\n"
-            "  Input tensors:        %s\n"
-            "  Output tensor:        %s\n"
-            "  Operation parameters: %s\n"
-            "  Exported name:        %s\n"
-            "  Output directory:     %s\n"
-            "  Working directory:    %s"
-        ),
-        op_name,
-        arch,
-        kernel_spec.backend.name,
-        kernel_spec.op_name,
-        str(kernel_source_file),
-        kernel_spec.input_tensors,
-        kernel_spec.output_tensor,
-        kernel_spec.op_params,
-        exported_name,
-        str(output_dir),
-        str(work_dir),
-    )
+        # Get compiler for the selected backend and compile
+        compile_fn = _get_compiler(kernel_spec.backend)
 
-    # Get compiler for the selected backend and compile
-    compile_fn = get_compiler(kernel_spec.backend)
-    compile_fn(
-        kernel_spec=kernel_spec,
-        work_dir=work_dir,
-        exported_name=exported_name,
-        output_directory=output_dir,
-        logger=logger,
-        verbose=verbose,
-    )
+        try:
+            compile_fn(
+                kernel_spec=kernel_spec,
+                exported_name=exported_name,
+                output_directory=output_dir,
+                logger=logger,
+                verbose=verbose,
+            )
+        except Exception:
+            logger.exception(
+                "Compilation failed for operation %s, kernel %s with backend %s",
+                op_name,
+                kernel.name,
+                kernel_spec.backend.name,
+            )
+        else:
+            return
 
-    logger.info(
-        "Finished compilation for kernel %s in %s", kernel.name, output_directory
-    )
+    msg = f"Could not compile kernel {kernel.name} for operation {op_name} with any backend."
+    logger.error(msg)
+    raise RuntimeError(msg)
 
 
-def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
+def _to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
     """Convert a string of the form "(x,y,z,w)" to a tuple of integers.
 
     Parameters:
@@ -318,7 +329,7 @@ def to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
     return t
 
 
-def to_tensordesc(string: str) -> TensorDesc:
+def _to_tensordesc(string: str) -> TensorDesc:
     """Create a TensorDesc from a string representation.
 
     Parameters:
@@ -329,26 +340,8 @@ def to_tensordesc(string: str) -> TensorDesc:
 
     """
     shape, dtype = string.split("/")
-    shape = to_tuple_of_ints(shape)
+    shape = _to_tuple_of_ints(shape)
     return TensorDesc(dtype=dtype, shape=shape, stride=None)
-
-
-def file_path(string: str):
-    """Validate that a string represents an existing file path.
-
-    Parameters:
-        string: The file path to validate.
-
-    Returns:
-        The validated file path string.
-
-    Raises:
-        FileNotFoundError: If the file does not exist.
-
-    """
-    if not Path(string).is_file():
-        raise FileNotFoundError(string)
-    return string
 
 
 def main() -> None:
@@ -373,14 +366,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--input_tensors",
-        type=to_tensordesc,
+        type=_to_tensordesc,
         nargs="+",
         required=True,
         help="Input kernel tensor shapes and datatypes",
     )
     parser.add_argument(
         "--output_tensor",
-        type=to_tensordesc,
+        type=_to_tensordesc,
         required=True,
         help="Output kernel tensor shape and datatype",
     )

@@ -23,10 +23,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
 
-from .utils import (
-    align_to_arch,
-    arch_to_device,
-)
+from .utils import align_to_arch, arch_to_device
 
 
 def get_cross_entropy_loss_dimensions(tensor) -> tuple[int, int]:
@@ -66,9 +63,7 @@ def get_cross_entropy_loss_dimensions(tensor) -> tuple[int, int]:
 KERN_VEC_SIZE = 8
 
 
-def cross_entropy_loss(
-    arch: str, input_tensors: list, output_tensor, op_params: bytearray
-):
+def cross_entropy_loss(arch: str, input_tensors: list, output_tensor):
     """IRON design for GGML_OP_CROSS_ENTROPY_LOSS implementation.
 
     Cross entropy loss computes: -sum(labels * log(softmax(logits))) / num_rows
@@ -80,7 +75,6 @@ def cross_entropy_loss(
             - input_tensors[0]: Logits tensor (predictions before softmax)
             - input_tensors[1]: Labels tensor (ground truth, often one-hot encoded)
         output_tensor: Output scalar tensor containing the loss value.
-        op_params: Operation parameters (currently unused).
 
     """
     if len(input_tensors) != 2:
