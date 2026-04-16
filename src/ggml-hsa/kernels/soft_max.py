@@ -28,6 +28,8 @@ def ggml_op_soft_max(
         KernelSpec for the SOFT_MAX operation.
 
     """
+    from functools import partial
+
     from .iron.softmax import softmax
 
     return KernelSpec(
@@ -37,5 +39,11 @@ def ggml_op_soft_max(
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
-        function=softmax,
+        function=partial(
+            softmax,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            op_params=op_params,
+        ),
     )
