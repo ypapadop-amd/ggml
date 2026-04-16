@@ -25,6 +25,8 @@ def ggml_op_mul_mat(
         KernelSpec for the MUL_MAT operation.
 
     """
+    from functools import partial
+
     from .iron.gemm import gemm
 
     return KernelSpec(
@@ -33,6 +35,7 @@ def ggml_op_mul_mat(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=gemm,
+        function=partial(
+            gemm, arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
+        ),
     )

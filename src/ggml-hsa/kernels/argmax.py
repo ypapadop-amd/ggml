@@ -31,6 +31,8 @@ def ggml_op_argmax(
         KernelSpec: Kernel specification for the ARGMAX operation.
 
     """
+    from functools import partial
+
     from .iron.argmax import argmax_op
 
     return KernelSpec(
@@ -39,6 +41,10 @@ def ggml_op_argmax(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=argmax_op,
+        function=partial(
+            argmax_op,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+        ),
     )

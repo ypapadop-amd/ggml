@@ -751,14 +751,13 @@ def create_mat_mul_external_functions(
     )
 
 
-def gemm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def gemm(arch: str, input_tensors: list, output_tensor):
     """IRON design for matrix multiplication.
 
     Args:
         arch: Target architecture (e.g., "aie2", "aie2p").
         input_tensors: List of two input tensors (A and B).
         output_tensor: Output tensor (C).
-        op_params: Operation-specific parameters as a bytearray.
 
     Returns:
         The MLIR module representing the matrix multiplication operation.

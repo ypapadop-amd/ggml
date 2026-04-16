@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 820" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-iron" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#c2410c"/>
+    </marker>
+    <marker id="arrow-triton" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#7e22ce"/>
+    </marker>
+    <marker id="arrow-out" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#15803d"/>
+    </marker>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.10"/>
+    </filter>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="100%" stop-color="#f1f5f9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="820" rx="12" fill="#f4f6f9"/>
+
+  <!-- Title -->
+  <text x="480" y="42" text-anchor="middle" font-size="22" font-weight="700" fill="#0f172a">JIT Compilation Pipeline</text>
+  <text x="480" y="64" text-anchor="middle" font-size="13" fill="#64748b">ggml-hsa  ·  after ggml_hsa_create_aie_kernel()</text>
+
+  <!-- ════════════════════════════════════════════ -->
+  <!-- LAYER 1: C++ entry  -->
+  <!-- ════════════════════════════════════════════ -->
+  <rect x="280" y="88" width="400" height="56" rx="8" fill="#1e3a5f" filter="url(#shadow)"/>
+  <text x="480" y="113" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">ggml_hsa_compile_aie_kernel()</text>
+  <text x="480" y="132" text-anchor="middle" font-size="11" fill="#93c5fd">C++ · aie-kernel-compiler.cpp</text>
+
+  <!-- Arrow 1→2 -->
+  <line x1="480" y1="144" x2="480" y2="170" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ════════════════════════════════════════════ -->
+  <!-- LAYER 2: pybind11 bridge  -->
+  <!-- ════════════════════════════════════════════ -->
+  <rect x="280" y="174" width="400" height="68" rx="8" fill="#134e4a" filter="url(#shadow)"/>
+  <text x="480" y="199" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">pybind11 Bridge</text>
+  <text x="480" y="218" text-anchor="middle" font-size="11" fill="#99f6e4">ggml_tensor → TensorDesc</text>
+  <text x="480" y="233" text-anchor="middle" font-size="11" fill="#99f6e4">op_params → bytearray</text>
+
+  <!-- Arrow 2→3 -->
+  <line x1="480" y1="242" x2="480" y2="268" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ════════════════════════════════════════════ -->
+  <!-- LAYER 3: Python dispatch  -->
+  <!-- ════════════════════════════════════════════ -->
+  <rect x="280" y="272" width="400" height="82" rx="8" fill="#1e293b" filter="url(#shadow)"/>
+  <text x="480" y="297" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">build.ggml_compile_op()</text>
+  <text x="480" y="316" text-anchor="middle" font-size="11" fill="#94a3b8">kernels/build.py</text>
+  <text x="480" y="336" text-anchor="middle" font-size="11" fill="#cbd5e1">op → _op_to_kernel_map → dispatch module → KernelSpec</text>
+
+  <!-- Branch arrows from dispatch -->
+  <!-- Left branch (IRON) -->
+  <path d="M 380 354 L 380 370 Q 380 380 370 380 L 270 380 Q 260 380 260 390 L 260 406" stroke="#c2410c" stroke-width="2" fill="none" marker-end="url(#arrow-iron)"/>
+  <!-- Right branch (Triton) -->
+  <path d="M 580 354 L 580 370 Q 580 380 590 380 L 690 380 Q 700 380 700 390 L 700 406" stroke="#7e22ce" stroke-width="2" fill="none" marker-end="url(#arrow-triton)"/>
+
+  <!-- Branch labels -->
+  <rect x="310" y="370" width="70" height="20" rx="4" fill="#c2410c"/>
+  <text x="345" y="384" text-anchor="middle" font-size="10" font-weight="600" fill="#fff">IRON</text>
+  <rect x="580" y="370" width="70" height="20" rx="4" fill="#7e22ce"/>
+  <text x="615" y="384" text-anchor="middle" font-size="10" font-weight="600" fill="#fff">Triton</text>
+
+  <!-- ════════════════════════════════════════════ -->
+  <!-- LAYER 4A: IRON backend  -->
+  <!-- ════════════════════════════════════════════ -->
+  <rect x="60" y="410" width="400" height="230" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="260" y="436" text-anchor="middle" font-size="14" font-weight="700" fill="#9a3412">IRON Backend (MLIR-AIE)</text>
+  <text x="260" y="453" text-anchor="middle" font-size="11" fill="#c2410c">kernels/build_iron.py</text>
+
+  <!-- Step 1 -->
+  <rect x="84" y="468" width="352" height="42" rx="6" fill="#fed7aa" stroke="#f97316" stroke-width="1"/>
+  <text x="100" y="485" font-size="11" font-weight="600" fill="#9a3412">1</text>
+  <text x="116" y="485" font-size="11.5" fill="#431407">kernel_spec.function(arch, tensors, params)</text>
+  <text x="116" y="501" font-size="11" fill="#78350f">→ MLIR module via aie.iron DSL</text>
+
+  <!-- Arrow step 1→2 -->
+  <line x1="260" y1="510" x2="260" y2="524" stroke="#c2410c" stroke-width="1.5" marker-end="url(#arrow-iron)"/>
+
+  <!-- Step 2 -->
+  <rect x="84" y="528" width="352" height="42" rx="6" fill="#fed7aa" stroke="#f97316" stroke-width="1"/>
+  <text x="100" y="545" font-size="11" font-weight="600" fill="#9a3412">2</text>
+  <text x="116" y="545" font-size="11.5" fill="#431407">compile_cxx_core_function()</text>
+  <text x="116" y="561" font-size="11" fill="#78350f">Peano / llvm-aie:  .cc → .o</text>
+
+  <!-- Arrow step 2→3 -->
+  <line x1="260" y1="570" x2="260" y2="584" stroke="#c2410c" stroke-width="1.5" marker-end="url(#arrow-iron)"/>
+
+  <!-- Step 3 -->
+  <rect x="84" y="588" width="352" height="42" rx="6" fill="#fed7aa" stroke="#f97316" stroke-width="1"/>
+  <text x="100" y="605" font-size="11" font-weight="600" fill="#9a3412">3</text>
+  <text x="116" y="605" font-size="11.5" fill="#431407">compile_mlir_module()</text>
+  <text x="116" y="621" font-size="11" fill="#78350f">MLIR-AIE lowering  (--alloc-scheme=basic-sequential)</text>
+
+  <!-- ════════════════════════════════════════════ -->
+  <!-- LAYER 4B: Triton backend  -->
+  <!-- ════════════════════════════════════════════ -->
+  <rect x="500" y="410" width="400" height="230" rx="8" fill="#faf5ff" stroke="#9333ea" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="700" y="436" text-anchor="middle" font-size="14" font-weight="700" fill="#6b21a8">Triton-XDNA Backend</text>
+  <text x="700" y="453" text-anchor="middle" font-size="11" fill="#7e22ce">kernels/build_triton.py</text>
+
+  <!-- Step 1 -->
+  <rect x="524" y="468" width="352" height="42" rx="6" fill="#e9d5ff" stroke="#a855f7" stroke-width="1"/>
+  <text x="540" y="485" font-size="11" font-weight="600" fill="#6b21a8">1</text>
+  <text x="556" y="485" font-size="11.5" fill="#3b0764">NPUDriver + TempEnvSet + config_context</text>
+  <text x="556" y="501" font-size="11" fill="#581c87">compile_only=True, output_format="xclbin"</text>
+
+  <!-- Arrow step 1→2 -->
+  <line x1="700" y1="510" x2="700" y2="524" stroke="#7e22ce" stroke-width="1.5" marker-end="url(#arrow-triton)"/>
+
+  <!-- Step 2 -->
+  <rect x="524" y="528" width="352" height="42" rx="6" fill="#e9d5ff" stroke="#a855f7" stroke-width="1"/>
+  <text x="540" y="545" font-size="11" font-weight="600" fill="#6b21a8">2</text>
+  <text x="556" y="545" font-size="11.5" fill="#3b0764">kernel_spec.function()</text>
+  <text x="556" y="561" font-size="11" fill="#581c87">triggers Triton JIT → compiled_kernel</text>
+
+  <!-- Arrow step 2→3 -->
+  <line x1="700" y1="570" x2="700" y2="584" stroke="#7e22ce" stroke-width="1.5" marker-end="url(#arrow-triton)"/>
+
+  <!-- Step 3 -->
+  <rect x="524" y="588" width="352" height="42" rx="6" fill="#e9d5ff" stroke="#a855f7" stroke-width="1"/>
+  <text x="540" y="605" font-size="11" font-weight="600" fill="#6b21a8">3</text>
+  <text x="556" y="605" font-size="11.5" fill="#3b0764">xclbinutil → extract .pdi from xclbin</text>
+  <text x="556" y="621" font-size="11" fill="#581c87">copy _insts.bin to output directory</text>
+
+  <!-- ════════════════════════════════════════════ -->
+  <!-- Converging arrows to output  -->
+  <!-- ════════════════════════════════════════════ -->
+  <path d="M 260 640 L 260 660 Q 260 674 274 674 L 380 674" stroke="#15803d" stroke-width="2" fill="none"/>
+  <path d="M 700 640 L 700 660 Q 700 674 686 674 L 580 674" stroke="#15803d" stroke-width="2" fill="none"/>
+
+  <!-- ════════════════════════════════════════════ -->
+  <!-- LAYER 5: Output artifacts  -->
+  <!-- ════════════════════════════════════════════ -->
+  <rect x="310" y="658" width="340" height="56" rx="8" fill="#14532d" filter="url(#shadow)"/>
+  <text x="480" y="682" text-anchor="middle" font-size="13" font-weight="600" fill="#bbf7d0">Output Artifacts</text>
+  <text x="480" y="702" text-anchor="middle" font-size="12" fill="#86efac" font-family="'SF Mono', 'Fira Code', 'Consolas', monospace">&lt;name&gt;.pdi  +  &lt;name&gt;_insts.bin</text>
+
+  <!-- Arrow 5→6 -->
+  <line x1="480" y1="714" x2="480" y2="740" stroke="#15803d" stroke-width="2" marker-end="url(#arrow-out)"/>
+
+  <!-- ════════════════════════════════════════════ -->
+  <!-- LAYER 6: Disk cache  -->
+  <!-- ════════════════════════════════════════════ -->
+  <rect x="310" y="744" width="340" height="60" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="480" y="766" text-anchor="middle" font-size="12" font-weight="600" fill="#166534">Written to cache_dir/&lt;device&gt;/</text>
+  <text x="480" y="782" text-anchor="middle" font-size="10" fill="#15803d">$GGML_HSA_KERNEL_CACHE_DIR</text>
+  <text x="480" y="796" text-anchor="middle" font-size="10" fill="#15803d">$XDG_CACHE_HOME/ggml  |  ~/.cache/ggml</text>
+
+  <!-- Side annotations: compiler flags -->
+  <rect x="60" y="650" width="220" height="80" rx="6" fill="#fffbeb" stroke="#d97706" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="74" y="668" font-size="10" font-weight="600" fill="#92400e">Compile-time defines</text>
+  <text x="74" y="684" font-size="10" fill="#78350f" font-family="'SF Mono', 'Fira Code', monospace">Unary:  -D&lt;OP&gt;=1 -DINPUT_DTYPE=…</text>
+  <text x="74" y="698" font-size="10" fill="#78350f" font-family="'SF Mono', 'Fira Code', monospace">Binary: -D&lt;OP&gt;=1 -DINPUT0/1_DTYPE=…</text>
+  <text x="74" y="712" font-size="10" fill="#78350f" font-family="'SF Mono', 'Fira Code', monospace">GEMM:   -DDIM_M=N -DDIM_K=N …</text>
+  <!-- dashed connector -->
+  <line x1="260" y1="640" x2="218" y2="650" stroke="#d97706" stroke-width="1" stroke-dasharray="3,3"/>
+</svg>

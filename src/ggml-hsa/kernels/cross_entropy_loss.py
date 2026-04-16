@@ -27,6 +27,8 @@ def ggml_op_cross_entropy_loss(
         KernelSpec for the CROSS_ENTROPY_LOSS operation.
 
     """
+    from functools import partial
+
     from .iron.cross_entropy_loss import cross_entropy_loss
 
     return KernelSpec(
@@ -35,6 +37,10 @@ def ggml_op_cross_entropy_loss(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        op_params=op_params,
-        function=cross_entropy_loss,
+        function=partial(
+            cross_entropy_loss,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+        ),
     )
