@@ -65,6 +65,7 @@ ignore = [
     "PLR2004", # magic values
     "T201",    # print
     "S101",    # allow assert
+    "S603",    # allow subprocess without shell
     "SIM108",  # use ternary operator
     "SLF001",  # private member accessed
 ]

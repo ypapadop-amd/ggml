@@ -25,6 +25,8 @@ def ggml_op_scale(
         KernelSpec for the SCALE operation.
 
     """
+    from functools import partial
+
     from .iron.scale import scale
 
     return KernelSpec(
@@ -34,5 +36,11 @@ def ggml_op_scale(
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
-        function=scale,
+        function=partial(
+            scale,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            op_params=op_params,
+        ),
     )

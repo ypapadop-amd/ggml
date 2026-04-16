@@ -123,7 +123,7 @@ static bool ggml_hsa_find_aie_kernel_files(const std::string & device_name,
  */
 static ggml_status
 ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & path, ggml_hsa_pdi_buffer & buffer) {
-    std::ifstream is(path, std::ios::binary | std::ios::ate | std::ios::in);
+    std::ifstream is(path, std::ios::binary | std::ios::ate);
     if (is.fail()) {
         GGML_HSA_LOG_ERROR("%s: could not open file %s", __func__, path.c_str());
         return GGML_STATUS_FAILED;
@@ -157,7 +157,7 @@ ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & path, ggml_hsa_pd
 static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
                                        const fs::path & path,
                                        ggml_hsa_insts_buffer & buffer) {
-    std::ifstream is(path, std::ios::binary | std::ios::ate | std::ios::in);
+    std::ifstream is(path, std::ios::binary | std::ios::ate);
     if (is.fail()) {
         GGML_HSA_LOG_ERROR("%s: could not open file %s", __func__, path.c_str());
         return GGML_STATUS_FAILED;

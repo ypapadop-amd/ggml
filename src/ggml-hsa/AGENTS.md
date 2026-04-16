@@ -13,7 +13,8 @@ The ggml-hsa backend enables GGML tensor operations to run on AMD XDNA NPUs (AI 
 
 The backend uses a multi-backend kernel compilation system with per-operation dispatch. Currently supported backends:
 
-- **IRON** (MLIR-AIE framework) - Optimized AIE kernels
+- **IRON** (MLIR-AIE framework) - Optimized AIE kernels (default)
+- **TRITON** (Triton-XDNA) - Compiler-driven kernel generation via MLIR-AIR/AIE (optional)
 
 The system supports both JIT and AOT compilation.
 
@@ -42,6 +43,7 @@ src/ggml-hsa/
 │   ├── __init__.py              # Package exports (ggml_compile_op, Kernel, TensorDesc, ggml_tensor_to_tensordesc)
 │   ├── build.py                 # Kernel compilation orchestrator
 │   ├── build_iron.py            # IRON backend compiler
+│   ├── build_triton.py          # Triton backend compiler
 │   ├── kernel.py                # Core types: Backend enum, Kernel, KernelSpec
 │   ├── tensor_desc.py           # Tensor descriptor dataclass
 │   ├── binary_ops.py            # Top-level GGML binary op dispatch
@@ -53,6 +55,11 @@ src/ggml-hsa/
 │   ├── argmax.py                # Top-level argmax op dispatch
 │   ├── count_equal.py           # Top-level count_equal op dispatch
 │   ├── cross_entropy_loss.py    # Top-level cross entropy loss op dispatch
+│   ├── triton/                  # Triton kernel implementations
+│   │   ├── __init__.py          # Subpackage init
+│   │   ├── utils.py             # Shared utilities (dtype conversion)
+│   │   ├── vecadd.py            # Vector addition Triton kernel
+│   │   └── vecadd_aie2.mlir     # MLIR transform/tiling script for AIE2
 │   └── iron/                    # IRON kernel implementations
 │       ├── __init__.py          # Subpackage init
 │       ├── utils.py             # Shared utilities (alignment, device mapping)
@@ -90,12 +97,12 @@ static operation mapping from runtime backend selection:
 
 #### Layer 1: Static Mapping (Kernel)
 
-The `_op_to_kernel_map` in `build.py` maps GGML operation names to `Kernel` objects:
+The `_OP_KERNEL_MAP` in `build.py` maps GGML operation names to `Kernel` objects:
 
 ```python
 from kernel import Kernel
 
-_op_to_kernel_map = {
+_OP_KERNEL_MAP = {
     "ADD": Kernel("ggml_op_add", "binary_ops.py"),
     "SCALE": Kernel("ggml_op_scale", "scale.py"),
 }
@@ -111,6 +118,7 @@ The `Kernel` dataclass identifies:
 Dispatch functions examine tensor parameters and return a `KernelSpec`:
 
 ```python
+from functools import partial
 from kernel import Backend, KernelSpec
 from .iron.scale import scale
 
@@ -122,41 +130,68 @@ def ggml_op_scale(arch, input_tensors, output_tensor, op_params) -> KernelSpec:
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
-        function=scale,
+        function=partial(
+            scale,
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            op_params=op_params,
+        ),
     )
 ```
 
+The `function` field uses `functools.partial` to bind all arguments at dispatch time,
+so the backend compiler can call it with no arguments to generate the IR.
+
 The `KernelSpec` specifies:
 
-- `backend`: Which compilation backend to use (`Backend.IRON`)
+- `backend`: Which compilation backend to use (`Backend.IRON` or `Backend.TRITON`)
 - `op_name`: Name of the operation (e.g., `"GGML_OP_SCALE"`)
 - `arch`: Target architecture string (`"aie2"` or `"aie2p"`)
 - `input_tensors`: List of input tensors
 - `output_tensor`: Output tensor
-- `op_params`: Operation-specific parameters as a bytearray
 - `function`: The callable that generates backend-specific IR
+- `op_params`: Operation-specific parameters as a bytearray (optional, defaults to `None`)
+- `config`: Dictionary for additional backend-specific configuration (optional, defaults to `{}`)
 
 This enables per-invocation backend selection based on tensor shapes, dtypes,
-or other runtime parameters.
+or other runtime parameters. Dispatch functions can return a single `KernelSpec`
+or a `list[KernelSpec]` for multi-backend fallback (see "Multi-Backend Fallback").
 
 ### Compilation Pipeline
 
 The compilation flow in `ggml_compile_op`:
 
-1. Look up `Kernel` from `_op_to_kernel_map`
+1. Look up `Kernel` from `_OP_KERNEL_MAP`
 2. Dynamically import the dispatch module
-3. Call dispatch function to get `KernelSpec` (includes all tensor/op context)
-4. Look up compiler function via `get_compiler(backend)`
-5. Invoke the backend-specific compiler
+3. Call dispatch function to get `KernelSpec` or `list[KernelSpec]`
+4. Iterate through specs, look up compiler via `_get_compiler(backend)`
+5. Invoke the backend-specific compiler; on success, stop; on failure, try next spec
 
 ```text
 ggml_compile_op("SCALE", ...)
-    └─> get_kernel("SCALE") -> Kernel("ggml_op_scale", "scale.py")
-    └─> import_from_path("ggml_op_scale", "scale.py")
+    └─> _get_kernel("SCALE") -> Kernel("ggml_op_scale", "scale.py")
+    └─> _import_from_path("ggml_op_scale", "scale.py")
     └─> ggml_op_scale(...) -> KernelSpec(backend=IRON, function=scale)
-    └─> get_compiler(Backend.IRON) -> compile_iron_kernel
+    └─> _get_compiler(Backend.IRON) -> compile_iron_kernel
     └─> compile_iron_kernel(kernel_spec, ...)
 ```
+
+### Multi-Backend Fallback
+
+Dispatch functions can return a `list[KernelSpec]` to enable fallback across backends.
+The compilation pipeline tries each spec in order, stopping at the first success:
+
+```text
+ggml_compile_op("ADD", ...)
+    └─> ggml_op_add(...) -> [KernelSpec(IRON, ...), KernelSpec(TRITON, ...)]
+    └─> try compile_iron_kernel(spec[0]) -> success? done
+    └─> try compile_triton_kernel(spec[1]) -> success? done
+    └─> all failed? log error
+```
+
+This allows operations to prefer one backend but gracefully fall back to another.
+For example, `ggml_op_add` returns IRON as first priority and Triton as fallback.
 
 ### Backend Compilers
 
@@ -165,18 +200,30 @@ Each backend has a dedicated compiler module:
 - **IRON** (`build_iron.py`): Compiles IRON Python designs to PDI/instructions
   - Calls the `KernelSpec.function` to generate an MLIR module
   - Compiles any C++ core functions to object files
-  - Produces final `.pdi` and `_insts.bin` files
+  - Produces PDI `.pdi` and instructions `_insts.bin` files for AIE execution
+
+- **TRITON** (`build_triton.py`): Compiles Triton kernels via MLIR-AIR/AIE
+  - Sets up environment: `TRITON_CACHE_DIR`, `AIR_TRANSFORM_TILING_SCRIPT` (from `kernel_spec.config["transform_script"]`), `AMD_TRITON_NPU_COMPILE_ONLY=1`
+  - Calls `kernel_spec.function()` to trigger Triton compilation
+  - Extracts PDI and instructions from the generated `aie.xclbin` via `xclbinutil`
+  - Produces PDI `.pdi` and instructions `_insts.bin` files for AIE execution
 
 Compilers are registered in `build.py`:
 
 ```python
 from kernel import Backend
 from build_iron import compile_iron_kernel
+from build_triton import compile_triton_kernel
 
-_compilers = {
+_BACKENDS: dict[Backend, Callable] = {
     Backend.IRON: compile_iron_kernel,
+    Backend.TRITON: compile_triton_kernel,
 }
 ```
+
+The `_get_compiler()` function looks up compilers by `backend.name` (string comparison)
+rather than identity, to handle the case where `Backend` enums from dynamically imported
+modules have different class identity.
 
 ### IRON Kernel Implementations
 
@@ -288,12 +335,14 @@ Each kernel consists of three files across two layers:
 
 ### 1. Dispatch Function (e.g., `kernels/unary_ops.py`)
 
-Returns a `KernelSpec` specifying backend, function, and tensor context:
+Returns a `KernelSpec` (or `list[KernelSpec]` for multi-backend fallback) specifying backend, function, and tensor context:
 
 - Imports the kernel function from the appropriate backend subpackage
 - Provides the standard GGML dispatch signature
-- Returns `KernelSpec` with all fields: `backend`, `op_name`, `arch`, `input_tensors`, `output_tensor`, `op_params`, `function`
-- May use `functools.partial` to bind operation-specific parameters
+- Returns `KernelSpec` with all fields: `backend`, `op_name`, `arch`, `input_tensors`, `output_tensor`, `function`
+- Returns `list[KernelSpec]` when the operation supports fallback across backends (tried in order)
+- Uses `functools.partial` to bind all arguments to the kernel function at dispatch time
+- `op_params` and `config` are optional (included only when the operation requires them)
 
 ### 2. IRON Design (e.g., `kernels/iron/unary_ops.py`)
 
@@ -320,30 +369,39 @@ Implements the core computation using the AIE API:
 1. **Register the operation** in `kernels/build.py`:
 
    ```python
-   _op_to_kernel_map = {
+   _OP_KERNEL_MAP = {
        "NEW_OP": Kernel("ggml_op_new_op", "new_op.py"),
    }
    ```
 
 2. **Create the dispatch function** (`kernels/new_op.py`):
 
+   The dispatch function can return a single `KernelSpec` or a `list[KernelSpec]`
+   for multi-backend fallback:
+
    ```python
    """Top-level entry point for GGML_OP_NEW_OP."""
-   from .iron.new_op import new_op
    from .kernel import Backend, KernelSpec
 
    def ggml_op_new_op(
        arch: str, input_tensors: list, output_tensor, op_params: bytearray
    ) -> KernelSpec:
        """GGML_OP_NEW_OP implementation."""
+       from functools import partial
+       from .iron.new_op import new_op
+
        return KernelSpec(
            backend=Backend.IRON,
            op_name="GGML_OP_NEW_OP",
            arch=arch,
            input_tensors=input_tensors,
            output_tensor=output_tensor,
-           op_params=op_params,
-           function=new_op,
+           function=partial(
+               new_op,
+               arch=arch,
+               input_tensors=input_tensors,
+               output_tensor=output_tensor,
+           ),
        )
    ```
 
@@ -369,7 +427,7 @@ Implements the core computation using the AIE API:
 
 ## Adding a New Compilation Backend
 
-To add a new backend (e.g., Triton):
+To add a new backend, follow the pattern used for the Triton backend. This example shows how Triton was added:
 
 1. **Add to the Backend enum** in `kernels/kernel.py`:
 
@@ -384,7 +442,6 @@ To add a new backend (e.g., Triton):
    ```python
    def compile_triton_kernel(
        kernel_spec: KernelSpec,
-       work_dir: Path,
        exported_name: str,
        output_directory: Path,
        logger: logging.Logger,
@@ -401,7 +458,7 @@ To add a new backend (e.g., Triton):
    ```python
    from build_triton import compile_triton_kernel
 
-   _compilers = {
+   _BACKENDS: dict[Backend, Callable] = {
        Backend.IRON: compile_iron_kernel,
        Backend.TRITON: compile_triton_kernel,
    }
@@ -409,12 +466,28 @@ To add a new backend (e.g., Triton):
 
 4. **Update dispatch functions** to return the new backend when appropriate:
 
+   Return a single `KernelSpec` for exclusive backend use, or a `list[KernelSpec]`
+   for multi-backend fallback (tried in order):
+
    ```python
-   def ggml_op_new_op(...) -> KernelSpec:
-       if some_condition:
-           return KernelSpec(backend=Backend.TRITON, function=triton_new_op)
-       return KernelSpec(backend=Backend.IRON, function=iron_new_op)
+   def ggml_op_new_op(...) -> KernelSpec | list[KernelSpec]:
+       # Single backend
+       if exclusive:
+           return KernelSpec(
+               backend=Backend.TRITON,
+               function=partial(triton_new_op, ...),
+               config={"transform_script": "/path/to/transform.mlir"},
+           )
+       # Multi-backend fallback (IRON first, Triton fallback)
+       return [
+           KernelSpec(backend=Backend.IRON, function=partial(iron_new_op, ...)),
+           KernelSpec(backend=Backend.TRITON, function=partial(triton_new_op, ...),
+                      config={"transform_script": "/path/to/transform.mlir"}),
+       ]
    ```
+
+   The `config` dict passes backend-specific parameters (e.g., MLIR transform scripts)
+   that the compiler needs but are not part of the standard kernel specification.
 
 ## Code Conventions
 
@@ -461,7 +534,7 @@ These operations have complete AIE kernel implementations:
 | -------- | ---------- |
 | Binary | `ADD`, `SUB`, `MUL`, `DIV` (with broadcast support) |
 | Unary (GGML_UNARY_OP) | `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` |
-| Unary (GGML_OP) | `SQR`, `LOG` (with scalar_log kernel) |
+| Unary (GGML_OP) | `SQR`, `LOG` |
 | Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
 | Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE) |
 
@@ -473,7 +546,7 @@ These operations are registered in `build.py` but raise `NotImplementedError`:
 - `TANH`, `ELU`, `SIGMOID`, `SILU`, `EXP` (require exp/transcendental functions)
 - `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` (require erf or approximations)
 
-These are placeholders for future implementation. Note that the `aie_kernel_math.h` header provides
+These are placeholders for future implementation. The `aie_kernel_math.h` header provides
 utility functions like `scalar_exp`, `scalar_log`, `pow2`, and `vec_exp` that can be used as building
 blocks for implementing these operations.
 
@@ -492,14 +565,19 @@ Supported GGML types and their mappings:
 
 ## Environment Setup
 
-**Important:** A Python virtual environment with IRON/MLIR-AIE dependencies must be active.
-If Python cannot find the `aie` package, the virtual environment is not set up or not activated.
+**Important:** A Python virtual environment with backend dependencies must be active.
+If Python cannot find the `aie` package (IRON) or `triton` package (Triton), the virtual environment is not set up or not activated.
 
 ```bash
-# Set up Python environment with IRON dependencies
-source ./env_setup.sh
+# Set up Python environment with IRON dependencies (default)
+source ./env_setup.sh iron
 # Or manually:
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r requirements-iron.txt
+
+# Set up Python environment with Triton dependencies (includes IRON)
+source ./env_setup.sh triton
+# Or manually:
+python3 -m pip install -r requirements-triton.txt
 ```
 
 ### MLIR-AIE Version
@@ -607,3 +685,26 @@ distinct cached kernels.
 | `GGML_HSA_KERNEL_CACHE_DIR` | JIT cache directory |
 | `GGML_HSA_KERNEL_CACHE_CLEAR` | Set to `1` to clear the kernel cache (required when testing kernel changes) |
 | `GGML_HSA_JIT_VERBOSE` | Verbose JIT output |
+
+## Agent Rules
+
+### Python Linting and Formatting
+
+After modifying any Python file under `src/ggml-hsa/`, run:
+
+```bash
+ruff check src/ggml-hsa/
+ruff format src/ggml-hsa/
+```
+
+Fix any issues reported by `ruff check` before considering the task complete.
+The ruff configuration is in `src/ggml-hsa/ruff.toml`.
+
+### Documentation Maintenance
+
+After any change to the ggml-hsa codebase, review and update:
+
+- `src/ggml-hsa/AGENTS.md` — Keep codebase structure, supported operations, conventions, and examples in sync with the code
+- `src/ggml-hsa/README.md` — Keep user-facing documentation (supported operations, data types, build instructions, environment variables) in sync with the code
+
+This includes but is not limited to: adding/removing operations, changing file structure, adding environment variables, modifying build options, or updating dependencies.

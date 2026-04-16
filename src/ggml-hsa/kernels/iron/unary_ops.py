@@ -22,11 +22,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
 
-from .utils import (
-    arch_aligned_num_elements,
-    arch_to_device,
-    max_tile_size,
-)
+from .utils import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
 @dataclass(frozen=True)
@@ -152,16 +148,16 @@ def _create_external_function(
 
 
 def unary_op(
-    arch: str,
     op_name: str,
+    arch: str,
     input_tensors: list,
     output_tensor,
 ):
     """IRON design for unary operations.
 
     Parameters:
-        arch: Target architecture.
         op_name: Name of the unary operation.
+        arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
 

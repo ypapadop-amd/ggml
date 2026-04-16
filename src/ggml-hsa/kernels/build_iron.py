@@ -6,14 +6,12 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 
-from aie.iron import ExternalFunction
-from aie.utils.compile import compile_cxx_core_function, compile_mlir_module
 from kernel import KernelSpec
 
 
 def _compile_aie_core_kernels(
     arch: str,
-    functions: Iterable[ExternalFunction],
+    functions: Iterable,
     work_dir: Path,
 ) -> None:
     """Compile AIE core functions to object files.
@@ -28,6 +26,8 @@ def _compile_aie_core_kernels(
         work_dir: Working directory for intermediate files.
 
     """
+    from aie.utils.compile import compile_cxx_core_function
+
     for func in functions:
         compile_cxx_core_function(
             source_path=func._source_file,
@@ -41,7 +41,6 @@ def _compile_aie_core_kernels(
 
 def compile_iron_kernel(
     kernel_spec: KernelSpec,
-    work_dir: Path,
     exported_name: str,
     output_directory: Path,
     logger: logging.Logger,
@@ -56,24 +55,26 @@ def compile_iron_kernel(
 
     Parameters:
         kernel_spec: The KernelSpec containing the IRON kernel function.
-        work_dir: Working directory for intermediate files.
         exported_name: Name for the exported kernel files.
         output_directory: Directory for output PDI and instruction files.
         logger: Logger for status messages.
         verbose: If True, enables verbose compilation output.
 
     """
+    from aie.iron import ExternalFunction
+    from aie.utils.compile import compile_mlir_module
+
+    work_dir = output_directory / f"{exported_name}-iron-artifacts"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Working directory: %s", str(work_dir))
+
     # Clear any existing external functions from previous compilations
     ExternalFunction._instances.clear()
 
     # Generate MLIR module by calling the kernel function
-    # (this also populates ExternalFunction._instances)
-    mlir_module = kernel_spec.function(
-        arch=kernel_spec.arch,
-        input_tensors=kernel_spec.input_tensors,
-        output_tensor=kernel_spec.output_tensor,
-        op_params=kernel_spec.op_params,
-    )
+    # (this populates ExternalFunction._instances)
+    mlir_module = kernel_spec.function()
 
     # Compile any external C++ core functions
     _compile_aie_core_kernels(
@@ -88,7 +89,9 @@ def compile_iron_kernel(
     # Write MLIR module to file for debugging/inspection
     mlir_path = work_dir / f"{exported_name}.mlir"
     logger.info(
-        "Writing MLIR module for operation %s in %s", kernel_spec.op_name, mlir_path
+        "Writing MLIR module for operation %s in %s",
+        kernel_spec.op_name,
+        mlir_path,
     )
     with mlir_path.open("w", encoding="utf-8") as file:
         file.write(str(mlir_module))
@@ -103,4 +106,10 @@ def compile_iron_kernel(
         pdi_path=str(pdi_path),
         verbose=verbose,
         work_dir=str(work_dir),
+    )
+
+    logger.info(
+        "IRON compilation successful\n  PDI Path: %s\n  Instructions Path: %s",
+        pdi_path,
+        insts_path,
     )

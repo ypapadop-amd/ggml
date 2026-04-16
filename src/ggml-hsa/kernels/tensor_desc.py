@@ -13,16 +13,38 @@ from innermost to outermost (reverse of PyTorch).
 from dataclasses import dataclass
 
 import numpy as np
-from aie.iron import str_to_dtype
+from ml_dtypes import bfloat16
 
-# Mapping for dtypes not natively supported by IRON but still valid GGML types.
-# These tensors can still be described, but kernels need to have special handling for
-# them.
-_FALLBACK_DTYPE_MAP = {
+# Maps GGML dtype strings to numpy dtypes.
+_GGML_NP_DTYPE_MAP = {
+    "i8": np.int8,
+    "i16": np.int16,
+    "i32": np.int32,
     "i64": np.int64,
-    "u64": np.uint64,
-    "f64": np.float64,
+    "bf16": bfloat16,
+    "f16": np.float16,
+    "f32": np.float32,
 }
+
+
+def str_to_dtype(dtype_str: str):
+    """Converts a GGML dtype representation to its corresponding np.dtype object.
+
+    Args:
+        dtype_str: The string representation of the data type.
+
+    Returns:
+        The corresponding np.dtype object.
+
+    Raises:
+        ValueError: If the provided dtype_str is not recognized.
+
+    """
+    try:
+        return _GGML_NP_DTYPE_MAP[dtype_str]
+    except KeyError as e:
+        msg = f"Unrecognized dtype: {dtype_str}. Supported dtypes are: {list(_GGML_NP_DTYPE_MAP.keys())}"
+        raise ValueError(msg) from e
 
 
 @dataclass(frozen=True)
@@ -48,17 +70,7 @@ class TensorDesc:
         """Validate and compute derived properties of the tensor descriptor."""
         # convert dtype to np.dtype if it's a string
         if isinstance(self.dtype, str):
-            # First try AIE-supported dtypes, then fall back to numpy for others
-            try:
-                object.__setattr__(self, "dtype", np.dtype(str_to_dtype(self.dtype)))
-            except ValueError:
-                # dtype not supported by AIE - use numpy dtype for fallback
-                if self.dtype in _FALLBACK_DTYPE_MAP:
-                    object.__setattr__(
-                        self, "dtype", np.dtype(_FALLBACK_DTYPE_MAP[self.dtype])
-                    )
-                else:
-                    raise
+            object.__setattr__(self, "dtype", np.dtype(str_to_dtype(self.dtype)))
 
         # compute stride if not provided as if the tensor is contiguous
         if self.stride is None:

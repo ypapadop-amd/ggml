@@ -368,8 +368,8 @@ def _binary_op_broadcast(
 
 
 def binary_op(
-    arch: str,
     op_name: str,
+    arch: str,
     input_tensors: list,
     output_tensor,
 ):
@@ -379,8 +379,8 @@ def binary_op(
     (src1 smaller, gets repeated to match src0/dst).
 
     Parameters:
-        arch: Target architecture.
         op_name: Name of the operation.
+        arch: Target architecture.
         input_tensors: List of two input tensors [src0, src1].
         output_tensor: Output tensor.
 

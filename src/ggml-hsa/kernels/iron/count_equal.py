@@ -28,13 +28,10 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from aie.iron.placers import SequentialPlacer
 
-from .utils import (
-    arch_to_device,
-    max_tile_size,
-)
+from .utils import arch_to_device, max_tile_size
 
 
-def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def count_equal_op(arch: str, input_tensors: list, output_tensor):
     """IRON design for count_equal.
 
     Counts elements that are equal between two I32 input tensors and outputs
@@ -51,7 +48,6 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor, op_params: byt
             Both tensors must be I32 with the same shape.
         output_tensor: Output tensor of type I64 with shape [1,1,1,1]
             containing the count of equal elements.
-        op_params: Operation parameters (unused for COUNT_EQUAL).
 
     Returns:
         MLIR module representing the IRON program for count_equal.
