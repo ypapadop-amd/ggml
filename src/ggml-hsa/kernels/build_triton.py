@@ -23,7 +23,7 @@ class TempEnvSet(ContextDecorator):
         value: Value to set for the environment variable.
 
     Usage:
-        with tempenvset("TRITON_CACHE_DIR", str(Path("/path/to/cache"))):
+        with TempEnvSet("TRITON_CACHE_DIR", str(Path("/path/to/cache"))):
             # Triton compilation code here
     """
 

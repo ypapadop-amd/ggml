@@ -132,7 +132,7 @@ def _make_triton_add_kernel_spec(
         ),
         config={
             "transform_script": str(
-                Path(__file__).parent / "triton" / "vecadd_aie2.mlir"
+                Path(__file__).parent / "triton" / f"vecadd_{arch}.mlir"
             ),
         },
     )
