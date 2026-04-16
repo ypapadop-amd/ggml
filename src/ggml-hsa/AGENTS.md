@@ -685,3 +685,26 @@ distinct cached kernels.
 | `GGML_HSA_KERNEL_CACHE_DIR` | JIT cache directory |
 | `GGML_HSA_KERNEL_CACHE_CLEAR` | Set to `1` to clear the kernel cache (required when testing kernel changes) |
 | `GGML_HSA_JIT_VERBOSE` | Verbose JIT output |
+
+## Agent Rules
+
+### Python Linting and Formatting
+
+After modifying any Python file under `src/ggml-hsa/`, run:
+
+```bash
+ruff check src/ggml-hsa/
+ruff format src/ggml-hsa/
+```
+
+Fix any issues reported by `ruff check` before considering the task complete.
+The ruff configuration is in `src/ggml-hsa/ruff.toml`.
+
+### Documentation Maintenance
+
+After any change to the ggml-hsa codebase, review and update:
+
+- `src/ggml-hsa/AGENTS.md` — Keep codebase structure, supported operations, conventions, and examples in sync with the code
+- `src/ggml-hsa/README.md` — Keep user-facing documentation (supported operations, data types, build instructions, environment variables) in sync with the code
+
+This includes but is not limited to: adding/removing operations, changing file structure, adding environment variables, modifying build options, or updating dependencies.
