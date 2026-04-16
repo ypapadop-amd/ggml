@@ -302,7 +302,9 @@ def ggml_compile_op(
         else:
             return
 
-    logger.error("Could not compile kernel %s with any backend", kernel.name)
+    msg = f"Could not compile kernel {kernel.name} for operation {op_name} with any backend."
+    logger.error(msg)
+    raise RuntimeError(msg)
 
 
 def _to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:

@@ -18,7 +18,7 @@ def _make_iron_binary_kernel_spec(
     output_tensor,
     op_name: str,
 ) -> KernelSpec:
-    """Create a KernelSpec for a binary operation targetting the IRON backend.
+    """Create a KernelSpec for a binary operation targeting the IRON backend.
 
     Parameters:
         arch: Target architecture.
@@ -62,13 +62,12 @@ def _make_triton_add_kernel_spec(
     input_tensors: list,
     output_tensor,
 ) -> KernelSpec:
-    """Create a KernelSpec for ADD operation targetting the TRITON backend.
+    """Create a KernelSpec for ADD operation targeting the TRITON backend.
 
     Parameters:
         arch (str): Target architecture.
         input_tensors (list): Two input tensors.
         output_tensor (TensorDesc): Output tensor.
-        op_params (bytearray): Operation parameters.
 
     Returns:
         KernelSpec configured for TRITON backend.

@@ -16,7 +16,7 @@ def _make_iron_unary_kernel_spec(
     output_tensor,
     op_name: str,
 ) -> KernelSpec:
-    """Create a KernelSpec for a unary operation targetting the IRON backend.
+    """Create a KernelSpec for a unary operation targeting the IRON backend.
 
     Parameters:
         arch: Target architecture.
