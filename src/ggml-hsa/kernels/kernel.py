@@ -19,7 +19,7 @@ Example:
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any
@@ -30,9 +30,11 @@ class Backend(Enum):
 
     Each backend has its own compilation pipeline:
     - IRON: Uses MLIR-AIE/IRON framework for optimized AIE kernels
+    - TRITON: Uses Triton-XDNA for compiler-driven kernel generation via MLIR-AIR/AIE
     """
 
     IRON = auto()
+    TRITON = auto()
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,7 @@ class KernelSpec:
         output_tensor: Output tensor for the operation.
         op_params: Operation parameters.
         function: Callable that generates the backend-specific IR.
-        config: Optional dictionary for additional configuration parameters.
+        config: Dictionary for additional configuration parameters.
 
     """
 
@@ -82,12 +84,12 @@ class KernelSpec:
     arch: str
     input_tensors: list
     output_tensor: Any
-    op_params: bytearray
     function: Callable[..., Any]
-    config: dict | None = None
+    op_params: bytearray | None = None
+    config: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Validate that backend is a Backend enum instance."""
+        """Validate backend."""
         if not isinstance(self.backend, Backend):
             backend_type = type(self.backend).__name__
             msg = f"backend must be a Backend enum, got {backend_type}"
