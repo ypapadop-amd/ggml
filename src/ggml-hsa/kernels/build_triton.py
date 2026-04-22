@@ -122,14 +122,14 @@ def compile_triton_kernel(
         raise ValueError(msg)
 
     with (
-        TempEnvSet("AMD_TRITON_NPU_DEBUG", "1" if verbose else "0"),
-        TempEnvSet("AMD_TRITON_NPU_TARGET", arch),
+        TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
         config_context(
             compile_only=True,
             transform_tiling_script=kernel_spec.config.get("transform_script", _UNSET),
             output_format="xclbin",
+            debug=1 if verbose else 0,
+            target=arch,
         ),
-        TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
     ):
         compiled_kernel = kernel_spec.function()
         xclbin_path = Path(get_npu_cache_dir(compiled_kernel))
