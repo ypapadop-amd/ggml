@@ -708,3 +708,7 @@ After any change to the ggml-hsa codebase, review and update:
 - `src/ggml-hsa/README.md` — Keep user-facing documentation (supported operations, data types, build instructions, environment variables) in sync with the code
 
 This includes but is not limited to: adding/removing operations, changing file structure, adding environment variables, modifying build options, or updating dependencies.
+
+### Feature Branches
+
+Create a feature branch for any new work. Do not commit directly to `master`, `main`, or `hsa-backend`.
