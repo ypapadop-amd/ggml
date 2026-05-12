@@ -326,7 +326,7 @@ struct ggml_backend_hsa_context {
     hsa_queue_t * queue{};          ///< HSA queue.
     hsa_signal_t dispatch_signal{}; ///< Signal for packet completion.
     std::vector<ggml_hsa_unique_ptr<void>>
-        pending_payloads; ///< Packet payloads since last synchronization.
+        kernargs; ///< Kernarg allocations since last synchronization.
 
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 
@@ -339,11 +339,11 @@ struct ggml_backend_hsa_context {
     ggml_backend_hsa_context & operator=(ggml_backend_hsa_context &&) = delete;
 
     /**
-     * @brief Frees all memory associated with pending packets.
+     * @brief Frees all memory associated with pending kernargs.
      *
      * @warning This function assumes that packets have been processed.
      */
-    void free_pending_payloads();
+    void free_kernargs();
 };
 
 /**
