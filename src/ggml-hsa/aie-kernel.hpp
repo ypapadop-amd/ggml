@@ -9,7 +9,9 @@
 #include <utility>
 
 /**
- * @brief Instruction sequence and PDI buffer for AIE agent kernels.
+ * @brief Buffer for AIE agent kernels.
+ *
+ * This buffer is used to hold the PDI and instruction data for AIE kernels.
  */
 class ggml_hsa_aie_buffer {
     ggml_hsa_unique_ptr<std::byte> m_data;
@@ -31,12 +33,12 @@ class ggml_hsa_aie_buffer {
     }
 
     /**
-     * @brief Returns the size of the instruction sequence in bytes.
+     * @brief Returns the size of the buffer in bytes.
      */
     std::size_t size() const { return m_size; }
 
     /**
-     * @brief Returns a pointer to the instruction sequence data.
+     * @brief Returns a pointer to the buffer data.
      */
     std::byte * data() const { return m_data.get(); }
 };
