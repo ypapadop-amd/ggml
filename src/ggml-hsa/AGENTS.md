@@ -59,7 +59,8 @@ src/ggml-hsa/
 │   │   ├── __init__.py          # Subpackage init
 │   │   ├── utils.py             # Shared utilities (dtype conversion)
 │   │   ├── vecadd.py            # Vector addition Triton kernel
-│   │   └── vecadd_aie2.mlir     # MLIR transform/tiling script for AIE2
+│   │   ├── vecadd_aie2.mlir     # MLIR transform/tiling script for AIE2
+│   │   └── vecadd_aie2p.mlir    # MLIR transform/tiling script for AIE2P
 │   └── iron/                    # IRON kernel implementations
 │       ├── __init__.py          # Subpackage init
 │       ├── utils.py             # Shared utilities (alignment, device mapping)
@@ -203,7 +204,8 @@ Each backend has a dedicated compiler module:
   - Produces PDI `.pdi` and instructions `_insts.bin` files for AIE execution
 
 - **TRITON** (`build_triton.py`): Compiles Triton kernels via MLIR-AIR/AIE
-  - Sets up environment: `TRITON_CACHE_DIR`, `AIR_TRANSFORM_TILING_SCRIPT` (from `kernel_spec.config["transform_script"]`), `AMD_TRITON_NPU_COMPILE_ONLY=1`
+  - Uses `config_context` from `triton.backends.amd_triton_npu.config` to set compilation parameters (`compile_only`, `transform_tiling_script` from `kernel_spec.config["transform_script"]`, `output_format`, `debug`, `target`)
+  - Sets `TRITON_CACHE_DIR` environment variable for artifact caching
   - Calls `kernel_spec.function()` to trigger Triton compilation
   - Extracts PDI and instructions from the generated `aie.xclbin` via `xclbinutil`
   - Produces PDI `.pdi` and instructions `_insts.bin` files for AIE execution

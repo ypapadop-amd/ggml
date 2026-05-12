@@ -113,7 +113,7 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
            ▼
  ggml_hsa_wait_dispatches()                   ─── ggml-hsa.cpp
    hsa_signal_wait_scacquire(signal, EQ, 0)
-   free pending_payloads
+   free kernargs
 ```
 
 ---
@@ -220,7 +220,7 @@ The payload (`hsa_amd_aie_ert_start_kernel_data_t`) contains:
 | `data[5..N]` | Per-tensor: address (lo/hi) + byte size |
 
 Payload memory is allocated from the `kernarg_memory` pool and tracked in
-`ctx.pending_payloads` for deferred free after signal wait.
+`ctx.kernargs` for deferred free after signal wait.
 
 ---
 
