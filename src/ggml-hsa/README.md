@@ -114,7 +114,7 @@ Or use the setup script:
 source src/ggml-hsa/env_setup.sh triton
 ```
 
-> **Note:** The Triton backend is currently in development. Most operations use the IRON backend by default.
+> **Note:** Operations may prefer either backend.
 
 ## Building
 
