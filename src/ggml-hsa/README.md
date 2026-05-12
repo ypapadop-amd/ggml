@@ -67,7 +67,7 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 
 `ggml-hsa` requires [ROCm](https://github.com/ROCm/rocm-systems) 7.2.1 or newer. See the [installation instructions](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
 
-Due to ongoing NPU support work in [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime), it is recommended to compile the latest ROCR from source. Commit [`863ffc1`](https://github.com/ROCm/rocm-systems/commit/bd52f48dd397bc8a18f60bdea3310ce922b956b8) is confirmed working.
+Due to ongoing NPU support work in [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime), it is recommended to compile the latest ROCR from source. Commit [`bd52f48`](https://github.com/ROCm/rocm-systems/commit/bd52f48dd397bc8a18f60bdea3310ce922b956b8) is confirmed working.
 
 ### AMD XDNA Driver
 
