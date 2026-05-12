@@ -20,9 +20,9 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
 
     // create kernargs
     uint64_t * kernargs = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool,
-                                                   kernarg_bytes, 0,
-                                                   reinterpret_cast<void **>(&kernargs));
+    if (auto status =
+            hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, kernarg_bytes, 0,
+                                         reinterpret_cast<void **>(&kernargs));
         status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: failed to allocate kernargs (%zu bytes) (%s)", __func__,
                            kernarg_bytes, ggml_hsa_get_status_string(status));
