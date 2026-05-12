@@ -28,7 +28,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                            kernarg_bytes, ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
-    ctx.pending_payloads.emplace_back(kernargs); // track pending payload for cleanup after dispatch
+    ctx.kernargs.emplace_back(kernargs); // track kernargs for cleanup after dispatch
 
     // add tensor kernargs
     std::size_t kernarg_idx = 0;
