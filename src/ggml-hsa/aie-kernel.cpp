@@ -61,8 +61,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.num_kernargs = num_kernargs;
     pkt.kernarg_address = kernargs;
     pkt.insts_size = insts.size();
-    pkt.pdi_addr =
-        const_cast<void *>(static_cast<const void *>(pdi.data())); // PDI to use with this command
+    pkt.pdi_addr = pdi.data(); // PDI to use with this command
 
     auto queue = ctx.queue;
 

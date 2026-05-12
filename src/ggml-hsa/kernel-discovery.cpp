@@ -119,10 +119,11 @@ static bool ggml_hsa_find_aie_kernel_files(const std::string & device_name,
 }
 
 /**
- * @brief Reads a PDI file from @p path and returns its contents and size in bytes in @p buffer.
+ * @brief Reads a binary file from @p path and returns its contents in @p buffer.
  */
-static ggml_status
-ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & path, ggml_hsa_pdi_buffer & buffer) {
+static ggml_status ggml_hsa_load_file(hsa_amd_memory_pool_t pool,
+                                      const fs::path & path,
+                                      ggml_hsa_aie_buffer & buffer) {
     std::ifstream is(path, std::ios::binary | std::ios::ate);
     if (is.fail()) {
         GGML_HSA_LOG_ERROR("%s: could not open file %s", __func__, path.c_str());
@@ -143,48 +144,7 @@ ggml_hsa_load_pdi(hsa_amd_memory_pool_t pool, const fs::path & path, ggml_hsa_pd
         return GGML_STATUS_ALLOC_FAILED;
     }
 
-    buffer = ggml_hsa_pdi_buffer{reinterpret_cast<std::uint64_t *>(ptr)};
-
-    is.read(reinterpret_cast<char *>(buffer.data()), size);
-
-    return GGML_STATUS_SUCCESS;
-}
-
-/**
- * @brief Reads an instruction file from @p path and returns its contents and number of instructions
- *        in @p buffer.
- */
-static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
-                                       const fs::path & path,
-                                       ggml_hsa_insts_buffer & buffer) {
-    std::ifstream is(path, std::ios::binary | std::ios::ate);
-    if (is.fail()) {
-        GGML_HSA_LOG_ERROR("%s: could not open file %s", __func__, path.c_str());
-        return GGML_STATUS_FAILED;
-    }
-
-    const std::size_t size = is.tellg();
-    if (!is.seekg(0, std::ios::beg) || (size == 0)) {
-        GGML_HSA_LOG_ERROR("%s: could not get file size for %s", __func__, path.c_str());
-        return GGML_STATUS_FAILED;
-    }
-
-    if (size % sizeof(std::uint32_t) != 0) {
-        GGML_HSA_LOG_ERROR("%s: file size %zu bytes is not a multiple of %zu bytes", __func__, size,
-                           sizeof(std::uint32_t));
-        return GGML_STATUS_FAILED;
-    }
-
-    void * ptr = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(pool, size, 0, &ptr);
-        status != HSA_STATUS_SUCCESS) {
-        GGML_HSA_LOG_ERROR("%s: failed to allocate %zu bytes (%s)", __func__, size,
-                           ggml_hsa_get_status_string(status));
-        return GGML_STATUS_ALLOC_FAILED;
-    }
-
-    buffer = ggml_hsa_insts_buffer{reinterpret_cast<std::uint32_t *>(ptr), size};
-
+    buffer = ggml_hsa_aie_buffer{static_cast<std::byte *>(ptr), size};
     is.read(reinterpret_cast<char *>(buffer.data()), size);
 
     return GGML_STATUS_SUCCESS;
@@ -234,13 +194,14 @@ static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device
     auto aie_kernel = std::make_shared<ggml_hsa_aie_kernel>();
 
     // load PDI and instructions
-    if (auto status = ggml_hsa_load_pdi(dev_info.dev_memory.memory_pool, pdi_path, aie_kernel->pdi);
+    if (auto status =
+            ggml_hsa_load_file(dev_info.dev_memory.memory_pool, pdi_path, aie_kernel->pdi);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
     if (auto status =
-            ggml_hsa_load_insts(dev_info.dev_memory.memory_pool, insts_path, aie_kernel->insts);
+            ggml_hsa_load_file(dev_info.dev_memory.memory_pool, insts_path, aie_kernel->insts);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
