@@ -53,21 +53,21 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 | Component   | Version                                                              |
 |-------------|----------------------------------------------------------------------|
 | OS          | [Ubuntu 24.04.2], [Ubuntu 25.10]                                     |
-| ROCm        | [7.2.0][ROCm 7.2.0]                                                  |
+| ROCm        | [7.2.1][ROCm 7.2.1]                                                  |
 | XDNA Driver | [1.6][XDNA Driver 1.6]                                               |
 | MLIR-AIE    | [1.3.1][MLIR-AIE 1.3.1]                                              |
 
 [Ubuntu 24.04.2]: https://releases.ubuntu.com/noble/
 [Ubuntu 25.10]: https://releases.ubuntu.com/questing/
-[ROCm 7.2.0]: https://rocm.docs.amd.com/en/docs-7.2.0/
+[ROCm 7.2.1]: https://rocm.docs.amd.com/en/docs-7.2.1/
 [XDNA Driver 1.6]: https://github.com/amd/xdna-driver/tree/1.6
 [MLIR-AIE 1.3.1]: https://github.com/Xilinx/mlir-aie/tree/v1.3.1
 
 ### ROCm
 
-`ggml-hsa` requires [ROCm](https://github.com/ROCm/rocm-systems) 7.1.1 or newer. See the [installation instructions](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
+`ggml-hsa` requires [ROCm](https://github.com/ROCm/rocm-systems) 7.2.1 or newer. See the [installation instructions](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
 
-Due to ongoing NPU support work in [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime), it is recommended to compile the latest ROCR from source. Commit [`863ffc1`](https://github.com/ROCm/rocm-systems/commit/863ffc1c07cf56567101fff2c39b66efb4cdb579) is confirmed working.
+Due to ongoing NPU support work in [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime), it is recommended to compile the latest ROCR from source. Commit [`863ffc1`](https://github.com/ROCm/rocm-systems/commit/bd52f48dd397bc8a18f60bdea3310ce922b956b8) is confirmed working.
 
 ### AMD XDNA Driver
 
