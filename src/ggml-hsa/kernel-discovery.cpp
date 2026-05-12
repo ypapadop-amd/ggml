@@ -183,8 +183,7 @@ static ggml_status ggml_hsa_load_insts(hsa_amd_memory_pool_t pool,
         return GGML_STATUS_ALLOC_FAILED;
     }
 
-    buffer = ggml_hsa_insts_buffer{reinterpret_cast<std::uint32_t *>(ptr),
-                                   (size / sizeof(std::uint32_t))};
+    buffer = ggml_hsa_insts_buffer{reinterpret_cast<std::uint32_t *>(ptr), size};
 
     is.read(reinterpret_cast<char *>(buffer.data()), size);
 
