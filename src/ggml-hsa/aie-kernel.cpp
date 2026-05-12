@@ -16,15 +16,16 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor & dst_tensor) const {
     const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
     const auto num_kernargs = num_src_tensors + 1 /* destination tensor */;
+    const std::size_t kernarg_bytes = num_kernargs * 2 * sizeof(std::uint64_t);
 
     // create kernargs
     uint64_t * kernargs = nullptr;
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool,
-                                                   (num_kernargs * 2 * sizeof(std::uint64_t)), 0,
+                                                   kernarg_bytes, 0,
                                                    reinterpret_cast<void **>(&kernargs));
         status != HSA_STATUS_SUCCESS) {
-        GGML_HSA_LOG_ERROR("%s: failed to allocate hsa_queue packet storage (%s)", __func__,
-                           ggml_hsa_get_status_string(status));
+        GGML_HSA_LOG_ERROR("%s: failed to allocate kernargs (%zu bytes) (%s)", __func__,
+                           kernarg_bytes, ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
     ctx.pending_payloads.emplace_back(kernargs); // track pending payload for cleanup after dispatch
