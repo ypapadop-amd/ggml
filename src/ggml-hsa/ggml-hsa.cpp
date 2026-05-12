@@ -729,7 +729,7 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
 }
 
-void ggml_backend_hsa_context::free_pending_payloads() { pending_payloads.clear(); }
+void ggml_backend_hsa_context::free_kernargs() { kernargs.clear(); }
 
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
     if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
@@ -738,7 +738,7 @@ void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
         GGML_ABORT("%s: unexpected signal value (%ld)\n", __func__, val);
     }
 
-    ctx.free_pending_payloads();
+    ctx.free_kernargs();
 }
 
 // HSA buffer
