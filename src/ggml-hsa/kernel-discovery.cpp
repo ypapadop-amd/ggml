@@ -145,7 +145,14 @@ static ggml_status ggml_hsa_load_file(hsa_amd_memory_pool_t pool,
     }
 
     buffer = ggml_hsa_aie_buffer{static_cast<std::byte *>(ptr), size};
-    is.read(reinterpret_cast<char *>(buffer.data()), size);
+    is.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(size));
+    if (!is || is.gcount() != static_cast<std::streamsize>(size)) {
+        GGML_HSA_LOG_ERROR("%s: failed to read %zu bytes from %s", __func__, size,
+                           path.c_str());
+        hsa_amd_memory_pool_free(ptr);
+        buffer = ggml_hsa_aie_buffer{};
+        return GGML_STATUS_FAILED;
+    }
 
     return GGML_STATUS_SUCCESS;
 }
