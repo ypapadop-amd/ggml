@@ -103,8 +103,10 @@ def compile_triton_kernel(
         verbose: If True, enables verbose compilation output.
 
     """
+    from dataclasses import MISSING
+
     import triton
-    from triton.backends.amd_triton_npu.config import _UNSET, config_context
+    from triton.backends.amd_triton_npu.config import config_context
     from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
 
     # Determine Triton cache directory
@@ -125,7 +127,7 @@ def compile_triton_kernel(
         TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
         config_context(
             compile_only=True,
-            transform_tiling_script=kernel_spec.config.get("transform_script", _UNSET),
+            transform_tiling_script=kernel_spec.config.get("transform_script", MISSING),
             output_format="xclbin",
             debug=1 if verbose else 0,
             target=arch,
