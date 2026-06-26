@@ -20,7 +20,6 @@ from aie.iron import (
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
-from aie.iron.placers import SequentialPlacer
 
 from .utils import arch_aligned_num_elements, arch_to_device, max_tile_size
 
@@ -104,7 +103,7 @@ def _unary_op(
         rt.drain(of_out.cons(), t[-1], wait=True)
 
     # Place program components (assign them resources on the device) and generate MLIR
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program()
 
 
 def _create_external_function(

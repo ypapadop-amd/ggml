@@ -20,7 +20,6 @@ from aie.iron import (
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
-from aie.iron.placers import SequentialPlacer
 
 from .utils import (
     arch_aligned_num_elements,
@@ -142,4 +141,4 @@ def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         rt.drain(of_out.cons(), b_out, wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program()
