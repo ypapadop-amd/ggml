@@ -103,8 +103,6 @@ def compile_triton_kernel(
     from dataclasses import MISSING
 
     import triton
-    from triton.backends.amd_triton_npu.config import config_context
-    from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
 
     # Determine Triton cache directory
     cache_dir = output_directory / f"{exported_name}-triton-artifacts"
@@ -115,6 +113,9 @@ def compile_triton_kernel(
     # Set active driver based on architecture
     arch = _get_triton_target(kernel_spec)
     if arch in ["npu1", "npu2"]:
+        from triton.backends.amd_triton_npu.config import config_context
+        from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
+
         triton.runtime.driver.set_active(NPUDriver())
         with (
             TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
