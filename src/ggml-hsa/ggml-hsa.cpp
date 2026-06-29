@@ -334,16 +334,30 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
         return status;
     }
 
+    auto & info = *static_cast<ggml_hsa_device_info *>(data);
+
     switch (type) {
+        case HSA_DEVICE_TYPE_CPU:
+            // remember the CPU agent for unified-memory access grants; the CPU is not registered
+            // as a compute device
+            if (info.cpu_agent.handle == 0) {
+                info.cpu_agent = agent;
+            }
+            return HSA_STATUS_SUCCESS;
+#ifdef GGML_HSA_AIE
         case HSA_DEVICE_TYPE_AIE:
             break;
+#endif
+#ifdef GGML_HSA_GPU
+        case HSA_DEVICE_TYPE_GPU:
+            break;
+#endif
         default:
-            // only consider AIE agents for now
+            // device type not enabled in this build
             return HSA_STATUS_SUCCESS;
     }
 
-    auto & info = *static_cast<ggml_hsa_device_info *>(data);
-    if (info.device_count >= GGML_HSA_MAX_DEVICES) {
+    if (info.device_count == GGML_HSA_MAX_DEVICES - 1) {
         GGML_ABORT("%s: exceeded GGML_HSA_MAX_DEVICES limit (%d)", __func__, GGML_HSA_MAX_DEVICES);
     }
 
@@ -363,6 +377,8 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     if (dev_info.name == "aie2" || dev_info.name == "aie2p") {
         dev_info.substitute_fp16_bf16 = true;
         GGML_ASSERT(dev_info.alignment % 4 == 0);
+    } else if (type == HSA_DEVICE_TYPE_GPU) {
+        // AMD GPU (e.g. gfx1151 Strix Halo iGPU); native datatypes, no fp16->bf16 substitution
     } else {
         GGML_ABORT("%s: unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
     }
@@ -659,6 +675,32 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     }
 }
 
+#ifdef GGML_HSA_GPU
+/**
+ * @brief Grants the device and CPU agents access to a unified-memory allocation.
+ *
+ * On Strix Halo the CPU and GPU share physical memory; buffers allocated from the GPU memory pool
+ * must be made accessible to both the GPU agent (kernel execution) and the CPU agent (host-side
+ * @c set_tensor / @c get_tensor copies).
+ */
+static hsa_status_t ggml_hsa_grant_unified_access(const ggml_hsa_device_info::device_info & dev_info,
+                                                  void * ptr) {
+    const auto & info = ggml_hsa_info();
+    std::vector<hsa_agent_t> agents;
+    if (dev_info.agent.handle != 0) {
+        agents.push_back(dev_info.agent);
+    }
+    if (info.cpu_agent.handle != 0) {
+        agents.push_back(info.cpu_agent);
+    }
+    if (agents.empty()) {
+        return HSA_STATUS_SUCCESS;
+    }
+    return hsa_amd_agents_allow_access(static_cast<std::uint32_t>(agents.size()), agents.data(),
+                                      nullptr, ptr);
+}
+#endif
+
 ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     const ggml_hsa_device_info::device_info & dev_info) {
     if (buffer != nullptr) {
@@ -687,6 +729,17 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
         return GGML_STATUS_ALLOC_FAILED;
     }
     buffer.reset(static_cast<std::byte *>(ptr));
+
+#ifdef GGML_HSA_GPU
+    if (dev_info.type == HSA_DEVICE_TYPE_GPU) {
+        if (auto status = ggml_hsa_grant_unified_access(dev_info, ptr);
+            status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: failed to grant unified access (%s)", __func__,
+                               ggml_hsa_get_status_string(status));
+            return GGML_STATUS_ALLOC_FAILED;
+        }
+    }
+#endif
 
     auto buffer_ptr = buffer.get();
     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
@@ -961,6 +1014,18 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
                            ggml_hsa_get_status_string(status));
         return nullptr;
     }
+
+#ifdef GGML_HSA_GPU
+    if (dev_info.type == HSA_DEVICE_TYPE_GPU) {
+        if (auto status = ggml_hsa_grant_unified_access(dev_info, buffer);
+            status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: failed to grant unified access (%s)", __func__,
+                               ggml_hsa_get_status_string(status));
+            hsa_amd_memory_pool_free(buffer);
+            return nullptr;
+        }
+    }
+#endif
 
     try {
         auto * buf_ctx =

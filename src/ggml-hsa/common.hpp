@@ -227,6 +227,7 @@ class ggml_hsa_kernel {
  */
 struct ggml_hsa_device_info {
     std::int32_t device_count{}; ///< Number of devices, up to @ref GGML_HSA_MAX_DEVICES.
+    hsa_agent_t cpu_agent{};     ///< CPU agent, used for unified-memory access grants (GPU).
 
     /**
      * @brief Information about a single HSA memory pool.

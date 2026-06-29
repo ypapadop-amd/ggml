@@ -21,15 +21,34 @@ endif()
 
 find_package(hsa-runtime64 1.0 REQUIRED)
 
-option(GGML_HSA_JIT_COMPILE "ggml-hsa: enable JIT compilation of kernels" ON)
+option(GGML_HSA_AIE         "ggml-hsa: enable the AIE (XDNA NPU) backend"  ON)
+option(GGML_HSA_GPU         "ggml-hsa: enable the GPU (ROCm/HIP) backend"  OFF)
+option(GGML_HSA_JIT_COMPILE "ggml-hsa: enable JIT compilation of kernels"  ON)
+
+if (NOT GGML_HSA_AIE AND NOT GGML_HSA_GPU)
+    message(FATAL_ERROR "ggml-hsa: at least one of GGML_HSA_AIE or GGML_HSA_GPU must be enabled")
+endif ()
+
+# JIT compilation generates AIE kernels and therefore requires the AIE backend.
+if (GGML_HSA_JIT_COMPILE AND NOT GGML_HSA_AIE)
+    message(STATUS "ggml-hsa: GGML_HSA_JIT_COMPILE requires GGML_HSA_AIE; disabling JIT compilation")
+    set(GGML_HSA_JIT_COMPILE OFF)
+endif ()
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
-    aie-kernel.cpp
     ggml-hsa.cpp
     host-ops.cpp
     kernel-discovery.cpp
     )
+
+if (GGML_HSA_AIE)
+    list(APPEND GGML_SOURCES_HSA aie-kernel.cpp)
+endif ()
+
+if (GGML_HSA_GPU)
+    list(APPEND GGML_SOURCES_HSA gpu-kernel.cpp)
+endif ()
 
 if (GGML_HSA_JIT_COMPILE)
     include(FetchContent)
@@ -58,12 +77,21 @@ target_include_directories(ggml-hsa PRIVATE . ..)
 
 target_sources(ggml-hsa
     PRIVATE
-        aie-kernel.hpp
         common.hpp
         host-ops.hpp
         kernel-discovery.hpp
         type-traits.hpp
     )
+
+if (GGML_HSA_AIE)
+    target_sources(ggml-hsa PRIVATE aie-kernel.hpp)
+    target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_AIE)
+endif ()
+
+if (GGML_HSA_GPU)
+    target_sources(ggml-hsa PRIVATE gpu-kernel.hpp)
+    target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_GPU)
+endif ()
 
 if (GGML_HSA_JIT_COMPILE)
     target_sources(ggml-hsa PRIVATE aie-kernel-compiler.hpp)

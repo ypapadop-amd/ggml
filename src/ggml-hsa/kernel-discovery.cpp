@@ -9,10 +9,21 @@
 #include <fstream>
 #include <string_view>
 
-#include "ggml-hsa/aie-kernel.hpp"
 #include "ggml-impl.h"
+
+#ifdef GGML_HSA_AIE
+#include "ggml-hsa/aie-kernel.hpp"
 #ifdef GGML_HSA_JIT_COMPILE
 #include "ggml-hsa/aie-kernel-compiler.hpp"
+#endif
+#endif
+
+#ifdef GGML_HSA_GPU
+#include <fcntl.h>
+#include <string>
+#include <unistd.h>
+
+#include "ggml-hsa/gpu-kernel.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -70,18 +81,20 @@ static fs::path ggml_hsa_cached_kernel_dir() {
 /// Cached (i.e., JIT compiled) kernel directory.
 static const fs::path cached_kernel_dir = ggml_hsa_cached_kernel_dir();
 
-/// PDI file suffix.
-static constexpr std::string_view pdi_file_suffix = ".pdi";
-
-/// Binary instructions file suffix.
-static constexpr std::string_view inst_file_suffix = "_insts.bin";
-
 /**
  * @brief Returns if @p p is a file.
  */
 static bool ggml_hsa_is_file(const fs::path & p) {
     return fs::is_regular_file(p) || fs::is_symlink(p);
 }
+
+#ifdef GGML_HSA_AIE
+
+/// PDI file suffix.
+static constexpr std::string_view pdi_file_suffix = ".pdi";
+
+/// Binary instructions file suffix.
+static constexpr std::string_view inst_file_suffix = "_insts.bin";
 
 /**
  * @brief Returns if the files for a @ref ggml_hsa_aie_kernel exists in any of the directories.
@@ -217,13 +230,179 @@ static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device
     return GGML_STATUS_SUCCESS;
 }
 
+#endif // GGML_HSA_AIE
+
+#ifdef GGML_HSA_GPU
+
+/// GPU code object file suffix.
+static constexpr std::string_view hsaco_file_suffix = ".hsaco";
+
+/// AMDGPU kernel descriptor symbol suffix.
+static constexpr std::string_view kd_symbol_suffix = ".kd";
+
+/**
+ * @brief Sanitizes a kernel name into a valid C identifier for use as a kernel symbol.
+ *
+ * The generic kernel name may contain characters (e.g. '-') that are not valid in a C
+ * identifier. The HIP-compiled kernels export their entry point using the sanitized name, so
+ * both the @c .hsaco file name and the kernel descriptor symbol are derived from it.
+ */
+static std::string ggml_hsa_sanitize_kernel_name(const std::string & kernel_name) {
+    std::string sanitized = kernel_name;
+    for (char & c : sanitized) {
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) {
+            c = '_';
+        }
+    }
+    return sanitized;
+}
+
+/**
+ * @brief Returns if the @c .hsaco file for a @ref ggml_hsa_gpu_kernel exists in any directory.
+ */
+static bool ggml_hsa_find_gpu_kernel_files(const std::string & device_name,
+                                           const std::string & symbol_name,
+                                           fs::path & hsaco_path) {
+    const auto partial_path =
+        fs::path(device_name).append(symbol_name).concat(hsaco_file_suffix);
+
+    if (!kernel_dir.empty()) {
+        // find kernel in pregenerated kernel directory
+        auto tmp = kernel_dir / partial_path;
+        if (ggml_hsa_is_file(tmp)) {
+            hsaco_path = std::move(tmp);
+            return true;
+        }
+    }
+
+    // find kernel in cached kernel directory
+    auto tmp = cached_kernel_dir / partial_path;
+    if (ggml_hsa_is_file(tmp)) {
+        hsaco_path = std::move(tmp);
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * @brief Creates a GPU kernel by loading a HIP-compiled @c .hsaco code object.
+ *
+ * @param[in] dev_info device information
+ * @param[in] kernel_name kernel name
+ * @param[out] kernel kernel for the operation
+ */
+static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                              const std::string & kernel_name,
+                                              std::shared_ptr<ggml_hsa_kernel> & kernel) {
+    const std::string symbol_base = ggml_hsa_sanitize_kernel_name(kernel_name);
+
+    fs::path hsaco_path;
+    if (!ggml_hsa_find_gpu_kernel_files(dev_info.name, symbol_base, hsaco_path)) {
+        GGML_HSA_LOG_INFO("%s: could not find code object for kernel %s", __func__,
+                          symbol_base.c_str());
+        return GGML_STATUS_FAILED;
+    }
+
+    hsa_file_t file_handle = open(hsaco_path.c_str(), O_RDONLY);
+    if (file_handle == -1) {
+        GGML_HSA_LOG_ERROR("%s: could not open %s", __func__, hsaco_path.c_str());
+        return GGML_STATUS_FAILED;
+    }
+
+    hsa_code_object_reader_t reader{};
+    auto status = hsa_code_object_reader_create_from_file(file_handle, &reader);
+    close(file_handle);
+    if (status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: failed to read code object %s (%s)", __func__, hsaco_path.c_str(),
+                           ggml_hsa_get_status_string(status));
+        return GGML_STATUS_FAILED;
+    }
+
+    auto gpu_kernel = std::make_shared<ggml_hsa_gpu_kernel>();
+
+    if (status = hsa_executable_create_alt(HSA_PROFILE_FULL,
+                                           HSA_DEFAULT_FLOAT_ROUNDING_MODE_DEFAULT, nullptr,
+                                           &gpu_kernel->executable);
+        status != HSA_STATUS_SUCCESS) {
+        hsa_code_object_reader_destroy(reader);
+        GGML_HSA_LOG_ERROR("%s: failed to create executable (%s)", __func__,
+                           ggml_hsa_get_status_string(status));
+        return GGML_STATUS_FAILED;
+    }
+
+    if (status = hsa_executable_load_agent_code_object(gpu_kernel->executable, dev_info.agent,
+                                                       reader, nullptr, nullptr);
+        status != HSA_STATUS_SUCCESS) {
+        hsa_code_object_reader_destroy(reader);
+        GGML_HSA_LOG_ERROR("%s: failed to load code object (%s)", __func__,
+                           ggml_hsa_get_status_string(status));
+        return GGML_STATUS_FAILED;
+    }
+
+    if (status = hsa_executable_freeze(gpu_kernel->executable, nullptr);
+        status != HSA_STATUS_SUCCESS) {
+        hsa_code_object_reader_destroy(reader);
+        GGML_HSA_LOG_ERROR("%s: failed to freeze executable (%s)", __func__,
+                           ggml_hsa_get_status_string(status));
+        return GGML_STATUS_FAILED;
+    }
+    hsa_code_object_reader_destroy(reader);
+
+    const std::string symbol_name = symbol_base + std::string(kd_symbol_suffix);
+    hsa_executable_symbol_t symbol{};
+    if (status = hsa_executable_get_symbol(gpu_kernel->executable, nullptr, symbol_name.c_str(),
+                                           dev_info.agent, 0, &symbol);
+        status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: failed to find symbol %s (%s)", __func__, symbol_name.c_str(),
+                           ggml_hsa_get_status_string(status));
+        return GGML_STATUS_FAILED;
+    }
+
+    struct symbol_query {
+        hsa_executable_symbol_info_t info;
+        void * dst;
+    };
+    const symbol_query queries[] = {
+        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT, &gpu_kernel->kernel_object},
+        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_PRIVATE_SEGMENT_SIZE, &gpu_kernel->private_segment_size},
+        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_GROUP_SEGMENT_SIZE, &gpu_kernel->group_segment_size},
+        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_KERNARG_SEGMENT_SIZE, &gpu_kernel->kernarg_size},
+        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_KERNARG_SEGMENT_ALIGNMENT, &gpu_kernel->kernarg_align},
+    };
+    for (const auto & query : queries) {
+        if (status = hsa_executable_symbol_get_info(symbol, query.info, query.dst);
+            status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: failed to query symbol info (%s)", __func__,
+                               ggml_hsa_get_status_string(status));
+            return GGML_STATUS_FAILED;
+        }
+    }
+    if (gpu_kernel->kernarg_align < 16) {
+        gpu_kernel->kernarg_align = 16;
+    }
+
+    kernel = std::move(gpu_kernel);
+
+    return GGML_STATUS_SUCCESS;
+}
+
+#endif // GGML_HSA_GPU
+
 ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                    const std::string & kernel_name,
                                    const ggml_tensor & tensor,
                                    std::shared_ptr<ggml_hsa_kernel> & kernel) {
+    GGML_UNUSED(tensor);
     switch (dev_info.type) {
+#ifdef GGML_HSA_AIE
         case HSA_DEVICE_TYPE_AIE:
             return ggml_hsa_create_aie_kernel(dev_info, kernel_name, tensor, kernel);
+#endif
+#ifdef GGML_HSA_GPU
+        case HSA_DEVICE_TYPE_GPU:
+            return ggml_hsa_create_gpu_kernel(dev_info, kernel_name, kernel);
+#endif
 
         // unsupported device types
         default:
