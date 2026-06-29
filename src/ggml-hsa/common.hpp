@@ -361,6 +361,9 @@ class ggml_hsa_kernarg_pool {
         return static_cast<std::byte *>(m_buffer.get()) + index * m_slot_size;
     }
 
+    /// @brief Returns the size of each slot in bytes.
+    std::size_t slot_size() const { return m_slot_size; }
+
     /**
      * @brief Abandons the backing buffer instead of freeing it.
      *

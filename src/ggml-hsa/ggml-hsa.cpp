@@ -9,6 +9,10 @@
 #include "ggml-hsa/host-ops.hpp"
 #include "ggml-hsa/kernel-discovery.hpp"
 
+#ifdef GGML_HSA_GPU
+#include "ggml-hsa/gpu-kernel.hpp"
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -466,8 +470,14 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
 
     auto & info = *static_cast<ggml_hsa_device_info *>(data);
     switch (type) {
+#ifdef GGML_HSA_AIE
         case HSA_DEVICE_TYPE_AIE:
             break;
+#endif
+#ifdef GGML_HSA_GPU
+        case HSA_DEVICE_TYPE_GPU:
+            break;
+#endif
         case HSA_DEVICE_TYPE_CPU:
             // record the first host agent; device buffers are mapped for it
             if (info.cpu_agent.handle == 0) {
@@ -475,7 +485,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
             }
             return HSA_STATUS_SUCCESS;
         default:
-            // only consider AIE agents for now
+            // device type not enabled in this build
             return HSA_STATUS_SUCCESS;
     }
 
@@ -499,6 +509,8 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     if (dev_info.name == "aie2" || dev_info.name == "aie2p") {
         dev_info.substitute_fp16_bf16 = true;
         GGML_ASSERT(dev_info.alignment % 4 == 0);
+    } else if (type == HSA_DEVICE_TYPE_GPU) {
+        // AMD GPU (e.g. gfx1151 Strix Halo iGPU); native datatypes, no fp16->bf16 substitution
     } else {
         GGML_ABORT("%s: unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
     }
@@ -958,6 +970,32 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // postprocess_kernel. The dispatch functions infer the queue drains the host paths need.
 }
 
+#ifdef GGML_HSA_GPU
+/**
+ * @brief Grants the device and CPU agents access to a unified-memory allocation.
+ *
+ * On Strix Halo the CPU and GPU share physical memory; buffers allocated from the GPU memory pool
+ * must be made accessible to both the GPU agent (kernel execution) and the CPU agent (host-side
+ * @c set_tensor / @c get_tensor copies).
+ */
+static hsa_status_t ggml_hsa_grant_unified_access(const ggml_hsa_device_info::device_info & dev_info,
+                                                  void * ptr) {
+    const auto & info = ggml_hsa_info();
+    std::vector<hsa_agent_t> agents;
+    if (dev_info.agent.handle != 0) {
+        agents.push_back(dev_info.agent);
+    }
+    if (info.cpu_agent.handle != 0) {
+        agents.push_back(info.cpu_agent);
+    }
+    if (agents.empty()) {
+        return HSA_STATUS_SUCCESS;
+    }
+    return hsa_amd_agents_allow_access(static_cast<std::uint32_t>(agents.size()), agents.data(),
+                                      nullptr, ptr);
+}
+#endif
+
 /**
  * @brief Allocates @p size bytes of device memory from the data memory pool of @p dev_info into
  * @p buffer, logging on failure.
@@ -976,6 +1014,19 @@ ggml_hsa_allocate_device_memory(const ggml_hsa_device_info::device_info & dev_in
         return GGML_STATUS_ALLOC_FAILED;
     }
     buffer.reset(static_cast<std::byte *>(ptr));
+
+#ifdef GGML_HSA_GPU
+    if (dev_info.type == HSA_DEVICE_TYPE_GPU) {
+        if (auto status = ggml_hsa_grant_unified_access(dev_info, ptr);
+            status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: failed to grant unified access (%s)", __func__,
+                               ggml_hsa_get_status_string(status));
+            buffer.reset();
+            return GGML_STATUS_ALLOC_FAILED;
+        }
+    }
+#endif
+
     return GGML_STATUS_SUCCESS;
 }
 
@@ -1097,14 +1148,35 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     // One kernarg slot per queue ring slot, reused only once the device consumes the packet that
     // referenced it. Sized for the worst-case kernarg region (all sources + destination, pointer +
     // size each), so a free ring slot always has a free kernarg slot.
-    const std::size_t kernarg_alignment =
+    std::size_t kernarg_alignment =
         std::max<std::size_t>(dev_info.kernarg_memory.alignment, alignof(std::uint64_t));
     constexpr std::size_t max_kernarg_entries =
         (GGML_MAX_SRC + 1 /* destination */) * 2 /* pointer + size */;
-    const std::size_t slot_size = max_kernarg_entries * sizeof(std::uint64_t);
+    std::size_t slot_size = max_kernarg_entries * sizeof(std::uint64_t);
+#ifdef GGML_HSA_GPU
+    if (dev_info.type == HSA_DEVICE_TYPE_GPU) {
+        // A GPU kernarg segment is the explicit arguments followed by the HIP hidden arguments;
+        // ggml_hsa_gpu_kernel::dispatch rejects a kernel whose segment does not fit.
+        kernarg_alignment = std::max<std::size_t>(kernarg_alignment, ggml_hsa_gpu_kernarg_alignment);
+        slot_size = ggml_hsa_gpu_kernarg_slot_size;
+    }
+#endif
     try {
         kernargs = ggml_hsa_kernarg_pool{dev_info.kernarg_memory.memory_pool, queue->size,
                                          slot_size, kernarg_alignment};
+#ifdef GGML_HSA_GPU
+        // the kernarg pool may be the GPU's data pool, which the host writes the arguments into
+        if (dev_info.type == HSA_DEVICE_TYPE_GPU) {
+            const std::array<hsa_agent_t, 2> agents = {dev_info.agent, ggml_hsa_info().cpu_agent};
+            if (auto status = hsa_amd_agents_allow_access(agents.size(), agents.data(), nullptr,
+                                                          kernargs.slot(0));
+                status != HSA_STATUS_SUCCESS) {
+                throw std::runtime_error{std::string("Could not grant kernarg pool access (")
+                                             .append(ggml_hsa_get_status_string(status))
+                                             .append(")")};
+            }
+        }
+#endif
     } catch (...) {
         // release the HSA resources acquired above before propagating the failure
         GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
@@ -1239,6 +1311,9 @@ ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
 
 /**
  * @brief Device memory mapped with the HSA vmem API, accessible to the host and the device.
+ *
+ * A GPU's memory is allocated with the pool allocator instead (see @ref allocate); importing a
+ * dma-buf always maps it with the vmem API.
  */
 class ggml_hsa_vmem_allocation {
   public:
@@ -1254,6 +1329,27 @@ class ggml_hsa_vmem_allocation {
      */
     hsa_status_t allocate(const ggml_hsa_device_info::device_info & dev_info, std::size_t size) {
         assert(m_va == nullptr);
+
+#ifdef GGML_HSA_GPU
+        // A GPU reads stale data from vmem mappings, most visibly once a released range is mapped
+        // again, so GPU memory comes from the pool allocator instead.
+        if (dev_info.type == HSA_DEVICE_TYPE_GPU) {
+            if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
+                                                           /* flags = */ 0, &m_va);
+                status != HSA_STATUS_SUCCESS) {
+                m_va = nullptr;
+                return status;
+            }
+            m_size = size;
+            m_pool_allocated = true;
+            if (auto status = ggml_hsa_grant_unified_access(dev_info, m_va);
+                status != HSA_STATUS_SUCCESS) {
+                release();
+                return status;
+            }
+            return HSA_STATUS_SUCCESS;
+        }
+#endif
 
         const auto pool = dev_info.data_memory.memory_pool;
         std::size_t granule = 0;
@@ -1344,6 +1440,13 @@ class ggml_hsa_vmem_allocation {
 
     /// @brief Releases whatever part of the allocation exists.
     void release() {
+        if (m_pool_allocated) {
+            GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(m_va));
+            m_va = nullptr;
+            m_size = 0;
+            m_pool_allocated = false;
+            return;
+        }
         if (m_mapped) {
             GGML_HSA_CHECK_ABORT(hsa_amd_vmem_unmap(m_va, m_size));
             m_mapped = false;
@@ -1363,6 +1466,7 @@ class ggml_hsa_vmem_allocation {
     void * m_va{};                          ///< Reserved virtual address range.
     std::size_t m_size{};                   ///< Size of the reserved range in bytes.
     bool m_mapped{false};                   ///< @c true if @ref m_handle is mapped at @ref m_va.
+    bool m_pool_allocated{false};           ///< @c true if @ref m_va is from the pool allocator.
 };
 
 /**
