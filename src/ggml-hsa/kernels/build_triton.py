@@ -75,11 +75,8 @@ def _get_triton_target(kernel_spec: KernelSpec) -> str:
         "aie2": "npu1",
         "aie2p": "npu2",
     }
-    try:
-        return mapping[kernel_spec.arch]
-    except KeyError:
-        msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"
-        raise ValueError(msg) from None
+
+    return mapping.get(kernel_spec.arch, kernel_spec.arch)
 
 
 def compile_triton_kernel(
@@ -119,67 +116,68 @@ def compile_triton_kernel(
     arch = _get_triton_target(kernel_spec)
     if arch in ["npu1", "npu2"]:
         triton.runtime.driver.set_active(NPUDriver())
+        with (
+            TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
+            config_context(
+                compile_only=True,
+                transform_tiling_script=kernel_spec.config.get(
+                    "transform_script", MISSING
+                ),
+                output_format="xclbin",
+                debug=1 if verbose else 0,
+                target=arch,
+            ),
+        ):
+            compiled_kernel = kernel_spec.function()
+            xclbin_path = Path(get_npu_cache_dir(compiled_kernel))
+            logger.info(
+                (
+                    "Triton compilation successful\n"
+                    "  Metadata:           %s\n"
+                    "  Metadata Group:     %s\n"
+                    "  XCLBIN Parent Path: %s"
+                ),
+                compiled_kernel.metadata,
+                compiled_kernel.metadata_group,
+                str(xclbin_path),
+            )
+            with Path(xclbin_path / "tt.shared.mlir").open("w", encoding="utf-8") as f:
+                f.write(str(compiled_kernel.asm["ttsharedir"]))
+                logger.info("Triton Shared MLIR written to %s", f.name)
+
+            # Create PDI from Triton cache xclbin
+            pdi_path = output_directory / f"{exported_name}.pdi"
+            cmd = [
+                "/opt/xilinx/xrt/bin/xclbinutil",
+                "--dump-section",
+                "AIE_PARTITION:JSON:partition.json",
+                "--force",
+                "--input",
+                str(xclbin_path / "aie.xclbin"),
+            ]
+            subprocess.run(
+                cmd,
+                check=True,
+                text=True,
+                capture_output=True,
+                cwd=str(xclbin_path),
+            )
+            pdi_src_path = next(xclbin_path.glob("**/*.pdi"))
+            shutil.copy(pdi_src_path, pdi_path)
+
+            # Copy instructions file from Triton cache
+            insts_path = output_directory / f"{exported_name}_insts.bin"
+            shutil.copy(xclbin_path / "insts.bin", insts_path)
+
+            logger.info(
+                (
+                    "Triton compilation successful\n"
+                    "  PDI Path:          %s\n"
+                    "  Instructions Path: %s"
+                ),
+                pdi_path,
+                insts_path,
+            )
     else:
         msg = f"Unsupported architecture for Triton kernel: {arch}"
         raise ValueError(msg)
-
-    with (
-        TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
-        config_context(
-            compile_only=True,
-            transform_tiling_script=kernel_spec.config.get("transform_script", MISSING),
-            output_format="xclbin",
-            debug=1 if verbose else 0,
-            target=arch,
-        ),
-    ):
-        compiled_kernel = kernel_spec.function()
-        xclbin_path = Path(get_npu_cache_dir(compiled_kernel))
-        logger.info(
-            (
-                "Triton compilation successful\n"
-                "  Metadata:           %s\n"
-                "  Metadata Group:     %s\n"
-                "  XCLBIN Parent Path: %s"
-            ),
-            compiled_kernel.metadata,
-            compiled_kernel.metadata_group,
-            str(xclbin_path),
-        )
-        with Path(xclbin_path / "tt.shared.mlir").open("w", encoding="utf-8") as f:
-            f.write(str(compiled_kernel.asm["ttsharedir"]))
-            logger.info("Triton Shared MLIR written to %s", f.name)
-
-        # Create PDI from Triton cache xclbin
-        pdi_path = output_directory / f"{exported_name}.pdi"
-        cmd = [
-            "/opt/xilinx/xrt/bin/xclbinutil",
-            "--dump-section",
-            "AIE_PARTITION:JSON:partition.json",
-            "--force",
-            "--input",
-            str(xclbin_path / "aie.xclbin"),
-        ]
-        subprocess.run(
-            cmd,
-            check=True,
-            text=True,
-            capture_output=True,
-            cwd=str(xclbin_path),
-        )
-        pdi_src_path = next(xclbin_path.glob("**/*.pdi"))
-        shutil.copy(pdi_src_path, pdi_path)
-
-        # Copy instructions file from Triton cache
-        insts_path = output_directory / f"{exported_name}_insts.bin"
-        shutil.copy(xclbin_path / "insts.bin", insts_path)
-
-        logger.info(
-            (
-                "Triton compilation successful\n"
-                "  PDI Path:          %s\n"
-                "  Instructions Path: %s"
-            ),
-            pdi_path,
-            insts_path,
-        )
