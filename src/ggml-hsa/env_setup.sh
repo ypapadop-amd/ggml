@@ -35,8 +35,14 @@ source ${VENV_NAME}/bin/activate
 # Upgrade pip
 python3 -m pip install --upgrade pip
 
+# If both iron and triton are selected, only install triton requirements
+INSTALL_LIST=("${BACKEND_LIST[@]}")
+if [[ " ${BACKEND_LIST[*]} " == *" iron "* ]] && [[ " ${BACKEND_LIST[*]} " == *" triton "* ]]; then
+    INSTALL_LIST=("triton")
+fi
+
 # Install requirements for each backend
-for backend in "${BACKEND_LIST[@]}"; do
+for backend in "${INSTALL_LIST[@]}"; do
     backend=$(echo "$backend" | xargs)
     REQUIREMENTS_FILE="${SCRIPT_DIR_NAME}/requirements-${backend}.txt"
     echo "Installing ${backend} backend dependencies from ${REQUIREMENTS_FILE}..."
