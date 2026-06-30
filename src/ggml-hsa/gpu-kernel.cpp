@@ -73,17 +73,11 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     const auto & info = ggml_hsa_info();
     const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
 
-    // Explicit kernel arguments: one pointer per source, one destination pointer, the element
-    // count. The HIP-compiled kernels use the signature (src0, ..., srcN, dst, uint64_t N).
-    const std::size_t num_ptrs = num_src_tensors + 1; // sources + destination
-    const std::size_t explicit_size = num_ptrs * sizeof(std::uint64_t) + sizeof(std::uint64_t);
-
     // Allocate the kernarg segment from the device kernarg pool. Over-allocate so the segment
     // can be aligned to the kernel's required alignment; the (unaligned) base is tracked for
     // freeing while the aligned interior pointer is handed to the packet.
     const std::uint32_t align = kernarg_align != 0 ? kernarg_align : 16;
-    const std::size_t buf_size =
-        (explicit_size >= kernarg_size ? explicit_size : kernarg_size) + (static_cast<std::size_t>(align) << 1);
+    const std::size_t buf_size = kernarg_size + (static_cast<std::size_t>(align) << 1);
 
     void * kernarg_base = nullptr;
     if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, buf_size, 0,
@@ -102,45 +96,80 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // defined.
     std::memset(kernarg, 0, kernarg_size);
 
-    // Explicit arguments: source pointers, destination pointer, element count.
-    auto * args = reinterpret_cast<std::uint64_t *>(kernarg);
-    std::size_t idx = 0;
-    for (std::size_t i = 0; i < num_src_tensors; ++i) {
-        assert(src_tensors[i]->data != nullptr);
-        args[idx++] = reinterpret_cast<std::uintptr_t>(src_tensors[i]->data);
-    }
-    assert(dst_tensor.data != nullptr);
-    args[idx++] = reinterpret_cast<std::uintptr_t>(dst_tensor.data);
-    const std::uint64_t n_elements = ggml_nelements(&dst_tensor);
-    args[idx++] = n_elements;
-
     // Grid configuration. AQL grid_size is the total number of work-items (global size), rounded
     // up to a whole number of workgroups; hidden_block_count is the number of workgroups.
+    const std::uint64_t n_elements = ggml_nelements(&dst_tensor);
     const std::uint32_t wg = work_group_size != 0 ? work_group_size : 64;
     const std::uint32_t num_groups_x = (static_cast<std::uint32_t>(n_elements) + wg - 1) / wg;
     const std::uint32_t grid_size_x = (num_groups_x != 0 ? num_groups_x : 1) * wg;
 
-    // HIP implicit/hidden arguments (COV5 layout), placed immediately after the explicit args.
-    // Required because the kernels use blockIdx/blockDim/threadIdx, which the compiler lowers to
-    // reads from these hidden kernarg slots.
-    std::byte * hidden = kernarg + explicit_size;
-    const auto put_u32 = [&](std::size_t off, std::uint32_t v) { std::memcpy(hidden + off, &v, sizeof(v)); };
-    const auto put_u16 = [&](std::size_t off, std::uint16_t v) { std::memcpy(hidden + off, &v, sizeof(v)); };
-    const auto put_u64 = [&](std::size_t off, std::uint64_t v) { std::memcpy(hidden + off, &v, sizeof(v)); };
-    put_u32(0, num_groups_x != 0 ? num_groups_x : 1); // hidden_block_count_x
-    put_u32(4, 1);                                     // hidden_block_count_y
-    put_u32(8, 1);                                     // hidden_block_count_z
-    put_u16(12, static_cast<std::uint16_t>(wg));       // hidden_group_size_x
-    put_u16(14, 1);                                    // hidden_group_size_y
-    put_u16(16, 1);                                    // hidden_group_size_z
-    put_u16(18, static_cast<std::uint16_t>(static_cast<std::uint32_t>(n_elements) % wg)); // remainder_x
-    put_u16(20, 0);                                    // hidden_remainder_y
-    put_u16(22, 0);                                    // hidden_remainder_z
-    // bytes 24..31 are padding so the global-offset trio is 8-aligned
-    put_u64(32, 0);                                    // hidden_global_offset_x
-    put_u64(40, 0);                                    // hidden_global_offset_y
-    put_u64(48, 0);                                    // hidden_global_offset_z
-    put_u16(56, 1);                                    // hidden_grid_dims (1D)
+    // Populate the kernarg segment using the layout parsed from the code object metadata. Explicit
+    // global_buffer arguments are filled in order (sources first, then destination); the single
+    // by_value argument is the element count; the HIP hidden arguments are derived from the grid
+    // configuration. Offsets/sizes come from the kernel itself, so the layout is ABI-robust.
+    const auto put = [&](std::uint32_t off, const void * src, std::uint32_t sz) {
+        if (static_cast<std::size_t>(off) + sz <= kernarg_size) {
+            std::memcpy(kernarg + off, src, sz);
+        }
+    };
+    // The HIP kernel ABI is positional (argument names are not emitted in the code object
+    // metadata, so arguments are matched by kind and position rather than by name). Explicit
+    // arguments are, in order:
+    //   1. the source buffers, then the destination buffer (global_buffer);
+    //   2. the scalar (by_value) parameters: index 0 is the element count, and any further
+    //      scalars are taken in order from the op parameter block (ggml_tensor::op_params),
+    //      copied raw. This lets ops such as SCALE (one factor) or CLAMP (min, max) reuse this
+    //      dispatch path by declaring their extra scalar parameters after N, laid out to match
+    //      op_params byte-for-byte.
+    const auto * op_params_bytes = reinterpret_cast<const std::byte *>(dst_tensor.op_params);
+    std::size_t global_buffer_idx = 0;
+    std::size_t by_value_idx = 0;
+    std::size_t op_params_cursor = 0;
+    for (const auto & arg : args) {
+        if (arg.value_kind == "global_buffer") {
+            void * ptr = global_buffer_idx < num_src_tensors
+                             ? src_tensors[global_buffer_idx]->data
+                             : dst_tensor.data;
+            assert(ptr != nullptr);
+            std::uint64_t v = reinterpret_cast<std::uintptr_t>(ptr);
+            put(arg.offset, &v, arg.size);
+            ++global_buffer_idx;
+        } else if (arg.value_kind == "by_value") {
+            if (by_value_idx == 0) {
+                put(arg.offset, &n_elements, arg.size); // first scalar is the element count
+            } else if (op_params_cursor + arg.size <= sizeof(dst_tensor.op_params)) {
+                // subsequent scalars come from the op parameter block, in order
+                put(arg.offset, op_params_bytes + op_params_cursor, arg.size);
+                op_params_cursor += arg.size;
+            } else {
+                GGML_HSA_LOG_WARN("%s: by_value kernarg #%zu (name \"%s\", size %u) exceeds "
+                                  "op_params; zeroed",
+                                  __func__, by_value_idx, arg.name.c_str(), arg.size);
+            }
+            ++by_value_idx;
+        } else if (arg.value_kind == "hidden_block_count_x") {
+            std::uint32_t v = num_groups_x != 0 ? num_groups_x : 1;
+            put(arg.offset, &v, arg.size);
+        } else if (arg.value_kind == "hidden_block_count_y" ||
+                   arg.value_kind == "hidden_block_count_z") {
+            std::uint32_t v = 1;
+            put(arg.offset, &v, arg.size);
+        } else if (arg.value_kind == "hidden_group_size_x") {
+            std::uint16_t v = static_cast<std::uint16_t>(wg);
+            put(arg.offset, &v, arg.size);
+        } else if (arg.value_kind == "hidden_group_size_y" ||
+                   arg.value_kind == "hidden_group_size_z") {
+            std::uint16_t v = 1;
+            put(arg.offset, &v, arg.size);
+        } else if (arg.value_kind == "hidden_remainder_x") {
+            std::uint16_t v = static_cast<std::uint16_t>(static_cast<std::uint32_t>(n_elements) % wg);
+            put(arg.offset, &v, arg.size);
+        } else if (arg.value_kind == "hidden_grid_dims") {
+            std::uint16_t v = 1; // 1D grid
+            put(arg.offset, &v, arg.size);
+        }
+        // all other hidden arguments (remainder_y/z, global_offset_*, etc.) remain zero
+    }
 
     // Grant the GPU and CPU agents access to the kernarg allocation (unified memory).
     std::vector<hsa_agent_t> agents;

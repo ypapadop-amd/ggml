@@ -19,9 +19,10 @@
 #endif
 
 #ifdef GGML_HSA_GPU
-#include <fcntl.h>
 #include <string>
-#include <unistd.h>
+#include <vector>
+
+#include <amd_comgr/amd_comgr.h>
 
 #include "ggml-hsa/gpu-kernel.hpp"
 #endif
@@ -286,6 +287,124 @@ static bool ggml_hsa_find_gpu_kernel_files(const std::string & device_name,
 }
 
 /**
+ * @brief Reads the string value of a comgr metadata node.
+ */
+static bool ggml_hsa_comgr_get_string(amd_comgr_metadata_node_t node, std::string & out) {
+    std::size_t sz = 0;
+    if (amd_comgr_get_metadata_string(node, &sz, nullptr) != AMD_COMGR_STATUS_SUCCESS) {
+        return false;
+    }
+    std::string s(sz, '\0');
+    if (amd_comgr_get_metadata_string(node, &sz, s.data()) != AMD_COMGR_STATUS_SUCCESS) {
+        return false;
+    }
+    if (!s.empty() && s.back() == '\0') {
+        s.pop_back();
+    }
+    out = std::move(s);
+    return true;
+}
+
+/**
+ * @brief Looks up a string-valued key in a comgr metadata map.
+ */
+static bool ggml_hsa_comgr_lookup_string(amd_comgr_metadata_node_t map, const char * key,
+                                         std::string & out) {
+    amd_comgr_metadata_node_t node;
+    if (amd_comgr_metadata_lookup(map, key, &node) != AMD_COMGR_STATUS_SUCCESS) {
+        return false;
+    }
+    bool ok = ggml_hsa_comgr_get_string(node, out);
+    amd_comgr_destroy_metadata(node);
+    return ok;
+}
+
+/**
+ * @brief Parses the argument layout for kernel descriptor @p symbol from a code object.
+ *
+ * Reads the AMDGPU code object metadata (via comgr) and records the value kind, byte offset,
+ * and size of each kernel argument, including the HIP hidden arguments. This avoids hardcoding
+ * the kernarg layout, which varies by ABI version and architecture.
+ *
+ * @param[in] blob in-memory code object bytes
+ * @param[in] symbol kernel descriptor symbol (e.g. "add_8f32_8f32_8f32.kd")
+ * @param[out] out parsed argument descriptors
+ */
+static bool ggml_hsa_parse_kernel_args(const std::vector<char> & blob, const std::string & symbol,
+                                       std::vector<ggml_hsa_gpu_kernel_arg> & out) {
+    amd_comgr_data_t data;
+    if (amd_comgr_create_data(AMD_COMGR_DATA_KIND_EXECUTABLE, &data) != AMD_COMGR_STATUS_SUCCESS) {
+        return false;
+    }
+
+    bool result = false;
+    bool have_root = false;
+    amd_comgr_metadata_node_t root{};
+    do {
+        if (amd_comgr_set_data(data, blob.size(), blob.data()) != AMD_COMGR_STATUS_SUCCESS) {
+            break;
+        }
+        if (amd_comgr_get_data_metadata(data, &root) != AMD_COMGR_STATUS_SUCCESS) {
+            break;
+        }
+        have_root = true;
+
+        amd_comgr_metadata_node_t kernels;
+        if (amd_comgr_metadata_lookup(root, "amdhsa.kernels", &kernels) !=
+            AMD_COMGR_STATUS_SUCCESS) {
+            break;
+        }
+
+        std::size_t nkernels = 0;
+        amd_comgr_get_metadata_list_size(kernels, &nkernels);
+        for (std::size_t i = 0; i < nkernels && !result; ++i) {
+            amd_comgr_metadata_node_t kernel;
+            if (amd_comgr_index_list_metadata(kernels, i, &kernel) != AMD_COMGR_STATUS_SUCCESS) {
+                continue;
+            }
+
+            std::string sym;
+            if (ggml_hsa_comgr_lookup_string(kernel, ".symbol", sym) && sym == symbol) {
+                amd_comgr_metadata_node_t args;
+                if (amd_comgr_metadata_lookup(kernel, ".args", &args) == AMD_COMGR_STATUS_SUCCESS) {
+                    std::size_t nargs = 0;
+                    amd_comgr_get_metadata_list_size(args, &nargs);
+                    for (std::size_t j = 0; j < nargs; ++j) {
+                        amd_comgr_metadata_node_t arg;
+                        if (amd_comgr_index_list_metadata(args, j, &arg) !=
+                            AMD_COMGR_STATUS_SUCCESS) {
+                            continue;
+                        }
+                        std::string name, kind, off, size;
+                        ggml_hsa_comgr_lookup_string(arg, ".name", name); // explicit args only
+                        ggml_hsa_comgr_lookup_string(arg, ".value_kind", kind);
+                        ggml_hsa_comgr_lookup_string(arg, ".offset", off);
+                        ggml_hsa_comgr_lookup_string(arg, ".size", size);
+                        ggml_hsa_gpu_kernel_arg info;
+                        info.name = std::move(name);
+                        info.value_kind = std::move(kind);
+                        info.offset = off.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(off));
+                        info.size = size.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(size));
+                        out.push_back(std::move(info));
+                        amd_comgr_destroy_metadata(arg);
+                    }
+                    amd_comgr_destroy_metadata(args);
+                    result = !out.empty();
+                }
+            }
+            amd_comgr_destroy_metadata(kernel);
+        }
+        amd_comgr_destroy_metadata(kernels);
+    } while (false);
+
+    if (have_root) {
+        amd_comgr_destroy_metadata(root);
+    }
+    amd_comgr_release_data(data);
+    return result;
+}
+
+/**
  * @brief Creates a GPU kernel by loading a HIP-compiled @c .hsaco code object.
  *
  * @param[in] dev_info device information
@@ -304,15 +423,21 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
         return GGML_STATUS_FAILED;
     }
 
-    hsa_file_t file_handle = open(hsaco_path.c_str(), O_RDONLY);
-    if (file_handle == -1) {
+    // Read the code object once; the bytes feed both the HSA loader and the comgr metadata parser.
+    std::ifstream is(hsaco_path, std::ios::binary | std::ios::ate);
+    if (!is) {
         GGML_HSA_LOG_ERROR("%s: could not open %s", __func__, hsaco_path.c_str());
+        return GGML_STATUS_FAILED;
+    }
+    const std::streamsize blob_size = is.tellg();
+    std::vector<char> blob(static_cast<std::size_t>(blob_size));
+    if (!is.seekg(0, std::ios::beg).read(blob.data(), blob_size)) {
+        GGML_HSA_LOG_ERROR("%s: failed to read %s", __func__, hsaco_path.c_str());
         return GGML_STATUS_FAILED;
     }
 
     hsa_code_object_reader_t reader{};
-    auto status = hsa_code_object_reader_create_from_file(file_handle, &reader);
-    close(file_handle);
+    auto status = hsa_code_object_reader_create_from_memory(blob.data(), blob.size(), &reader);
     if (status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: failed to read code object %s (%s)", __func__, hsaco_path.c_str(),
                            ggml_hsa_get_status_string(status));
@@ -380,6 +505,13 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
     }
     if (gpu_kernel->kernarg_align < 16) {
         gpu_kernel->kernarg_align = 16;
+    }
+
+    // Read the argument layout (explicit + hidden) from the code object metadata.
+    if (!ggml_hsa_parse_kernel_args(blob, symbol_name, gpu_kernel->args)) {
+        GGML_HSA_LOG_ERROR("%s: failed to parse argument metadata for %s", __func__,
+                           symbol_name.c_str());
+        return GGML_STATUS_FAILED;
     }
 
     kernel = std::move(gpu_kernel);

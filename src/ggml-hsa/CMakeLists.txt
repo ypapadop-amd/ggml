@@ -89,8 +89,12 @@ if (GGML_HSA_AIE)
 endif ()
 
 if (GGML_HSA_GPU)
+    # comgr (Code Object Manager) is used to read kernel argument metadata from .hsaco files.
+    find_library(GGML_HSA_COMGR_LIB amd_comgr REQUIRED PATHS ${ROCM_PATH}/lib)
     target_sources(ggml-hsa PRIVATE gpu-kernel.hpp)
     target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_GPU)
+    target_include_directories(ggml-hsa PRIVATE ${ROCM_PATH}/include)
+    target_link_libraries(ggml-hsa PRIVATE ${GGML_HSA_COMGR_LIB})
 endif ()
 
 if (GGML_HSA_JIT_COMPILE)

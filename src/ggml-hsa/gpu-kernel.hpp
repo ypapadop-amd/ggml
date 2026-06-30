@@ -7,15 +7,31 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include <hsa/hsa.h>
+
+/**
+ * @brief Description of a single kernel argument, read from the code object metadata.
+ *
+ * Offsets and sizes come from the compiled kernel itself (via comgr) rather than a
+ * hand-maintained struct, so the kernarg layout is robust to ABI/architecture changes.
+ */
+struct ggml_hsa_gpu_kernel_arg {
+    std::string name;        ///< Argument name (explicit args only; empty for hidden args).
+    std::string value_kind;  ///< AMDGPU value kind, e.g. "global_buffer", "hidden_block_count_x".
+    std::uint32_t offset{};  ///< Byte offset of the argument within the kernarg segment.
+    std::uint32_t size{};    ///< Argument size in bytes.
+};
 
 /**
  * @brief Kernel for GPU agents (ROCm/HIP code objects loaded from @c .hsaco files).
  *
  * The kernel is dispatched using a standard HSA AQL kernel dispatch packet. The
  * code object is loaded into an @c hsa_executable_t at creation time; the kernel
- * descriptor handle and segment sizes are queried from the resolved symbol.
+ * descriptor handle, segment sizes, and argument layout are queried from the
+ * resolved symbol and the code object metadata.
  */
 class ggml_hsa_gpu_kernel : public ggml_hsa_kernel {
   public:
@@ -26,6 +42,7 @@ class ggml_hsa_gpu_kernel : public ggml_hsa_kernel {
     std::uint32_t kernarg_size{};         ///< Kernel argument segment size in bytes.
     std::uint32_t kernarg_align{};        ///< Kernel argument segment alignment in bytes.
     std::uint32_t work_group_size{64};    ///< Workgroup size (work-items per group, dim x).
+    std::vector<ggml_hsa_gpu_kernel_arg> args; ///< Argument layout from code object metadata.
 
     ggml_hsa_gpu_kernel() = default;
     ~ggml_hsa_gpu_kernel() override;
