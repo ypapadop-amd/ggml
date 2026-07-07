@@ -11,6 +11,7 @@ from dataclasses import MISSING
 from pathlib import Path
 
 from kernel import KernelSpec
+from triton.utils import NPU_ARCH_MAP, is_gpu_arch, is_npu_arch
 
 
 class TempEnvSet(ContextDecorator):
@@ -60,12 +61,6 @@ class TempEnvSet(ContextDecorator):
             del os.environ[self.env_var]
 
 
-_NPU_ARCH_MAP = {
-    "aie2": "npu1",
-    "aie2p": "npu2",
-}
-
-
 def _get_triton_target(kernel_spec: KernelSpec) -> str:
     """Returns the Triton target string for a given KernelSpec architecture.
 
@@ -81,22 +76,12 @@ def _get_triton_target(kernel_spec: KernelSpec) -> str:
     Raises:
         ValueError: If the architecture is not a known NPU or GPU target.
     """
-    if kernel_spec.arch in _NPU_ARCH_MAP:
-        return _NPU_ARCH_MAP[kernel_spec.arch]
-    if kernel_spec.arch.startswith("gfx"):
+    if kernel_spec.arch in NPU_ARCH_MAP:
+        return NPU_ARCH_MAP[kernel_spec.arch]
+    if is_gpu_arch(kernel_spec.arch):
         return kernel_spec.arch
     msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"
     raise ValueError(msg)
-
-
-def _is_npu_arch(arch: str) -> bool:
-    """Returns True if arch is a known Triton-XDNA NPU target string (e.g. "npu1")."""
-    return arch in _NPU_ARCH_MAP.values()
-
-
-def _is_gpu_arch(arch: str) -> bool:
-    """Returns True if arch is an AMD GPU target string (e.g. "gfx942")."""
-    return arch.startswith("gfx")
 
 
 def compile_triton_kernel(
@@ -133,7 +118,7 @@ def compile_triton_kernel(
 
     # Set active driver based on architecture
     arch = _get_triton_target(kernel_spec)
-    if _is_npu_arch(arch):
+    if is_npu_arch(kernel_spec.arch):
         from triton.backends.amd_triton_npu.config import config_context
         from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
 
@@ -200,7 +185,7 @@ def compile_triton_kernel(
                 pdi_path,
                 insts_path,
             )
-    elif _is_gpu_arch(arch):
+    elif is_gpu_arch(kernel_spec.arch):
         from triton.backends.amd.driver import HIPDriver
 
         triton.runtime.driver.set_active(HIPDriver())
@@ -216,11 +201,11 @@ def compile_triton_kernel(
         shutil.copy(hsaco_path, output_hsaco_path)
 
         logger.info(
-            (
-                "Triton GPU compilation successful\n"
-                "  Metadata:   %s\n"
-                "  HSACO Path: %s"
-            ),
+            ("Triton GPU compilation successful\n  Metadata:   %s\n  HSACO Path: %s"),
             compiled_kernel.metadata,
             output_hsaco_path,
         )
+    else:
+        msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"
+        logger.error(msg)
+        raise ValueError(msg)
