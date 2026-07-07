@@ -12,6 +12,21 @@ from pathlib import Path
 from .kernel import Backend, KernelSpec
 
 
+def _validate_binary_inputs(input_tensors: list) -> None:
+    """Validate the inputs of a binary operation.
+
+    Parameters:
+        input_tensors: List of input tensors to validate.
+
+    Raises:
+        ValueError: If the number of input tensors is not exactly two.
+
+    """
+    if len(input_tensors) != 2:
+        msg = f"Operation requires exactly two input tensors, got {len(input_tensors)}."
+        raise ValueError(msg)
+
+
 def _make_iron_binary_kernel_spec(
     arch: str,
     input_tensors: list,
@@ -32,7 +47,7 @@ def _make_iron_binary_kernel_spec(
     """
     from functools import partial
 
-    from .iron.binary_ops import binary_op
+    from .iron_kernels.binary_ops import binary_op
 
     return KernelSpec(
         backend=Backend.IRON,
@@ -78,14 +93,15 @@ def _make_triton_add_kernel_spec(
         n_elements=n_elements,
     ):
         # All imports, grid specialisation, and tensor creation are deferred into
-        # _compile so that any failure is caught by the try/except in build.py,
-        # allowing the IRON fallback to be reached.
+        # _compile so that any failure is caught by the try/except in build.py.
+        # IRON is the primary backend (tried first); this Triton spec is the
+        # fallback, reached only if IRON compilation fails.
 
         import torch
         import triton
 
-        from .triton.utils import numpy_dtype_to_torch, triton_device
-        from .triton.vecadd import vecadd
+        from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
+        from .triton_kernels.vecadd import vecadd
 
         broadcast = input_tensors[0].shape != input_tensors[1].shape
         if broadcast or any(not t.contiguous for t in (*input_tensors, output_tensor)):
@@ -124,7 +140,7 @@ def _make_triton_add_kernel_spec(
         function=_compile,
         config={
             "transform_script": str(
-                Path(__file__).parent / "triton" / f"vecadd_{arch}.mlir"
+                Path(__file__).parent / "triton_kernels" / f"vecadd_{arch}.mlir"
             ),
         },
     )
@@ -146,9 +162,7 @@ def ggml_op_add(
         KernelSpec for the ADD operation.
 
     """
-    if len(input_tensors) != 2:
-        msg = f"Operation requires exactly two input tensors, got {len(input_tensors)}."
-        raise ValueError(msg)
+    _validate_binary_inputs(input_tensors)
 
     return [
         _make_iron_binary_kernel_spec(
@@ -174,9 +188,7 @@ def ggml_op_sub(
         KernelSpec for the SUB operation.
 
     """
-    if len(input_tensors) != 2:
-        msg = f"Operation requires exactly two input tensors, got {len(input_tensors)}."
-        raise ValueError(msg)
+    _validate_binary_inputs(input_tensors)
 
     return _make_iron_binary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_OP_SUB"
@@ -199,9 +211,7 @@ def ggml_op_mul(
         KernelSpec for the MUL operation.
 
     """
-    if len(input_tensors) != 2:
-        msg = f"Operation requires exactly two input tensors, got {len(input_tensors)}."
-        raise ValueError(msg)
+    _validate_binary_inputs(input_tensors)
 
     return _make_iron_binary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_OP_MUL"
@@ -224,9 +234,7 @@ def ggml_op_div(
         KernelSpec for the DIV operation.
 
     """
-    if len(input_tensors) != 2:
-        msg = f"Operation requires exactly two input tensors, got {len(input_tensors)}."
-        raise ValueError(msg)
+    _validate_binary_inputs(input_tensors)
 
     return _make_iron_binary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_OP_DIV"
