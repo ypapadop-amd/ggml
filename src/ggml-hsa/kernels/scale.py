@@ -27,7 +27,7 @@ def ggml_op_scale(
     """
     from functools import partial
 
-    from .iron.scale import scale
+    from .iron_kernels.scale import scale
 
     return KernelSpec(
         backend=Backend.IRON,
