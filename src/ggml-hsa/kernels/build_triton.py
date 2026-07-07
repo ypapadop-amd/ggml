@@ -192,11 +192,19 @@ def compile_triton_kernel(
         with TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)):
             compiled_kernel = kernel_spec.function()
 
-        hsaco_path = next(
+        hsaco_paths = [
             Path(p)
             for name, p in compiled_kernel.metadata_group.items()
             if name.endswith(".hsaco")
-        )
+        ]
+        if not hsaco_paths:
+            msg = (
+                f"No .hsaco artifact found in Triton metadata_group for {exported_name} "
+                f"(arch={kernel_spec.arch}). Available keys: {list(compiled_kernel.metadata_group.keys())}"
+            )
+            logger.error(msg)
+            raise ValueError(msg)
+        hsaco_path = hsaco_paths[0]
         output_hsaco_path = output_directory / f"{exported_name}.hsaco"
         shutil.copy(hsaco_path, output_hsaco_path)
 
