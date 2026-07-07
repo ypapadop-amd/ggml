@@ -193,7 +193,7 @@ def compile_triton_kernel(
 
             logger.info(
                 (
-                    "Triton compilation successful\n"
+                    "Triton-XDNA compilation successful\n"
                     "  PDI Path:          %s\n"
                     "  Instructions Path: %s"
                 ),
@@ -218,8 +218,8 @@ def compile_triton_kernel(
         logger.info(
             (
                 "Triton GPU compilation successful\n"
-                "  Metadata:      %s\n"
-                "  HSACO Path:    %s"
+                "  Metadata:   %s\n"
+                "  HSACO Path: %s"
             ),
             compiled_kernel.metadata,
             output_hsaco_path,
