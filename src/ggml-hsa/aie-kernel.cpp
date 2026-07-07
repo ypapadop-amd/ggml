@@ -14,7 +14,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor * src_tensors[],
                                           std::size_t num_src_tensors,
                                           ggml_tensor & dst_tensor) const {
-    // each kernarg occupies two uint64_t entries: an address followed by a size in bytes
+    // kernarg buffer layout (uint64_t entries): [src_ptrs..., dst_ptr, src_sizes..., dst_size]
     constexpr std::size_t kernarg_entries_per_tensor = 2;
 
     const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
