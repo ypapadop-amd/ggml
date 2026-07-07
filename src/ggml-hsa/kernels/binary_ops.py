@@ -84,7 +84,7 @@ def _make_triton_add_kernel_spec(
         import torch
         import triton
 
-        from .triton.utils import numpy_dtype_to_torch
+        from .triton.utils import numpy_dtype_to_torch, triton_device
         from .triton.vecadd import vecadd
 
         broadcast = input_tensors[0].shape != input_tensors[1].shape
@@ -95,7 +95,7 @@ def _make_triton_add_kernel_spec(
         block_size = 1 << (min(1024, n_elements) - 1).bit_length()
         block_size = min(block_size, 1024)
         grid = (triton.cdiv(n_elements, block_size),)
-        device = "cpu"
+        device = triton_device(arch)
         a = torch.randn(
             n_elements,
             device=device,
