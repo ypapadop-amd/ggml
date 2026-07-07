@@ -21,7 +21,7 @@ GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int32_t
 // split tensor buffer that splits matrices by rows across multiple devices
 GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_hsa_split_buffer_type(int32_t main_device, const float * tensor_split);
 
-// pinned host buffer for use with the CPU backend for faster copies between CPU and GPU
+// pinned host buffer for use with the CPU backend for faster copies between CPU and HSA agent
 GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_hsa_host_buffer_type(void);
 
 GGML_BACKEND_API int32_t ggml_backend_hsa_get_device_count(void);

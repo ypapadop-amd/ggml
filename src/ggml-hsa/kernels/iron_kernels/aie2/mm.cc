@@ -131,9 +131,10 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
 
     event0();
 
-    AIE_PREPARE_FOR_PIPELINING
-    AIE_LOOP_MIN_ITERATION_COUNT(4)
-    for (unsigned z = 0; z < rowA; z += 2) {
+    // Factor the outer-loop body into an always-inlined lambda so the same code
+    // can be driven by loops carrying a truthful minimum trip-count hint chosen
+    // from the compile-time iteration count below.
+    auto outer_body = [&](unsigned z) [[gnu::always_inline]] {
         T_out * __restrict pC1;
         T_out * __restrict pC2;
         if constexpr (c_row_maj) {
@@ -245,6 +246,24 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
                     pC2 += MMUL::size_C;
                 }
             }
+    };
+
+    constexpr unsigned outer_iters = rowA / 2;
+    if constexpr (outer_iters >= 4) {
+        AIE_PREPARE_FOR_PIPELINING
+        AIE_LOOP_MIN_ITERATION_COUNT(4)
+        for (unsigned z = 0; z < rowA; z += 2)
+            outer_body(z);
+    } else if constexpr (outer_iters >= 2) {
+        AIE_PREPARE_FOR_PIPELINING
+        AIE_LOOP_MIN_ITERATION_COUNT(2)
+        for (unsigned z = 0; z < rowA; z += 2)
+            outer_body(z);
+    } else {
+        AIE_PREPARE_FOR_PIPELINING
+        AIE_LOOP_MIN_ITERATION_COUNT(1)
+        for (unsigned z = 0; z < rowA; z += 2)
+            outer_body(z);
     }
 
     event1();
@@ -290,9 +309,10 @@ static inline void matmul_vectorized_4x2_mmul(const T_in * __restrict pA,
 
     event0();
 
-    AIE_PREPARE_FOR_PIPELINING
-    AIE_LOOP_MIN_ITERATION_COUNT(4)
-    for (unsigned z = 0; z < rowA; z += 4) {
+    // Factor the outer-loop body into an always-inlined lambda so the same code
+    // can be driven by loops carrying a truthful minimum trip-count hint chosen
+    // from the compile-time iteration count below.
+    auto outer_body = [&](unsigned z) [[gnu::always_inline]] {
         T_out * __restrict pC1;
         T_out * __restrict pC2;
         T_out * __restrict pC3;
@@ -450,6 +470,24 @@ static inline void matmul_vectorized_4x2_mmul(const T_in * __restrict pA,
                     pC2 += MMUL::size_C;
                 }
             }
+    };
+
+    constexpr unsigned outer_iters = rowA / 4;
+    if constexpr (outer_iters >= 4) {
+        AIE_PREPARE_FOR_PIPELINING
+        AIE_LOOP_MIN_ITERATION_COUNT(4)
+        for (unsigned z = 0; z < rowA; z += 4)
+            outer_body(z);
+    } else if constexpr (outer_iters >= 2) {
+        AIE_PREPARE_FOR_PIPELINING
+        AIE_LOOP_MIN_ITERATION_COUNT(2)
+        for (unsigned z = 0; z < rowA; z += 4)
+            outer_body(z);
+    } else {
+        AIE_PREPARE_FOR_PIPELINING
+        AIE_LOOP_MIN_ITERATION_COUNT(1)
+        for (unsigned z = 0; z < rowA; z += 4)
+            outer_body(z);
     }
 
     event1();
@@ -495,9 +533,10 @@ static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
 
     event0();
 
-    AIE_PREPARE_FOR_PIPELINING
-    AIE_LOOP_MIN_ITERATION_COUNT(2)
-    for (unsigned z = 0; z < rowA; z += 4) {
+    // Factor the outer-loop body into an always-inlined lambda so the same code
+    // can be driven by loops carrying a truthful minimum trip-count hint chosen
+    // from the compile-time iteration count below.
+    auto outer_body = [&](unsigned z) [[gnu::always_inline]] {
         T_out * __restrict pC1;
         T_out * __restrict pC2;
         T_out * __restrict pC3;
@@ -767,6 +806,24 @@ static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
                     pC4 += MMUL::size_C;
                 }
             }
+    };
+
+    constexpr unsigned outer_iters = rowA / 4;
+    if constexpr (outer_iters >= 4) {
+        AIE_PREPARE_FOR_PIPELINING
+        AIE_LOOP_MIN_ITERATION_COUNT(4)
+        for (unsigned z = 0; z < rowA; z += 4)
+            outer_body(z);
+    } else if constexpr (outer_iters >= 2) {
+        AIE_PREPARE_FOR_PIPELINING
+        AIE_LOOP_MIN_ITERATION_COUNT(2)
+        for (unsigned z = 0; z < rowA; z += 4)
+            outer_body(z);
+    } else {
+        AIE_PREPARE_FOR_PIPELINING
+        AIE_LOOP_MIN_ITERATION_COUNT(1)
+        for (unsigned z = 0; z < rowA; z += 4)
+            outer_body(z);
     }
 
     event1();
