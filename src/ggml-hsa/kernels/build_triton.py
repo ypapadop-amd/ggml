@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 from contextlib import ContextDecorator
+from dataclasses import MISSING
 from pathlib import Path
 
 from kernel import KernelSpec
@@ -59,22 +60,43 @@ class TempEnvSet(ContextDecorator):
             del os.environ[self.env_var]
 
 
+_NPU_ARCH_MAP = {
+    "aie2": "npu1",
+    "aie2p": "npu2",
+}
+
+
 def _get_triton_target(kernel_spec: KernelSpec) -> str:
-    """Returns Triton target names for a given KernelSpec architecture.
+    """Returns the Triton target string for a given KernelSpec architecture.
+
+    Maps NPU architecture names to their Triton equivalents and passes GPU
+    architectures through unchanged. Raises for unsupported architectures.
 
     Parameters:
         kernel_spec: The KernelSpec containing the architecture information.
 
     Returns:
-        A string representing the Triton target name corresponding to the
-        kernel's architecture. Unknown architectures are returned unchanged.
-    """
-    mapping = {
-        "aie2": "npu1",
-        "aie2p": "npu2",
-    }
+        Triton target string (e.g. "npu1", "npu2", "gfx942").
 
-    return mapping.get(kernel_spec.arch, kernel_spec.arch)
+    Raises:
+        ValueError: If the architecture is not a known NPU or GPU target.
+    """
+    if kernel_spec.arch in _NPU_ARCH_MAP:
+        return _NPU_ARCH_MAP[kernel_spec.arch]
+    if kernel_spec.arch.startswith("gfx"):
+        return kernel_spec.arch
+    msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"
+    raise ValueError(msg)
+
+
+def _is_npu_arch(arch: str) -> bool:
+    """Returns True if arch is a known Triton-XDNA NPU target string (e.g. "npu1")."""
+    return arch in _NPU_ARCH_MAP.values()
+
+
+def _is_gpu_arch(arch: str) -> bool:
+    """Returns True if arch is an AMD GPU target string (e.g. "gfx942")."""
+    return arch.startswith("gfx")
 
 
 def compile_triton_kernel(
@@ -84,22 +106,23 @@ def compile_triton_kernel(
     logger: logging.Logger,
     verbose: bool,
 ) -> None:
-    """Compile a Triton kernel.
+    """Compile a Triton kernel for the target architecture in kernel_spec.
 
-    This function executes the Triton-XDNA compilation pipeline:
-    1. Translates the kernel specification into a Triton kernel
-    2. Compiles via Triton-XDNA stack to produce PDI and instructions
+    For NPU targets this runs the Triton-XDNA pipeline and extracts a PDI
+    and instructions binary from the resulting xclbin.
+    For GPU targets this runs the standard HIP pipeline and copies the
+    hsaco object from the Triton cache.
 
     Parameters:
         kernel_spec: The KernelSpec containing the Triton kernel function.
         exported_name: Name for the exported kernel files.
-        output_directory: Directory for output PDI and instruction files.
+        output_directory: Directory where output files are written.
         logger: Logger for status messages.
         verbose: If True, enables verbose compilation output.
 
+    Raises:
+        ValueError: If the architecture is not a supported NPU or GPU target.
     """
-    from dataclasses import MISSING
-
     import triton
 
     # Determine Triton cache directory
@@ -110,7 +133,7 @@ def compile_triton_kernel(
 
     # Set active driver based on architecture
     arch = _get_triton_target(kernel_spec)
-    if arch in ["npu1", "npu2"]:
+    if _is_npu_arch(arch):
         from triton.backends.amd_triton_npu.config import config_context
         from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
 
@@ -177,6 +200,27 @@ def compile_triton_kernel(
                 pdi_path,
                 insts_path,
             )
-    else:
-        msg = f"Unsupported architecture for Triton kernel: {arch}"
-        raise ValueError(msg)
+    elif _is_gpu_arch(arch):
+        from triton.backends.amd.driver import HIPDriver
+
+        triton.runtime.driver.set_active(HIPDriver())
+        with TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)):
+            compiled_kernel = kernel_spec.function()
+
+        hsaco_path = next(
+            Path(p)
+            for name, p in compiled_kernel.metadata_group.items()
+            if name.endswith(".hsaco")
+        )
+        output_hsaco_path = output_directory / f"{exported_name}.hsaco"
+        shutil.copy(hsaco_path, output_hsaco_path)
+
+        logger.info(
+            (
+                "Triton GPU compilation successful\n"
+                "  Metadata:      %s\n"
+                "  HSACO Path:    %s"
+            ),
+            compiled_kernel.metadata,
+            output_hsaco_path,
+        )
