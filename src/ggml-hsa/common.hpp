@@ -34,7 +34,7 @@
 extern bool g_ggml_hsa_verbose;
 
 /**
- * @brief Logs errors.
+ * @brief Logs an error when verbose logging is enabled (@ref g_ggml_hsa_verbose).
  */
 #define GGML_HSA_LOG_ERROR(MSG, ...)                                                               \
     do {                                                                                           \
@@ -43,7 +43,7 @@ extern bool g_ggml_hsa_verbose;
     } while (false)
 
 /**
- * @brief Logs warnings.
+ * @brief Logs a warning when verbose logging is enabled (@ref g_ggml_hsa_verbose).
  */
 #define GGML_HSA_LOG_WARN(MSG, ...)                                                                \
     do {                                                                                           \
@@ -52,7 +52,7 @@ extern bool g_ggml_hsa_verbose;
     } while (false)
 
 /**
- * @brief Logs information.
+ * @brief Logs an informational message when verbose logging is enabled (@ref g_ggml_hsa_verbose).
  */
 #define GGML_HSA_LOG_INFO(MSG, ...)                                                                \
     do {                                                                                           \
