@@ -33,6 +33,9 @@ bool g_ggml_hsa_verbose = [] {
 /// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
 #define MATRIX_ROW_PADDING 512
 
+/// @brief Size in bytes of the buffer used to query @c HSA_AGENT_INFO_NAME.
+static constexpr std::size_t ggml_hsa_agent_name_size = 64;
+
 #define NOT_IMPLEMENTED()                                                                          \
     do {                                                                                           \
         GGML_ABORT("(%s:%d) %s not implemented\n", __FILE__, __LINE__, __PRETTY_FUNCTION__);       \
@@ -117,8 +120,9 @@ static std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor,
     std::ostringstream oss;
 
     // convert name in lowercase
-    std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss),
-                   [&](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
+    std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss), [&](char c) {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    });
 
     // output tensor
     oss << '-';
@@ -207,8 +211,7 @@ static std::string ggml_hsa_format_name(std::int32_t device) {
  * @brief Retrieves the agent info for the given agent @p agent.
  */
 static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
-    constexpr std::size_t agent_name_size = 64;
-    char agent_name[agent_name_size] = {};
+    char agent_name[ggml_hsa_agent_name_size] = {};
     GGML_HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, agent_name));
     return std::string{agent_name};
 }
@@ -349,7 +352,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     dev_info.agent = agent;
     dev_info.type = type;
 
-    char name[64] = {};
+    char name[ggml_hsa_agent_name_size] = {};
     if (auto status = hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, name);
         status != HSA_STATUS_SUCCESS) {
         return status;
@@ -524,9 +527,11 @@ static bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor) {
 }
 
 /**
- * @brief Updates the strides of @p tensor so that it has a trivial layout.
+ * @brief Recomputes the strides of @p tensor from its shape for a contiguous, unpermuted layout.
+ *
+ * After this function is called, the @p tensor has a trivial layout.
  */
-static void ggml_hsa_force_unpermuted(ggml_tensor & tensor) {
+static void ggml_hsa_set_contiguous_strides(ggml_tensor & tensor) {
     tensor.nb[0] = ggml_type_size(tensor.type);
     tensor.nb[1] = tensor.nb[0] * (tensor.ne[0] / ggml_blck_size(tensor.type));
     for (std::int32_t i = 2; i < GGML_MAX_DIMS; ++i) {
@@ -541,11 +546,7 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
     const auto nelements = ggml_nelements(&tensor);
     tensor.ne[0] = nelements;
     std::fill_n(std::next(tensor.ne), GGML_MAX_DIMS - 1, 1);
-    tensor.nb[0] = ggml_type_size(tensor.type);
-    tensor.nb[1] = tensor.nb[0] * (tensor.ne[0] / ggml_blck_size(tensor.type));
-    for (std::int32_t i = 2; i < GGML_MAX_DIMS; ++i) {
-        tensor.nb[i] = tensor.nb[i - 1] * tensor.ne[i - 1];
-    }
+    ggml_hsa_set_contiguous_strides(tensor);
 }
 
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
@@ -616,7 +617,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         auto & src_node = src_nodes[src_idx];
         if (!ggml_hsa_has_trivial_layout(src_node.tensor)) {
             update_src_buffer_size[src_idx] = true;
-            ggml_hsa_force_unpermuted(src_node.tensor);
+            ggml_hsa_set_contiguous_strides(src_node.tensor);
         }
     }
 
@@ -881,7 +882,7 @@ static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t /* buffer *
                                                const ggml_tensor * src,
                                                ggml_tensor * dst) {
     if (ggml_backend_buffer_is_hsa(src->buffer)) {
-        std::memcpy(dst->data, src->data, ggml_nbytes(dst));
+        std::memcpy(dst->data, src->data, ggml_nbytes(src));
         return true;
     }
     return false;
@@ -1065,12 +1066,13 @@ static const char * ggml_backend_hsa_host_buffer_type_name(ggml_backend_buffer_t
     return GGML_HSA_NAME "_Host";
 }
 
-static void ggml_backend_hsa_host_buffer_free_buffer(ggml_backend_buffer_t buffer) {
+[[noreturn]] static void
+ggml_backend_hsa_host_buffer_free_buffer(ggml_backend_buffer_t /* buffer */) {
     // TODO free buffer
     NOT_IMPLEMENTED();
 }
 
-static void * ggml_hsa_host_malloc(size_t size) {
+static void * ggml_hsa_host_malloc(size_t /* size */) {
     // TODO allocate pinned memory
     NOT_IMPLEMENTED();
     return nullptr;
@@ -1296,11 +1298,13 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     return status;
 }
 
-static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
+[[noreturn]] static void ggml_backend_hsa_event_record(ggml_backend_t /* backend */,
+                                                       ggml_backend_event_t /* event */) {
     NOT_IMPLEMENTED();
 }
 
-static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_event_t event) {
+[[noreturn]] static void ggml_backend_hsa_event_wait(ggml_backend_t /* backend */,
+                                                     ggml_backend_event_t /* event */) {
     NOT_IMPLEMENTED();
 }
 
@@ -1370,12 +1374,12 @@ void ggml_backend_hsa_get_device_memory(std::int32_t device, size_t * free, size
     *free = *total;
 }
 
-bool ggml_backend_hsa_register_host_buffer(void * buffer, size_t size) {
+bool ggml_backend_hsa_register_host_buffer(void * /* buffer */, size_t /* size */) {
     NOT_IMPLEMENTED();
     return false;
 }
 
-void ggml_backend_hsa_unregister_host_buffer(void * buffer) { NOT_IMPLEMENTED(); }
+void ggml_backend_hsa_unregister_host_buffer(void * /* buffer */) { NOT_IMPLEMENTED(); }
 
 // backend device
 
@@ -1530,17 +1534,19 @@ static bool ggml_backend_hsa_device_offload_op(ggml_backend_dev_t /* dev */,
     return get_op_batch_size(op) >= min_batch_size;
 }
 
-static ggml_backend_event_t ggml_backend_hsa_device_event_new(ggml_backend_dev_t dev) {
+static ggml_backend_event_t ggml_backend_hsa_device_event_new(ggml_backend_dev_t /* dev */) {
     NOT_IMPLEMENTED();
     return nullptr;
 }
 
-static void ggml_backend_hsa_device_event_free(ggml_backend_dev_t dev, ggml_backend_event_t event) {
+[[noreturn]] static void ggml_backend_hsa_device_event_free(ggml_backend_dev_t /* dev */,
+                                                            ggml_backend_event_t /* event */) {
     NOT_IMPLEMENTED();
 }
 
-static void ggml_backend_hsa_device_event_synchronize(ggml_backend_dev_t dev,
-                                                      ggml_backend_event_t event) {
+[[noreturn]] static void
+ggml_backend_hsa_device_event_synchronize(ggml_backend_dev_t /* dev */,
+                                          ggml_backend_event_t /* event */) {
     NOT_IMPLEMENTED();
 }
 
@@ -1573,7 +1579,7 @@ static const ggml_backend_device_i ggml_backend_hsa_device_interface = {
 struct ggml_backend_hsa_reg_context {
     static inline const char * name = GGML_HSA_NAME;
     std::vector<ggml_backend_dev_t> devices;
-    std::array<ggml_backend_feature, 1> features = {{nullptr, nullptr}};
+    std::array<ggml_backend_feature, 1> features = {{{nullptr, nullptr}}};
 };
 
 static const char * ggml_backend_hsa_reg_get_name(ggml_backend_reg_t /* reg */) {
