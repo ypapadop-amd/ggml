@@ -14,9 +14,13 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor * src_tensors[],
                                           std::size_t num_src_tensors,
                                           ggml_tensor & dst_tensor) const {
+    // each kernarg occupies two uint64_t entries: an address followed by a size in bytes
+    constexpr std::size_t kernarg_entries_per_tensor = 2;
+
     const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
     const auto num_kernargs = num_src_tensors + 1 /* destination tensor */;
-    const std::size_t kernarg_bytes = num_kernargs * 2 * sizeof(std::uint64_t);
+    const std::size_t kernarg_bytes =
+        num_kernargs * kernarg_entries_per_tensor * sizeof(std::uint64_t);
 
     // create kernargs
     uint64_t * kernargs = nullptr;
@@ -47,7 +51,11 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     }
     kernargs[kernarg_idx++] = ggml_nbytes(&dst_tensor);
 
-    assert(kernarg_idx == num_kernargs * 2); // each tensor has 2 kernargs: pointer and size
+    assert(kernarg_idx == num_kernargs * kernarg_entries_per_tensor);
+
+    // number of bytes in the packet after completion_signal up to kernarg_address; the AIE dispatch
+    // packet ABI requires this to be exactly 24 (see hsa_amd_aie_kernel_dispatch_packet_t)
+    constexpr std::uint16_t aie_packet_count = 24;
 
     // create packet
     hsa_amd_aie_kernel_dispatch_packet_t pkt{};
@@ -55,7 +63,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                  (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE) |
                  (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE);
     pkt.opcode = HSA_AMD_AIE_PACKET_OPCODE_KMQ;
-    pkt.count = 24;
+    pkt.count = aie_packet_count;
     pkt.completion_signal.handle = 0; // TODO add ctx.dispatch_signal
     pkt.insts_addr_low = reinterpret_cast<std::uintptr_t>(insts.data()) & 0xFFFFFFFF;
     pkt.insts_addr_high = reinterpret_cast<std::uintptr_t>(insts.data()) >> 32;
