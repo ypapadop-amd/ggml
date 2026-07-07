@@ -49,4 +49,4 @@ for backend in "${INSTALL_LIST[@]}"; do
     python3 -m pip install -r ${REQUIREMENTS_FILE}
 done
 
-echo "Environment setup complete. Installed backends: ${BACKENDS}"
+echo "Environment setup complete. Installed backends: ${INSTALL_LIST[*]}"
