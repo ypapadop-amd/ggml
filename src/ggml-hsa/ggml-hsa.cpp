@@ -64,7 +64,7 @@ void ggml_hsa_error(
 }
 
 std::int32_t ggml_hsa_nsrcs(const ggml_tensor & tensor) {
-    // count backwards to handles "holes" in the src[] array - e.g., for SOFT_MAX with mask=nullptr
+    // count backwards to handle "holes" in the src[] array - e.g., for SOFT_MAX with mask=nullptr
     // but sinks!=nullptr has src[0]=input, src[1]=nullptr, src[2]=sinks
     std::int32_t last_src_idx = GGML_MAX_SRC - 1;
     for (; (last_src_idx >= 0) && (tensor.src[last_src_idx] == nullptr); --last_src_idx) {
@@ -161,8 +161,9 @@ constexpr bool ggml_hsa_is_elementwise_op(ggml_op op) {
 /**
  * @brief Returns if @p op can be flattened.
  *
- * An operation can be flattened if it independent of the tensor's dimensions, such as element wise
- * operations where the shapes and strides of the input and output tensors match.
+ * An operation can be flattened if its result is independent of how elements are laid out across
+ * dimensions: unary operations always qualify; element-wise operations qualify when all input and
+ * output tensors have the same shape.
  */
 static bool ggml_hsa_can_flatten(const ggml_tensor & op) {
     // operations with non-contiguously allocated tensors cannot be flattened
@@ -449,7 +450,9 @@ static ggml_hsa_device_info ggml_hsa_init() {
     return info;
 }
 
-/// @copydoc ggml_hsa_info
+/**
+ * @brief Returns a mutable reference to the HSA device information singleton.
+ */
 static ggml_hsa_device_info & ggml_hsa_info_mut() {
     static ggml_hsa_device_info info = ggml_hsa_init();
     return info;
@@ -1178,7 +1181,7 @@ static void ggml_backend_hsa_get_tensor_async(
 /**
  * @brief Copy tensor data between buffers if possible.
  *
- * The size of the data to be copied is inferred by the source tensor @p src.
+ * Both tensors must be contiguous; the number of bytes copied is @c ggml_nbytes(dst).
  *
  * @param backend_src source backend
  * @param backend_dst destination backend
@@ -1298,14 +1301,75 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     return status;
 }
 
-[[noreturn]] static void ggml_backend_hsa_event_record(ggml_backend_t /* backend */,
-                                                       ggml_backend_event_t /* event */) {
-    NOT_IMPLEMENTED();
+// event
+
+/**
+ * @brief Per-event data captured at record time.
+ *
+ * Stores the minimum information needed to implement point-in-time fence semantics on top of the
+ * backend's single counting dispatch signal.
+ */
+struct ggml_hsa_event_context {
+    hsa_signal_t signal{};         ///< The backend's dispatch signal at record time.
+    hsa_signal_value_t snapshot{}; ///< Signal value at event_record: all pre-record work is done
+                                   ///< when the signal drops below this.
+    hsa_queue_t * queue{};         ///< Queue the event was recorded on (for same-queue detection).
+};
+
+/**
+ * @brief Blocks until all work submitted before the corresponding @c event_record call completes.
+ *
+ * Uses the signal snapshot captured at record time: waits for the dispatch signal to drop below
+ * @p ec.snapshot, which (given the in-order queue) means every packet enqueued before the record
+ * point has been processed by hardware.  Returns immediately when @p ec.snapshot is zero (nothing
+ * was in flight at record time).
+ *
+ * @param[in] ec Event context populated by @c ggml_backend_hsa_event_record.
+ */
+static void ggml_hsa_event_wait_for_snapshot(const ggml_hsa_event_context & ec) {
+    if (ec.snapshot == 0) {
+        return;
+    }
+    hsa_signal_wait_scacquire(ec.signal, HSA_SIGNAL_CONDITION_LT, ec.snapshot, UINT64_MAX,
+                              HSA_WAIT_STATE_BLOCKED);
 }
 
-[[noreturn]] static void ggml_backend_hsa_event_wait(ggml_backend_t /* backend */,
-                                                     ggml_backend_event_t /* event */) {
-    NOT_IMPLEMENTED();
+/**
+ * @brief Records a fence point on @p backend into @p event.
+ *
+ * Snapshots the current value of the backend's dispatch signal so that a later
+ * @c ggml_backend_hsa_device_event_synchronize or @c ggml_backend_hsa_event_wait can block only
+ * until work submitted before this call has completed, without waiting for work submitted after.
+ *
+ * @param[in]  backend Backend whose in-flight work the event should fence.
+ * @param[out] event   Event to record into; must have been created with
+ *                     @c ggml_backend_hsa_device_event_new.
+ */
+static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
+    auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
+    auto & ec = *static_cast<ggml_hsa_event_context *>(event->context);
+    ec.signal = ctx.dispatch_signal;
+    ec.snapshot = hsa_signal_load_scacquire(ctx.dispatch_signal);
+    ec.queue = ctx.queue;
+}
+
+/**
+ * @brief Inserts a device-side dependency on @p event into @p backend's command stream.
+ *
+ * The AIE queue only accepts kernel dispatch packets, so a true GPU-side barrier cannot be
+ * enqueued.  Work on the same in-order queue is implicitly ordered, so when @p backend uses the
+ * same queue as the recording backend this is a no-op.  For a different queue the CPU blocks until
+ * the recorded work completes (conservative but correct).
+ *
+ * @param[in] backend Backend that should wait for @p event before proceeding.
+ * @param[in] event   Event previously populated by @c ggml_backend_hsa_event_record.
+ */
+static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_event_t event) {
+    const auto & ec = *static_cast<ggml_hsa_event_context *>(event->context);
+    const auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
+    if (ec.queue != ctx.queue) {
+        ggml_hsa_event_wait_for_snapshot(ec);
+    }
 }
 
 /**
@@ -1349,7 +1413,7 @@ bool ggml_backend_is_hsa(ggml_backend_t backend) {
 }
 
 /**
- * @brief Returns if the number of devices (i.e., HSA agents) associated with the HSA backend.
+ * @brief Returns the number of devices (i.e., HSA agents) associated with the HSA backend.
  */
 std::int32_t ggml_backend_hsa_get_device_count() { return ggml_hsa_info().device_count; }
 
@@ -1450,7 +1514,7 @@ static void ggml_backend_hsa_device_get_props(ggml_backend_dev_t dev,
         /* .async                = */ true,
         /* .host_buffer          = */ false,
         /* .buffer_from_host_ptr = */ false,
-        /* .events               = */ false,
+        /* .events               = */ true,
     };
 }
 
@@ -1534,20 +1598,38 @@ static bool ggml_backend_hsa_device_offload_op(ggml_backend_dev_t /* dev */,
     return get_op_batch_size(op) >= min_batch_size;
 }
 
-static ggml_backend_event_t ggml_backend_hsa_device_event_new(ggml_backend_dev_t /* dev */) {
-    NOT_IMPLEMENTED();
-    return nullptr;
+/**
+ * @brief Allocates a new event associated with @p dev.
+ *
+ * @param[in] dev Device the event belongs to.
+ * @return Newly allocated event, or @c nullptr on allocation failure.
+ */
+static ggml_backend_event_t ggml_backend_hsa_device_event_new(ggml_backend_dev_t dev) {
+    return new ggml_backend_event{
+        /* .device  = */ dev,
+        /* .context = */ new ggml_hsa_event_context,
+    };
 }
 
-[[noreturn]] static void ggml_backend_hsa_device_event_free(ggml_backend_dev_t /* dev */,
-                                                            ggml_backend_event_t /* event */) {
-    NOT_IMPLEMENTED();
+/**
+ * @brief Frees an event previously created by @c ggml_backend_hsa_device_event_new.
+ *
+ * @param[in] event Event to destroy.
+ */
+static void ggml_backend_hsa_device_event_free(ggml_backend_dev_t /* dev */,
+                                               ggml_backend_event_t event) {
+    delete static_cast<ggml_hsa_event_context *>(event->context);
+    delete event;
 }
 
-[[noreturn]] static void
-ggml_backend_hsa_device_event_synchronize(ggml_backend_dev_t /* dev */,
-                                          ggml_backend_event_t /* event */) {
-    NOT_IMPLEMENTED();
+/**
+ * @brief Blocks the calling thread until the work recorded into @p event has completed.
+ *
+ * @param[in] event Event previously populated by @c ggml_backend_hsa_event_record.
+ */
+static void ggml_backend_hsa_device_event_synchronize(ggml_backend_dev_t /* dev */,
+                                                      ggml_backend_event_t event) {
+    ggml_hsa_event_wait_for_snapshot(*static_cast<ggml_hsa_event_context *>(event->context));
 }
 
 /**
