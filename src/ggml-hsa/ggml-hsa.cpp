@@ -9,6 +9,7 @@
 #include "ggml-hsa/kernel-discovery.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -117,7 +118,7 @@ static std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor,
 
     // convert name in lowercase
     std::transform(op_name.begin(), op_name.end(), std::ostreambuf_iterator(oss),
-                   [&](char c) { return std::tolower(c); });
+                   [&](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
 
     // output tensor
     oss << '-';
@@ -207,8 +208,8 @@ static std::string ggml_hsa_format_name(std::int32_t device) {
  */
 static std::string ggml_hsa_agent_name(hsa_agent_t agent) {
     constexpr std::size_t agent_name_size = 64;
-    char agent_name[agent_name_size];
-    GGML_HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, &agent_name));
+    char agent_name[agent_name_size] = {};
+    GGML_HSA_CHECK_THROW(hsa_agent_get_info(agent, HSA_AGENT_INFO_NAME, agent_name));
     return std::string{agent_name};
 }
 
@@ -338,7 +339,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     }
 
     auto & info = *static_cast<ggml_hsa_device_info *>(data);
-    if (info.device_count == GGML_HSA_MAX_DEVICES - 1) {
+    if (info.device_count >= GGML_HSA_MAX_DEVICES) {
         GGML_ABORT("%s: exceeded GGML_HSA_MAX_DEVICES limit (%d)", __func__, GGML_HSA_MAX_DEVICES);
     }
 
@@ -1025,7 +1026,7 @@ static struct {
 ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(std::int32_t device) {
     const auto device_count = ggml_backend_hsa_get_device_count();
 
-    if (device >= device_count) {
+    if (device < 0 || device >= device_count) {
         return nullptr;
     }
 
