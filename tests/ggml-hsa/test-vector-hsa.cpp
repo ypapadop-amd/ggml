@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -102,86 +103,74 @@ int run(ggml_backend_t backend, std::size_t N, const char * op) {
     const std::size_t alignment = ggml_backend_get_alignment(backend);
     const std::size_t tensor_count = 3;
     const std::size_t buffer_size = tensor_count * GGML_PAD((N * sizeof(T)), alignment);
-    ggml_backend_buffer_t buffer = ggml_backend_alloc_buffer(backend, buffer_size);
-    ggml_tallocr alloc = ggml_tallocr_new(buffer);
-    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)> buffer{
+        ggml_backend_alloc_buffer(backend, buffer_size), ggml_backend_buffer_free};
+    ggml_tallocr alloc = ggml_tallocr_new(buffer.get());
+    std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)> galloc{
+        ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
 
     const std::size_t ctx_size =
         tensor_count * ggml_tensor_overhead() + ggml_graph_overhead_custom(tensor_count, false);
     ggml_init_params params = {/*.mem_size   =*/ctx_size,
                                /*.mem_buffer =*/nullptr,
                                /*.no_alloc   =*/true};
-    ggml_context * ctx = ggml_init(params);
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx{ggml_init(params), ggml_free};
 
-    int ret = EXIT_SUCCESS;
-
-    ggml_tensor * tensor_a = ggml_new_tensor_1d(ctx, tensor_type, N);
-    ggml_tensor * tensor_b = ggml_new_tensor_1d(ctx, tensor_type, N);
+    ggml_tensor * tensor_a = ggml_new_tensor_1d(ctx.get(), tensor_type, N);
+    ggml_tensor * tensor_b = ggml_new_tensor_1d(ctx.get(), tensor_type, N);
     if ((ggml_tallocr_alloc(&alloc, tensor_a) != GGML_STATUS_SUCCESS) ||
         (ggml_tallocr_alloc(&alloc, tensor_b) != GGML_STATUS_SUCCESS)) {
         std::cerr << "Could not allocate tensor\n";
-        ret = EXIT_FAILURE;
-        goto cleanup;
+        return EXIT_FAILURE;
     }
 
-    {
-        ggml_cgraph * gf = ggml_new_graph_custom(ctx, tensor_count, /*grads*/ false);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx.get(), tensor_count, /*grads*/ false);
 
-        ggml_tensor * tensor_result = nullptr;
-        if (std::strcmp(op, "+") == 0) {
-            tensor_result = ggml_add(ctx, tensor_a, tensor_b);
-        } else if (std::strcmp(op, "-") == 0) {
-            tensor_result = ggml_sub(ctx, tensor_a, tensor_b);
-        } else if (std::strcmp(op, "*") == 0) {
-            tensor_result = ggml_mul(ctx, tensor_a, tensor_b);
-        } else if (std::strcmp(op, "/") == 0) {
-            tensor_result = ggml_div(ctx, tensor_a, tensor_b);
-        } else {
-            std::cerr << "Unknown operation \"" << op << "\".\n";
-            ret = EXIT_FAILURE;
-            goto cleanup;
-        }
-
-        if (!ggml_backend_supports_op(backend, tensor_result)) {
-            std::cerr << "Operation not supported\n";
-            ret = EXIT_FAILURE;
-            goto cleanup;
-        }
-        ggml_build_forward_expand(gf, tensor_result);
-        if (!ggml_gallocr_alloc_graph(galloc, gf)) {
-            std::cerr << "Could not allocate graph\n";
-            ret = EXIT_FAILURE;
-            goto cleanup;
-        }
-
-        ggml_backend_tensor_set(tensor_a, std::data(A), 0, ggml_nbytes(tensor_a));
-        ggml_backend_tensor_set(tensor_b, std::data(B), 0, ggml_nbytes(tensor_b));
-
-        if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
-            std::cerr << "Execution failed\n";
-            ret = EXIT_FAILURE;
-            goto cleanup;
-        }
-
-        std::vector<T> result(N);
-        ggml_backend_tensor_get(tensor_result, std::data(result), 0, ggml_nbytes(tensor_result));
-        std::cout << "A =     ";
-        print_vec(std::cout, A);
-        std::cout << '\n';
-        std::cout << "B =     ";
-        print_vec(std::cout, B);
-        std::cout << '\n';
-        std::cout << "A " << op << " B = ";
-        print_vec(std::cout, result);
-        std::cout << '\n';
+    ggml_tensor * tensor_result = nullptr;
+    if (std::strcmp(op, "+") == 0) {
+        tensor_result = ggml_add(ctx.get(), tensor_a, tensor_b);
+    } else if (std::strcmp(op, "-") == 0) {
+        tensor_result = ggml_sub(ctx.get(), tensor_a, tensor_b);
+    } else if (std::strcmp(op, "*") == 0) {
+        tensor_result = ggml_mul(ctx.get(), tensor_a, tensor_b);
+    } else if (std::strcmp(op, "/") == 0) {
+        tensor_result = ggml_div(ctx.get(), tensor_a, tensor_b);
+    } else {
+        std::cerr << "Unknown operation \"" << op << "\".\n";
+        return EXIT_FAILURE;
     }
 
-cleanup:
-    ggml_free(ctx);
-    ggml_gallocr_free(galloc);
-    ggml_backend_buffer_free(buffer);
+    if (!ggml_backend_supports_op(backend, tensor_result)) {
+        std::cerr << "Operation not supported\n";
+        return EXIT_FAILURE;
+    }
+    ggml_build_forward_expand(gf, tensor_result);
+    if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
+        std::cerr << "Could not allocate graph\n";
+        return EXIT_FAILURE;
+    }
 
-    return ret;
+    ggml_backend_tensor_set(tensor_a, std::data(A), 0, ggml_nbytes(tensor_a));
+    ggml_backend_tensor_set(tensor_b, std::data(B), 0, ggml_nbytes(tensor_b));
+
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        std::cerr << "Execution failed\n";
+        return EXIT_FAILURE;
+    }
+
+    std::vector<T> result(N);
+    ggml_backend_tensor_get(tensor_result, std::data(result), 0, ggml_nbytes(tensor_result));
+    std::cout << "A =     ";
+    print_vec(std::cout, A);
+    std::cout << '\n';
+    std::cout << "B =     ";
+    print_vec(std::cout, B);
+    std::cout << '\n';
+    std::cout << "A " << op << " B = ";
+    print_vec(std::cout, result);
+    std::cout << '\n';
+
+    return EXIT_SUCCESS;
 }
 
 int main(int argc, char * argv[]) {
