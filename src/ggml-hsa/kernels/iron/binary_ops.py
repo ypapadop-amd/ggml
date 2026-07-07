@@ -22,7 +22,6 @@ from aie.iron import (
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
-from aie.iron.placers import SequentialPlacer
 
 from .utils import (
     arch_aligned_num_elements,
@@ -144,7 +143,7 @@ def _binary_op(
         rt.drain(of_out.cons(), t[-1], wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program()
 
 
 def _create_external_function(
@@ -364,7 +363,7 @@ def _binary_op_broadcast(
         rt.fill(of_src1.prod(), b)
         rt.drain(of_out.cons(), c, wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program()
 
 
 def binary_op(
