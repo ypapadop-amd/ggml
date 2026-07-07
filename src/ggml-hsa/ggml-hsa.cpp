@@ -1306,23 +1306,25 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 /**
  * @brief Per-event data captured at record time.
  *
- * Stores the minimum information needed to implement point-in-time fence semantics on top of the
- * backend's single counting dispatch signal.
+ * Because the dispatch signal is a counting signal (incremented per submission, decremented per
+ * completion), there is no cheap point-in-time fence.  We instead record whether any work was
+ * in-flight at record time; if so, the wait drains the entire queue (conservative but correct).
  */
 struct ggml_hsa_event_context {
     hsa_signal_t signal{};         ///< The backend's dispatch signal at record time.
-    hsa_signal_value_t snapshot{}; ///< Signal value at event_record: all pre-record work is done
-                                   ///< when the signal drops below this.
+    hsa_signal_value_t snapshot{}; ///< Signal value at event_record: non-zero means work was
+                                   ///< in flight and the queue must be fully drained to wait.
     hsa_queue_t * queue{};         ///< Queue the event was recorded on (for same-queue detection).
 };
 
 /**
  * @brief Blocks until all work submitted before the corresponding @c event_record call completes.
  *
- * Uses the signal snapshot captured at record time: waits for the dispatch signal to drop below
- * @p ec.snapshot, which (given the in-order queue) means every packet enqueued before the record
- * point has been processed by hardware.  Returns immediately when @p ec.snapshot is zero (nothing
- * was in flight at record time).
+ * Because @c dispatch_signal is a counting signal (incremented on each submission, decremented on
+ * each completion), waiting for it to drop below the recorded snapshot would only guarantee that
+ * at least one dispatch completed, not all pre-record work.  When work was in flight at record
+ * time (@p ec.snapshot != 0), this function conservatively drains the entire queue by waiting for
+ * the signal to reach zero.
  *
  * @param[in] ec Event context populated by @c ggml_backend_hsa_event_record.
  */
@@ -1330,16 +1332,17 @@ static void ggml_hsa_event_wait_for_snapshot(const ggml_hsa_event_context & ec) 
     if (ec.snapshot == 0) {
         return;
     }
-    hsa_signal_wait_scacquire(ec.signal, HSA_SIGNAL_CONDITION_LT, ec.snapshot, UINT64_MAX,
+    hsa_signal_wait_scacquire(ec.signal, HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX,
                               HSA_WAIT_STATE_BLOCKED);
 }
 
 /**
  * @brief Records a fence point on @p backend into @p event.
  *
- * Snapshots the current value of the backend's dispatch signal so that a later
- * @c ggml_backend_hsa_device_event_synchronize or @c ggml_backend_hsa_event_wait can block only
- * until work submitted before this call has completed, without waiting for work submitted after.
+ * Snapshots the current value of the backend's dispatch signal.  A non-zero snapshot indicates
+ * that work was in flight at record time; a later @c ggml_backend_hsa_device_event_synchronize or
+ * cross-queue @c ggml_backend_hsa_event_wait will conservatively drain the entire queue to ensure
+ * all pre-record work has completed.
  *
  * @param[in]  backend Backend whose in-flight work the event should fence.
  * @param[out] event   Event to record into; must have been created with
