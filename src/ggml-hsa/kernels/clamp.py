@@ -38,6 +38,7 @@ def ggml_op_clamp(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
+        op_params=op_params,
         function=partial(
             clamp,
             arch=arch,
