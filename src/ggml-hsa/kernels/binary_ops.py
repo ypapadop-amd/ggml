@@ -29,9 +29,6 @@ def _make_iron_binary_kernel_spec(
     Returns:
         KernelSpec configured for IRON backend.
 
-    Raises:
-        ValueError: If input_tensors does not contain exactly two tensors.
-
     """
     from functools import partial
 
@@ -69,7 +66,8 @@ def _make_triton_add_kernel_spec(
         KernelSpec configured for TRITON backend.
 
     Raises:
-        ValueError: If the architecture is not supported.
+        ValueError: If the tensors require broadcasting or are non-contiguous
+            (raised lazily when the returned compile function is invoked).
     """
     n_elements = output_tensor.numel()
 

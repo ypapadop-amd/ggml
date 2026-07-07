@@ -66,10 +66,8 @@ def _get_triton_target(kernel_spec: KernelSpec) -> str:
         kernel_spec: The KernelSpec containing the architecture information.
 
     Returns:
-        A string representing the Triton target name corresponding to the kernel's architecture.
-
-    Raises:
-        ValueError: If the architecture specified in the kernel_spec is not supported.
+        A string representing the Triton target name corresponding to the
+        kernel's architecture. Unknown architectures are returned unchanged.
     """
     mapping = {
         "aie2": "npu1",
