@@ -30,7 +30,7 @@ def _make_iron_unary_kernel_spec(
     """
     from functools import partial
 
-    from .iron.unary_ops import unary_op
+    from .iron_kernels.unary_ops import unary_op
 
     return KernelSpec(
         backend=Backend.IRON,

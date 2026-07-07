@@ -32,7 +32,7 @@ def _make_iron_binary_kernel_spec(
     """
     from functools import partial
 
-    from .iron.binary_ops import binary_op
+    from .iron_kernels.binary_ops import binary_op
 
     return KernelSpec(
         backend=Backend.IRON,
@@ -84,8 +84,8 @@ def _make_triton_add_kernel_spec(
         import torch
         import triton
 
-        from .triton.utils import numpy_dtype_to_torch, triton_device
-        from .triton.vecadd import vecadd
+        from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
+        from .triton_kernels.vecadd import vecadd
 
         broadcast = input_tensors[0].shape != input_tensors[1].shape
         if broadcast or any(not t.contiguous for t in (*input_tensors, output_tensor)):
@@ -124,7 +124,7 @@ def _make_triton_add_kernel_spec(
         function=_compile,
         config={
             "transform_script": str(
-                Path(__file__).parent / "triton" / f"vecadd_{arch}.mlir"
+                Path(__file__).parent / "triton_kernels" / f"vecadd_{arch}.mlir"
             ),
         },
     )

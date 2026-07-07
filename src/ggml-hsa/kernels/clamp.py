@@ -30,7 +30,7 @@ def ggml_op_clamp(
     """
     from functools import partial
 
-    from .iron.clamp import clamp
+    from .iron_kernels.clamp import clamp
 
     return KernelSpec(
         backend=Backend.IRON,
