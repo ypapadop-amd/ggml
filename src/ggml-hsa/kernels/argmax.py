@@ -33,7 +33,7 @@ def ggml_op_argmax(
     """
     from functools import partial
 
-    from .iron.argmax import argmax_op
+    from .iron_kernels.argmax import argmax_op
 
     return KernelSpec(
         backend=Backend.IRON,
