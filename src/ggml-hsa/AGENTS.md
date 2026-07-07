@@ -584,7 +584,7 @@ python3 -m pip install -r requirements-triton.txt
 
 ### MLIR-AIE Version
 
-The project currently uses **mlir-aie v1.3.1**. Ensure your environment
+The project currently uses **mlir-aie v1.3.3**. Ensure your environment
 matches this version to avoid compatibility issues with:
 
 - IRON API changes
@@ -691,6 +691,12 @@ distinct cached kernels.
 ## Agent Rules
 
 ### Python Linting and Formatting
+
+`ruff` is not part of the backend requirements. Install the dev tools first:
+
+```bash
+python3 -m pip install -r src/ggml-hsa/requirements-dev.txt
+```
 
 After modifying any Python file under `src/ggml-hsa/`, run:
 
