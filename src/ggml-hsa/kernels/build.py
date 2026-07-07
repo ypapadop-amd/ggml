@@ -350,8 +350,8 @@ def _to_tensordesc(string: str) -> TensorDesc:
         A TensorDesc instance with the specified shape and dtype.
 
     """
-    shape, dtype = string.split("/")
-    shape = _to_tuple_of_ints(shape)
+    shape_str, dtype = string.split("/")
+    shape = _to_tuple_of_ints(shape_str)
     return TensorDesc(dtype=dtype, shape=shape, stride=None)
 
 

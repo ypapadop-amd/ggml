@@ -27,7 +27,7 @@ def ggml_op_mul_mat(
     """
     from functools import partial
 
-    from .iron.gemm import gemm
+    from .iron_kernels.gemm import gemm
 
     return KernelSpec(
         backend=Backend.IRON,

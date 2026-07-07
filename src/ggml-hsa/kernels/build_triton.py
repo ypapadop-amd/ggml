@@ -11,7 +11,7 @@ from dataclasses import MISSING
 from pathlib import Path
 
 from kernel import KernelSpec
-from triton.utils import NPU_ARCH_MAP, is_gpu_arch, is_npu_arch
+from triton_kernels.utils import NPU_ARCH_MAP, is_gpu_arch, is_npu_arch
 
 
 class TempEnvSet(ContextDecorator):

@@ -36,7 +36,7 @@ install(
     FILES
         ${IRON_FILES}
     DESTINATION
-        lib/kernels/iron
+        lib/kernels/iron_kernels
     )
 
 # copy aie2 kernel files
@@ -55,7 +55,7 @@ install(
     FILES
         ${IRON_AIE2_KERNEL_FILES}
     DESTINATION
-        lib/kernels/iron/aie2
+        lib/kernels/iron_kernels/aie2
     )
 
 # copy aie2p kernel files
@@ -74,6 +74,6 @@ install(
     FILES
         ${IRON_AIE2P_KERNEL_FILES}
     DESTINATION
-        lib/kernels/iron/aie2p
+        lib/kernels/iron_kernels/aie2p
     )
 

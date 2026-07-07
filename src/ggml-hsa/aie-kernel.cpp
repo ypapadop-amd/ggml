@@ -64,7 +64,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                  (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE);
     pkt.opcode = HSA_AMD_AIE_PACKET_OPCODE_KMQ;
     pkt.count = aie_packet_count;
-    pkt.completion_signal.handle = 0; // TODO add ctx.dispatch_signal
+    pkt.completion_signal = ctx.dispatch_signal;
     pkt.insts_addr_low = reinterpret_cast<std::uintptr_t>(insts.data()) & 0xFFFFFFFF;
     pkt.insts_addr_high = reinterpret_cast<std::uintptr_t>(insts.data()) >> 32;
     pkt.num_kernargs = num_kernargs;
@@ -83,6 +83,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     const std::uint64_t packet_id = wr_idx % queue->size;
     *(static_cast<hsa_amd_aie_kernel_dispatch_packet_t *>(queue->base_address) + packet_id) = pkt;
 
+    hsa_signal_add_relaxed(ctx.dispatch_signal, 1);
     hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
 
     return GGML_STATUS_SUCCESS;

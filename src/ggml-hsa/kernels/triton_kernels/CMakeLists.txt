@@ -18,5 +18,5 @@ install(
     FILES
         ${TRITON_FILES}
     DESTINATION
-        lib/kernels/triton
+        lib/kernels/triton_kernels
     )

@@ -29,7 +29,7 @@ def ggml_op_cross_entropy_loss(
     """
     from functools import partial
 
-    from .iron.cross_entropy_loss import cross_entropy_loss
+    from .iron_kernels.cross_entropy_loss import cross_entropy_loss
 
     return KernelSpec(
         backend=Backend.IRON,

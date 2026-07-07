@@ -30,7 +30,7 @@ def ggml_op_soft_max(
     """
     from functools import partial
 
-    from .iron.softmax import softmax
+    from .iron_kernels.softmax import softmax
 
     return KernelSpec(
         backend=Backend.IRON,

@@ -34,7 +34,7 @@ def ggml_op_count_equal(
     """
     from functools import partial
 
-    from .iron.count_equal import count_equal_op
+    from .iron_kernels.count_equal import count_equal_op
 
     return KernelSpec(
         backend=Backend.IRON,
