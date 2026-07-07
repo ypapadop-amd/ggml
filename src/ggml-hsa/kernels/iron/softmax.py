@@ -23,7 +23,6 @@ from aie.iron import (
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
-from aie.iron.placers import SequentialPlacer
 
 from .utils import arch_to_device
 
@@ -197,7 +196,7 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
         rt.fill(of_in.prod(), a_in)
         rt.drain(of_out.cons(), b_out, wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program()
 
 
 def create_binary_program(
@@ -297,7 +296,7 @@ def create_binary_program(
         rt.fill(of_mask.prod(), a_mask)
         rt.drain(of_out.cons(), b_out, wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program()
 
 
 def create_ternary_program(
@@ -404,7 +403,7 @@ def create_ternary_program(
         rt.fill(of_sink.prod(), a_sink)
         rt.drain(of_out.cons(), b_out, wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program()
 
 
 def _create_external_function(

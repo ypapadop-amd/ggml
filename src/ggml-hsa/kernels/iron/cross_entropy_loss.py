@@ -21,7 +21,6 @@ from aie.iron import (
     Worker,
 )
 from aie.iron.controlflow import range_
-from aie.iron.placers import SequentialPlacer
 
 from .utils import align_to_arch, arch_to_device
 
@@ -254,7 +253,7 @@ def create_reduction_program(
         rt.fill(of_labels.prod(), a_labels)
         rt.drain(of_out.cons(), b_out, wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program()
 
 
 def _create_external_function(

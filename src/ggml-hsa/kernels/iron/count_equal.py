@@ -26,7 +26,6 @@ from aie.iron import (
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
-from aie.iron.placers import SequentialPlacer
 
 from .utils import arch_to_device, max_tile_size
 
@@ -178,7 +177,7 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor):
         rt.drain(of_out.cons(), b_out, wait=True)
 
     # Place program components and generate an MLIR module
-    return Program(arch_to_device(arch), rt).resolve_program(SequentialPlacer())
+    return Program(arch_to_device(arch), rt).resolve_program()
 
 
 def _create_external_function(

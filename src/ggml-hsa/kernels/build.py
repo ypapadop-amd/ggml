@@ -187,6 +187,30 @@ def _import_from_path(module_name: str, path: str | Path):
     return module
 
 
+def _setup_logger(name: str, verbose: bool) -> logging.Logger:
+    """Configure and return a logger for kernel compilation.
+
+    Parameters:
+        name: Logger name, typically __name__ of the calling module.
+        verbose: If True, enables DEBUG-level output to stderr.
+
+    Returns:
+        Configured Logger instance.
+
+    """
+    logger = logging.getLogger(name)
+    for handler in logger.handlers.copy():
+        with contextlib.suppress(ValueError):
+            logger.removeHandler(handler)
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.DEBUG)
+        ch.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        logger.addHandler(ch)
+    return logger
+
+
 def ggml_compile_op(
     op_name: str,
     arch: str,
@@ -219,20 +243,7 @@ def ggml_compile_op(
         NotImplementedError: If the selected backend is not implemented.
 
     """
-    # Setup logging
-    logger = logging.getLogger(__name__)
-    # remove all existing handlers
-    for handler in logger.handlers.copy():
-        # ignore double removals
-        with contextlib.suppress(ValueError):
-            logger.removeHandler(handler)
-    if verbose:
-        logger.setLevel(logging.DEBUG)
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.DEBUG)
-        formatter = logging.Formatter("%(levelname)s: %(message)s")
-        ch.setFormatter(formatter)
-        logger.addHandler(ch)
+    logger = _setup_logger(__name__, verbose)
 
     # Get kernel mapping for the operation
     kernel = _get_kernel(op_name)
