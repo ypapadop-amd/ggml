@@ -21,12 +21,12 @@ class ggml_hsa_aie_buffer {
     constexpr ggml_hsa_aie_buffer() = default;
     ggml_hsa_aie_buffer(std::byte * data, std::size_t size) : m_data{data}, m_size{size} {}
 
-    ggml_hsa_aie_buffer(ggml_hsa_aie_buffer && other) :
+    ggml_hsa_aie_buffer(ggml_hsa_aie_buffer && other) noexcept :
         m_data{std::exchange(other.m_data, nullptr)}, m_size{std::exchange(other.m_size, 0)} {}
 
     ~ggml_hsa_aie_buffer() = default;
 
-    ggml_hsa_aie_buffer & operator=(ggml_hsa_aie_buffer && other) {
+    ggml_hsa_aie_buffer & operator=(ggml_hsa_aie_buffer && other) noexcept {
         m_data = std::exchange(other.m_data, nullptr);
         m_size = std::exchange(other.m_size, 0);
         return *this;

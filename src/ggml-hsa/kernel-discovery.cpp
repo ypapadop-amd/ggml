@@ -130,11 +130,12 @@ static ggml_status ggml_hsa_load_file(hsa_amd_memory_pool_t pool,
         return GGML_STATUS_FAILED;
     }
 
-    const std::size_t size = is.tellg();
-    if (!is.seekg(0, std::ios::beg) || (size == 0)) {
+    const std::streamoff file_size = is.tellg();
+    if ((file_size <= 0) || !is.seekg(0, std::ios::beg)) {
         GGML_HSA_LOG_ERROR("%s: could not get file size for %s", __func__, path.c_str());
         return GGML_STATUS_FAILED;
     }
+    const auto size = static_cast<std::size_t>(file_size);
 
     void * ptr = nullptr;
     if (auto status = hsa_amd_memory_pool_allocate(pool, size, 0, &ptr);
@@ -148,7 +149,6 @@ static ggml_status ggml_hsa_load_file(hsa_amd_memory_pool_t pool,
     is.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(size));
     if (!is || is.gcount() != static_cast<std::streamsize>(size)) {
         GGML_HSA_LOG_ERROR("%s: failed to read %zu bytes from %s", __func__, size, path.c_str());
-        hsa_amd_memory_pool_free(ptr);
         buffer = ggml_hsa_aie_buffer{};
         return GGML_STATUS_FAILED;
     }
