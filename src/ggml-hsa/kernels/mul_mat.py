@@ -13,13 +13,13 @@ from .kernel import Backend, KernelSpec
 def ggml_op_mul_mat(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """GGML_OP_MUL_MAT implementation.
+    """Return the KernelSpec for GGML_OP_MUL_MAT.
 
     Parameters:
-        arch: Target architecture (e.g., "aie2", "aie2p").
-        input_tensors: List of two input tensors (A and B).
-        output_tensor: Output tensor (C).
-        op_params: Operation-specific parameters.
+        arch: Target architecture.
+        input_tensors: Input tensors A and B.
+        output_tensor: Output tensor C.
+        op_params: Operation parameters.
 
     Returns:
         KernelSpec for the MUL_MAT operation.

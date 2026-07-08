@@ -1,11 +1,6 @@
 # (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""GGML HSA Kernels package.
-
-This package provides IRON-based kernel implementations for GGML operations
-targeting AMD AIE (AI Engine) devices. It exposes the main compilation function
-and tensor descriptor utilities needed for JIT kernel compilation.
-"""
+"""GGML HSA kernels for AMD AIE devices: compilation entry point and tensor descriptors."""
 
 from .build import ggml_compile_op
 from .kernel import Kernel

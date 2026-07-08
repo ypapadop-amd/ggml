@@ -31,25 +31,14 @@ from .utils import (
 
 
 def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
-    """Python reimplementation of ggml_can_repeat.
-
-    Checks if tensor t0 can be repeated to fill tensor t1.
-    This is the GGML broadcast semantic: t1->ne[i] % t0->ne[i] == 0 for all dims.
-
-    From ggml.c:
-        bool ggml_can_repeat(const struct ggml_tensor * t0, const struct ggml_tensor * t1) {
-            return (t1->ne[0]%t0->ne[0] == 0) &&
-                   (t1->ne[1]%t0->ne[1] == 0) &&
-                   (t1->ne[2]%t0->ne[2] == 0) &&
-                   (t1->ne[3]%t0->ne[3] == 0);
-        }
+    """Whether t0 can be repeated to fill t1 (GGML broadcast: t1[i] % t0[i] == 0).
 
     Parameters:
-        t0_shape: Shape of the smaller tensor to be repeated.
-        t1_shape: Shape of the larger tensor to fill.
+        t0_shape: Shape of the tensor to be repeated.
+        t1_shape: Target shape to fill.
 
     Returns:
-        True if t0 can be repeated to fill t1.
+        True if t0 can be broadcast to t1.
 
     """
     return all(t1_shape[i] % t0_shape[i] == 0 for i in range(4))
@@ -57,11 +46,11 @@ def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
 
 @dataclass(frozen=True)
 class CoreFunctionSpec:
-    """Specification for a core function to be used in binary operations.
+    """Core function plus total element count for an element-wise binary op.
 
     Attributes:
-        external_function: The external function to be called for the binary operation.
-        num_elements: The total number of elements in the input/output tensors.
+        external_function: External function implementing the operation.
+        num_elements: Total number of elements to process.
 
     """
 
@@ -70,7 +59,7 @@ class CoreFunctionSpec:
 
     @property
     def tile_size(self) -> int:
-        """Returns the tile size used by the external function."""
+        """Tile size used by the external function."""
         return self.external_function.tile_size(0)
 
 
@@ -80,12 +69,12 @@ def _binary_op(
     function_spec: CoreFunctionSpec,
     output_tensor,
 ):
-    """Implement output_tensor = op(*input_tensors).
+    """Element-wise output_tensor = op(*input_tensors).
 
     Parameters:
         arch: Target architecture.
-        input_tensors: Input tensors.
-        function_spec: Binary operator specification.
+        input_tensors: Input tensors [src0, src1].
+        function_spec: Core function specification.
         output_tensor: Output tensor.
 
     """
@@ -152,16 +141,13 @@ def _create_external_function(
     input_tensors: list,
     output_tensor,
 ) -> CoreFunctionSpec:
-    """Create a specification for binary ops.
+    """Create the CoreFunctionSpec for an element-wise binary op.
 
     Parameters:
         arch: Target architecture.
         op_name: Name of the operation.
-        input_tensors: List of input tensors.
+        input_tensors: Two input tensors [src0, src1].
         output_tensor: Output tensor.
-
-    Returns:
-        CoreFunctionSpec: Specification for the core function to be used in binary ops.
 
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
@@ -190,14 +176,14 @@ def _create_external_function(
 
 @dataclass(frozen=True)
 class BroadcastFunctionSpec:
-    """Specification for a broadcast binary operation.
+    """Core function and shapes for a broadcast binary op (src1 repeated).
 
     Attributes:
-        external_function: The external function for broadcast op.
-        num_elements_out: Total number of elements in output (and src0).
-        num_elements_src1: Total number of elements in src1 (smaller).
-        src1_ne: Shape of src1 as 4-element tuple (ne0, ne1, ne2, ne3).
-        dst_ne: Shape of dst as 4-element tuple (ne0, ne1, ne2, ne3).
+        external_function: External function implementing the operation.
+        num_elements_out: Total number of output elements.
+        num_elements_src1: Total number of src1 elements.
+        src1_ne: src1 shape as (ne0, ne1, ne2, ne3).
+        dst_ne: Destination shape as (ne0, ne1, ne2, ne3).
 
     """
 
@@ -209,7 +195,7 @@ class BroadcastFunctionSpec:
 
     @property
     def tile_size(self) -> int:
-        """Returns the tile size used by the external function."""
+        """Tile size used by the external function."""
         return self.external_function.tile_size(0)
 
 
@@ -219,19 +205,16 @@ def _create_broadcast_external_function(
     input_tensors: list,
     output_tensor,
 ) -> BroadcastFunctionSpec:
-    """Create a specification for broadcast binary ops.
+    """Create the BroadcastFunctionSpec for a broadcast binary op.
 
-    In broadcast mode, src1 is smaller than src0/dst and gets repeated.
-    The kernel receives the full src1 buffer and uses modulo indexing.
+    src1 is smaller than src0/dst; the kernel gets the full src1 buffer and
+    uses modulo indexing to repeat it.
 
     Parameters:
         arch: Target architecture.
         op_name: Name of the operation.
-        input_tensors: List of input tensors [src0, src1].
+        input_tensors: Two input tensors [src0, src1].
         output_tensor: Output tensor.
-
-    Returns:
-        BroadcastFunctionSpec: Specification for broadcast binary ops.
 
     """
     num_elements_out = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
@@ -285,12 +268,12 @@ def _binary_op_broadcast(
     function_spec: BroadcastFunctionSpec,
     output_tensor,
 ):
-    """Binary op with broadcasting - src1 loaded fully once, src0 streamed in tiles.
+    """Broadcast binary op: src1 loaded fully once, src0 streamed in tiles.
 
     Parameters:
         arch: Target architecture.
         input_tensors: Input tensors [src0, src1].
-        function_spec: Broadcast operation specification.
+        function_spec: Broadcast function specification.
         output_tensor: Output tensor.
 
     """
@@ -372,15 +355,12 @@ def binary_op(
     input_tensors: list,
     output_tensor,
 ):
-    """IRON generic design for binary operations.
-
-    Supports both element-wise operations (same shape) and broadcasting
-    (src1 smaller, gets repeated to match src0/dst).
+    """IRON design for binary ops (element-wise, or broadcasting src1 to src0/dst).
 
     Parameters:
         op_name: Name of the operation.
         arch: Target architecture.
-        input_tensors: List of two input tensors [src0, src1].
+        input_tensors: Two input tensors [src0, src1].
         output_tensor: Output tensor.
 
     """

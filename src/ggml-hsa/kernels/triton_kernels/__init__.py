@@ -5,8 +5,4 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""Triton kernel implementations.
-
-This package contains Triton kernel implementations for various GGML operations. Each module
-provides kernel designs that generate executables for AMD XDNA / XDNA2 NPUs.
-"""
+"""Triton kernel designs for GGML operations, targeting AMD XDNA / XDNA2 NPUs."""
