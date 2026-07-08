@@ -50,11 +50,25 @@ def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     input_tensor = input_tensors[0]
 
+    if input_tensor.dtype != np.float32 or output_tensor.dtype != np.float32:
+        msg = (
+            f"POOL_2D only supports float32 tensors; "
+            f"got input dtype={input_tensor.dtype}, output dtype={output_tensor.dtype}."
+        )
+        raise ValueError(msg)
+
     if not input_tensor.contiguous or not output_tensor.contiguous:
         msg = "Input and output tensors must be contiguous in memory."
         raise ValueError(msg)
 
     # op_params: {op, k0, k1, s0, s1, p0, p1} as 7 x int32.
+    _POOL_2D_PARAMS_SIZE = 7 * 4  # 7 int32 fields
+    if len(op_params) < _POOL_2D_PARAMS_SIZE:
+        msg = (
+            f"op_params too short: expected at least {_POOL_2D_PARAMS_SIZE} bytes, "
+            f"got {len(op_params)}."
+        )
+        raise ValueError(msg)
     op, k0, k1, s0, s1, p0, p1 = struct.unpack_from("7i", op_params, 0)
 
     if op not in (_GGML_OP_POOL_MAX, _GGML_OP_POOL_AVG):

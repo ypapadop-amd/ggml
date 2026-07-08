@@ -57,7 +57,6 @@ void ggml_op_pool_2d(const INPUT_DTYPE * __restrict in,
 
     event0();
 
-    const float ka_inv = 1.0f / static_cast<float>(k0 * k1);
     const int32_t offset0 = -p0;
     const int32_t offset1 = -p1;
 
@@ -89,7 +88,7 @@ void ggml_op_pool_2d(const INPUT_DTYPE * __restrict in,
             }
 
             if (op == GGML_OP_POOL_AVG) {
-                res *= ka_inv;
+                res *= 1.0f / static_cast<float>(k0 * k1);
             }
             out[oy * ow + ox] = res;
         }
