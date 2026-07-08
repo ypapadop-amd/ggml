@@ -12,6 +12,7 @@
 #include <cstring>
 #include <limits>
 
+#include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
 /**
@@ -271,7 +272,7 @@ inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
     aie::vector<float, VecSize> poly = aie::broadcast<float, VecSize>(exp_coeffs[0]);
     aie::accum<accfloat, VecSize> tmp;
 
-#pragma unroll
+    AIE_LOOP_UNROLL_FULL
     for (int32_t i = 1; i < NUM_EXP_COEFFS; ++i) {
         tmp = aie::mul(poly, r);
         poly = aie::add(tmp.template to_vector<float>(),

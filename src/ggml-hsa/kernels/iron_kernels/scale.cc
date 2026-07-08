@@ -20,9 +20,11 @@ extern "C" {
  */
 void ggml_op_scale(
     const float * __restrict in, float * __restrict out, int32_t N, float scale, float bias) {
+    event0();
     for (int i = 0; i < N; ++i) {
         out[i] = in[i] * scale + bias;
     }
+    event1();
 }
 
 } // extern "C"
