@@ -19,6 +19,7 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 | Binary    | `ADD`, `SUB`, `MUL`, `DIV` (with multi-dimensional broadcast)  |
 | Unary     | `SQR`, `LOG`, `ABS`, `SGN`, `NEG`, `STEP`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `RELU`, `HARDSWISH`, `HARDSIGMOID` |
 | Matrix    | `MUL_MAT`                                                      |
+| Pooling   | `POOL_2D` (`MAX` and `AVG`, with padding)                     |
 | Reduction | `ARGMAX`, `COUNT_EQUAL`                                        |
 | Loss      | `CROSS_ENTROPY_LOSS`                                           |
 | Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                   |

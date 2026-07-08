@@ -5,7 +5,12 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON kernel implementation for the cross entropy loss operation."""
+"""IRON design for GGML_OP_CROSS_ENTROPY_LOSS.
+
+Computes -sum(labels * log_softmax(logits)) / num_rows with numerically stable
+log-softmax (max subtraction). One row is processed per worker iteration and
+per-row losses are accumulated on-tile into a single scalar.
+"""
 
 from pathlib import Path
 
@@ -26,18 +31,19 @@ from .utils import align_to_arch, arch_to_device
 
 
 def get_cross_entropy_loss_dimensions(tensor) -> tuple[int, int]:
-    """Extract cross entropy loss dimensions from tensor shape.
+    """Return (row_length, num_rows) for a GGML-ordered tensor.
 
-    GGML convention: cross entropy loss is computed over dimension 0 (ne00).
-    GGML shape ordering: (ne00, ne01, ne02, ne03) where ne00 is innermost.
+    Loss is computed over dim 0 (ne00), so row_length = ne00 and
+    num_rows = ne01 * ne02 * ne03.
 
     Parameters:
-        tensor: Input tensor with shape in GGML order.
+        tensor: GGML-ordered tensor of rank 1 to 4.
 
     Returns:
-        Tuple of (row_length, num_rows) where:
-            - row_length = ne00 (dimension over which loss is computed per row)
-            - num_rows = ne01 * ne02 * ne03 (number of independent rows)
+        The (row_length, num_rows) pair.
+
+    Raises:
+        ValueError: If the tensor rank is unsupported.
 
     """
     shape = tensor.shape
@@ -63,17 +69,12 @@ KERN_VEC_SIZE = 8
 
 
 def cross_entropy_loss(arch: str, input_tensors: list, output_tensor):
-    """IRON design for GGML_OP_CROSS_ENTROPY_LOSS implementation.
-
-    Cross entropy loss computes: -sum(labels * log(softmax(logits))) / num_rows
-    where the softmax is computed with numerical stability.
+    """Build the cross entropy loss IRON program.
 
     Parameters:
         arch: Target architecture.
-        input_tensors: List of 2 input tensors:
-            - input_tensors[0]: Logits tensor (predictions before softmax)
-            - input_tensors[1]: Labels tensor (ground truth, often one-hot encoded)
-        output_tensor: Output scalar tensor containing the loss value.
+        input_tensors: [logits, labels] of identical shape.
+        output_tensor: Output scalar tensor holding the loss.
 
     """
     if len(input_tensors) != 2:
@@ -140,31 +141,21 @@ def create_reduction_program(
     tile_size: int,
     num_rows: int,
 ):
-    """Create an IRON program for cross entropy loss with on-tile reduction.
+    """Build the IRON program that reduces per-row losses on-tile.
 
-    The C++ kernel computes per-row loss: loss_row = -sum(labels * log_softmax).
-    The worker accumulates all per-row losses on-tile and outputs a single
-    scalar: total_loss / num_rows, matching the CPU reference behavior.
-
-    Algorithm:
-        1. Acquire the output FIFO element once (single scalar buffer).
-        2. For each row: save accumulated value, call kernel (which overwrites
-           the buffer with this row's loss), then add accumulated + row loss
-           and store back.
-        3. After all rows: divide by num_rows and release.
-        4. DMA drains exactly 1 float to the host.
+    The output FIFO element is acquired once. For each row the accumulated value
+    is saved, the kernel overwrites the buffer with the row's loss, and the sum
+    is stored back. After all rows the total is divided by num_rows and released,
+    so the DMA drains exactly one float.
 
     Parameters:
-        arch: Target architecture (e.g., "aie2", "aie2p").
-        function: The external function for per-row loss.
+        arch: Target architecture.
+        function: The per-row loss external function.
         logits_tensor: Logits tensor.
         labels_tensor: Labels tensor.
         output_tensor: Output tensor.
         tile_size: Number of elements per tile (row length).
         num_rows: Number of rows to process.
-
-    Returns:
-        MLIR module representing the cross entropy loss program.
 
     """
     num_tiles = num_rows
@@ -262,11 +253,7 @@ def _create_external_function(
     output_tensor,
     tile_size: int,
 ):
-    """Create an external function specification for cross entropy loss.
-
-    The external function wraps the C++ kernel that computes per-row loss:
-    loss = -sum(labels * log_softmax(logits)) using numerically stable
-    log-softmax with max subtraction.
+    """Create the ExternalFunction wrapping cross_entropy_loss.cc.
 
     Parameters:
         logits_tensor: Logits tensor.
@@ -275,8 +262,7 @@ def _create_external_function(
         tile_size: Number of elements per tile (equals row length).
 
     Returns:
-        ExternalFunction: Configured external function specification that
-            references cross_entropy_loss.cc with appropriate compile flags.
+        The configured ExternalFunction.
 
     """
     arg_types = [

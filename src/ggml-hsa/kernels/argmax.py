@@ -13,22 +13,18 @@ from .kernel import Backend, KernelSpec
 def ggml_op_argmax(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """GGML_OP_ARGMAX dispatch function.
+    """Return the KernelSpec for GGML_OP_ARGMAX.
 
-    Finds the index of the maximum value along the first dimension (ne0) of each row.
-    For a tensor with shape [ne0, ne1, ne2, ne3], computes argmax over ne0 for each
-    of the ne1 * ne2 * ne3 rows, producing an I32 output tensor with shape [ne1, ne2, ne3].
+    Argmax over ne0 for input [ne0, ne1, ne2, ne3], producing I32 output [ne1, ne2, ne3].
 
     Parameters:
         arch: Target architecture.
-        input_tensors: List containing exactly one input tensor.
-        output_tensor: Output tensor of type I32. Shape is
-            the input shape with the first dimension removed.
-        op_params: Operation parameters (unused for ARGMAX, but required
-            by the dispatch interface).
+        input_tensors: List of one input tensor.
+        output_tensor: I32 output tensor.
+        op_params: Unused.
 
     Returns:
-        KernelSpec: Kernel specification for the ARGMAX operation.
+        KernelSpec for the ARGMAX operation.
 
     """
     from functools import partial

@@ -25,13 +25,13 @@ from .utils import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 
 def scale(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """IRON design for scale.
+    """IRON design for scale: output = input * s + b.
 
     Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-        op_params: Operation parameters.
+        op_params: s and b as 2 x float32.
 
     """
     if len(input_tensors) != 1:
@@ -99,19 +99,16 @@ def _create_external_function(
     input_tensor,
     output_tensor,
 ) -> tuple[ExternalFunction, int, int]:
-    """Create an ExternalFunction specification for the scale operation.
+    """Create the scale ExternalFunction.
 
     Parameters:
-        arch: Target architecture (e.g., "aie2", "aie2p").
-        op_name: Operation name used for function naming and compile flags.
+        arch: Target architecture.
+        op_name: Name of the operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
 
     Returns:
-        Tuple[ExternalFunction, int, int]: A tuple containing:
-            - func: The configured ExternalFunction specification.
-            - num_elements: Architecture-aligned number of elements.
-            - tile_size: Size of each processing tile.
+        (func, num_elements, tile_size) where num_elements is arch-aligned.
 
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)

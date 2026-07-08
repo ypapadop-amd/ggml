@@ -9,16 +9,16 @@ from aie.iron.device import NPU1, NPU2
 def align_to_arch(
     arch: str, size: int, dtype: np.dtype, alignment_bytes: int = 4
 ) -> int:
-    """Align a size to architecture requirements.
+    """Align an element count so its byte size is a multiple of alignment_bytes.
 
     Parameters:
         arch: Target architecture.
-        size: Size to align (number of elements).
-        dtype: Data type of elements.
-        alignment_bytes: Alignment in bytes.
+        size: Element count to align.
+        dtype: Element data type.
+        alignment_bytes: Byte boundary to align to.
 
     Returns:
-        int: Aligned size.
+        The aligned element count.
 
     """
     if arch in ["aie2", "aie2p"]:
@@ -36,32 +36,29 @@ def align_to_arch(
 
 
 def arch_aligned_num_elements(arch: str, tensor) -> int:
-    """Align number of elements to architecture requirements.
-
-    Return the number of elements in the tensor aligned to what the architecture
-    expects for the data type of the tensor.
+    """Tensor element count aligned to the architecture for its dtype.
 
     Parameters:
         arch: Target architecture.
-        tensor: Tensor.
+        tensor: Tensor whose element count is aligned.
 
     Returns:
-        int: Number of elements aligned to architecture requirements.
+        The arch-aligned element count.
 
     """
     return align_to_arch(arch, tensor.numel(), tensor.dtype)
 
 
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
-    """Return the maximum tile size based on device, data type and number of elements.
+    """Largest power-of-two tile within a 512-bit vector dividing num_elements.
 
     Parameters:
         arch: Target architecture.
-        dtype: Data type of the tensor elements.
-        num_elements: Total number of elements in the tensor.
+        dtype: Element data type.
+        num_elements: Total number of elements to tile.
 
     Returns:
-        int: Maximum tile size.
+        The chosen tile size.
 
     """
     vector_register_width = 0
@@ -84,16 +81,13 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
 
 
 def arch_to_device(device):
-    """Convert an architecture string to an IRON device object.
+    """Map "aie2" -> NPU1, "aie2p" -> NPU2; pass through existing device objects.
 
     Parameters:
-        device: Architecture string ("aie2" or "aie2p") or an existing device object.
+        device: Architecture string or an existing device object.
 
     Returns:
-        NPU1 for "aie2", NPU2 for "aie2p", or the input if already a device object.
-
-    Raises:
-        ValueError: If the architecture string is not supported.
+        The corresponding device object.
 
     """
     if isinstance(device, str):

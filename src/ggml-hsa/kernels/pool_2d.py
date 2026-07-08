@@ -5,42 +5,42 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""Top-level entry point for the GGML count equal operation (GGML_OP_COUNT_EQUAL)."""
+"""Top-level entry point for the GGML 2D pooling operation (GGML_OP_POOL_2D)."""
 
 from .kernel import Backend, KernelSpec
 
 
-def ggml_op_count_equal(
+def ggml_op_pool_2d(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """Return the KernelSpec for GGML_OP_COUNT_EQUAL.
-
-    Counts elementwise-equal entries between two same-shaped I32 tensors.
+    """Return the KernelSpec for GGML_OP_POOL_2D.
 
     Parameters:
         arch: Target architecture.
-        input_tensors: List of two contiguous I32 tensors.
-        output_tensor: I64 scalar [1, 1, 1, 1] holding the count.
-        op_params: Unused.
+        input_tensors: List of one input tensor.
+        output_tensor: Output tensor.
+        op_params: {op, k0, k1, s0, s1, p0, p1} as 7 x int32.
 
     Returns:
-        KernelSpec for the COUNT_EQUAL operation.
+        KernelSpec for the POOL_2D operation.
 
     """
     from functools import partial
 
-    from .iron_kernels.count_equal import count_equal_op
+    from .iron_kernels.pool_2d import pool_2d
 
     return KernelSpec(
         backend=Backend.IRON,
-        op_name="GGML_OP_COUNT_EQUAL",
+        op_name="GGML_OP_POOL_2D",
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
+        op_params=op_params,
         function=partial(
-            count_equal_op,
+            pool_2d,
             arch=arch,
             input_tensors=input_tensors,
             output_tensor=output_tensor,
+            op_params=op_params,
         ),
     )

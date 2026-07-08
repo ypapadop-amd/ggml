@@ -2,12 +2,9 @@
 
 """Tensor descriptor for GGML HSA kernel operations.
 
-This module provides the TensorDesc dataclass used to describe tensors passed
-to kernels. It captures the essential properties needed for kernel
-compilation: data type, shape, stride, and contiguity information.
-
-The tensor dimensions follow GGML conventions where dimensions are ordered
-from innermost to outermost (reverse of PyTorch).
+TensorDesc captures the dtype, shape, stride, and contiguity a kernel needs to
+compile. Dimensions follow GGML convention: innermost to outermost (reverse of
+PyTorch).
 """
 
 from dataclasses import dataclass
@@ -28,16 +25,13 @@ _GGML_NP_DTYPE_MAP = {
 
 
 def str_to_dtype(dtype_str: str):
-    """Converts a GGML dtype representation to its corresponding np.dtype object.
+    """Convert a GGML dtype string to its corresponding numpy dtype.
 
-    Args:
-        dtype_str: The string representation of the data type.
-
-    Returns:
-        The corresponding np.dtype object.
+    Parameters:
+        dtype_str: GGML dtype string to convert (e.g. "f32", "bf16").
 
     Raises:
-        ValueError: If the provided dtype_str is not recognized.
+        ValueError: If dtype_str is not recognized.
 
     """
     try:
@@ -83,21 +77,11 @@ class TensorDesc:
 
     @property
     def size(self):
-        """Return the number of elements in the tensor.
-
-        Returns:
-            int: The total number of elements in the tensor.
-
-        """
+        """Number of elements in the tensor."""
         return int(np.prod(self.shape))
 
     def numel(self):
-        """Return the number of elements in the tensor.
-
-        Returns:
-            int: The total number of elements in the tensor.
-
-        """
+        """Number of elements in the tensor."""
         return self.size
 
 
@@ -107,18 +91,13 @@ def ggml_tensor_to_tensordesc(
     nb: tuple[int, int, int, int],
     contiguous: bool,
 ) -> TensorDesc:
-    """Create a TensorDesc from the ggml_tensor parameters.
+    """Create a TensorDesc from ggml_tensor parameters.
 
     Parameters:
         dtype: Tensor data type.
-        ne: Number of elements in each dimension. Dimensions
-            are from innermost to outermost (reverse of PyTorch).
-        nb: Tensor stride in bytes for each dimension.
-            Dimensions are from innermost to outermost (reverse of PyTorch).
-        contiguous: Indicates if the tensor is contiguous in memory.
-
-    Returns:
-        TensorDesc: A new TensorDesc instance.
+        ne: Number of elements per dimension (innermost to outermost).
+        nb: Stride in bytes per dimension (innermost to outermost).
+        contiguous: Whether the tensor is contiguous in memory.
 
     """
     return TensorDesc(dtype=dtype, shape=ne, stride=nb, contiguous=contiguous)

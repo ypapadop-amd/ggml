@@ -17,16 +17,15 @@ from triton_kernels.utils import NPU_ARCH_MAP, is_gpu_arch, is_npu_arch
 class TempEnvSet(ContextDecorator):
     """Context manager to temporarily set an environment variable.
 
-    This ensures that Triton uses a specific cache directory for compiled artifacts,
-    which helps with organization and cleanup.
-
-    Parameters:
-        env_var: Name of the environment variable to set.
-        value: Value to set for the environment variable.
-
     Usage:
         with TempEnvSet("TRITON_CACHE_DIR", str(Path("/path/to/cache"))):
             # Triton compilation code here
+
+    Attributes:
+        env_var: Name of the environment variable to set.
+        value: Value to set; if None, the variable is left untouched.
+        old_value: Original value of the variable, restored on exit.
+
     """
 
     env_var: str
@@ -34,11 +33,11 @@ class TempEnvSet(ContextDecorator):
     old_value: str | None = None
 
     def __init__(self, env_var: str, value: str | None) -> None:
-        """Initialize the context manager with the desired environment variable and value.
+        """Initialize the context manager.
 
         Parameters:
             env_var: Name of the environment variable to set.
-            value: Value to set for the environment variable. If None, the variable will not be set.
+            value: Value to set; if None, the variable is left untouched.
         """
         self.env_var = env_var
         self.value = value
@@ -52,7 +51,14 @@ class TempEnvSet(ContextDecorator):
         os.environ[self.env_var] = str(self.value)
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Restore the original environment variable after exiting the context."""
+        """Restore the original environment variable after exiting the context.
+
+        Parameters:
+            exc_type: Exception type raised in the context, if any.
+            exc_val: Exception instance raised in the context, if any.
+            exc_tb: Traceback of the exception raised, if any.
+
+        """
         if self.value is None:
             return
         if self.old_value is not None:
@@ -62,19 +68,17 @@ class TempEnvSet(ContextDecorator):
 
 
 def _get_triton_target(kernel_spec: KernelSpec) -> str:
-    """Returns the Triton target string for a given KernelSpec architecture.
+    """Return the Triton target string for a KernelSpec's architecture.
 
     Maps NPU architecture names to their Triton equivalents and passes GPU
-    architectures through unchanged. Raises for unsupported architectures.
+    architectures through unchanged (e.g. "npu1", "npu2", "gfx942").
 
     Parameters:
-        kernel_spec: The KernelSpec containing the architecture information.
-
-    Returns:
-        Triton target string (e.g. "npu1", "npu2", "gfx942").
+        kernel_spec: The KernelSpec whose architecture to map.
 
     Raises:
         ValueError: If the architecture is not a known NPU or GPU target.
+
     """
     if kernel_spec.arch in NPU_ARCH_MAP:
         return NPU_ARCH_MAP[kernel_spec.arch]
@@ -93,10 +97,9 @@ def compile_triton_kernel(
 ) -> None:
     """Compile a Triton kernel for the target architecture in kernel_spec.
 
-    For NPU targets this runs the Triton-XDNA pipeline and extracts a PDI
-    and instructions binary from the resulting xclbin.
-    For GPU targets this runs the standard HIP pipeline and copies the
-    hsaco object from the Triton cache.
+    NPU targets run the Triton-XDNA pipeline and extract a PDI and instructions
+    binary from the resulting xclbin; GPU targets run the HIP pipeline and copy
+    the hsaco object from the Triton cache.
 
     Parameters:
         kernel_spec: The KernelSpec containing the Triton kernel function.

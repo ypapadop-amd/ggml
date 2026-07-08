@@ -5,7 +5,13 @@
 #
 # (c) Copyright 2025-2026 AMD Inc.
 
-"""IRON kernel implementation for matrix multiplication (GEMM)."""
+"""IRON design for matrix multiplication (GEMM).
+
+A is tiled into (m, k) blocks broadcast across columns and distributed across
+rows; B into (k, n) blocks broadcast across rows and distributed across columns.
+Each core accumulates C tiles over the K dimension. r, s, t are the microkernel
+MAC dimensions (see microkernel_mac_dim_map).
+"""
 
 import argparse
 from pathlib import Path
@@ -37,11 +43,7 @@ microkernel_mac_dim_map = {
 
 
 def main():
-    """Command-line entry point for generating matrix multiplication MLIR.
-
-    Parses command-line arguments and generates MLIR code for a matrix
-    multiplication design with the specified dimensions and configuration.
-    """
+    """CLI entry point: parse arguments and print the generated GEMM MLIR."""
     argparser = argparse.ArgumentParser(
         prog="AIE Matrix Multiplication MLIR Design (Whole Array)",
         description="Emits MLIR code for a matrix multiplication design of the given input size",
@@ -107,7 +109,16 @@ def main():
 
 
 def ceildiv(a, b):
-    """Return the ceiling of integer division a/b."""
+    """Return the ceiling of integer division a/b.
+
+    Parameters:
+        a: Dividend.
+        b: Divisor.
+
+    Returns:
+        The smallest integer >= a / b.
+
+    """
     return (a + b - 1) // b
 
 
@@ -132,35 +143,34 @@ def my_matmul(
     object_file,
     generate_taps=False,
 ):
-    """Generate MLIR for tiled matrix multiplication across an AIE array.
+    """Generate MLIR for tiled GEMM across an AIE array.
 
-    This function creates the complete AIE design including tile declarations,
-    object FIFOs for data movement, compute core logic, and runtime DMA sequences.
+    Builds tile declarations, object FIFOs, compute cores, and runtime DMA
+    sequences for C = A @ B.
 
     Parameters:
         dev: Device type ("npu" or "npu2").
-        M: Number of rows in matrix A and C.
+        M: Rows of A and C.
         K: Inner dimension (columns of A, rows of B).
-        N: Number of columns in matrix B and C.
-        m: Tile size in M dimension per core.
-        k: Tile size in K dimension (shared across all cores).
-        n: Tile size in N dimension per core.
+        N: Columns of B and C.
+        m: Per-core tile size in the M dimension.
+        k: Per-core tile size in the K dimension.
+        n: Per-core tile size in the N dimension.
         n_aie_cols: Number of AIE columns to use (1, 2, 4, or 8).
-        dtype_in_str: Input data type ("bf16", "i8", or "i16").
-        dtype_out_str: Output data type ("bf16", "i8", "i16", "f32", or "i32").
-        b_col_maj: If True, matrix B is in column-major layout.
-        c_col_maj: If True, matrix C is in column-major layout.
-        use_scalar: If True, use scalar kernels (for debugging small sizes).
-        emulate_bf16_mmul_with_bfp16: If True, use bfp16 emulation for bf16.
-        trace_size: Size of trace buffer (0 to disable tracing).
-        zero_fn: Name of the zero initialization function.
-        matmul_fn: Name of the matrix multiply accumulate function.
-        object_file: Name of the compiled object file containing kernels.
-        generate_taps: If True, return TensorAccessPattern objects for visualization.
+        dtype_in_str: Input dtype ("bf16", "i8", or "i16").
+        dtype_out_str: Output dtype ("bf16", "i8", "i16", "f32", or "i32").
+        b_col_maj: B is in column-major layout.
+        c_col_maj: C is in column-major layout.
+        use_scalar: Use scalar kernels (for debugging small sizes).
+        emulate_bf16_mmul_with_bfp16: Use bfp16 emulation for bf16.
+        trace_size: Trace buffer size (0 disables tracing).
+        zero_fn: Name of the zero-init function.
+        matmul_fn: Name of the multiply-accumulate function.
+        object_file: Compiled object file containing the kernels.
+        generate_taps: Return TensorAccessSequence objects for visualization.
 
     Returns:
-        If generate_taps is True, returns a tuple of TensorAccessSequence objects
-        for A, B, and C matrices. Otherwise returns None.
+        A tuple of (A, B, C) TensorAccessSequences if generate_taps, else None.
 
     """
     n_aie_rows = 4
@@ -211,7 +221,6 @@ def my_matmul(
         """B must be tileable into (k, n * n_aie_cols)-sized blocks"""
     )
 
-    # r, s, t are the dimensions required by the microkernel MAC instructions.
     if not use_scalar:
         assert m % r == 0
         assert k % s == 0
@@ -673,21 +682,18 @@ def create_mat_mul_external_functions(
     input_tensors: list,
     output_tensor,
 ):
-    """Create parameters and names of external functions for matrix multiplication.
+    """Create the zero-init and matmul ExternalFunctions for GEMM.
 
-    Args:
-        arch: Target architecture.
-        input_tensors: List of two input tensors.
-        output_tensor: Output tensor.
+    Parameters:
+        arch: Target architecture ("aie2" or "aie2p").
+        input_tensors: Two input tensors [A, B].
+        output_tensor: Output tensor C.
 
     Returns:
-        A tuple containing:
-            - m: The block size in the M dimension.
-            - n: The block size in the N dimension.
-            - k: The block size in the K dimension.
-            - use_scalar: Boolean indicating if scalar multiplication is used.
-            - mm_fn: The name of the matrix multiplication function.
-            - zero_fn: The name of the zeroing function.
+        (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn).
+
+    Raises:
+        ValueError: If the architecture is unsupported.
 
     """
     use_scalar = False
@@ -752,15 +758,15 @@ def create_mat_mul_external_functions(
 
 
 def gemm(arch: str, input_tensors: list, output_tensor):
-    """IRON design for matrix multiplication.
+    """Build the GEMM IRON program (C = A @ B).
 
-    Args:
-        arch: Target architecture (e.g., "aie2", "aie2p").
-        input_tensors: List of two input tensors (A and B).
-        output_tensor: Output tensor (C).
+    Parameters:
+        arch: Target architecture ("aie2" or "aie2p").
+        input_tensors: Two input tensors [A, B].
+        output_tensor: Output tensor C.
 
     Returns:
-        The MLIR module representing the matrix multiplication operation.
+        The MLIR module.
 
     """
     if len(input_tensors) != 2:
