@@ -24,28 +24,34 @@ NPU_ARCH_MAP = {
 
 
 def is_npu_arch(arch: str) -> bool:
-    """Return True if arch is a raw NPU architecture string (e.g. "aie2", "aie2p")."""
+    """Return True if arch is a raw NPU architecture string (e.g. "aie2", "aie2p").
+
+    Parameters:
+        arch: Architecture string to check.
+
+    """
     return arch in NPU_ARCH_MAP
 
 
 def is_gpu_arch(arch: str) -> bool:
-    """Return True if arch is an AMD GPU architecture string (e.g. "gfx942")."""
+    """Return True if arch is an AMD GPU architecture string (e.g. "gfx942").
+
+    Parameters:
+        arch: Architecture string to check.
+
+    """
     return arch.startswith("gfx")
 
 
 def triton_device(arch: str) -> str:
-    """Return the Triton device string for the given architecture.
-
-    NPU architectures use "cpu"; GPU architectures use "cuda".
+    """Return the Triton device string: "cpu" for NPU targets, "cuda" for GPU targets.
 
     Parameters:
-        arch: Raw architecture string (e.g. "aie2", "aie2p", "gfx942").
-
-    Returns:
-        "cpu" for NPU targets, "cuda" for GPU targets.
+        arch: Architecture string to map to a Triton device.
 
     Raises:
         ValueError: If arch is not a recognised NPU or GPU architecture.
+
     """
     if is_npu_arch(arch):
         return "cpu"
@@ -59,10 +65,7 @@ def numpy_dtype_to_torch(dtype: np.dtype) -> torch.dtype:
     """Convert a numpy dtype to the corresponding torch dtype.
 
     Parameters:
-        dtype: A numpy dtype instance.
-
-    Returns:
-        The corresponding torch dtype.
+        dtype: The numpy dtype to convert.
 
     Raises:
         ValueError: If the numpy dtype has no torch equivalent.

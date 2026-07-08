@@ -5,11 +5,10 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON kernel implementation for the count_equal operation.
+"""IRON design for count_equal: number of equal elements between two I32 tensors.
 
-Counts the number of elements that are equal between two I32 input tensors.
-The output is a single I64 value, but since IRON doesn't support I64 in ObjectFifos,
-we use two I32 values (low and high parts) for the transfer.
+The count is a single I64 scalar. IRON ObjectFifos lack I64, so it is transferred
+as two I32 lanes (low and high 32 bits) that bitwise form the I64.
 """
 
 from pathlib import Path
@@ -31,32 +30,18 @@ from .utils import arch_to_device, max_tile_size
 
 
 def count_equal_op(arch: str, input_tensors: list, output_tensor):
-    """IRON design for count_equal.
-
-    Counts elements that are equal between two I32 input tensors and outputs
-    a single I64 scalar with the count. Processes data in tiles.
-
-    Since IRON doesn't support I64 types in ObjectFifos, we transfer the count
-    as two I32 values (low and high 32 bits). The C++ kernel writes the 64-bit
-    count as these two I32 lanes to the ObjectFifo output buffer, which together
-    bitwise represent a single I64 value.
+    """Build the count_equal IRON program.
 
     Parameters:
         arch: Target architecture.
-        input_tensors: List containing exactly two input tensors.
-            Both tensors must be I32 with the same shape.
-        output_tensor: Output tensor of type I64 with shape [1,1,1,1]
-            containing the count of equal elements.
+        input_tensors: Two I32 tensors of identical shape.
+        output_tensor: I64 scalar tensor, shape [1, 1, 1, 1].
 
     Returns:
-        MLIR module representing the IRON program for count_equal.
+        The resolved IRON program (MLIR module).
 
     Raises:
-        ValueError: If input_tensors does not contain exactly two tensors.
-        ValueError: If input tensors have different shapes.
-        ValueError: If input or output tensors are not contiguous in memory.
-        ValueError: If input tensor dtype is not int32.
-        ValueError: If output tensor dtype is not int64.
+        ValueError: On invalid tensor count, shape mismatch, contiguity, or dtype.
 
     """
     if len(input_tensors) != 2:
@@ -185,19 +170,15 @@ def _create_external_function(
     input_tensor,
     tile_size: int,
 ) -> ExternalFunction:
-    """Create an ExternalFunction specification for count_equal.
-
-    The external function wraps the C++ kernel that performs the actual count_equal
-    computation on the AIE tile.
+    """Create the ExternalFunction wrapping count_equal.cc.
 
     Parameters:
-        op_name: Operation name used for function naming and compile flags.
+        op_name: Operation name (drives function name and compile flags).
         input_tensor: Input tensor.
-        tile_size: Size of each tile in elements.
+        tile_size: Number of elements per tile.
 
     Returns:
-        ExternalFunction: Configured external function specification that references
-            the count_equal.cc source file with appropriate compile flags.
+        The configured ExternalFunction.
 
     """
     current_dir = Path(__file__).resolve().parent

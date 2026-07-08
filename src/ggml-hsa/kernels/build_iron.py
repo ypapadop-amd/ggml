@@ -14,15 +14,11 @@ def _compile_aie_core_kernels(
     functions: Iterable,
     work_dir: Path,
 ) -> None:
-    """Compile AIE core functions to object files.
-
-    This function compiles the C++ source files for external functions
-    (core compute kernels) into object files that will be linked into
-    the final PDI.
+    """Compile external-function C++ sources into object files linked into the final PDI.
 
     Parameters:
         arch: Target architecture (e.g., "aie2", "aie2p").
-        functions: Iterable of ExternalFunction objects to compile.
+        functions: ExternalFunction objects to compile.
         work_dir: Working directory for intermediate files.
 
     """
@@ -46,12 +42,11 @@ def compile_iron_kernel(
     logger: logging.Logger,
     verbose: bool,
 ) -> None:
-    """Compile an IRON kernel.
+    """Run the IRON compilation pipeline for a kernel.
 
-    This function executes the IRON compilation pipeline:
-    1. Executes the kernel's Python function to generate an MLIR module
-    2. Compiles any external C++ core functions to object files
-    3. Compiles the MLIR module to produce PDI and instructions binaries
+    Runs the kernel's Python function to generate an MLIR module, compiles any
+    external C++ core functions to object files, then compiles the module into
+    PDI and instruction binaries.
 
     Parameters:
         kernel_spec: The KernelSpec containing the IRON kernel function.

@@ -13,13 +13,13 @@ from .kernel import Backend, KernelSpec
 def ggml_op_scale(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """GGML_OP_SCALE implementation.
+    """Return the KernelSpec for GGML_OP_SCALE.
 
     Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-        op_params: Operation parameters containing the scale factor.
+        op_params: Scale factor.
 
     Returns:
         KernelSpec for the SCALE operation.

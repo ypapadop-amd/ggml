@@ -52,6 +52,7 @@ src/ggml-hsa/
 │   ├── soft_max.py              # Top-level softmax op dispatch
 │   ├── clamp.py                 # Top-level clamp op dispatch
 │   ├── mul_mat.py               # Top-level matrix multiply dispatch
+│   ├── pool_2d.py               # Top-level 2D pooling op dispatch
 │   ├── argmax.py                # Top-level argmax op dispatch
 │   ├── count_equal.py           # Top-level count_equal op dispatch
 │   ├── cross_entropy_loss.py    # Top-level cross entropy loss op dispatch
@@ -69,6 +70,7 @@ src/ggml-hsa/
 │       ├── scale.py/cc          # Scale IRON design + AIE core function
 │       ├── softmax.py/cc        # Softmax IRON design + AIE core function (unary/masked/ternary variants)
 │       ├── clamp.py/cc          # Clamp IRON design + AIE core function
+│       ├── pool_2d.py/cc        # 2D pooling IRON design + AIE core function (MAX/AVG, one channel-plane per tile)
 │       ├── argmax.py/cc         # Argmax IRON design + AIE core function
 │       ├── count_equal.py/cc    # Count equal IRON design + AIE core function
 │       ├── cross_entropy_loss.py/cc  # Cross entropy loss IRON design + AIE core function
@@ -537,6 +539,7 @@ These operations have complete AIE kernel implementations:
 | Binary | `ADD`, `SUB`, `MUL`, `DIV` (with broadcast support) |
 | Unary (GGML_UNARY_OP) | `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` |
 | Unary (GGML_OP) | `SQR`, `LOG` |
+| Pooling | `POOL_2D` (`MAX` and `AVG`, with padding) |
 | Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
 | Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE) |
 

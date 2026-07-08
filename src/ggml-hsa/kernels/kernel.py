@@ -1,13 +1,12 @@
 # Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-"""Kernel specification types for the GGML HSA backend.
+"""Kernel dispatch and backend-selection types for the GGML HSA backend.
 
-This module defines the core data structures used for kernel dispatch and
-compilation backend selection. The two-layer architecture separates:
+Two layers separate concerns:
 
-1. Static mapping (Kernel): Maps GGML operation names to dispatch modules
-2. Runtime dispatch (KernelSpec): Returned by dispatch functions to specify
-   which backend and function to use for compilation
+1. Kernel (static): maps a GGML operation name to its dispatch module.
+2. KernelSpec (runtime): returned by a dispatch function to specify which
+   backend and function to compile.
 
 Example:
     # In op_to_kernel_map (static)
@@ -28,9 +27,8 @@ from typing import Any
 class Backend(Enum):
     """Supported kernel compilation backends.
 
-    Each backend has its own compilation pipeline:
-    - IRON: Uses MLIR-AIE/IRON framework for optimized AIE kernels
-    - TRITON: Uses Triton-XDNA for compiler-driven kernel generation via MLIR-AIR/AIE
+    - IRON: MLIR-AIE/IRON framework for optimized AIE kernels.
+    - TRITON: Triton-XDNA for compiler-driven generation via MLIR-AIR/AIE.
     """
 
     IRON = auto()
@@ -39,15 +37,11 @@ class Backend(Enum):
 
 @dataclass(frozen=True)
 class Kernel:
-    """Static mapping entry from GGML operation to dispatch module.
-
-    This dataclass represents an entry in op_to_kernel_map. It identifies
-    which Python module contains the dispatch function for a given operation.
+    """Static op_to_kernel_map entry identifying a dispatch function and its module.
 
     Attributes:
         name: Name of the dispatch function to call (e.g., "ggml_op_add").
-        source_file: Path to the Python module containing the
-            dispatch function.
+        source_file: Python module containing the dispatch function.
 
     """
 
@@ -57,15 +51,11 @@ class Kernel:
 
 @dataclass(frozen=True)
 class KernelSpec:
-    """Specification returned by kernel dispatch functions.
+    """Specification returned by a kernel dispatch function.
 
-    When a kernel dispatch function (e.g., ggml_op_add) is called, it examines
-    the input parameters and returns a KernelSpec that tells the build system:
-    1. Which backend to use for compilation
-    2. Which function to call to generate the IR
-
-    This enables per-invocation backend selection based on tensor shapes,
-    dtypes, and other runtime parameters.
+    Tells the build system which backend to use and which function generates the
+    IR, enabling per-invocation backend selection based on tensor shapes, dtypes,
+    and other runtime parameters.
 
     Attributes:
         backend: The compilation backend to use.
