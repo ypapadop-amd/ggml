@@ -5,12 +5,11 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON kernel implementation for the 2D pooling operation.
+"""IRON design for GGML_OP_POOL_2D (max/avg pooling, zero-fill padding).
 
-POOL_2D reduces each ``k1 x k0`` window of an input channel-plane to a single
-output element. Channel-planes are independent (no channel mixing), so the
-design processes one input plane ``[IW, IH]`` -> output plane ``[OW, OH]`` per
-worker iteration, iterating over all ``C * N`` planes.
+Channel-planes are independent, so one input plane [IW, IH] -> output plane
+[OW, OH] is processed per worker iteration across all C * N planes. Input is
+float32 or bfloat16; output is float32.
 """
 
 import struct
@@ -36,13 +35,20 @@ _GGML_OP_POOL_AVG = 1
 
 
 def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """IRON design for 2D pooling.
+    """Build the pooling IRON program.
 
     Parameters:
         arch: Target architecture.
-        input_tensors: List of one input tensor with shape [IW, IH, C, N].
-        output_tensor: Output tensor with shape [OW, OH, C, N].
-        op_params: Operation parameters {op, k0, k1, s0, s1, p0, p1} (7 x int32).
+        input_tensors: List of one input tensor, shape [IW, IH, C, N].
+        output_tensor: Output tensor, shape [OW, OH, C, N].
+        op_params: {op, k0, k1, s0, s1, p0, p1} as 7 x int32.
+
+    Returns:
+        The resolved IRON program (MLIR module).
+
+    Raises:
+        ValueError: On invalid tensor count, dtype, contiguity, op_params, or
+            pooling op.
 
     """
     if len(input_tensors) != 1:
@@ -137,17 +143,17 @@ def _create_external_function(
     in_plane: int,
     out_plane: int,
 ) -> ExternalFunction:
-    """Create an ExternalFunction specification for the pooling operation.
+    """Create the ExternalFunction for the pooling core function.
 
     Parameters:
-        op_name: Operation name used for function naming and compile flags.
+        op_name: Operation name (drives function name and compile flags).
         input_tensor: Input tensor.
         output_tensor: Output tensor.
-        in_plane: Number of elements in an input channel-plane (IW * IH).
-        out_plane: Number of elements in an output channel-plane (OW * OH).
+        in_plane: Input channel-plane size (IW * IH).
+        out_plane: Output channel-plane size (OW * OH).
 
     Returns:
-        The configured ExternalFunction specification.
+        The configured ExternalFunction.
 
     """
     current_dir = Path(__file__).resolve().parent

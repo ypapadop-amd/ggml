@@ -1,14 +1,10 @@
 # Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-"""GGML HSA backend kernel build system.
+"""GGML HSA kernel build system for AMD XDNA / XDNA2 devices.
 
-This module provides the infrastructure for compiling kernels to executable code
-for AMD XDNA / XDNA2 devices. It handles mapping GGML operations to their corresponding
-kernel implementations, dynamic module loading, and orchestrating the compilation
-pipeline.
-
-The build system supports multiple compilation backends with per-operation dispatch
-based on compilation parameters.
+Maps GGML operations to kernel implementations, dynamically loads dispatch
+modules, and orchestrates compilation across multiple backends with
+per-operation dispatch.
 
 Usage:
     As a module:
@@ -40,21 +36,17 @@ _BACKENDS: dict[Backend, Callable] = {
 
 
 def _get_compiler(backend: Backend) -> Callable:
-    """Get the compiler function for the given backend.
+    """Return the compiler function for the given backend.
 
     Parameters:
-        backend: The compiler backend to use.
-
-    Returns:
-        The compiler function for the specified backend.
+        backend: The backend whose compiler function to return.
 
     Raises:
         NotImplementedError: If the backend is not implemented.
 
     Note:
-        Uses backend.name for lookup to handle the case where Backend enums
-        from dynamically imported modules have different identity than those
-        in this module.
+        Looks up by ``backend.name`` because Backend enums from dynamically
+        imported modules have different identity than those defined here.
 
     """
     # Lookup by name to handle different enum class identities from dynamic imports
@@ -65,8 +57,7 @@ def _get_compiler(backend: Backend) -> Callable:
     raise NotImplementedError(msg)
 
 
-# Mapping of GGML operations to kernel source files.
-# Each entry maps an operation name to a Kernel that identifies the dispatch module.
+# Maps each GGML operation name to a Kernel identifying its dispatch module.
 _OP_KERNEL_MAP: dict[str, Kernel] = {
     # unary operation to kernel source mapping
     "ABS": Kernel("ggml_unary_op_abs", "unary_ops.py"),
@@ -111,13 +102,10 @@ _OP_KERNEL_MAP: dict[str, Kernel] = {
 
 
 def _get_kernel(op_name: str) -> Kernel:
-    """Get the kernel for the given operation.
+    """Return the Kernel for the given operation.
 
     Parameters:
-        op_name: Operation name.
-
-    Returns:
-        The Kernel object associated with the operation.
+        op_name: Operation name to look up.
 
     Raises:
         NotImplementedError: If the Kernel is not found.
@@ -131,17 +119,11 @@ def _get_kernel(op_name: str) -> Kernel:
 
 
 def _import_from_path(module_name: str, path: str | Path):
-    """Import a module by name from the specified file path.
-
-    This function handles the complexity of importing Python modules dynamically,
-    including setting up the package structure for relative imports.
+    """Dynamically import a module from a file path, wiring up the package structure for relative imports.
 
     Parameters:
-        module_name: Name of the module to import.
-        path: Path to the Python file containing the module.
-
-    Returns:
-        The imported module object.
+        module_name: Name to assign the imported module.
+        path: File path of the module to import.
 
     Raises:
         ImportError: If the module cannot be found or loaded.
@@ -195,9 +177,6 @@ def _setup_logger(name: str, verbose: bool) -> logging.Logger:
         name: Logger name, typically __name__ of the calling module.
         verbose: If True, enables DEBUG-level output to stderr.
 
-    Returns:
-        Configured Logger instance.
-
     """
     logger = logging.getLogger(name)
     for handler in logger.handlers.copy():
@@ -224,19 +203,18 @@ def ggml_compile_op(
 ) -> None:
     """Compile a GGML operation kernel to PDI and instruction files.
 
-    This is the main entry point for kernel compilation. It:
-    1. Looks up the kernel dispatch module for the operation
-    2. Calls the dispatch function to get a KernelSpec (backend + function)
-    3. Invokes the appropriate backend compiler
+    Main entry point for kernel compilation: looks up the dispatch module,
+    calls it to obtain a KernelSpec (backend + function), then invokes the
+    matching backend compiler.
 
     Parameters:
         op_name: Operation name (e.g., "ADD", "MUL_MAT").
         arch: Target architecture (e.g., "aie2", "aie2p").
-        input_tensors: List of input tensor descriptions.
+        input_tensors: Input tensor descriptions.
         output_tensor: Output tensor description.
-        op_params: Operation-specific parameters as a bytearray.
+        op_params: Operation-specific parameters.
         exported_name: Name to export the compiled kernel as.
-        output_directory: Directory to save the compiled PDI and instruction files.
+        output_directory: Destination for the PDI and instruction files.
         verbose: If True, enables verbose logging output.
 
     Raises:
@@ -320,13 +298,10 @@ def ggml_compile_op(
 
 
 def _to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
-    """Convert a string of the form "(x,y,z,w)" to a tuple of integers.
+    """Convert a string of the form "(x,y,z,w)" to a 4-tuple of integers.
 
     Parameters:
-        string: String representation of a 4-element tuple.
-
-    Returns:
-        A tuple of 4 integers.
+        string: String of the form "(x,y,z,w)" to convert.
 
     Raises:
         ValueError: If the string does not represent exactly 4 integers.
@@ -342,13 +317,10 @@ def _to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
 
 
 def _to_tensordesc(string: str) -> TensorDesc:
-    """Create a TensorDesc from a string representation.
+    """Create a TensorDesc from a string of the form "(shape)/dtype", e.g. "(1024,1,1,1)/f32".
 
     Parameters:
-        string: String of the form "(shape)/dtype", e.g., "(1024,1,1,1)/f32".
-
-    Returns:
-        A TensorDesc instance with the specified shape and dtype.
+        string: String of the form "(shape)/dtype" to convert.
 
     """
     shape_str, dtype = string.split("/")

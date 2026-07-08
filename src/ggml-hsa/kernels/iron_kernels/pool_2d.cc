@@ -23,7 +23,8 @@ extern "C" {
  *
  * Mirrors ggml_compute_forward_pool_2d for a single channel-plane. Padding is
  * handled by skipping out-of-bounds taps; AVG divides by the full k0 * k1 window
- * area (matching the GGML CPU reference), not the count of valid taps.
+ * area (matching the GGML CPU reference), not the count of valid taps. Taps are
+ * accumulated in float.
  *
  * @param[in]  in   Input channel-plane of iw * ih elements (row-major, width fastest).
  * @param[out] out  Output channel-plane of ow * oh elements.

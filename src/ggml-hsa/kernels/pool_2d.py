@@ -13,13 +13,13 @@ from .kernel import Backend, KernelSpec
 def ggml_op_pool_2d(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """GGML_OP_POOL_2D implementation.
+    """Return the KernelSpec for GGML_OP_POOL_2D.
 
     Parameters:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-        op_params: Operation parameters {op, k0, k1, s0, s1, p0, p1}.
+        op_params: {op, k0, k1, s0, s1, p0, p1} as 7 x int32.
 
     Returns:
         KernelSpec for the POOL_2D operation.
