@@ -1,0 +1,159 @@
+#
+# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+# (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
+
+"""IRON kernel implementation for the 2D pooling operation.
+
+POOL_2D reduces each ``k1 x k0`` window of an input channel-plane to a single
+output element. Channel-planes are independent (no channel mixing), so the
+design processes one input plane ``[IW, IH]`` -> output plane ``[OW, OH]`` per
+worker iteration, iterating over all ``C * N`` planes.
+"""
+
+import struct
+from pathlib import Path
+
+import numpy as np
+from aie.iron import (
+    ExternalFunction,
+    ObjectFifo,
+    Program,
+    Runtime,
+    Worker,
+    dtype_to_str,
+)
+from aie.iron.controlflow import range_
+
+from .utils import arch_to_device
+
+# GGML pooling op selector (matches enum ggml_op_pool in include/ggml.h).
+_GGML_OP_POOL_MAX = 0
+_GGML_OP_POOL_AVG = 1
+
+
+def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+    """IRON design for 2D pooling.
+
+    Parameters:
+        arch: Target architecture.
+        input_tensors: List of one input tensor with shape [IW, IH, C, N].
+        output_tensor: Output tensor with shape [OW, OH, C, N].
+        op_params: Operation parameters {op, k0, k1, s0, s1, p0, p1} (7 x int32).
+
+    """
+    if len(input_tensors) != 1:
+        msg = "Operation requires exactly one input tensor."
+        raise ValueError(msg)
+
+    input_tensor = input_tensors[0]
+
+    if not input_tensor.contiguous or not output_tensor.contiguous:
+        msg = "Input and output tensors must be contiguous in memory."
+        raise ValueError(msg)
+
+    # op_params: {op, k0, k1, s0, s1, p0, p1} as 7 x int32.
+    op, k0, k1, s0, s1, p0, p1 = struct.unpack_from("7i", op_params, 0)
+
+    if op not in (_GGML_OP_POOL_MAX, _GGML_OP_POOL_AVG):
+        msg = f"Unsupported pooling op: {op}."
+        raise ValueError(msg)
+
+    iw, ih, in_c, in_n = input_tensor.shape
+    ow, oh, out_c, out_n = output_tensor.shape
+
+    if (in_c, in_n) != (out_c, out_n):
+        msg = (
+            f"Channel/batch mismatch: input {(in_c, in_n)} vs output {(out_c, out_n)}."
+        )
+        raise ValueError(msg)
+
+    in_plane = iw * ih
+    out_plane = ow * oh
+    num_planes = in_c * in_n
+
+    function = _create_external_function(
+        op_name="GGML_OP_POOL_2D",
+        input_tensor=input_tensor,
+        output_tensor=output_tensor,
+        in_plane=in_plane,
+        out_plane=out_plane,
+    )
+
+    # AIE-array data movement with object fifos: one channel-plane per tile.
+    input_tile_ty = np.ndarray[(in_plane,), np.dtype[input_tensor.dtype]]
+    output_tile_ty = np.ndarray[(out_plane,), np.dtype[output_tensor.dtype]]
+    of_in = ObjectFifo(input_tile_ty, name="in")
+    of_out = ObjectFifo(output_tile_ty, name="out")
+
+    def ext_core_fn(of_in, of_out, function):
+        for _ in range_(num_planes):
+            elem_in = of_in.acquire(1)
+            elem_out = of_out.acquire(1)
+            function(elem_in, elem_out, iw, ih, ow, oh, k0, k1, s0, s1, p0, p1, op)
+            of_in.release(1)
+            of_out.release(1)
+
+    worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+
+    # Runtime operations to move data to/from the AIE-array.
+    rt = Runtime()
+    input_tensor_ty = np.ndarray[(in_plane * num_planes,), np.dtype[input_tensor.dtype]]
+    output_tensor_ty = np.ndarray[
+        (out_plane * num_planes,), np.dtype[output_tensor.dtype]
+    ]
+    with rt.sequence(input_tensor_ty, output_tensor_ty) as (a_in, b_out):
+        rt.start(worker)
+        rt.fill(of_in.prod(), a_in)
+        rt.drain(of_out.cons(), b_out, wait=True)
+
+    return Program(arch_to_device(arch), rt).resolve_program()
+
+
+def _create_external_function(
+    op_name: str,
+    input_tensor,
+    output_tensor,
+    in_plane: int,
+    out_plane: int,
+) -> ExternalFunction:
+    """Create an ExternalFunction specification for the pooling operation.
+
+    Parameters:
+        op_name: Operation name used for function naming and compile flags.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
+        in_plane: Number of elements in an input channel-plane (IW * IH).
+        out_plane: Number of elements in an output channel-plane (OW * OH).
+
+    Returns:
+        The configured ExternalFunction specification.
+
+    """
+    current_dir = Path(__file__).resolve().parent
+    return ExternalFunction(
+        name=op_name.lower(),
+        object_file_name=f"{op_name.lower()}_core_function.o",
+        source_file=str(current_dir / "pool_2d.cc"),
+        arg_types=[
+            np.ndarray[(in_plane,), np.dtype[input_tensor.dtype]],
+            np.ndarray[(out_plane,), np.dtype[output_tensor.dtype]],
+            np.int32,  # iw
+            np.int32,  # ih
+            np.int32,  # ow
+            np.int32,  # oh
+            np.int32,  # k0
+            np.int32,  # k1
+            np.int32,  # s0
+            np.int32,  # s1
+            np.int32,  # p0
+            np.int32,  # p1
+            np.int32,  # op
+        ],
+        compile_flags=[
+            f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
+            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        ],
+    )

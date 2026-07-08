@@ -7069,6 +7069,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // Soft max:  [500, 1] x [500, 1] -> [1, 1]
     test_cases.emplace_back(new test_soft_max(GGML_TYPE_F32, {500, 1, 1, 1}));
 
+    // POOL_2D: MNIST-CNN 2x2 stride-2 max pooling (no padding)
+    test_cases.emplace_back(new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {26, 26, 32, 1}, 2, 2, 2, 2, 0, 0));
+    test_cases.emplace_back(new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {11, 11, 64, 1}, 2, 2, 2, 2, 0, 0));
+    // POOL_2D: average pooling with padding
+    test_cases.emplace_back(new test_pool2d(GGML_OP_POOL_AVG, GGML_TYPE_F32, {10, 10, 3, 1}, 3, 3, 1, 1, 1, 1));
+
     return test_cases;
 }
 #ifdef _MSC_VER
