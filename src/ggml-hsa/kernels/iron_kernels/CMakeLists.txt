@@ -17,6 +17,8 @@ set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.py
     ${CMAKE_CURRENT_SOURCE_DIR}/gemm.py
     ${CMAKE_CURRENT_SOURCE_DIR}/ggml-aie.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/pool_2d.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/pool_2d.py
     ${CMAKE_CURRENT_SOURCE_DIR}/scale.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/scale.py
     ${CMAKE_CURRENT_SOURCE_DIR}/softmax.cc

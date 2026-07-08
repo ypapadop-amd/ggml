@@ -13,7 +13,7 @@ from .kernel import Backend, KernelSpec
 
 
 def _validate_binary_inputs(input_tensors: list) -> None:
-    """Validate the inputs of a binary operation.
+    """Validate that a binary operation has exactly two input tensors.
 
     Parameters:
         input_tensors: List of input tensors to validate.
@@ -33,16 +33,16 @@ def _make_iron_binary_kernel_spec(
     output_tensor,
     op_name: str,
 ) -> KernelSpec:
-    """Create a KernelSpec for a binary operation targeting the IRON backend.
+    """Create an IRON-backend KernelSpec for a binary operation.
 
     Parameters:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_name: Name of the operation.
+        op_name: Name of the GGML operation.
 
     Returns:
-        KernelSpec configured for IRON backend.
+        KernelSpec configured for the IRON backend.
 
     """
     from functools import partial
@@ -70,19 +70,20 @@ def _make_triton_add_kernel_spec(
     input_tensors: list,
     output_tensor,
 ) -> KernelSpec:
-    """Create a KernelSpec for ADD operation targeting the TRITON backend.
+    """Create a TRITON-backend KernelSpec for ADD.
 
     Parameters:
-        arch (str): Target architecture.
-        input_tensors (list): Two input tensors.
-        output_tensor (TensorDesc): Output tensor.
+        arch: Target architecture.
+        input_tensors: List of two input tensors.
+        output_tensor: Output tensor.
 
     Returns:
-        KernelSpec configured for TRITON backend.
+        KernelSpec configured for the TRITON backend.
 
     Raises:
         ValueError: If the tensors require broadcasting or are non-contiguous
             (raised lazily when the returned compile function is invoked).
+
     """
     n_elements = output_tensor.numel()
 
@@ -149,17 +150,17 @@ def _make_triton_add_kernel_spec(
 def ggml_op_add(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> list[KernelSpec]:
-    """GGML_OP_ADD implementation.
+    """Return KernelSpecs for GGML_OP_ADD (IRON primary, Triton fallback).
 
     Parameters:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params: Operation parameters (unused for ADD, but required
+        op_params: Operation parameters (unused for elementwise ops but required
             by the dispatch interface).
 
     Returns:
-        KernelSpec for the ADD operation.
+        List of KernelSpecs for the ADD operation.
 
     """
     _validate_binary_inputs(input_tensors)
@@ -175,13 +176,13 @@ def ggml_op_add(
 def ggml_op_sub(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """GGML_OP_SUB implementation.
+    """Return the KernelSpec for GGML_OP_SUB.
 
     Parameters:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params: Operation parameters (unused for SUB, but required
+        op_params: Operation parameters (unused for elementwise ops but required
             by the dispatch interface).
 
     Returns:
@@ -198,13 +199,13 @@ def ggml_op_sub(
 def ggml_op_mul(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """GGML_OP_MUL implementation.
+    """Return the KernelSpec for GGML_OP_MUL.
 
     Parameters:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params: Operation parameters (unused for MUL, but required
+        op_params: Operation parameters (unused for elementwise ops but required
             by the dispatch interface).
 
     Returns:
@@ -221,13 +222,13 @@ def ggml_op_mul(
 def ggml_op_div(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """GGML_OP_DIV implementation.
+    """Return the KernelSpec for GGML_OP_DIV.
 
     Parameters:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
-        op_params: Operation parameters (unused for DIV, but required
+        op_params: Operation parameters (unused for elementwise ops but required
             by the dispatch interface).
 
     Returns:
