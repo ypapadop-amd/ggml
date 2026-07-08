@@ -15,14 +15,15 @@ def vecadd(
     n_elements: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
 ):
-    """Triton kernel for vector addition: C = A + B.
+    """Compute C = A + B over n_elements, BLOCK_SIZE_N elements per block.
 
     Parameters:
-        A: Pointer to input vector A
-        B: Pointer to input vector B
-        C: Pointer to output vector C
-        n_elements: Total number of elements in the vectors
-        BLOCK_SIZE_N: Number of elements processed by each block
+        A: Pointer to the first input vector.
+        B: Pointer to the second input vector.
+        C: Pointer to the output vector.
+        n_elements: Total number of elements in each vector.
+        BLOCK_SIZE_N: Number of elements processed per block.
+
     """
     pid = tl.program_id(0)  # block row id
     block_start = pid * BLOCK_SIZE_N

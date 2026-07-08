@@ -26,11 +26,11 @@ from .utils import arch_aligned_num_elements, arch_to_device, max_tile_size
 
 @dataclass(frozen=True)
 class CoreFunctionSpec:
-    """Specification for a core function to be used in unary operations.
+    """Core function plus total element count for a unary op.
 
     Attributes:
-        external_function: The external function to be called for the unary operation.
-        num_elements: The total number of elements in the input/output tensors.
+        external_function: External function implementing the operation.
+        num_elements: Total number of elements to process.
 
     """
 
@@ -39,7 +39,7 @@ class CoreFunctionSpec:
 
     @property
     def tile_size(self) -> int:
-        """Returns the tile size used by the external function."""
+        """Tile size used by the external function."""
         return self.external_function.tile_size(0)
 
 
@@ -49,12 +49,12 @@ def _unary_op(
     function_spec: CoreFunctionSpec,
     output_tensor,
 ):
-    """Implement output_tensor = op(input_tensors[0]).
+    """Element-wise output_tensor = op(input_tensors[0]).
 
     Parameters:
         arch: Target architecture.
-        input_tensors: Input tensors.
-        function_spec: Unary operator specification.
+        input_tensors: List of one input tensor.
+        function_spec: Core function specification.
         output_tensor: Output tensor.
 
     """
@@ -112,16 +112,13 @@ def _create_external_function(
     input_tensor,
     output_tensor,
 ) -> CoreFunctionSpec:
-    """Create a specification for unary ops.
+    """Create the CoreFunctionSpec for a unary op.
 
     Parameters:
         arch: Target architecture.
-        op_name: Name of the operation.
+        op_name: Name of the unary operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
-
-    Returns:
-        CoreFunctionSpec: Specification for the core function to be used in unary ops.
 
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
@@ -152,7 +149,7 @@ def unary_op(
     input_tensors: list,
     output_tensor,
 ):
-    """IRON design for unary operations.
+    """IRON design for unary element-wise operations.
 
     Parameters:
         op_name: Name of the unary operation.

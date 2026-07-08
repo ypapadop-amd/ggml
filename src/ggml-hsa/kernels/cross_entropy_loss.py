@@ -13,15 +13,13 @@ from .kernel import Backend, KernelSpec
 def ggml_op_cross_entropy_loss(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
-    """GGML_OP_CROSS_ENTROPY_LOSS implementation.
+    """Return the KernelSpec for GGML_OP_CROSS_ENTROPY_LOSS.
 
     Parameters:
         arch: Target architecture.
-        input_tensors: List of 2 input tensors:
-            - input_tensors[0]: Logits tensor (predictions before softmax)
-            - input_tensors[1]: Labels tensor (ground truth, often one-hot encoded)
-        output_tensor: Output scalar tensor containing the loss value.
-        op_params: Operation parameters (currently unused).
+        input_tensors: [logits, labels].
+        output_tensor: Scalar loss value.
+        op_params: Unused.
 
     Returns:
         KernelSpec for the CROSS_ENTROPY_LOSS operation.
