@@ -16,7 +16,7 @@
  * @param[in] kernel_name kernel name
  * @param[in] output_path directory to write kernel to
  */
-ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
+ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                         const ggml_tensor & tensor,
                                         const std::string & op_name,
                                         const std::string & kernel_name,
@@ -30,7 +30,7 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
  * @param[in] kernel_name kernel name
  * @param[in] output_path directory to write kernel to
  */
-ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
+ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                         const ggml_tensor & tensor,
                                         const std::string & kernel_name,
                                         const std::filesystem::path & output_path);

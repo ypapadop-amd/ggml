@@ -53,7 +53,7 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
  │    └─ JIT compile (GGML_HSA_JIT_COMPILE)
  │         │
  │         ▼
- │    ggml_hsa_compile_aie_kernel()           ─── aie-kernel-compiler.cpp
+ │    ggml_hsa_compile_kernel()           ─── kernel-compiler.cpp
  │      C++ → Python bridge (pybind11)
  │         │
  │         ▼
@@ -255,7 +255,7 @@ Payload memory is allocated from the `kernarg_memory` pool and tracked in
 ## Error Handling
 
 - **Python compilation failure:** `py::error_already_set` is caught in
-  `ggml_hsa_compile_aie_kernel()`, which returns `GGML_STATUS_FAILED`.
+  `ggml_hsa_compile_kernel()`, which returns `GGML_STATUS_FAILED`.
 - **File load failure:** `ggml_hsa_load_pdi()` / `ggml_hsa_load_insts()`
   return `GGML_STATUS_ALLOC_FAILED` or `GGML_STATUS_FAILED`.
 - **Kernel not found and JIT disabled:** returns `GGML_STATUS_FAILED`,

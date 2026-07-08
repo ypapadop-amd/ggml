@@ -37,7 +37,7 @@ src/ggml-hsa/
 ├── host-ops.cpp/hpp             # Host-side operation implementations
 ├── kernel-discovery.cpp/hpp     # Runtime kernel discovery and loading
 ├── aie-kernel.cpp/hpp           # AIE kernel abstraction layer
-├── aie-kernel-compiler.cpp/hpp  # JIT compilation interface
+├── kernel-compiler.cpp/hpp  # JIT compilation interface
 ├── type-traits.hpp              # GGML type to C++ type mapping
 ├── kernels/                     # AIE kernel implementations (two-layer architecture)
 │   ├── __init__.py              # Package exports (ggml_compile_op, Kernel, TensorDesc, ggml_tensor_to_tensordesc)

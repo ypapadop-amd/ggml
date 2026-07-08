@@ -14,7 +14,7 @@
 #ifdef GGML_HSA_AIE
 #include "ggml-hsa/aie-kernel.hpp"
 #ifdef GGML_HSA_JIT_COMPILE
-#include "ggml-hsa/aie-kernel-compiler.hpp"
+#include "ggml-hsa/kernel-compiler.hpp"
 #endif
 #endif
 
@@ -196,7 +196,7 @@ static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device
 #ifdef GGML_HSA_JIT_COMPILE
         // kernel files not found, compile kernel
         if (auto status =
-                ggml_hsa_compile_aie_kernel(dev_info, tensor, kernel_name, cached_kernel_dir);
+                ggml_hsa_compile_kernel(dev_info, tensor, kernel_name, cached_kernel_dir);
             status != GGML_STATUS_SUCCESS) {
             return status;
         }

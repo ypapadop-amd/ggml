@@ -1,6 +1,6 @@
 // Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "ggml-hsa/aie-kernel-compiler.hpp"
+#include "ggml-hsa/kernel-compiler.hpp"
 
 #include <algorithm>
 #include <array>
@@ -72,7 +72,7 @@ static py::tuple ggml_hsa_tensor_nb_as_pytuple(const ggml_tensor & tensor) {
     return nb;
 }
 
-ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
+ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                         const ggml_tensor & tensor,
                                         const std::string & op_name,
                                         const std::string & kernel_name,
@@ -130,10 +130,10 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
     return GGML_STATUS_SUCCESS;
 }
 
-ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
+ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                         const ggml_tensor & tensor,
                                         const std::string & kernel_name,
                                         const std::filesystem::path & output_path) {
-    return ggml_hsa_compile_aie_kernel(dev_info, tensor, ggml_op_desc(&tensor), kernel_name,
+    return ggml_hsa_compile_kernel(dev_info, tensor, ggml_op_desc(&tensor), kernel_name,
                                        output_path);
 }
