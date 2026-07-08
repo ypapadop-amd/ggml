@@ -5,11 +5,15 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON design for GGML_OP_POOL_2D (max/avg pooling, zero-fill padding).
+"""IRON design for GGML_OP_POOL_2D (max/avg pooling).
 
 Channel-planes are independent, so one input plane [IW, IH] -> output plane
 [OW, OH] is processed per worker iteration across all C * N planes. Input is
 float32 or bfloat16; output is float32.
+
+Out-of-bounds taps are skipped. For MAX pooling this is equivalent to
+-FLT_MAX padding; for AVG pooling the divisor is the full k0*k1 window area
+(not the count of valid taps), matching the GGML CPU reference.
 """
 
 import struct
@@ -83,6 +87,18 @@ def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     if op not in (_GGML_OP_POOL_MAX, _GGML_OP_POOL_AVG):
         msg = f"Unsupported pooling op: {op}."
+        raise ValueError(msg)
+
+    if k0 <= 0 or k1 <= 0:
+        msg = f"Kernel dimensions must be positive; got k0={k0}, k1={k1}."
+        raise ValueError(msg)
+
+    if s0 <= 0 or s1 <= 0:
+        msg = f"Strides must be positive; got s0={s0}, s1={s1}."
+        raise ValueError(msg)
+
+    if p0 < 0 or p1 < 0:
+        msg = f"Padding must be non-negative; got p0={p0}, p1={p1}."
         raise ValueError(msg)
 
     iw, ih, in_c, in_n = input_tensor.shape
