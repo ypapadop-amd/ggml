@@ -26,6 +26,7 @@ from aie.iron import (
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
+from ml_dtypes import bfloat16
 
 from .utils import arch_to_device
 
@@ -50,9 +51,12 @@ def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     input_tensor = input_tensors[0]
 
-    if input_tensor.dtype != np.float32 or output_tensor.dtype != np.float32:
+    if (
+        input_tensor.dtype not in (np.float32, bfloat16)
+        or output_tensor.dtype != np.float32
+    ):
         msg = (
-            f"POOL_2D only supports float32 tensors; "
+            f"POOL_2D only supports float32/bfloat16 input and float32 output; "
             f"got input dtype={input_tensor.dtype}, output dtype={output_tensor.dtype}."
         )
         raise ValueError(msg)

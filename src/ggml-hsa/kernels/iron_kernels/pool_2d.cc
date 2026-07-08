@@ -52,7 +52,7 @@ void ggml_op_pool_2d(const INPUT_DTYPE * __restrict in,
                      int32_t p0,
                      int32_t p1,
                      int32_t op) {
-    static_assert(std::is_same<INPUT_DTYPE, float>::value, "INPUT_DTYPE must be float");
+    static_assert(is_floating_point_v<INPUT_DTYPE>, "INPUT_DTYPE must be a floating-point type");
     static_assert(std::is_same<OUTPUT_DTYPE, float>::value, "OUTPUT_DTYPE must be float");
 
     event0();
@@ -62,7 +62,7 @@ void ggml_op_pool_2d(const INPUT_DTYPE * __restrict in,
 
     for (int32_t oy = 0; oy < oh; ++oy) {
         for (int32_t ox = 0; ox < ow; ++ox) {
-            float res = (op == GGML_OP_POOL_MAX) ? std::numeric_limits<float>::lowest() : 0.0f;
+            auto res = (op == GGML_OP_POOL_MAX) ? std::numeric_limits<float>::lowest() : 0.0f;
 
             const int32_t ix = offset0 + ox * s0;
             const int32_t iy = offset1 + oy * s1;
@@ -72,13 +72,13 @@ void ggml_op_pool_2d(const INPUT_DTYPE * __restrict in,
                 if (y < 0 || y >= ih) {
                     continue;
                 }
-                const float * srow = in + static_cast<int32_t>(y) * iw;
+                const auto * srow = in + static_cast<int32_t>(y) * iw;
                 for (int32_t kx = 0; kx < k0; ++kx) {
                     const int32_t x = ix + kx;
                     if (x < 0 || x >= iw) {
                         continue;
                     }
-                    const float v = srow[x];
+                    const auto v = static_cast<float>(srow[x]);
                     if (op == GGML_OP_POOL_MAX) {
                         res = (v > res) ? v : res;
                     } else {

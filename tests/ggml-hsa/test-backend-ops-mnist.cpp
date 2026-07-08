@@ -7076,6 +7076,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {10, 10, 3, 1}, 3, 3, 1, 1, 1, 1));
     // POOL_2D: average pooling with padding
     test_cases.emplace_back(new test_pool2d(GGML_OP_POOL_AVG, GGML_TYPE_F32, {10, 10, 3, 1}, 3, 3, 1, 1, 1, 1));
+    // POOL_2D: F16 input
+    test_cases.emplace_back(new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F16, {10, 10, 3, 1}, 2, 2, 2, 2, 0, 0));
 
     return test_cases;
 }
