@@ -17,6 +17,7 @@ if (GGML_HSA_JIT_COMPILE)
         ${CMAKE_CURRENT_SOURCE_DIR}/clamp.py
         ${CMAKE_CURRENT_SOURCE_DIR}/count_equal.py
         ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/im2col.py
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel.py
         ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat.py
         ${CMAKE_CURRENT_SOURCE_DIR}/pool_2d.py
