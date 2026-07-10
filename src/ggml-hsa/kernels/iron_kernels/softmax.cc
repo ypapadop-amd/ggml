@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
+#include <stdint.h>
+
 #include <limits>
 #include <type_traits>
 
@@ -270,7 +272,7 @@ void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
 
     // Step 3: Normalize
     const auto sum_inv = 1.0f / sum_total;
-    for (int i = 0; i < N; i++) {
+    for (int32_t i = 0; i < N; i++) {
         output[i] *= sum_inv;
     }
 

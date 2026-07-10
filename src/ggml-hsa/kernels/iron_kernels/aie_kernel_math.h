@@ -6,6 +6,8 @@
 #ifndef AIE_KERNEL_MATH
 #define AIE_KERNEL_MATH
 
+#include <stdint.h>
+
 #include <aie_api/aie.hpp>
 #include <cmath>
 #include <cstdint>
@@ -35,7 +37,7 @@ inline float scalar_exp(float x) {
     float t = x * log2e;
 
     // n = floor(t)
-    int n = static_cast<int>(t);
+    int32_t n = static_cast<int32_t>(t);
     if (t < static_cast<float>(n))
         n--;
 
@@ -167,7 +169,7 @@ inline uint32_t floor_log2(uint32_t x) {
  * @return The computed value of 2^x.
  */
 inline float pow2(float x) {
-    int i = static_cast<int>(x);
+    int32_t i = static_cast<int32_t>(x);
     if (x < static_cast<float>(i))
         i--;
     float f = x - static_cast<float>(i);
