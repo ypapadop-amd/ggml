@@ -8,10 +8,11 @@
 """IRON design for GGML_OP_IM2COL (2D image-to-column layout transform).
 
 im2col gathers sliding kernel windows into columns so a convolution can run as a
-matmul. The full input image for one batch element [IW, IH, IC] is loaded into
-L1 once, then one output row [OW, IC*KH*KW] is emitted per worker iteration for
-each of the OH output rows. Output columns pack taps channel-major
-(IC*KH*KW), applying zero-fill padding and dilation. Out-of-bounds taps are zero.
+matmul. The batch of N images is split across compute tiles (one worker per
+tile). Each worker loads one input image [IW, IH, IC] into L1 at a time, then
+emits its OH output rows [OW, IC*KH*KW] one per iteration. Output columns pack
+taps channel-major (IC*KH*KW), applying zero-fill padding and dilation.
+Out-of-bounds taps are zero.
 
 The convolution kernel (src0) is only used for its KW/KH shape; it carries no
 data, so it is not moved onto the AIE array. The image (src1) is float32; the
@@ -24,6 +25,7 @@ import struct
 from pathlib import Path
 
 import numpy as np
+from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
@@ -36,6 +38,10 @@ from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
 from .utils import arch_to_device
+
+# Cap on data-parallel workers (compute tiles). Beyond this the per-worker shim/
+# mem-tile DMA channels exhaust the array's routing budget on NPU1 (aie2).
+_MAX_WORKERS = 8
 
 
 def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -130,28 +136,60 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         row_size=row_size,
     )
 
-    # One image per outer iteration; one output row per inner iteration.
+    # The batch dimension is embarrassingly parallel: distribute the N images
+    # across compute tiles. Each worker owns an independent input/output fifo
+    # pair (one worker per compute tile) and streams its slice of the batch one
+    # image at a time. Independent per-worker fifos fed by per-worker DMA taps
+    # are used rather than a single split/join fifo: the split-then-stream-many-
+    # objects access pattern fails aiecc DMA lowering, whereas per-worker taps
+    # lower cleanly. Workers are capped at _MAX_WORKERS to stay within the shim/
+    # mem-tile DMA channel budget (16 workers exhausts it on NPU1).
+    num_workers = min(_MAX_WORKERS, n)
+    base, rem = divmod(n, num_workers)
+    # First `rem` workers get one extra image so the slices cover all N.
+    images_per_worker = [base + (1 if w < rem else 0) for w in range(num_workers)]
+    out_per_image = row_size * oh
+
     image_tile_ty = np.ndarray[(image_size,), np.dtype[image_tensor.dtype]]
     row_tile_ty = np.ndarray[(row_size,), np.dtype[output_tensor.dtype]]
-    of_in = ObjectFifo(image_tile_ty, name="in")
-    of_out = ObjectFifo(row_tile_ty, name="out")
 
-    # The outer loop over batch elements is emitted as an AIE loop (range_). The
-    # inner loop over output rows uses a plain Python range so it unrolls at
-    # build time: nested range_ loops are miscompiled (mlir-aie issue #1547), and
-    # OH is small. oh_idx is then a compile-time constant passed straight in.
-    def ext_core_fn(of_in, of_out, function):
-        for _ in range_(n):
-            img = of_in.acquire(1)
-            for oh_idx in range(oh):
-                row = of_out.acquire(1)
-                function(
-                    img, row, oh_idx, iw, ih, ic, kw, kh, ow, s0, s1, p0, p1, d0, d1
-                )
-                of_out.release(1)
-            of_in.release(1)
+    of_ins = [ObjectFifo(image_tile_ty, name=f"in{w}") for w in range(num_workers)]
+    of_outs = [ObjectFifo(row_tile_ty, name=f"out{w}") for w in range(num_workers)]
 
-    worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+    # The outer loop over this worker's images is emitted as an AIE loop
+    # (range_). The inner loop over output rows uses a plain Python range so it
+    # unrolls at build time: nested range_ loops are miscompiled (mlir-aie issue
+    # #1547), and OH is small. oh_idx is then a compile-time constant.
+    def make_core_fn(image_count):
+        def ext_core_fn(of_in, of_out, function):
+            for _ in range_(image_count):
+                img = of_in.acquire(1)
+                for oh_idx in range(oh):
+                    row = of_out.acquire(1)
+                    function(
+                        img, row, oh_idx, iw, ih, ic, kw, kh, ow, s0, s1, p0, p1, d0, d1
+                    )
+                    of_out.release(1)
+                of_in.release(1)
+
+        return ext_core_fn
+
+    workers = [
+        Worker(
+            make_core_fn(images_per_worker[w]),
+            fn_args=[of_ins[w].cons(), of_outs[w].prod(), function],
+        )
+        for w in range(num_workers)
+    ]
+
+    # Per-worker DMA taps select each worker's contiguous slice of the batch from
+    # the whole tensors: the input viewed as [N, image_size], the output as
+    # [N, out_per_image]. worker w reads images [start, start+count).
+    image_starts = []
+    acc = 0
+    for count in images_per_worker:
+        image_starts.append(acc)
+        acc += count
 
     # The runtime sequence binds one buffer per ggml tensor, positionally:
     # src0 (kernel), src1 (image), then dst. The kernel carries no data (only its
@@ -160,15 +198,31 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     kernel_numel = kernel_tensor.numel()
     kernel_tensor_ty = np.ndarray[(kernel_numel,), np.dtype[kernel_tensor.dtype]]
     image_tensor_ty = np.ndarray[(image_size * n,), np.dtype[image_tensor.dtype]]
-    output_tensor_ty = np.ndarray[(row_size * oh * n,), np.dtype[output_tensor.dtype]]
+    output_tensor_ty = np.ndarray[(out_per_image * n,), np.dtype[output_tensor.dtype]]
     with rt.sequence(kernel_tensor_ty, image_tensor_ty, output_tensor_ty) as (
         _a_kernel,
         a_in,
         b_out,
     ):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.drain(of_out.cons(), b_out, wait=True)
+        rt.start(*workers)
+        for w in range(num_workers):
+            count = images_per_worker[w]
+            in_tap = TensorAccessPattern(
+                (n, image_size),
+                image_starts[w] * image_size,
+                [1, count, 1, image_size],
+                [0, image_size, 0, 1],
+            )
+            rt.fill(of_ins[w].prod(), a_in, in_tap)
+        for w in range(num_workers):
+            count = images_per_worker[w]
+            out_tap = TensorAccessPattern(
+                (n, out_per_image),
+                image_starts[w] * out_per_image,
+                [1, count, 1, out_per_image],
+                [0, out_per_image, 0, 1],
+            )
+            rt.drain(of_outs[w].cons(), b_out, out_tap, wait=True)
 
     return Program(arch_to_device(arch), rt).resolve_program()
 
