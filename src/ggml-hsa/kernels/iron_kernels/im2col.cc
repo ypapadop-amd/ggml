@@ -68,12 +68,11 @@ void ggml_op_im2col(const INPUT_DTYPE * __restrict in,
             for (int32_t ikh = 0; ikh < kh; ++ikh) {
                 const int32_t iih = oh * s1 + ikh * d1 - p1;
                 const bool y_in = (iih >= 0) && (iih < ih);
-                const int32_t row_base = iih * iw;
                 for (int32_t ikw = 0; ikw < kw; ++ikw) {
                     const int32_t iiw = ox * s0 + ikw * d0 - p0;
                     const int32_t idx = iic * (kh * kw) + ikh * kw + ikw;
                     if (y_in && (iiw >= 0) && (iiw < iw)) {
-                        dst_col[idx] = static_cast<OUTPUT_DTYPE>(src_plane[row_base + iiw]);
+                        dst_col[idx] = static_cast<OUTPUT_DTYPE>(src_plane[iih * iw + iiw]);
                     } else {
                         dst_col[idx] = static_cast<OUTPUT_DTYPE>(0.0f);
                     }

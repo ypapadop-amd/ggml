@@ -126,6 +126,10 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         msg = f"Batch mismatch: image N={n} vs output N={out_n}."
         raise ValueError(msg)
 
+    if n <= 0:
+        msg = f"Batch size N must be positive; got N={n}."
+        raise ValueError(msg)
+
     image_size = ic * ih * iw
     row_size = ow * col_stride
 
