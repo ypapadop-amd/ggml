@@ -21,8 +21,11 @@ extern "C" {
  * @param[in]  min_val Minimum allowed value (inclusive).
  * @param[in]  max_val Maximum allowed value (inclusive).
  */
-void ggml_op_clamp(
-    const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N, float min_val, float max_val) {
+void ggml_op_clamp(const INPUT_DTYPE * __restrict in,
+                   OUTPUT_DTYPE * __restrict out,
+                   int32_t N,
+                   float min_val,
+                   float max_val) {
     event0();
     for (int32_t i = 0; i < N; ++i) {
         if (in[i] < static_cast<INPUT_DTYPE>(min_val)) {
