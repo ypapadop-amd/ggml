@@ -2246,6 +2246,64 @@ struct test_soft_max : public test_case {
     bool grad_precise() override { return true; }
 };
 
+// GGML_OP_IM2COL
+struct test_im2col : public test_case {
+    const ggml_type type_input;
+    const ggml_type type_kernel;
+    const ggml_type dst_type;
+    const std::array<int64_t, 4> ne_input;
+    const std::array<int64_t, 4> ne_kernel;
+    // stride
+    const int s0;
+    const int s1;
+    // padding
+    const int p0;
+    const int p1;
+    // dilation
+    const int d0;
+    const int d1;
+    // mode
+    const bool is_2D;
+
+    std::string vars() override {
+        return VARS_TO_STR12(type_input, type_kernel, dst_type, ne_input, ne_kernel, s0, s1, p0, p1,
+                             d0, d1, is_2D);
+    }
+
+    test_im2col(ggml_type type_input = GGML_TYPE_F32, ggml_type type_kernel = GGML_TYPE_F32,
+                ggml_type dst_type = GGML_TYPE_F32,
+                std::array<int64_t, 4> ne_input = {10, 10, 3, 1},
+                std::array<int64_t, 4> ne_kernel = {3, 3, 3, 1}, int s0 = 1, int s1 = 1, int p0 = 1,
+                int p1 = 1, int d0 = 1, int d1 = 1, bool is_2D = true) :
+        type_input(type_input),
+        type_kernel(type_kernel),
+        dst_type(dst_type),
+        ne_input(ne_input),
+        ne_kernel(ne_kernel),
+        s0(s0),
+        s1(s1),
+        p0(p0),
+        p1(p1),
+        d0(d0),
+        d1(d1),
+        is_2D(is_2D) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * input = ggml_new_tensor(ctx, type_input, 4, ne_input.data());
+        ggml_set_param(input);
+        ggml_set_name(input, "input");
+
+        ggml_tensor * kernel = ggml_new_tensor(ctx, type_kernel, 4, ne_kernel.data());
+        ggml_set_name(kernel, "kernel");
+
+        ggml_tensor * out =
+            ggml_im2col(ctx, kernel, input, s0, s1, p0, p1, d0, d1, is_2D, dst_type);
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+};
+
 // GGML_OP_POOL2D
 struct test_pool2d : public test_case {
     enum ggml_op_pool pool_type;
@@ -2478,6 +2536,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_soft_max(GGML_TYPE_F32, {10, 500, 1, 1}));
 
     // MNIST-CNN layer tests (FP32, batch=500, NCB=8)
+    // Conv1 im2col: images [28, 28, 1, 500] x conv1_kernel [3, 3, 1, 8], stride=1, pad=1
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {28, 28, 1, 500}, {3, 3, 1, 8}, 1, 1, 1, 1, 1, 1, true));
+    // Conv2 im2col: images [14, 14, 8, 500] x conv2_kernel [3, 3, 8, 16], stride=1, pad=1
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {14, 14, 8, 500}, {3, 3, 8, 16}, 1, 1, 1, 1, 1, 1,
+                                            true));
     // Conv1: images [28, 28, 1, 500] x conv1_kernel [3, 3, 1, 8], stride=1, pad=1 -> [28, 28, 8,
     // 500]
     test_cases.emplace_back(

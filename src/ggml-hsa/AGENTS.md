@@ -212,22 +212,26 @@ Each backend has a dedicated compiler module:
   - Extracts PDI and instructions from the generated `aie.xclbin` via `xclbinutil`
   - Produces PDI `.pdi` and instructions `_insts.bin` files for AIE execution
 
-Compilers are registered in `build.py`:
+Compilers are resolved in `build.py` by `_get_compiler()`:
 
 ```python
 from kernel import Backend
-from build_iron import compile_iron_kernel
-from build_triton import compile_triton_kernel
 
-_BACKENDS: dict[Backend, Callable] = {
-    Backend.IRON: compile_iron_kernel,
-    Backend.TRITON: compile_triton_kernel,
-}
+def _get_compiler(backend: Backend) -> Callable:
+    if backend.name == Backend.IRON.name:
+        from build_iron import compile_iron_kernel
+        return compile_iron_kernel
+    if backend.name == Backend.TRITON.name:
+        from build_triton import compile_triton_kernel
+        return compile_triton_kernel
+    raise NotImplementedError(...)
 ```
 
-The `_get_compiler()` function looks up compilers by `backend.name` (string comparison)
-rather than identity, to handle the case where `Backend` enums from dynamically imported
-modules have different class identity.
+Backend compilers are imported lazily so an IRON-only environment (without the
+Triton/torch dependencies) can still compile IRON kernels. Lookup is by
+`backend.name` (string comparison) rather than identity, to handle the case
+where `Backend` enums from dynamically imported modules have different class
+identity.
 
 ### IRON Kernel Implementations
 
@@ -457,15 +461,15 @@ To add a new backend, follow the pattern used for the Triton backend. This examp
        pass
    ```
 
-3. **Register the compiler** in `kernels/build.py`:
+3. **Register the compiler** in `kernels/build.py` by adding a lazy-import
+   branch to `_get_compiler()`:
 
    ```python
-   from build_triton import compile_triton_kernel
-
-   _BACKENDS: dict[Backend, Callable] = {
-       Backend.IRON: compile_iron_kernel,
-       Backend.TRITON: compile_triton_kernel,
-   }
+   def _get_compiler(backend: Backend) -> Callable:
+       ...
+       if backend.name == Backend.NEW.name:
+           from build_new import compile_new_kernel
+           return compile_new_kernel
    ```
 
 4. **Update dispatch functions** to return the new backend when appropriate:

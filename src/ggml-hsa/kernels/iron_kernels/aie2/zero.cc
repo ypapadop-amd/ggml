@@ -12,6 +12,8 @@
 #ifndef ZERO_CC
 #define ZERO_CC
 
+#include <stdint.h>
+
 #include <aie_api/aie.hpp>
 
 /**
@@ -25,9 +27,9 @@
  *
  * @param[out] c Output buffer of M*N elements to be zeroed.
  */
-template <typename T, int M, int N>
+template <typename T, int32_t M, int32_t N>
 void zero_scalar(T * __restrict c) {
-    for (int i = 0; i < M * N; i++) {
+    for (int32_t i = 0; i < M * N; i++) {
         c[i] = 0;
     }
 }
@@ -44,9 +46,9 @@ void zero_scalar(T * __restrict c) {
  *
  * @param[out] c Output buffer of M*N elements to be zeroed.
  */
-template <typename T, int M, int N>
+template <typename T, int32_t M, int32_t N>
 void zero_vectorized(T * __restrict c) {
-    constexpr int r = 256 / (sizeof(T) * 8); // one 256 bit store unit
+    constexpr int32_t r = 256 / (sizeof(T) * 8); // one 256 bit store unit
     static_assert((M * N) % r == 0);
     const aie::vector<T, r> zeros = aie::zeros<T, r>();
     const T * __restrict c_end = c + M * N;

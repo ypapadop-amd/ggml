@@ -6,6 +6,8 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 
+from aie.iron import ExternalFunction
+from aie.utils.compile import compile_cxx_core_function, compile_mlir_module
 from kernel import KernelSpec
 
 
@@ -22,8 +24,6 @@ def _compile_aie_core_kernels(
         work_dir: Working directory for intermediate files.
 
     """
-    from aie.utils.compile import compile_cxx_core_function
-
     for func in functions:
         compile_cxx_core_function(
             source_path=func._source_file,
@@ -56,9 +56,6 @@ def compile_iron_kernel(
         verbose: If True, enables verbose compilation output.
 
     """
-    from aie.iron import ExternalFunction
-    from aie.utils.compile import compile_mlir_module
-
     work_dir = output_directory / f"{exported_name}-iron-artifacts"
     work_dir.mkdir(parents=True, exist_ok=True)
 

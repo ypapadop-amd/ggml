@@ -23,16 +23,8 @@ import types
 from collections.abc import Callable
 from pathlib import Path
 
-from build_iron import compile_iron_kernel
-from build_triton import compile_triton_kernel
 from kernel import Backend, Kernel
 from tensor_desc import TensorDesc
-
-# Compiler registry mapping Backend enum to compile functions
-_BACKENDS: dict[Backend, Callable] = {
-    Backend.IRON: compile_iron_kernel,
-    Backend.TRITON: compile_triton_kernel,
-}
 
 
 def _get_compiler(backend: Backend) -> Callable:
@@ -45,14 +37,20 @@ def _get_compiler(backend: Backend) -> Callable:
         NotImplementedError: If the backend is not implemented.
 
     Note:
-        Looks up by ``backend.name`` because Backend enums from dynamically
+        Backend compilers are imported lazily so that an IRON-only environment
+        (without the Triton/torch dependencies) can still compile IRON kernels.
+        Lookup is by ``backend.name`` because Backend enums from dynamically
         imported modules have different identity than those defined here.
 
     """
-    # Lookup by name to handle different enum class identities from dynamic imports
-    for registered_backend, compiler in _BACKENDS.items():
-        if registered_backend.name == backend.name:
-            return compiler
+    if backend.name == Backend.IRON.name:
+        from build_iron import compile_iron_kernel
+
+        return compile_iron_kernel
+    if backend.name == Backend.TRITON.name:
+        from build_triton import compile_triton_kernel
+
+        return compile_triton_kernel
     msg = f"Backend {backend.name} not implemented."
     raise NotImplementedError(msg)
 
@@ -92,6 +90,7 @@ _OP_KERNEL_MAP: dict[str, Kernel] = {
     "COS": Kernel("ggml_op_cos", "unary_ops.py"),
     "MUL_MAT": Kernel("ggml_op_mul_mat", "mul_mat.py"),
     "POOL_2D": Kernel("ggml_op_pool_2d", "pool_2d.py"),
+    "IM2COL": Kernel("ggml_op_im2col", "im2col.py"),
     "SCALE": Kernel("ggml_op_scale", "scale.py"),
     "SOFT_MAX": Kernel("ggml_op_soft_max", "soft_max.py"),
     "CLAMP": Kernel("ggml_op_clamp", "clamp.py"),

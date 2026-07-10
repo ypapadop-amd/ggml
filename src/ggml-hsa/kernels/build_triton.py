@@ -10,6 +10,7 @@ from contextlib import ContextDecorator
 from dataclasses import MISSING
 from pathlib import Path
 
+import triton
 from kernel import KernelSpec
 from triton_kernels.utils import NPU_ARCH_MAP, is_gpu_arch, is_npu_arch
 
@@ -111,8 +112,6 @@ def compile_triton_kernel(
     Raises:
         ValueError: If the architecture is not a supported NPU or GPU target.
     """
-    import triton
-
     # Determine Triton cache directory
     cache_dir = output_directory / f"{exported_name}-triton-artifacts"
     cache_dir.mkdir(parents=True, exist_ok=True)
