@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
+#include <stdint.h>
+
 #include <limits>
 #include <type_traits>
 
@@ -214,7 +216,8 @@ void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
  * @param[in]  tile_idx      Current tile index (used to determine head index).
  * @param[in]  rows_per_head Number of rows per attention head.
  * @param[in]  scale         Scale factor applied to input.
- * @param[in]  max_bias      Unused in this variant.
+ * @param[in]  max_bias      Maximum ALiBi bias value.
+ * @param[in]  n_head        Total number of attention heads.
  */
 void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
                                           const MASK_DTYPE * __restrict mask,
@@ -224,7 +227,8 @@ void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
                                           int32_t tile_idx,
                                           int32_t rows_per_head,
                                           float scale,
-                                          float max_bias) {
+                                          float max_bias,
+                                          int32_t n_head) {
 
     static_assert(std::is_same<INPUT_DTYPE, float>::value, "INPUT_DTYPE must be float");
     static_assert(std::is_same<MASK_DTYPE, float>::value, "MASK_DTYPE must be float");
@@ -241,10 +245,13 @@ void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
     const auto head_idx = tile_idx / rows_per_head;
     const auto sink_val = sinks[head_idx];
 
+    // Compute ALiBi slope
+    const auto slope = compute_alibi_slope(max_bias, n_head, head_idx);
+
     // Step 1: Find max for numerical stability (including sink)
     float global_max = sink_val;
     for (int32_t i = 0; i < N; ++i) {
-        float val = input[i] * scale + mask_input[i];
+        float val = input[i] * scale + mask_input[i] * slope;
         if (val > global_max) {
             global_max = val;
         }
@@ -253,7 +260,7 @@ void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
     // Step 2: Compute exp(x - max) and sum
     float sum_total = 0.0f;
     for (int32_t i = 0; i < N; ++i) {
-        float val = input[i] * scale + mask_input[i] - global_max;
+        float val = input[i] * scale + mask_input[i] * slope - global_max;
         float exp_val = scalar_exp(val);
         output[i] = exp_val;
         sum_total += exp_val;
@@ -265,7 +272,7 @@ void ggml_op_soft_max_with_mask_and_sinks(const INPUT_DTYPE * __restrict in,
 
     // Step 3: Normalize
     const auto sum_inv = 1.0f / sum_total;
-    for (int i = 0; i < N; i++) {
+    for (int32_t i = 0; i < N; i++) {
         output[i] *= sum_inv;
     }
 

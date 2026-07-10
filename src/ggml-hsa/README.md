@@ -20,6 +20,7 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 | Unary     | `SQR`, `LOG`, `ABS`, `SGN`, `NEG`, `STEP`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `RELU`, `HARDSWISH`, `HARDSIGMOID` |
 | Matrix    | `MUL_MAT`                                                      |
 | Pooling   | `POOL_2D` (`MAX` and `AVG`, with padding)                     |
+| Convolution | `IM2COL` (2D, `f32` image, `f32`/`bf16` output)             |
 | Reduction | `ARGMAX`, `COUNT_EQUAL`                                        |
 | Loss      | `CROSS_ENTROPY_LOSS`                                           |
 | Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                   |
