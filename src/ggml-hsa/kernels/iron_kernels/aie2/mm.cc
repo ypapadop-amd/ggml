@@ -13,6 +13,7 @@
 
 #define NOCPP
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -45,17 +46,17 @@
  */
 template <typename T_in,
           typename T_out,
-          int rowA,
-          int colA,
-          int colB,
+          int32_t rowA,
+          int32_t colA,
+          int32_t colB,
           bool b_row_maj = true,
           bool c_row_maj = true>
 static inline void matmul_scalar(T_in * a, T_in * b, T_out * c) {
     event0();
-    for (int row = 0; row < rowA; row++) {
-        for (int col = 0; col < colB; col++) {
+    for (int32_t row = 0; row < rowA; row++) {
+        for (int32_t col = 0; col < colB; col++) {
             T_out running_sum = 0;
-            for (int i = 0; i < colA; i++) {
+            for (int32_t i = 0; i < colA; i++) {
                 T_in a_val = a[row * colA + i];
                 T_in b_val;
                 if constexpr (b_row_maj) {
@@ -115,12 +116,12 @@ static inline void matmul_scalar(T_in * a, T_in * b, T_out * c) {
  */
 template <typename T_in,
           typename T_out,
-          unsigned rowA,
-          unsigned colA,
-          unsigned colB,
-          unsigned r,
-          unsigned s,
-          unsigned t,
+          uint32_t rowA,
+          uint32_t colA,
+          uint32_t colB,
+          uint32_t r,
+          uint32_t s,
+          uint32_t t,
           bool b_row_maj = true,
           bool c_row_maj = true>
 static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
@@ -134,7 +135,7 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
     // Factor the outer-loop body into an always-inlined lambda so the same code
     // can be driven by loops carrying a truthful minimum trip-count hint chosen
     // from the compile-time iteration count below.
-    auto outer_body = [&](unsigned z) [[gnu::always_inline]] {
+    auto outer_body = [&](uint32_t z) [[gnu::always_inline]] {
         T_out * __restrict pC1;
         T_out * __restrict pC2;
         if constexpr (c_row_maj) {
@@ -142,7 +143,7 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
             pC2 = pC + ((z + 1) * colB) * MMUL::size_C;
         }
 
-        for (unsigned j = 0; j < colB; j += 2)
+        for (uint32_t j = 0; j < colB; j += 2)
 #ifdef OPT_PERF_ENABLED
             AIE_LOOP_FLATTEN
 #endif
@@ -193,7 +194,7 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
                 MMUL C10(acc_C10);
                 MMUL C11(acc_C11);
 
-                for (unsigned i = 0; i < colA; ++i)
+                for (uint32_t i = 0; i < colA; ++i)
 #ifdef OPT_PERF_ENABLED
                     AIE_LOOP_FLATTEN
 #endif
@@ -248,21 +249,21 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
             }
     };
 
-    constexpr unsigned outer_iters = rowA / 2;
+    constexpr uint32_t outer_iters = rowA / 2;
     if constexpr (outer_iters >= 4) {
         AIE_PREPARE_FOR_PIPELINING
         AIE_LOOP_MIN_ITERATION_COUNT(4)
-        for (unsigned z = 0; z < rowA; z += 2)
+        for (uint32_t z = 0; z < rowA; z += 2)
             outer_body(z);
     } else if constexpr (outer_iters >= 2) {
         AIE_PREPARE_FOR_PIPELINING
         AIE_LOOP_MIN_ITERATION_COUNT(2)
-        for (unsigned z = 0; z < rowA; z += 2)
+        for (uint32_t z = 0; z < rowA; z += 2)
             outer_body(z);
     } else {
         AIE_PREPARE_FOR_PIPELINING
         AIE_LOOP_MIN_ITERATION_COUNT(1)
-        for (unsigned z = 0; z < rowA; z += 2)
+        for (uint32_t z = 0; z < rowA; z += 2)
             outer_body(z);
     }
 
@@ -293,12 +294,12 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
  */
 template <typename T_in,
           typename T_out,
-          unsigned rowA,
-          unsigned colA,
-          unsigned colB,
-          unsigned r,
-          unsigned s,
-          unsigned t,
+          uint32_t rowA,
+          uint32_t colA,
+          uint32_t colB,
+          uint32_t r,
+          uint32_t s,
+          uint32_t t,
           bool b_row_maj = true,
           bool c_row_maj = true>
 static inline void matmul_vectorized_4x2_mmul(const T_in * __restrict pA,
@@ -312,7 +313,7 @@ static inline void matmul_vectorized_4x2_mmul(const T_in * __restrict pA,
     // Factor the outer-loop body into an always-inlined lambda so the same code
     // can be driven by loops carrying a truthful minimum trip-count hint chosen
     // from the compile-time iteration count below.
-    auto outer_body = [&](unsigned z) [[gnu::always_inline]] {
+    auto outer_body = [&](uint32_t z) [[gnu::always_inline]] {
         T_out * __restrict pC1;
         T_out * __restrict pC2;
         T_out * __restrict pC3;
@@ -325,7 +326,7 @@ static inline void matmul_vectorized_4x2_mmul(const T_in * __restrict pA,
             pC4 = pC + ((z + 3) * colB + 0) * MMUL::size_C;
         }
 
-        for (unsigned j = 0; j < colB; j += 2)
+        for (uint32_t j = 0; j < colB; j += 2)
 #ifdef OPT_PERF_ENABLED
             AIE_LOOP_FLATTEN
 #endif
@@ -399,7 +400,7 @@ static inline void matmul_vectorized_4x2_mmul(const T_in * __restrict pA,
                 MMUL C30(acc_C30);
                 MMUL C31(acc_C31);
 
-                for (unsigned i = 0; i < colA; i += 1)
+                for (uint32_t i = 0; i < colA; i += 1)
 #ifdef OPT_PERF_ENABLED
                     AIE_LOOP_FLATTEN
 #endif
@@ -472,21 +473,21 @@ static inline void matmul_vectorized_4x2_mmul(const T_in * __restrict pA,
             }
     };
 
-    constexpr unsigned outer_iters = rowA / 4;
+    constexpr uint32_t outer_iters = rowA / 4;
     if constexpr (outer_iters >= 4) {
         AIE_PREPARE_FOR_PIPELINING
         AIE_LOOP_MIN_ITERATION_COUNT(4)
-        for (unsigned z = 0; z < rowA; z += 4)
+        for (uint32_t z = 0; z < rowA; z += 4)
             outer_body(z);
     } else if constexpr (outer_iters >= 2) {
         AIE_PREPARE_FOR_PIPELINING
         AIE_LOOP_MIN_ITERATION_COUNT(2)
-        for (unsigned z = 0; z < rowA; z += 4)
+        for (uint32_t z = 0; z < rowA; z += 4)
             outer_body(z);
     } else {
         AIE_PREPARE_FOR_PIPELINING
         AIE_LOOP_MIN_ITERATION_COUNT(1)
-        for (unsigned z = 0; z < rowA; z += 4)
+        for (uint32_t z = 0; z < rowA; z += 4)
             outer_body(z);
     }
 
@@ -517,12 +518,12 @@ static inline void matmul_vectorized_4x2_mmul(const T_in * __restrict pA,
  */
 template <typename T_in,
           typename T_out,
-          unsigned rowA,
-          unsigned colA,
-          unsigned colB,
-          unsigned r,
-          unsigned s,
-          unsigned t,
+          uint32_t rowA,
+          uint32_t colA,
+          uint32_t colB,
+          uint32_t r,
+          uint32_t s,
+          uint32_t t,
           bool b_row_maj = true,
           bool c_row_maj = true>
 static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
@@ -536,7 +537,7 @@ static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
     // Factor the outer-loop body into an always-inlined lambda so the same code
     // can be driven by loops carrying a truthful minimum trip-count hint chosen
     // from the compile-time iteration count below.
-    auto outer_body = [&](unsigned z) [[gnu::always_inline]] {
+    auto outer_body = [&](uint32_t z) [[gnu::always_inline]] {
         T_out * __restrict pC1;
         T_out * __restrict pC2;
         T_out * __restrict pC3;
@@ -549,7 +550,7 @@ static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
             pC4 = pC + ((z + 3) * colB) * MMUL::size_C;
         }
 
-        for (unsigned j = 0; j < colB; j += 4)
+        for (uint32_t j = 0; j < colB; j += 4)
 #ifdef OPT_PERF_ENABLED
             AIE_LOOP_FLATTEN
 #endif
@@ -680,7 +681,7 @@ static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
                 MMUL C32(acc_C32);
                 MMUL C33(acc_C33);
 
-                for (unsigned i = 0; i < colA; ++i)
+                for (uint32_t i = 0; i < colA; ++i)
 #ifdef OPT_PERF_ENABLED
                     AIE_LOOP_FLATTEN
 #endif
@@ -808,21 +809,21 @@ static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
             }
     };
 
-    constexpr unsigned outer_iters = rowA / 4;
+    constexpr uint32_t outer_iters = rowA / 4;
     if constexpr (outer_iters >= 4) {
         AIE_PREPARE_FOR_PIPELINING
         AIE_LOOP_MIN_ITERATION_COUNT(4)
-        for (unsigned z = 0; z < rowA; z += 4)
+        for (uint32_t z = 0; z < rowA; z += 4)
             outer_body(z);
     } else if constexpr (outer_iters >= 2) {
         AIE_PREPARE_FOR_PIPELINING
         AIE_LOOP_MIN_ITERATION_COUNT(2)
-        for (unsigned z = 0; z < rowA; z += 4)
+        for (uint32_t z = 0; z < rowA; z += 4)
             outer_body(z);
     } else {
         AIE_PREPARE_FOR_PIPELINING
         AIE_LOOP_MIN_ITERATION_COUNT(1)
-        for (unsigned z = 0; z < rowA; z += 4)
+        for (uint32_t z = 0; z < rowA; z += 4)
             outer_body(z);
     }
 
@@ -872,13 +873,13 @@ constexpr aie::rounding_mode round_mode = aie::rounding_mode::floor; // default
  * @param[in]     pB Input matrix B.
  * @param[in,out] pC Output matrix C (accumulated).
  */
-template <unsigned m, unsigned k, unsigned n>
+template <uint32_t m, uint32_t k, uint32_t n>
 static inline void matmul_vectorized_4x4x4_i16_i16(const int16 * __restrict pA,
                                                    const int16 * __restrict pB,
                                                    int16 * __restrict pC) {
-    constexpr int r = 4;
-    constexpr int s = 4;
-    constexpr int t = 4;
+    constexpr int32_t r = 4;
+    constexpr int32_t s = 4;
+    constexpr int32_t t = 4;
 
     static_assert(m % (2 * r) == 0);
     static_assert(k % s == 0);
@@ -899,13 +900,13 @@ static inline void matmul_vectorized_4x4x4_i16_i16(const int16 * __restrict pA,
  * @param[in]     pB Input matrix B.
  * @param[in,out] pC Output matrix C (accumulated).
  */
-template <unsigned m, unsigned k, unsigned n>
+template <uint32_t m, uint32_t k, uint32_t n>
 static inline void matmul_vectorized_4x4x4_i16_i32(const int16 * __restrict pA,
                                                    const int16 * __restrict pB,
                                                    int32 * __restrict pC) {
-    constexpr int r = 4;
-    constexpr int s = 4;
-    constexpr int t = 4;
+    constexpr int32_t r = 4;
+    constexpr int32_t s = 4;
+    constexpr int32_t t = 4;
 
     static_assert(m % (2 * r) == 0);
     static_assert(k % s == 0);
@@ -926,13 +927,13 @@ static inline void matmul_vectorized_4x4x4_i16_i32(const int16 * __restrict pA,
  * @param[in]     pB Input matrix B.
  * @param[in,out] pC Output matrix C (accumulated).
  */
-template <unsigned m, unsigned k, unsigned n>
+template <uint32_t m, uint32_t k, uint32_t n>
 static inline void matmul_vectorized_4x8x4_bf16_bf16(const bfloat16 * __restrict pA,
                                                      const bfloat16 * __restrict pB,
                                                      bfloat16 * __restrict pC) {
-    constexpr int r = 4;
-    constexpr int s = 8;
-    constexpr int t = 4;
+    constexpr int32_t r = 4;
+    constexpr int32_t s = 8;
+    constexpr int32_t t = 4;
 
     static_assert(m % (4 * r) == 0);
     static_assert(k % s == 0);
@@ -955,13 +956,13 @@ static inline void matmul_vectorized_4x8x4_bf16_bf16(const bfloat16 * __restrict
  * @param[in]     pB Input matrix B.
  * @param[in,out] pC Output matrix C (accumulated).
  */
-template <unsigned m, unsigned k, unsigned n>
+template <uint32_t m, uint32_t k, uint32_t n>
 static inline void matmul_vectorized_4x8x4_bf16_f32(const bfloat16 * __restrict pA,
                                                     const bfloat16 * __restrict pB,
                                                     float * __restrict pC) {
-    constexpr int r = 4;
-    constexpr int s = 8;
-    constexpr int t = 4;
+    constexpr int32_t r = 4;
+    constexpr int32_t s = 8;
+    constexpr int32_t t = 4;
 
     static_assert(m % (4 * r) == 0);
     static_assert(k % s == 0);
@@ -984,13 +985,13 @@ static inline void matmul_vectorized_4x8x4_bf16_f32(const bfloat16 * __restrict 
  * @param[in]     pB Input matrix B.
  * @param[in,out] pC Output matrix C (accumulated).
  */
-template <unsigned m, unsigned k, unsigned n>
+template <uint32_t m, uint32_t k, uint32_t n>
 static inline void matmul_vectorized_4x8x8_i8_i8(const int8 * __restrict pA,
                                                  const int8 * __restrict pB,
                                                  int8 * __restrict pC) {
-    constexpr int r = 4;
-    constexpr int s = 8;
-    constexpr int t = 8;
+    constexpr int32_t r = 4;
+    constexpr int32_t s = 8;
+    constexpr int32_t t = 8;
 
     static_assert(m % (4 * r) == 0);
     static_assert(k % s == 0);
@@ -1011,13 +1012,13 @@ static inline void matmul_vectorized_4x8x8_i8_i8(const int8 * __restrict pA,
  * @param[in]     pB Input matrix B.
  * @param[in,out] pC Output matrix C (accumulated).
  */
-template <unsigned m, unsigned k, unsigned n>
+template <uint32_t m, uint32_t k, uint32_t n>
 static inline void matmul_vectorized_4x8x8_i8_i16(const int8 * __restrict pA,
                                                   const int8 * __restrict pB,
                                                   int16 * __restrict pC) {
-    constexpr int r = 4;
-    constexpr int s = 8;
-    constexpr int t = 8;
+    constexpr int32_t r = 4;
+    constexpr int32_t s = 8;
+    constexpr int32_t t = 8;
 
     static_assert(m % (4 * r) == 0);
     static_assert(k % s == 0);
@@ -1038,13 +1039,13 @@ static inline void matmul_vectorized_4x8x8_i8_i16(const int8 * __restrict pA,
  * @param[in]     pB Input matrix B.
  * @param[in,out] pC Output matrix C (accumulated).
  */
-template <unsigned m, unsigned k, unsigned n>
+template <uint32_t m, uint32_t k, uint32_t n>
 static inline void matmul_vectorized_4x8x8_i8_i32(const int8 * __restrict pA,
                                                   const int8 * __restrict pB,
                                                   int32 * __restrict pC) {
-    constexpr int r = 4;
-    constexpr int s = 8;
-    constexpr int t = 8;
+    constexpr int32_t r = 4;
+    constexpr int32_t s = 8;
+    constexpr int32_t t = 8;
 
     static_assert(m % (4 * r) == 0);
     static_assert(k % s == 0);
