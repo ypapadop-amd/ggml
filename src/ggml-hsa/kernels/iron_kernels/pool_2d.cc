@@ -61,36 +61,50 @@ void ggml_op_pool_2d(const INPUT_DTYPE * __restrict in,
     const int32_t offset0 = -p0;
     const int32_t offset1 = -p1;
 
+    const bool is_max = (op == GGML_OP_POOL_MAX);
+
     for (int32_t oy = 0; oy < oh; ++oy) {
         for (int32_t ox = 0; ox < ow; ++ox) {
-            auto res = (op == GGML_OP_POOL_MAX) ? std::numeric_limits<float>::lowest() : 0.0f;
-
             const int32_t ix = offset0 + ox * s0;
             const int32_t iy = offset1 + oy * s1;
 
-            for (int32_t ky = 0; ky < k1; ++ky) {
-                const int32_t y = iy + ky;
-                if (y < 0 || y >= ih) {
-                    continue;
-                }
-                const auto * srow = in + static_cast<int32_t>(y) * iw;
-                for (int32_t kx = 0; kx < k0; ++kx) {
-                    const int32_t x = ix + kx;
-                    if (x < 0 || x >= iw) {
+            float res;
+            if (is_max) {
+                res = std::numeric_limits<float>::lowest();
+                for (int32_t ky = 0; ky < k1; ++ky) {
+                    const int32_t y = iy + ky;
+                    if (y < 0 || y >= ih) {
                         continue;
                     }
-                    const auto v = static_cast<float>(srow[x]);
-                    if (op == GGML_OP_POOL_MAX) {
+                    const auto * srow = in + static_cast<int32_t>(y) * iw;
+                    for (int32_t kx = 0; kx < k0; ++kx) {
+                        const int32_t x = ix + kx;
+                        if (x < 0 || x >= iw) {
+                            continue;
+                        }
+                        const auto v = static_cast<float>(srow[x]);
                         res = (v > res) ? v : res;
-                    } else {
-                        res += v;
                     }
                 }
-            }
-
-            if (op == GGML_OP_POOL_AVG) {
+            } else {
+                res = 0.0f;
+                for (int32_t ky = 0; ky < k1; ++ky) {
+                    const int32_t y = iy + ky;
+                    if (y < 0 || y >= ih) {
+                        continue;
+                    }
+                    const auto * srow = in + static_cast<int32_t>(y) * iw;
+                    for (int32_t kx = 0; kx < k0; ++kx) {
+                        const int32_t x = ix + kx;
+                        if (x < 0 || x >= iw) {
+                            continue;
+                        }
+                        res += static_cast<float>(srow[x]);
+                    }
+                }
                 res *= 1.0f / static_cast<float>(k0 * k1);
             }
+
             out[oy * ow + ox] = res;
         }
     }

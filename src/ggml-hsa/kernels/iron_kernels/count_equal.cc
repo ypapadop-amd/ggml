@@ -45,9 +45,9 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
     }
 
     // Count equal elements using vectorized comparison where possible
-    constexpr int VEC_SIZE = 16; // 16 x int32 = 512 bits
-    const int num_full_iters = tile_size / VEC_SIZE;
-    const int tail_start = num_full_iters * VEC_SIZE;
+    constexpr int32_t VEC_SIZE = 16; // 16 x int32 = 512 bits
+    const int32_t num_full_iters = tile_size / VEC_SIZE;
+    const int32_t tail_start = num_full_iters * VEC_SIZE;
 
     int32_t local_count = 0;
 
@@ -55,7 +55,7 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
     const INPUT_DTYPE * __restrict p0 = in0;
     const INPUT_DTYPE * __restrict p1 = in1;
 
-    for (int i = 0; i < num_full_iters; i++) {
+    for (int32_t i = 0; i < num_full_iters; i++) {
         aie::vector<INPUT_DTYPE, VEC_SIZE> v0 = aie::load_v<VEC_SIZE>(p0);
         aie::vector<INPUT_DTYPE, VEC_SIZE> v1 = aie::load_v<VEC_SIZE>(p1);
         p0 += VEC_SIZE;
@@ -64,16 +64,21 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
         // Compare vectors - returns mask where elements are equal
         auto mask = aie::eq(v0, v1);
 
-        // Count set bits in mask (number of equal elements)
-        for (int j = 0; j < VEC_SIZE; j++) {
+#if __AIE_ARCH__ == 20
+        // aie2: count set bits in mask (number of equal elements)
+        for (int32_t j = 0; j < VEC_SIZE; ++j) {
             if (mask.test(j)) {
                 local_count++;
             }
         }
+#else
+        // population-count the mask (number of equal elements)
+        local_count += mask.count();
+#endif
     }
 
     // Scalar tail
-    for (int i = tail_start; i < tile_size; i++) {
+    for (int32_t i = tail_start; i < tile_size; i++) {
         if (in0[i] == in1[i]) {
             local_count++;
         }

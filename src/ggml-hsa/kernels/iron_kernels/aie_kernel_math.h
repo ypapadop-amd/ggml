@@ -6,12 +6,15 @@
 #ifndef AIE_KERNEL_MATH
 #define AIE_KERNEL_MATH
 
+#include <stdint.h>
+
 #include <aie_api/aie.hpp>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 
+#include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
 /**
@@ -34,7 +37,7 @@ inline float scalar_exp(float x) {
     float t = x * log2e;
 
     // n = floor(t)
-    int n = static_cast<int>(t);
+    int32_t n = static_cast<int32_t>(t);
     if (t < static_cast<float>(n))
         n--;
 
@@ -166,7 +169,7 @@ inline uint32_t floor_log2(uint32_t x) {
  * @return The computed value of 2^x.
  */
 inline float pow2(float x) {
-    int i = static_cast<int>(x);
+    int32_t i = static_cast<int32_t>(x);
     if (x < static_cast<float>(i))
         i--;
     float f = x - static_cast<float>(i);
@@ -271,7 +274,7 @@ inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
     aie::vector<float, VecSize> poly = aie::broadcast<float, VecSize>(exp_coeffs[0]);
     aie::accum<accfloat, VecSize> tmp;
 
-#pragma unroll
+    AIE_LOOP_UNROLL_FULL
     for (int32_t i = 1; i < NUM_EXP_COEFFS; ++i) {
         tmp = aie::mul(poly, r);
         poly = aie::add(tmp.template to_vector<float>(),

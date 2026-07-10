@@ -341,6 +341,9 @@ def create_ternary_program(
     num_sinks = func_result[6]
     rows_per_head = func_result[7]
 
+    # One sink per head, so the number of heads equals the number of sinks.
+    n_head = num_sinks
+
     num_tiles_in = num_elements_in // tile_size_in
     num_tiles_mask = num_elements_mask // tile_size_mask
 
@@ -383,6 +386,7 @@ def create_ternary_program(
                 rows_per_head,
                 scale,
                 max_bias,
+                n_head,
             )
 
             of_in.release(1)
@@ -510,6 +514,10 @@ def _create_external_function(
         arg_types.append(np.int32)  # n_head
         arg_types.append(np.int32)  # tile_idx (passed dynamically)
         arg_types.append(np.int32)  # rows_per_head
+
+    # sink variant needs n_head for the ALiBi slope
+    if sink_tensor is not None:
+        arg_types.append(np.int32)  # n_head
     # determine function name and compile directive
     function_name = op_name.lower()
     if mask_tensor and sink_tensor:

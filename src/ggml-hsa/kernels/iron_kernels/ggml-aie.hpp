@@ -32,7 +32,7 @@ using f32 = float;        ///< 32-bit floating-point type alias.
  * @code
  * static_assert(is_floating_point<float>::value);    // true
  * static_assert(is_floating_point<bfloat16>::value); // true
- * static_assert(!is_floating_point<int>::value);     // true
+ * static_assert(!is_floating_point<int>::value);     // int is not floating-point
  * @endcode
  */
 template <typename T>
