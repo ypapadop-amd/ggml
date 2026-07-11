@@ -96,12 +96,27 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // defined.
     std::memset(kernarg, 0, kernarg_size);
 
-    // Grid configuration. AQL grid_size is the total number of work-items (global size), rounded
-    // up to a whole number of workgroups; hidden_block_count is the number of workgroups.
+    // Grid configuration. AQL grid_size is the total number of work-items (global size).
+    //  - Triton kernels bake their launch geometry (fixed workgroup/grid, provided via the
+    //    sidecar); they read program ids from the dispatch packet and have no hidden kernargs.
+    //  - Hand-written HIP kernels use one work-item per element (workgroup default), deriving the
+    //    grid from the element count and filling the COV5 hidden block/group args below.
     const std::uint64_t n_elements = ggml_nelements(&dst_tensor);
-    const std::uint32_t wg = work_group_size != 0 ? work_group_size : 64;
-    const std::uint32_t num_groups_x = (static_cast<std::uint32_t>(n_elements) + wg - 1) / wg;
-    const std::uint32_t grid_size_x = (num_groups_x != 0 ? num_groups_x : 1) * wg;
+    std::uint32_t wg;
+    std::uint32_t grid_size_total;
+    std::uint32_t num_groups_x;
+    if (workgroup_size_x != 0) {
+        wg = workgroup_size_x;
+        grid_size_total = grid_size_x;
+        num_groups_x = wg != 0 ? grid_size_total / wg : 1;
+    } else {
+        wg = work_group_size != 0 ? work_group_size : 64;
+        num_groups_x = (static_cast<std::uint32_t>(n_elements) + wg - 1) / wg;
+        if (num_groups_x == 0) {
+            num_groups_x = 1;
+        }
+        grid_size_total = num_groups_x * wg;
+    }
 
     // Populate the kernarg segment using the layout parsed from the code object metadata. Explicit
     // global_buffer arguments are filled in order (sources first, then destination); the single
@@ -127,10 +142,15 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     std::size_t op_params_cursor = 0;
     for (const auto & arg : args) {
         if (arg.value_kind == "global_buffer") {
-            void * ptr = global_buffer_idx < num_src_tensors
-                             ? src_tensors[global_buffer_idx]->data
-                             : dst_tensor.data;
-            assert(ptr != nullptr);
+            // The first num_src+1 global buffers are the source tensors then the destination.
+            // Any additional global buffers are compiler scratch (e.g. Triton's global/profile
+            // scratch, which are zero-sized here) and are left null.
+            void * ptr = nullptr;
+            if (global_buffer_idx < num_src_tensors) {
+                ptr = src_tensors[global_buffer_idx]->data;
+            } else if (global_buffer_idx == num_src_tensors) {
+                ptr = dst_tensor.data;
+            }
             std::uint64_t v = reinterpret_cast<std::uintptr_t>(ptr);
             put(arg.offset, &v, arg.size);
             ++global_buffer_idx;
@@ -195,7 +215,7 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.workgroup_size_x = static_cast<std::uint16_t>(wg);
     pkt.workgroup_size_y = 1;
     pkt.workgroup_size_z = 1;
-    pkt.grid_size_x = grid_size_x;
+    pkt.grid_size_x = grid_size_total;
     pkt.grid_size_y = 1;
     pkt.grid_size_z = 1;
     pkt.private_segment_size = private_segment_size;

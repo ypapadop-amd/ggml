@@ -13,9 +13,6 @@
 
 #ifdef GGML_HSA_AIE
 #include "ggml-hsa/aie-kernel.hpp"
-#ifdef GGML_HSA_JIT_COMPILE
-#include "ggml-hsa/kernel-compiler.hpp"
-#endif
 #endif
 
 #ifdef GGML_HSA_GPU
@@ -25,6 +22,11 @@
 #include <amd_comgr/amd_comgr.h>
 
 #include "ggml-hsa/gpu-kernel.hpp"
+#endif
+
+// The kernel compiler bridge (Python JIT) is shared by all device backends.
+#ifdef GGML_HSA_JIT_COMPILE
+#include "ggml-hsa/kernel-compiler.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -238,9 +240,6 @@ static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device
 /// GPU code object file suffix.
 static constexpr std::string_view hsaco_file_suffix = ".hsaco";
 
-/// AMDGPU kernel descriptor symbol suffix.
-static constexpr std::string_view kd_symbol_suffix = ".kd";
-
 /**
  * @brief Sanitizes a kernel name into a valid C identifier for use as a kernel symbol.
  *
@@ -320,18 +319,20 @@ static bool ggml_hsa_comgr_lookup_string(amd_comgr_metadata_node_t map, const ch
 }
 
 /**
- * @brief Parses the argument layout for kernel descriptor @p symbol from a code object.
+ * @brief Parses the kernel symbol and argument layout from a code object's metadata.
  *
- * Reads the AMDGPU code object metadata (via comgr) and records the value kind, byte offset,
- * and size of each kernel argument, including the HIP hidden arguments. This avoids hardcoding
- * the kernarg layout, which varies by ABI version and architecture.
+ * Reads the AMDGPU code object metadata (via comgr) for the single kernel it contains, recording
+ * the kernel descriptor symbol and the value kind, byte offset, and size of each argument
+ * (including the hidden arguments). Reading the symbol from the metadata makes the loader
+ * independent of the producer's naming (e.g. hipcc's ggml kernel name vs Triton's function name),
+ * and reading the layout avoids hardcoding the kernarg ABI.
  *
  * @param[in] blob in-memory code object bytes
- * @param[in] symbol kernel descriptor symbol (e.g. "add_8f32_8f32_8f32.kd")
- * @param[out] out parsed argument descriptors
+ * @param[out] out_symbol kernel descriptor symbol (e.g. "add_8f32_8f32_8f32.kd" or "vecadd.kd")
+ * @param[out] out_args parsed argument descriptors
  */
-static bool ggml_hsa_parse_kernel_args(const std::vector<char> & blob, const std::string & symbol,
-                                       std::vector<ggml_hsa_gpu_kernel_arg> & out) {
+static bool ggml_hsa_parse_kernel_metadata(const std::vector<char> & blob, std::string & out_symbol,
+                                           std::vector<ggml_hsa_gpu_kernel_arg> & out_args) {
     amd_comgr_data_t data;
     if (amd_comgr_create_data(AMD_COMGR_DATA_KIND_EXECUTABLE, &data) != AMD_COMGR_STATUS_SUCCESS) {
         return false;
@@ -357,14 +358,14 @@ static bool ggml_hsa_parse_kernel_args(const std::vector<char> & blob, const std
 
         std::size_t nkernels = 0;
         amd_comgr_get_metadata_list_size(kernels, &nkernels);
+        // Each code object we load contains exactly one kernel; use the first.
         for (std::size_t i = 0; i < nkernels && !result; ++i) {
             amd_comgr_metadata_node_t kernel;
             if (amd_comgr_index_list_metadata(kernels, i, &kernel) != AMD_COMGR_STATUS_SUCCESS) {
                 continue;
             }
 
-            std::string sym;
-            if (ggml_hsa_comgr_lookup_string(kernel, ".symbol", sym) && sym == symbol) {
+            if (ggml_hsa_comgr_lookup_string(kernel, ".symbol", out_symbol)) {
                 amd_comgr_metadata_node_t args;
                 if (amd_comgr_metadata_lookup(kernel, ".args", &args) == AMD_COMGR_STATUS_SUCCESS) {
                     std::size_t nargs = 0;
@@ -385,11 +386,11 @@ static bool ggml_hsa_parse_kernel_args(const std::vector<char> & blob, const std
                         info.value_kind = std::move(kind);
                         info.offset = off.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(off));
                         info.size = size.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(size));
-                        out.push_back(std::move(info));
+                        out_args.push_back(std::move(info));
                         amd_comgr_destroy_metadata(arg);
                     }
                     amd_comgr_destroy_metadata(args);
-                    result = !out.empty();
+                    result = !out_args.empty() && !out_symbol.empty();
                 }
             }
             amd_comgr_destroy_metadata(kernel);
@@ -405,22 +406,68 @@ static bool ggml_hsa_parse_kernel_args(const std::vector<char> & blob, const std
 }
 
 /**
- * @brief Creates a GPU kernel by loading a HIP-compiled @c .hsaco code object.
+ * @brief Reads the optional launch-metadata sidecar for a GPU code object.
+ *
+ * Triton-generated kernels bake their launch geometry (workgroup size, number of workgroups) at
+ * compile time; it is emitted alongside the @c .hsaco as @c <name>.hsaco.json. Hand-written HIP
+ * kernels have no sidecar and derive their grid from the element count at dispatch.
+ */
+static bool ggml_hsa_read_launch_sidecar(const fs::path & hsaco_path, std::uint32_t & grid_size_x,
+                                         std::uint32_t & workgroup_size_x) {
+    fs::path sidecar = hsaco_path;
+    sidecar += ".json";
+    if (!ggml_hsa_is_file(sidecar)) {
+        return false;
+    }
+    std::ifstream is(sidecar);
+    const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+    const auto read_uint = [&](const char * key, std::uint32_t & out) -> bool {
+        auto pos = text.find(key);
+        if (pos == std::string::npos) {
+            return false;
+        }
+        pos = text.find(':', pos);
+        if (pos == std::string::npos) {
+            return false;
+        }
+        out = static_cast<std::uint32_t>(std::strtoul(text.c_str() + pos + 1, nullptr, 10));
+        return true;
+    };
+    bool ok = read_uint("\"grid_size_x\"", grid_size_x);
+    ok = read_uint("\"workgroup_size_x\"", workgroup_size_x) && ok;
+    return ok;
+}
+
+/**
+ * @brief Creates a GPU kernel by loading a @c .hsaco code object (JIT-compiling it if absent).
  *
  * @param[in] dev_info device information
  * @param[in] kernel_name kernel name
+ * @param[in] tensor tensor to compile a kernel for (used by the JIT fallback)
  * @param[out] kernel kernel for the operation
  */
 static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                               const std::string & kernel_name,
+                                              const ggml_tensor & tensor,
                                               std::shared_ptr<ggml_hsa_kernel> & kernel) {
     const std::string symbol_base = ggml_hsa_sanitize_kernel_name(kernel_name);
 
     fs::path hsaco_path;
     if (!ggml_hsa_find_gpu_kernel_files(dev_info.name, symbol_base, hsaco_path)) {
-        GGML_HSA_LOG_INFO("%s: could not find code object for kernel %s", __func__,
-                          symbol_base.c_str());
+#ifdef GGML_HSA_JIT_COMPILE
+        // code object not found; JIT-compile it (writes <cache>/<device>/<symbol_base>.hsaco).
+        if (auto status =
+                ggml_hsa_compile_kernel(dev_info, tensor, symbol_base, cached_kernel_dir);
+            status != GGML_STATUS_SUCCESS) {
+            return status;
+        }
+        if (!ggml_hsa_find_gpu_kernel_files(dev_info.name, symbol_base, hsaco_path)) {
+            return GGML_STATUS_FAILED;
+        }
+#else
+        GGML_HSA_LOG_INFO("%s: JIT compilation is disabled, kernel cannot be compiled", __func__);
         return GGML_STATUS_FAILED;
+#endif
     }
 
     // Read the code object once; the bytes feed both the HSA loader and the comgr metadata parser.
@@ -474,7 +521,15 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
     }
     hsa_code_object_reader_destroy(reader);
 
-    const std::string symbol_name = symbol_base + std::string(kd_symbol_suffix);
+    // Read the kernel symbol and argument layout from the code object metadata. This makes the
+    // loader independent of the producer's naming (hipcc uses the ggml kernel name, Triton uses
+    // the @triton.jit function name).
+    std::string symbol_name;
+    if (!ggml_hsa_parse_kernel_metadata(blob, symbol_name, gpu_kernel->args)) {
+        GGML_HSA_LOG_ERROR("%s: failed to parse metadata for %s", __func__, symbol_base.c_str());
+        return GGML_STATUS_FAILED;
+    }
+
     hsa_executable_symbol_t symbol{};
     if (status = hsa_executable_get_symbol(gpu_kernel->executable, nullptr, symbol_name.c_str(),
                                            dev_info.agent, 0, &symbol);
@@ -507,12 +562,8 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
         gpu_kernel->kernarg_align = 16;
     }
 
-    // Read the argument layout (explicit + hidden) from the code object metadata.
-    if (!ggml_hsa_parse_kernel_args(blob, symbol_name, gpu_kernel->args)) {
-        GGML_HSA_LOG_ERROR("%s: failed to parse argument metadata for %s", __func__,
-                           symbol_name.c_str());
-        return GGML_STATUS_FAILED;
-    }
+    // Optional launch geometry (Triton kernels bake grid/block at compile time).
+    ggml_hsa_read_launch_sidecar(hsaco_path, gpu_kernel->grid_size_x, gpu_kernel->workgroup_size_x);
 
     kernel = std::move(gpu_kernel);
 
@@ -533,7 +584,7 @@ ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev
 #endif
 #ifdef GGML_HSA_GPU
         case HSA_DEVICE_TYPE_GPU:
-            return ggml_hsa_create_gpu_kernel(dev_info, kernel_name, kernel);
+            return ggml_hsa_create_gpu_kernel(dev_info, kernel_name, tensor, kernel);
 #endif
 
         // unsupported device types

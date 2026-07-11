@@ -3,7 +3,10 @@
 include(ggml_hsa_utils)
 
 if (GGML_HSA_JIT_COMPILE)
-    add_subdirectory(iron_kernels)
+    # IRON kernels target AIE only; Triton kernels are shared by AIE and GPU.
+    if (GGML_HSA_AIE)
+        add_subdirectory(iron_kernels)
+    endif ()
     add_subdirectory(triton_kernels)
 
     # copy root package files

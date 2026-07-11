@@ -27,6 +27,35 @@ def _validate_binary_inputs(input_tensors: list) -> None:
         raise ValueError(msg)
 
 
+def _numpy_to_triton_elt(dtype) -> str:
+    """Map a numpy dtype to a Triton pointer element type string (e.g. 'fp32').
+
+    Parameters:
+        dtype: The numpy dtype to map.
+
+    Raises:
+        ValueError: If the dtype has no Triton element-type equivalent.
+
+    """
+    import numpy as np
+
+    name = np.dtype(dtype).name
+    mapping = {
+        "float32": "fp32",
+        "float16": "fp16",
+        "bfloat16": "bf16",
+        "int8": "i8",
+        "int16": "i16",
+        "int32": "i32",
+        "int64": "i64",
+    }
+    try:
+        return mapping[name]
+    except KeyError:
+        msg = f"Unsupported dtype for Triton GPU kernel: {name}"
+        raise ValueError(msg) from None
+
+
 def _make_iron_binary_kernel_spec(
     arch: str,
     input_tensors: list,
@@ -70,7 +99,7 @@ def _make_triton_add_kernel_spec(
     input_tensors: list,
     output_tensor,
 ) -> KernelSpec:
-    """Create a TRITON-backend KernelSpec for ADD.
+    """Create a TRITON-backend KernelSpec for ADD (NPU path).
 
     Parameters:
         arch: Target architecture.
@@ -147,10 +176,91 @@ def _make_triton_add_kernel_spec(
     )
 
 
+def _make_triton_gpu_add_kernel_spec(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+) -> KernelSpec:
+    """Create a TRITON-backend KernelSpec for ADD targeting an AMD GPU (gfx).
+
+    Unlike the NPU path (which JIT-launches the kernel), the GPU path is ahead-of-time
+    compiled: the returned spec's ``config`` carries a backend-neutral description of the
+    kernel's argument contract and launch geometry (``triton_fn``, ``signature``,
+    ``constexprs``, ``num_warps``, ``num_programs``). ``build_triton.py`` consumes those to
+    emit a ``.hsaco`` plus a ``<name>.hsaco.json`` launch sidecar required by the C++ dispatch.
+
+    Parameters:
+        arch: Target GPU architecture (e.g. "gfx1151").
+        input_tensors: List of two input tensors.
+        output_tensor: Output tensor.
+
+    Returns:
+        KernelSpec configured for the TRITON backend (GPU AOT path).
+
+    Raises:
+        ValueError: If the tensors require broadcasting (unmasked kernel).
+
+    """
+    import triton
+
+    from .triton_kernels.vecadd import vecadd
+
+    n_elements = output_tensor.numel()
+
+    # vecadd is an unmasked elementwise kernel; it is only valid when both sources and the
+    # destination have the same number of elements (no broadcasting).
+    if input_tensors[0].numel() != n_elements or input_tensors[1].numel() != n_elements:
+        msg = "Triton vecadd requires matching element counts (no broadcast)."
+        raise ValueError(msg)
+
+    # Triton's tl.arange requires a power-of-two range, so BLOCK_SIZE_N must be a power of two
+    # that divides n_elements (the kernel is unmasked). Pick the largest such block.
+    cap = min(1024, n_elements)
+    block_size = 1
+    power = 1
+    while power <= cap:
+        if n_elements % power == 0:
+            block_size = power
+        power *= 2
+    num_programs = triton.cdiv(n_elements, block_size)
+
+    # ONE canonical, backend-neutral description of the kernel's argument contract and launch
+    # geometry. The GPU compiler consumes signature/constexprs directly via ASTSource.
+    elt = _numpy_to_triton_elt(output_tensor.dtype)
+    signature = {
+        "A": f"*{elt}",
+        "B": f"*{elt}",
+        "C": f"*{elt}",
+        "n_elements": "constexpr",
+        "BLOCK_SIZE_N": "constexpr",
+    }
+    config = {
+        "triton_fn": vecadd,
+        "signature": signature,
+        "constexprs": {"n_elements": n_elements, "BLOCK_SIZE_N": block_size},
+        "num_warps": 4,
+        "num_programs": num_programs,
+    }
+
+    return KernelSpec(
+        backend=Backend.TRITON,
+        op_name="GGML_OP_ADD",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        function=vecadd,
+        config=config,
+    )
+
+
 def ggml_op_add(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> list[KernelSpec]:
-    """Return KernelSpecs for GGML_OP_ADD (IRON primary, Triton fallback).
+    """Return KernelSpecs for GGML_OP_ADD.
+
+    On NPU targets IRON is the primary backend with a Triton fallback. On GPU (gfx) targets
+    the Triton -> hsaco AOT path is used; unsupported cases (e.g. broadcasting) yield no spec,
+    so the op is reported unsupported and skipped.
 
     Parameters:
         arch: Target architecture.
@@ -163,7 +273,17 @@ def ggml_op_add(
         List of KernelSpecs for the ADD operation.
 
     """
+    from .triton_kernels.utils import is_gpu_arch
+
     _validate_binary_inputs(input_tensors)
+
+    if is_gpu_arch(arch):
+        try:
+            return [
+                _make_triton_gpu_add_kernel_spec(arch, input_tensors, output_tensor)
+            ]
+        except ValueError:
+            return []
 
     return [
         _make_iron_binary_kernel_spec(

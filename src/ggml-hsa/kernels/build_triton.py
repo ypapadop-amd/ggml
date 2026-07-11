@@ -89,6 +89,65 @@ def _get_triton_target(kernel_spec: KernelSpec) -> str:
     raise ValueError(msg)
 
 
+def _compile_triton_gpu_kernel(
+    kernel_spec: KernelSpec,
+    exported_name: str,
+    output_directory: Path,
+    logger: logging.Logger,
+    verbose: bool,
+) -> None:
+    """Compile a Triton kernel to a GPU code object (.hsaco) ahead of time.
+
+    Uses the upstream Triton AMD backend to ahead-of-time compile the same @triton.jit kernel
+    used by the AIE path. Emits ``<exported_name>.hsaco`` plus a launch-metadata sidecar
+    ``<exported_name>.hsaco.json`` = {"grid_size_x", "workgroup_size_x"} because the launch
+    geometry (workgroup size, number of workgroups) is fixed at compile time and is not
+    recoverable from the code object alone; the C++ dispatch reads it back from the sidecar.
+
+    Parameters:
+        kernel_spec: The KernelSpec; config carries triton_fn, signature, constexprs,
+            num_warps and num_programs.
+        exported_name: Base name for the output files.
+        output_directory: Directory for the .hsaco and sidecar.
+        logger: Logger for status messages.
+        verbose: If True, enables verbose output.
+    """
+    import json
+
+    from triton.backends.compiler import GPUTarget
+
+    cfg = kernel_spec.config
+    fn = cfg["triton_fn"]
+    signature = cfg["signature"]
+    constexprs = cfg["constexprs"]
+    num_warps = int(cfg.get("num_warps", 4))
+    num_programs = int(cfg["num_programs"])
+
+    # gfx11 uses wave32; the warp_size passed here is informational (Triton selects the ISA
+    # wavefront). The actual workgroup size is read back from the compiled kernel metadata.
+    target = GPUTarget("hip", kernel_spec.arch, 64)
+    src = triton.compiler.ASTSource(fn=fn, signature=signature, constexprs=constexprs)
+    compiled = triton.compile(src, target=target, options={"num_warps": num_warps})
+
+    hsaco = compiled.asm["hsaco"]
+    hsaco_path = output_directory / f"{exported_name}.hsaco"
+    hsaco_path.write_bytes(bytes(hsaco))
+
+    block_x = int(compiled.metadata.num_warps) * int(compiled.metadata.warp_size)
+    launch = {
+        "grid_size_x": int(num_programs * block_x),  # total work-items (AQL grid_size)
+        "workgroup_size_x": int(block_x),            # work-items per workgroup
+    }
+    sidecar_path = output_directory / f"{exported_name}.hsaco.json"
+    sidecar_path.write_text(json.dumps(launch))
+
+    logger.info(
+        "Triton GPU compilation successful\n  hsaco: %s\n  launch: %s",
+        hsaco_path,
+        launch,
+    )
+
+
 def compile_triton_kernel(
     kernel_spec: KernelSpec,
     exported_name: str,
@@ -99,8 +158,8 @@ def compile_triton_kernel(
     """Compile a Triton kernel for the target architecture in kernel_spec.
 
     NPU targets run the Triton-XDNA pipeline and extract a PDI and instructions
-    binary from the resulting xclbin; GPU targets run the HIP pipeline and copy
-    the hsaco object from the Triton cache.
+    binary from the resulting xclbin; GPU targets ahead-of-time compile the kernel
+    to a .hsaco and emit a launch-metadata sidecar.
 
     Parameters:
         kernel_spec: The KernelSpec containing the Triton kernel function.
@@ -188,32 +247,10 @@ def compile_triton_kernel(
                 insts_path,
             )
     elif is_gpu_arch(kernel_spec.arch):
-        from triton.backends.amd.driver import HIPDriver
-
-        triton.runtime.driver.set_active(HIPDriver())
-        with TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)):
-            compiled_kernel = kernel_spec.function()
-
-        hsaco_paths = [
-            Path(p)
-            for name, p in compiled_kernel.metadata_group.items()
-            if name.endswith(".hsaco")
-        ]
-        if not hsaco_paths:
-            msg = (
-                f"No .hsaco artifact found in Triton metadata_group for {exported_name} "
-                f"(arch={kernel_spec.arch}). Available keys: {list(compiled_kernel.metadata_group.keys())}"
-            )
-            logger.error(msg)
-            raise ValueError(msg)
-        hsaco_path = hsaco_paths[0]
-        output_hsaco_path = output_directory / f"{exported_name}.hsaco"
-        shutil.copy(hsaco_path, output_hsaco_path)
-
-        logger.info(
-            ("Triton GPU compilation successful\n  Metadata:   %s\n  HSACO Path: %s"),
-            compiled_kernel.metadata,
-            output_hsaco_path,
+        # GPU targets ahead-of-time compile to a .hsaco and emit a launch-metadata sidecar
+        # (grid/block geometry) required by the C++ dispatch.
+        _compile_triton_gpu_kernel(
+            kernel_spec, exported_name, output_directory, logger, verbose
         )
     else:
         msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"
