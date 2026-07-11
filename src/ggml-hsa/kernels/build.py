@@ -97,6 +97,7 @@ _OP_KERNEL_MAP: dict[str, Kernel] = {
     "ARGMAX": Kernel("ggml_op_argmax", "argmax.py"),
     "COUNT_EQUAL": Kernel("ggml_op_count_equal", "count_equal.py"),
     "CROSS_ENTROPY_LOSS": Kernel("ggml_op_cross_entropy_loss", "cross_entropy_loss.py"),
+    "CONV_2D": Kernel("ggml_op_conv_2d", "conv_2d.py"),
 }
 
 
