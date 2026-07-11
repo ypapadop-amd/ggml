@@ -87,6 +87,10 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     kernel_tensor = input_tensors[0]
     image_tensor = input_tensors[1]
 
+    if kernel_tensor.dtype != np.float32:
+        msg = f"CONV_2D only supports float32 kernel input; got {kernel_tensor.dtype}."
+        raise ValueError(msg)
+
     if image_tensor.dtype != np.float32:
         msg = f"CONV_2D only supports float32 image input; got {image_tensor.dtype}."
         raise ValueError(msg)
@@ -95,8 +99,12 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         msg = f"CONV_2D only supports float32 output; got {output_tensor.dtype}."
         raise ValueError(msg)
 
-    if not image_tensor.contiguous or not output_tensor.contiguous:
-        msg = "Image and output tensors must be contiguous in memory."
+    if (
+        not kernel_tensor.contiguous
+        or not image_tensor.contiguous
+        or not output_tensor.contiguous
+    ):
+        msg = "Kernel, image and output tensors must be contiguous in memory."
         raise ValueError(msg)
 
     if len(op_params) < _CONV2D_PARAMS_SIZE:
@@ -142,6 +150,10 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     if out_n != n:
         msg = f"Batch mismatch: image N={n}, output N={out_n}."
+        raise ValueError(msg)
+
+    if n <= 0:
+        msg = f"Batch size must be positive; got N={n}."
         raise ValueError(msg)
 
     # Element counts per tile
