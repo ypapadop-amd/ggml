@@ -7,6 +7,8 @@ import ml_dtypes
 import numpy as np
 import torch
 
+from .spec_utils import is_gpu_arch
+
 _NUMPY_TO_TORCH_DTYPE = {
     np.float16: torch.float16,
     np.float32: torch.float32,
@@ -33,18 +35,6 @@ def is_npu_arch(arch: str) -> bool:
         True if arch is a recognised NPU architecture string.
     """
     return arch in NPU_ARCH_MAP
-
-
-def is_gpu_arch(arch: str) -> bool:
-    """Return True if arch is an AMD GPU architecture string (e.g. "gfx942").
-
-    Args:
-        arch: Architecture string to check.
-
-    Returns:
-        True if arch starts with "gfx".
-    """
-    return arch.startswith("gfx")
 
 
 def triton_device(arch: str) -> str:

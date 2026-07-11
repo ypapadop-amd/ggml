@@ -29,11 +29,8 @@ if (NOT GGML_HSA_AIE AND NOT GGML_HSA_GPU)
     message(FATAL_ERROR "ggml-hsa: at least one of GGML_HSA_AIE or GGML_HSA_GPU must be enabled")
 endif ()
 
-# JIT compilation generates AIE kernels and therefore requires the AIE backend.
-if (GGML_HSA_JIT_COMPILE AND NOT GGML_HSA_AIE)
-    message(STATUS "ggml-hsa: GGML_HSA_JIT_COMPILE requires GGML_HSA_AIE; disabling JIT compilation")
-    set(GGML_HSA_JIT_COMPILE OFF)
-endif ()
+# JIT compilation (Python/pybind) is shared by the AIE (IRON/Triton -> pdi) and GPU
+# (Triton -> hsaco) backends.
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA

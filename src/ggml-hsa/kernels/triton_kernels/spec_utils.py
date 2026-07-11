@@ -16,6 +16,18 @@ import numpy as np
 _SCRIPT_DIR = Path(__file__).parent
 
 
+def is_gpu_arch(arch: str) -> bool:
+    """Return True if arch is an AMD GPU architecture string (e.g. "gfx942").
+
+    Args:
+        arch: Architecture string to check.
+
+    Returns:
+        True if arch starts with "gfx".
+    """
+    return arch.startswith("gfx")
+
+
 def transform_script(stem: str, arch: str, dtype=None) -> str:
     """Return the path to the Triton-XDNA transform script for an op.
 
