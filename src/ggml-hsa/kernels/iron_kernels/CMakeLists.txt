@@ -14,6 +14,8 @@ set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/count_equal.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/count_equal.py
     ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/conv_2d.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/conv_2d.py
     ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.py
     ${CMAKE_CURRENT_SOURCE_DIR}/gemm.py
     ${CMAKE_CURRENT_SOURCE_DIR}/ggml-aie.hpp
