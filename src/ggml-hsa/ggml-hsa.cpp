@@ -571,6 +571,103 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
     ggml_hsa_set_contiguous_strides(tensor);
 }
 
+/**
+ * @brief Prepares an F32 @c MUL_MAT node for the AIE whole-array GEMM kernel.
+ *
+ * The GEMM microkernel has no native f32 path and the whole-array tiling requires the matrix
+ * dimensions to be multiples of the per-architecture tile factors. This rewrites the internal node
+ * (and its sources) so the kernel sees bf16 operands zero-padded up to those tile multiples:
+ *   - src0 A = [K, M], src1 B = [K, N], dst C = [M, N] (GGML MUL_MAT layout);
+ *   - each dimension is padded to K->Kpad, M->Mpad, N->Npad and the dtype set to bf16;
+ *   - the padded regions read as zero (pre-zeroed by @ref allocate_internal_storage), so the extra
+ *     rows/cols and the interior K gap contribute nothing to the result.
+ * The output node keeps f32 but needs its own padded temporary storage plus a de-pad copy back into
+ * the (smaller) parent tensor, flagged via @c node_t::depad.
+ *
+ * Only the contiguous, non-batched, non-permuted f32 x f32 case is handled (the shapes exercised by
+ * MNIST). Returns @c false for anything else, leaving the node untouched so the caller falls back
+ * to the generic path.
+ *
+ * @param[in] dev_info device information (selects the tile factors)
+ * @param[in,out] node internal output node
+ * @param[in,out] src_nodes internal source nodes
+ * @param[in] nsrcs number of sources
+ * @return @c true if the node was rewritten for the padded bf16 GEMM path
+ */
+static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_info,
+                                         ggml_backend_hsa_tensor_extra::node_t & node,
+                                         ggml_backend_hsa_tensor_extra::node_t * src_nodes,
+                                         std::int32_t nsrcs) {
+    ggml_tensor & dst = node.tensor;
+    if (dst.op != GGML_OP_MUL_MAT || nsrcs != 2) {
+        return false;
+    }
+
+    ggml_tensor & a = src_nodes[0].tensor; // [K, M]
+    ggml_tensor & b = src_nodes[1].tensor; // [K, N]
+
+    // only the plain contiguous f32 x f32 -> f32 case is supported
+    if (a.type != GGML_TYPE_F32 || b.type != GGML_TYPE_F32 || dst.type != GGML_TYPE_F32) {
+        return false;
+    }
+    if (!ggml_hsa_has_trivial_layout(a) || !ggml_hsa_has_trivial_layout(b) ||
+        !ggml_hsa_has_trivial_layout(dst)) {
+        return false;
+    }
+    // no batching / broadcasting
+    if (a.ne[2] != 1 || a.ne[3] != 1 || b.ne[2] != 1 || b.ne[3] != 1) {
+        return false;
+    }
+
+    // per-architecture GEMM tiling factors (see gemm.py: tile size and n_aie_rows/n_aie_cols).
+    // n_aie_rows is 4 for both architectures.
+    constexpr std::int64_t n_aie_rows = 4;
+    std::int64_t tile = 0;
+    std::int64_t n_aie_cols = 0;
+    if (dev_info.name == "aie2p") {
+        tile = 16;
+        n_aie_cols = 8;
+    } else { // aie2
+        tile = 32;
+        n_aie_cols = 4;
+    }
+
+    const std::int64_t K = a.ne[0];
+    const std::int64_t M = a.ne[1];
+    const std::int64_t N = b.ne[1];
+
+    const std::int64_t Kpad = GGML_PAD(K, tile);
+    const std::int64_t Mpad = GGML_PAD(M, tile * n_aie_rows);
+    const std::int64_t Npad = GGML_PAD(N, tile * n_aie_cols);
+
+    // rewrite sources to padded bf16
+    a.type = GGML_TYPE_BF16;
+    a.ne[0] = Kpad;
+    a.ne[1] = Mpad;
+    ggml_hsa_set_contiguous_strides(a);
+    src_nodes[0].tensor.data = nullptr;
+    src_nodes[0].buffer_size = GGML_PAD(ggml_nbytes(&a), dev_info.alignment);
+    src_nodes[0].convert_dtype = true;
+
+    b.type = GGML_TYPE_BF16;
+    b.ne[0] = Kpad;
+    b.ne[1] = Npad;
+    ggml_hsa_set_contiguous_strides(b);
+    src_nodes[1].tensor.data = nullptr;
+    src_nodes[1].buffer_size = GGML_PAD(ggml_nbytes(&b), dev_info.alignment);
+    src_nodes[1].convert_dtype = true;
+
+    // rewrite output to a padded f32 temporary; it must be de-padded back into the parent tensor
+    dst.ne[0] = Mpad;
+    dst.ne[1] = Npad;
+    ggml_hsa_set_contiguous_strides(dst);
+    node.tensor.data = nullptr;
+    node.buffer_size = GGML_PAD(ggml_nbytes(&dst), dev_info.alignment);
+    node.depad = true;
+
+    return true;
+}
+
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) :
     nsrcs{ggml_hsa_nsrcs(parent_tensor)} {
@@ -611,53 +708,60 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
 
     std::array<bool, GGML_MAX_SRC> update_src_buffer_size = {};
 
-    // convert tensor data types if needed
-    if (dev_info.substitute_fp16_bf16) {
-        // output tensor can be converted in-place
-        if (node.tensor.type == GGML_TYPE_F16) {
-            node.tensor.type = GGML_TYPE_BF16;
-            node.convert_dtype = true;
-        }
+    // F32 MUL_MAT is handled specially: the operands are converted to bf16 and zero-padded to the
+    // GEMM tile multiples. This fully sets up the internal nodes (dtype, shape, buffer sizes,
+    // depad), so the generic dtype/layout/flatten handling below is skipped.
+    if (ggml_hsa_prepare_mul_mat_f32(dev_info, node, src_nodes.data(), nsrcs)) {
+        requires_sync = true;
+    } else {
+        // convert tensor data types if needed
+        if (dev_info.substitute_fp16_bf16) {
+            // output tensor can be converted in-place
+            if (node.tensor.type == GGML_TYPE_F16) {
+                node.tensor.type = GGML_TYPE_BF16;
+                node.convert_dtype = true;
+            }
 
-        // inputs require temporary storage as they may be shared among tensors
-        for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-            auto & src_node = src_nodes[src_idx];
-            if (src_node.tensor.type == GGML_TYPE_F16) {
-                update_src_buffer_size[src_idx] = true;
-                src_node.tensor.type = GGML_TYPE_BF16;
-                src_node.convert_dtype = true;
+            // inputs require temporary storage as they may be shared among tensors
+            for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+                auto & src_node = src_nodes[src_idx];
+                if (src_node.tensor.type == GGML_TYPE_F16) {
+                    update_src_buffer_size[src_idx] = true;
+                    src_node.tensor.type = GGML_TYPE_BF16;
+                    src_node.convert_dtype = true;
+                }
             }
         }
-    }
 
-    // make tensor layouts trivial; tensors that do not have a trivial layout will need
-    // temporary storage
-    if (!ggml_hsa_has_trivial_layout(node.tensor)) {
-        throw std::runtime_error{"Output tensor does not have trivial layout."};
-    }
-    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-        auto & src_node = src_nodes[src_idx];
-        if (!ggml_hsa_has_trivial_layout(src_node.tensor)) {
-            update_src_buffer_size[src_idx] = true;
-            ggml_hsa_set_contiguous_strides(src_node.tensor);
+        // make tensor layouts trivial; tensors that do not have a trivial layout will need
+        // temporary storage
+        if (!ggml_hsa_has_trivial_layout(node.tensor)) {
+            throw std::runtime_error{"Output tensor does not have trivial layout."};
         }
-    }
-
-    // flatten tensors to reuse kernels
-    if (ggml_hsa_can_flatten(node.tensor)) {
-        ggml_hsa_flatten_tensor(node.tensor);
         for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-            ggml_hsa_flatten_tensor(src_nodes[src_idx].tensor);
-        }
-    }
-
-    // update required tensor sizes
-    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-        if (update_src_buffer_size[src_idx]) {
             auto & src_node = src_nodes[src_idx];
-            src_node.tensor.data = nullptr;
-            src_node.buffer_size = GGML_PAD(ggml_nbytes(&src_node.tensor), dev_info.alignment);
-            requires_sync = true;
+            if (!ggml_hsa_has_trivial_layout(src_node.tensor)) {
+                update_src_buffer_size[src_idx] = true;
+                ggml_hsa_set_contiguous_strides(src_node.tensor);
+            }
+        }
+
+        // flatten tensors to reuse kernels
+        if (ggml_hsa_can_flatten(node.tensor)) {
+            ggml_hsa_flatten_tensor(node.tensor);
+            for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+                ggml_hsa_flatten_tensor(src_nodes[src_idx].tensor);
+            }
+        }
+
+        // update required tensor sizes
+        for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+            if (update_src_buffer_size[src_idx]) {
+                auto & src_node = src_nodes[src_idx];
+                src_node.tensor.data = nullptr;
+                src_node.buffer_size = GGML_PAD(ggml_nbytes(&src_node.tensor), dev_info.alignment);
+                requires_sync = true;
+            }
         }
     }
 
@@ -685,7 +789,7 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
         return GGML_STATUS_ABORTED;
     }
 
-    std::size_t buffer_size = 0;
+    std::size_t buffer_size = node.buffer_size;
     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
         buffer_size += src_nodes[src_idx].buffer_size;
     }
@@ -707,6 +811,10 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     }
     buffer.reset(static_cast<std::byte *>(ptr));
 
+    // pre-zero the whole block so padding gaps (trailing rows/cols and the interior K gap of a
+    // padded MUL_MAT) read as zero without the per-dispatch sub-block copies having to touch them
+    std::memset(buffer.get(), 0, buffer_size);
+
     auto buffer_ptr = buffer.get();
     for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
         auto & src_node = src_nodes[src_idx];
@@ -715,6 +823,13 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
             src_node.tensor.data = buffer_ptr;
             buffer_ptr += src_node.buffer_size;
         }
+    }
+
+    // the output node may need its own padded temporary storage (e.g. a de-padded MUL_MAT result)
+    if (node.buffer_size > 0) {
+        assert(node.tensor.data == nullptr);
+        node.tensor.data = buffer_ptr;
+        buffer_ptr += node.buffer_size;
     }
 
     GGML_HSA_LOG_INFO("%s: created temporary storage for tensor %s (%s)", __func__,
@@ -1338,9 +1453,14 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 if (tensor_extra.src_nodes[src_idx].buffer_size == 0) {
                     continue;
                 }
-                // change layout and/or convert datatypes
-                if (status = ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
-                    status != GGML_STATUS_SUCCESS) {
+                // A padded source has a different shape from its parent, so scatter the logical
+                // sub-block into the (pre-zeroed) padded buffer; otherwise the shapes match and a
+                // plain layout/dtype copy suffices.
+                status =
+                    tensor_extra.node.depad
+                        ? ggml_hsa_copy_subblock(node->src[src_idx], internal_node.src[src_idx])
+                        : ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
+                if (status != GGML_STATUS_SUCCESS) {
                     GGML_HSA_LOG_ERROR("%s: failed to copy source %i for tensor \"%s (%s)\"",
                                        __func__, src_idx, node->name, ggml_op_desc(node));
                     break;
@@ -1360,11 +1480,13 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             break;
         }
 
-        if (tensor_extra.node.convert_dtype) {
-            // change layout and/or convert datatypes
+        if (tensor_extra.node.convert_dtype || tensor_extra.node.depad) {
+            // gather the padded result sub-block back into the parent tensor (de-pad), or convert
+            // the datatype in place for the same-shape case
             ggml_hsa_wait_dispatches(ctx);
-            if (status = ggml_hsa_copy_tensor(&internal_node, node);
-                status != GGML_STATUS_SUCCESS) {
+            status = tensor_extra.node.depad ? ggml_hsa_copy_subblock(&internal_node, node)
+                                             : ggml_hsa_copy_tensor(&internal_node, node);
+            if (status != GGML_STATUS_SUCCESS) {
                 GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__,
                                    node->name, ggml_op_desc(node));
                 break;
