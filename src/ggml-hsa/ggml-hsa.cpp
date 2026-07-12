@@ -722,6 +722,7 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     // create signal to wait for packets
     if (auto status = hsa_signal_create(0, 0, nullptr, &dispatch_signal);
         status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
         throw std::runtime_error{std::string("Could not create hsa_signal (")
                                      .append(ggml_hsa_get_status_string(status))
                                      .append(")")};
@@ -737,8 +738,15 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
         (GGML_MAX_SRC + 1 /* destination */) * 2 /* pointer + size */;
     const std::size_t slice_bytes =
         GGML_PAD(max_kernarg_entries * sizeof(std::uint64_t), kernarg_alignment);
-    kernargs = ggml_hsa_bump_allocator{dev_info.kernarg_memory.memory_pool,
-                                       slice_bytes * queue->size, kernarg_alignment};
+    try {
+        kernargs = ggml_hsa_bump_allocator{dev_info.kernarg_memory.memory_pool,
+                                           slice_bytes * queue->size, kernarg_alignment};
+    } catch (...) {
+        // release the HSA resources acquired above before propagating the failure
+        GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
+        GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
+        throw;
+    }
 }
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {

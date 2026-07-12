@@ -216,13 +216,19 @@ class ggml_hsa_bump_allocator {
      *
      * @param[in] memory_pool HSA memory pool to allocate the backing buffer from
      * @param[in] size backing buffer capacity in bytes
-     * @param[in] alignment alignment applied to each slice returned by @ref allocate
+     * @param[in] alignment alignment applied to each slice returned by @ref allocate; must be a
+     *            power of two
+     * @throws std::invalid_argument if @p alignment is not a power of two
      * @throws std::runtime_error if the backing buffer cannot be allocated
      */
     ggml_hsa_bump_allocator(hsa_amd_memory_pool_t memory_pool,
                             std::size_t size,
                             std::size_t alignment) :
         size_{size}, alignment_{alignment} {
+        // allocate() aligns offsets with a power-of-two bitmask, so enforce that invariant here
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+            throw std::invalid_argument{"Allocator alignment must be a power of two"};
+        }
         void * buffer = nullptr;
         if (auto status = hsa_amd_memory_pool_allocate(memory_pool, size, 0, &buffer);
             status != HSA_STATUS_SUCCESS) {
@@ -237,6 +243,7 @@ class ggml_hsa_bump_allocator {
      * @brief Returns an aligned slice of @p size bytes, or @c nullptr if it does not fit.
      */
     void * allocate(std::size_t size) {
+        // alignment_ is guaranteed to be a power of two by the constructor
         const std::size_t aligned_offset = (offset_ + alignment_ - 1) & ~(alignment_ - 1);
         if (aligned_offset + size > size_) {
             return nullptr;

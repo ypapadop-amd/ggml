@@ -41,12 +41,16 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
 
     auto queue = ctx.queue;
 
-    // Reserve a slot in the queue ring. Queue is full when (write_index - read_index) >=
-    // queue->size; wait until there is space. The wait synchronizes and recycles the kernarg arena,
-    // so the kernarg buffer must be obtained *after* this point to avoid handing out a slice that a
-    // still-in-flight packet references.
-    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
-    while (wr_idx - hsa_queue_load_read_index_scacquire(queue) >= queue->size) {
+    // Wait until the queue ring has a free slot. Queue is full when (write_index - read_index) >=
+    // queue->size. The wait synchronizes and recycles the kernarg arena, so the kernarg buffer must
+    // be obtained *after* this point to avoid handing out a slice that a still-in-flight packet
+    // references. We poll the write index instead of reserving one so that a kernarg allocation
+    // failure below cannot leave a reserved-but-unused slot that permanently consumes ring
+    // capacity. This is safe because the queue is single-producer (HSA_QUEUE_TYPE_SINGLE): between
+    // this check and the reservation below no other thread advances the write index, and the read
+    // index only moves forward, so the observed free slot remains free.
+    while (hsa_queue_load_write_index_relaxed(queue) - hsa_queue_load_read_index_scacquire(queue) >=
+           queue->size) {
         ggml_hsa_wait_dispatches(ctx);
     }
 
@@ -57,6 +61,9 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
         return GGML_STATUS_ALLOC_FAILED;
     }
     pkt.kernarg_address = kernargs;
+
+    // reserve the queue slot now that the kernargs are in place
+    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
 
     // add tensor kernargs
     std::size_t kernarg_idx = 0;
