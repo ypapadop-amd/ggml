@@ -17,22 +17,53 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // kernarg buffer layout (uint64_t entries): [src_ptrs..., dst_ptr, src_sizes..., dst_size]
     constexpr std::size_t kernarg_entries_per_tensor = 2;
 
-    const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
     const auto num_kernargs = num_src_tensors + 1 /* destination tensor */;
     const std::size_t kernarg_bytes =
         num_kernargs * kernarg_entries_per_tensor * sizeof(std::uint64_t);
 
+    // number of bytes in the packet after completion_signal up to kernarg_address; the AIE dispatch
+    // packet ABI requires this to be exactly 24 (see hsa_amd_aie_kernel_dispatch_packet_t)
+    constexpr std::uint16_t aie_packet_count = 24;
+
+    // create packet (kernarg_address is filled in once the kernargs are allocated below)
+    hsa_amd_aie_kernel_dispatch_packet_t pkt{};
+    pkt.header = (HSA_AMD_AIE_PACKET_TYPE_READY << HSA_PACKET_HEADER_TYPE) |
+                 (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE) |
+                 (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE);
+    pkt.opcode = HSA_AMD_AIE_PACKET_OPCODE_KMQ;
+    pkt.count = aie_packet_count;
+    pkt.completion_signal = ctx.dispatch_signal;
+    pkt.insts_addr_low = reinterpret_cast<std::uintptr_t>(insts.data()) & 0xFFFFFFFF;
+    pkt.insts_addr_high = reinterpret_cast<std::uintptr_t>(insts.data()) >> 32;
+    pkt.num_kernargs = num_kernargs;
+    pkt.insts_size = insts.size();
+    pkt.pdi_addr = pdi.data(); // PDI to use with this command
+
+    auto queue = ctx.queue;
+
+    // Wait until the queue ring has a free slot. Queue is full when (write_index - read_index) >=
+    // queue->size. The wait synchronizes and recycles the kernarg arena, so the kernarg buffer must
+    // be obtained *after* this point to avoid handing out a slice that a still-in-flight packet
+    // references. We poll the write index instead of reserving one so that a kernarg allocation
+    // failure below cannot leave a reserved-but-unused slot that permanently consumes ring
+    // capacity. This is safe because the queue is single-producer (HSA_QUEUE_TYPE_SINGLE): between
+    // this check and the reservation below no other thread advances the write index, and the read
+    // index only moves forward, so the observed free slot remains free.
+    while (hsa_queue_load_write_index_relaxed(queue) - hsa_queue_load_read_index_scacquire(queue) >=
+           queue->size) {
+        ggml_hsa_wait_dispatches(ctx);
+    }
+
     // create kernargs
-    uint64_t * kernargs = nullptr;
-    if (auto status =
-            hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, kernarg_bytes, 0,
-                                         reinterpret_cast<void **>(&kernargs));
-        status != HSA_STATUS_SUCCESS) {
-        GGML_HSA_LOG_ERROR("%s: failed to allocate kernargs (%zu bytes) (%s)", __func__,
-                           kernarg_bytes, ggml_hsa_get_status_string(status));
+    auto * kernargs = static_cast<uint64_t *>(ctx.kernargs.allocate(kernarg_bytes));
+    if (kernargs == nullptr) {
+        GGML_HSA_LOG_ERROR("%s: failed to allocate kernargs (%zu bytes)", __func__, kernarg_bytes);
         return GGML_STATUS_ALLOC_FAILED;
     }
-    ctx.kernargs.emplace_back(kernargs); // track kernargs for cleanup after dispatch
+    pkt.kernarg_address = kernargs;
+
+    // reserve the queue slot now that the kernargs are in place
+    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
 
     // add tensor kernargs
     std::size_t kernarg_idx = 0;
@@ -52,33 +83,6 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     kernargs[kernarg_idx++] = ggml_nbytes(&dst_tensor);
 
     assert(kernarg_idx == num_kernargs * kernarg_entries_per_tensor);
-
-    // number of bytes in the packet after completion_signal up to kernarg_address; the AIE dispatch
-    // packet ABI requires this to be exactly 24 (see hsa_amd_aie_kernel_dispatch_packet_t)
-    constexpr std::uint16_t aie_packet_count = 24;
-
-    // create packet
-    hsa_amd_aie_kernel_dispatch_packet_t pkt{};
-    pkt.header = (HSA_AMD_AIE_PACKET_TYPE_READY << HSA_PACKET_HEADER_TYPE) |
-                 (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE) |
-                 (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE);
-    pkt.opcode = HSA_AMD_AIE_PACKET_OPCODE_KMQ;
-    pkt.count = aie_packet_count;
-    pkt.completion_signal = ctx.dispatch_signal;
-    pkt.insts_addr_low = reinterpret_cast<std::uintptr_t>(insts.data()) & 0xFFFFFFFF;
-    pkt.insts_addr_high = reinterpret_cast<std::uintptr_t>(insts.data()) >> 32;
-    pkt.num_kernargs = num_kernargs;
-    pkt.kernarg_address = kernargs;
-    pkt.insts_size = insts.size();
-    pkt.pdi_addr = pdi.data(); // PDI to use with this command
-
-    auto queue = ctx.queue;
-
-    // Queue is full when (write_index - read_index) >= queue->size. Wait until there is space.
-    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
-    while (wr_idx - hsa_queue_load_read_index_scacquire(queue) >= queue->size) {
-        ggml_hsa_wait_dispatches(ctx);
-    }
 
     const std::uint64_t packet_id = wr_idx % queue->size;
     *(static_cast<hsa_amd_aie_kernel_dispatch_packet_t *>(queue->base_address) + packet_id) = pkt;

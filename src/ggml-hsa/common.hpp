@@ -199,6 +199,78 @@ struct ggml_hsa_delete {
 template <typename T>
 using ggml_hsa_unique_ptr = std::unique_ptr<T, ggml_hsa_delete<T>>;
 
+/**
+ * @brief Linear (bump) allocator over a fixed HSA memory-pool buffer.
+ *
+ * The allocator owns a single buffer carved out of an HSA memory pool once at construction and
+ * hands out aligned slices of it with @ref allocate. No HSA call is made on the allocation path.
+ * @ref reset recycles the whole buffer at once (it does not free individual slices), so it must
+ * only be called when no outstanding slice is still in use.
+ */
+class ggml_hsa_bump_allocator {
+  public:
+    ggml_hsa_bump_allocator() = default;
+
+    /**
+     * @brief Constructs the allocator with a buffer of @p size bytes from @p memory_pool.
+     *
+     * @param[in] memory_pool HSA memory pool to allocate the backing buffer from
+     * @param[in] size backing buffer capacity in bytes
+     * @param[in] alignment alignment applied to each slice returned by @ref allocate; must be a
+     *            power of two
+     * @throws std::invalid_argument if @p alignment is not a power of two
+     * @throws std::runtime_error if the backing buffer cannot be allocated
+     */
+    ggml_hsa_bump_allocator(hsa_amd_memory_pool_t memory_pool,
+                            std::size_t size,
+                            std::size_t alignment) :
+        size_{size}, alignment_{alignment} {
+        // allocate() aligns offsets with a power-of-two bitmask, so enforce that invariant here
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+            throw std::invalid_argument{"Allocator alignment must be a power of two"};
+        }
+        void * buffer = nullptr;
+        if (auto status = hsa_amd_memory_pool_allocate(memory_pool, size, 0, &buffer);
+            status != HSA_STATUS_SUCCESS) {
+            throw std::runtime_error{std::string("Could not allocate bump allocator buffer (")
+                                         .append(ggml_hsa_get_status_string(status))
+                                         .append(")")};
+        }
+        buffer_.reset(buffer);
+    }
+
+    /**
+     * @brief Returns an aligned slice of @p size bytes, or @c nullptr if it does not fit.
+     */
+    void * allocate(std::size_t size) {
+        // alignment_ is guaranteed to be a power of two by the constructor
+        const std::size_t aligned_offset = (offset_ + alignment_ - 1) & ~(alignment_ - 1);
+        if (aligned_offset + size > size_) {
+            return nullptr;
+        }
+        offset_ = aligned_offset + size;
+        return static_cast<std::byte *>(buffer_.get()) + aligned_offset;
+    }
+
+    /**
+     * @brief Recycles all previously handed-out slices.
+     *
+     * @warning The caller must ensure no outstanding slice is still in use.
+     */
+    void reset() { offset_ = 0; }
+
+    /**
+     * @brief Returns the backing buffer capacity in bytes.
+     */
+    std::size_t capacity() const { return size_; }
+
+  private:
+    ggml_hsa_unique_ptr<void> buffer_; ///< Backing storage.
+    std::size_t size_{};               ///< Backing buffer capacity in bytes.
+    std::size_t offset_{};             ///< Current bump offset in bytes.
+    std::size_t alignment_{1};         ///< Per-slice alignment in bytes.
+};
+
 struct ggml_backend_hsa_context;
 
 /**
@@ -325,8 +397,8 @@ struct ggml_backend_hsa_context {
     std::string name;               ///< Device name.
     hsa_queue_t * queue{};          ///< HSA queue.
     hsa_signal_t dispatch_signal{}; ///< Signal for packet completion.
-    std::vector<ggml_hsa_unique_ptr<void>>
-        kernargs; ///< Kernarg allocations since last synchronization.
+
+    ggml_hsa_bump_allocator kernargs; ///< Kernarg buffers for in-flight packets.
 
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 
@@ -339,11 +411,11 @@ struct ggml_backend_hsa_context {
     ggml_backend_hsa_context & operator=(ggml_backend_hsa_context &&) = delete;
 
     /**
-     * @brief Frees all memory associated with pending kernargs.
+     * @brief Recycles all kernarg buffers handed out since the last synchronization.
      *
-     * @warning This function assumes that packets have been processed.
+     * @warning This function assumes that all packets referencing the kernargs have been processed.
      */
-    void free_kernargs();
+    void free_kernargs() { kernargs.reset(); }
 };
 
 /**
