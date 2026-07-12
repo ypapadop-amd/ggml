@@ -702,9 +702,12 @@ def create_mat_mul_external_functions(
     num_cols = None
     if arch == "aie2":
         num_cols = 4
-        m = 8
-        n = 8
-        k = 8
+        # The bf16 4x8x4 microkernel (r,s,t = 4,8,4 with 4x4 expansion) requires the per-core N
+        # tile to cover at least 8 mmul subtiles (colB = n / t >= 8, i.e. n >= 32); smaller tiles
+        # (e.g. 16) miscompute the C01/C02 accumulators. tile 32 also keeps i8/i16 valid.
+        m = 32
+        n = 32
+        k = 32
     elif arch == "aie2p":
         num_cols = 8
         m = 16

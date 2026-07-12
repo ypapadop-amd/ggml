@@ -341,6 +341,8 @@ struct ggml_backend_hsa_tensor_extra {
         ggml_tensor tensor{};      ///< Transformed tensor.
         std::size_t buffer_size{}; ///< Temporary storage size in bytes.
         bool convert_dtype{};      ///< True if data conversion is necessary.
+        bool depad{};              ///< True if the transformed tensor is zero-padded and must be
+                                   ///< copied to/from the (smaller) parent tensor sub-block.
     };
 
     std::int32_t nsrcs{};                         ///< Number of source tensors.
