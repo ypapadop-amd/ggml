@@ -200,39 +200,42 @@ template <typename T>
 using ggml_hsa_unique_ptr = std::unique_ptr<T, ggml_hsa_delete<T>>;
 
 /**
- * @brief Linear (bump) allocator over a fixed HSA memory-pool buffer.
+ * @brief Fixed-slot kernarg pool over a single HSA memory-pool buffer.
  *
- * The allocator owns a single buffer carved out of an HSA memory pool once at construction and
- * hands out aligned slices of it with @ref allocate. No HSA call is made on the allocation path.
- * @ref reset recycles the whole buffer at once (it does not free individual slices), so it must
- * only be called when no outstanding slice is still in use.
+ * The buffer is carved into @p slot_count equally sized, aligned slots at construction. @ref slot
+ * returns the slot address with no HSA call on the access path. Slot lifetime is managed by the
+ * caller: each slot maps to the queue ring slot of the same index, reused only once the device has
+ * consumed that ring slot. Sized for one worst-case kernarg region per ring slot.
  */
-class ggml_hsa_bump_allocator {
+class ggml_hsa_kernarg_pool {
   public:
-    ggml_hsa_bump_allocator() = default;
+    ggml_hsa_kernarg_pool() = default;
 
     /**
-     * @brief Constructs the allocator with a buffer of @p size bytes from @p memory_pool.
+     * @brief Constructs a pool of @p slot_count slots, each at least @p slot_size bytes.
      *
      * @param[in] memory_pool HSA memory pool to allocate the backing buffer from
-     * @param[in] size backing buffer capacity in bytes
-     * @param[in] alignment alignment applied to each slice returned by @ref allocate; must be a
-     *            power of two
+     * @param[in] slot_count number of fixed slots (one per queue ring slot)
+     * @param[in] slot_size minimum size of each slot in bytes; rounded up to @p alignment
+     * @param[in] alignment alignment applied to the start of every slot; must be a power of two
      * @throws std::invalid_argument if @p alignment is not a power of two
      * @throws std::runtime_error if the backing buffer cannot be allocated
      */
-    ggml_hsa_bump_allocator(hsa_amd_memory_pool_t memory_pool,
-                            std::size_t size,
-                            std::size_t alignment) :
-        size_{size}, alignment_{alignment} {
-        // allocate() aligns offsets with a power-of-two bitmask, so enforce that invariant here
+    ggml_hsa_kernarg_pool(hsa_amd_memory_pool_t memory_pool,
+                          std::size_t slot_count,
+                          std::size_t slot_size,
+                          std::size_t alignment) :
+        slot_count_{slot_count} {
         if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
-            throw std::invalid_argument{"Allocator alignment must be a power of two"};
+            throw std::invalid_argument{"Kernarg pool alignment must be a power of two"};
         }
+        // Pad each slot to alignment so every slot start is aligned.
+        slot_size_ = GGML_PAD(slot_size, alignment);
         void * buffer = nullptr;
-        if (auto status = hsa_amd_memory_pool_allocate(memory_pool, size, 0, &buffer);
+        if (auto status =
+                hsa_amd_memory_pool_allocate(memory_pool, slot_size_ * slot_count_, 0, &buffer);
             status != HSA_STATUS_SUCCESS) {
-            throw std::runtime_error{std::string("Could not allocate bump allocator buffer (")
+            throw std::runtime_error{std::string("Could not allocate kernarg pool buffer (")
                                          .append(ggml_hsa_get_status_string(status))
                                          .append(")")};
         }
@@ -240,35 +243,19 @@ class ggml_hsa_bump_allocator {
     }
 
     /**
-     * @brief Returns an aligned slice of @p size bytes, or @c nullptr if it does not fit.
-     */
-    void * allocate(std::size_t size) {
-        // alignment_ is guaranteed to be a power of two by the constructor
-        const std::size_t aligned_offset = (offset_ + alignment_ - 1) & ~(alignment_ - 1);
-        if (aligned_offset + size > size_) {
-            return nullptr;
-        }
-        offset_ = aligned_offset + size;
-        return static_cast<std::byte *>(buffer_.get()) + aligned_offset;
-    }
-
-    /**
-     * @brief Recycles all previously handed-out slices.
+     * @brief Returns the address of slot @p index.
      *
-     * @warning The caller must ensure no outstanding slice is still in use.
+     * @param[in] index slot index; must be less than the slot count
      */
-    void reset() { offset_ = 0; }
-
-    /**
-     * @brief Returns the backing buffer capacity in bytes.
-     */
-    std::size_t capacity() const { return size_; }
+    void * slot(std::size_t index) const {
+        GGML_ASSERT(index < slot_count_);
+        return static_cast<std::byte *>(buffer_.get()) + index * slot_size_;
+    }
 
   private:
     ggml_hsa_unique_ptr<void> buffer_; ///< Backing storage.
-    std::size_t size_{};               ///< Backing buffer capacity in bytes.
-    std::size_t offset_{};             ///< Current bump offset in bytes.
-    std::size_t alignment_{1};         ///< Per-slice alignment in bytes.
+    std::size_t slot_size_{};          ///< Size of each slot in bytes (padded to alignment).
+    std::size_t slot_count_{};         ///< Number of slots.
 };
 
 struct ggml_backend_hsa_context;
@@ -331,13 +318,7 @@ struct ggml_hsa_device_info {
 };
 
 /**
- * @brief Returns the HSA device information.
- *
- * This function returns a reference to a structure containing the HSA device
- * information. HSA and the information is initialized once and reused on all
- * subsequent calls.
- *
- * @return structure with device information
+ * @brief Returns the HSA device information, initialized once and reused on subsequent calls.
  */
 const ggml_hsa_device_info & ggml_hsa_info();
 
@@ -349,14 +330,9 @@ const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t 
 /**
  * @brief Tensor metadata.
  *
- * This class contains metadata about a ggml_tensor, called a parent tensor, that is used by the HSA
- * backend to create an alternative graph representation that will be used at run-time.
- *
- * A copy of the parent tensor metadata is made, along with a copy for all the parent's source
- * tensors' metadata.
- *
- * Those copies have a number of transformations applied to them, such as making them contiguous,
- * flattening them etc.
+ * Holds metadata about a parent ggml_tensor used by the HSA backend to build an alternative graph
+ * representation for run-time use. Copies are made of the parent and its source tensors' metadata,
+ * with transformations applied (e.g., making them contiguous, flattening).
  */
 struct ggml_backend_hsa_tensor_extra {
     /// @brief Internal graph node.
@@ -398,7 +374,10 @@ struct ggml_backend_hsa_context {
     hsa_queue_t * queue{};          ///< HSA queue.
     hsa_signal_t dispatch_signal{}; ///< Signal for packet completion.
 
-    ggml_hsa_bump_allocator kernargs; ///< Kernarg buffers for in-flight packets.
+    ggml_hsa_kernarg_pool kernargs; ///< Per-ring-slot kernarg buffers for in-flight packets.
+
+    std::size_t dispatch_batch_size{1}; ///< Packets accumulated before the doorbell is rung.
+    std::size_t n_batched{};            ///< Packets written since the last doorbell ring.
 
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 
@@ -409,13 +388,6 @@ struct ggml_backend_hsa_context {
 
     ggml_backend_hsa_context & operator=(const ggml_backend_hsa_context &) = delete;
     ggml_backend_hsa_context & operator=(ggml_backend_hsa_context &&) = delete;
-
-    /**
-     * @brief Recycles all kernarg buffers handed out since the last synchronization.
-     *
-     * @warning This function assumes that all packets referencing the kernargs have been processed.
-     */
-    void free_kernargs() { kernargs.reset(); }
 };
 
 /**
@@ -424,3 +396,14 @@ struct ggml_backend_hsa_context {
  * @param[in] ctx backend context
  */
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
+
+/**
+ * @brief Rings the doorbell for any packets accumulated since the last ring.
+ *
+ * Packets are written eagerly but the doorbell only rings once
+ * @ref ggml_backend_hsa_context::dispatch_batch_size packets accumulate, or a synchronization
+ * point forces a flush. Submits pending packets for processing; does @e not wait for completion.
+ *
+ * @param[in] ctx backend context
+ */
+void ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx);
