@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+// Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include "ggml-hsa/kernel-discovery.hpp"
 
@@ -166,13 +166,16 @@ static ggml_status ggml_hsa_load_file(hsa_amd_memory_pool_t pool,
  * If none of the above succeeds, an error message will be returned.
  *
  * @param[in] dev_info device information
- * @param[in] kernel_name kernel name
  * @param[in] tensor tensor to find the kernel for
+ * @param[in] op_name operation name; if provided, it overrides the default op name derived from the
+ * tensor's operation type
+ * @param[in] kernel_name kernel name
  * @param[out] kernel kernel for the operation of @p tensor
  */
 static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                              const std::string & kernel_name,
                                               const ggml_tensor & tensor,
+                                              std::optional<std::string> op_name,
+                                              const std::string & kernel_name,
                                               std::shared_ptr<ggml_hsa_kernel> & kernel) {
     fs::path pdi_path;
     fs::path insts_path;
@@ -181,7 +184,7 @@ static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device
     if (!ggml_hsa_find_aie_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
 #ifdef GGML_HSA_JIT_COMPILE
         // kernel files not found, compile kernel
-        if (auto status = ggml_hsa_compile_aie_kernel(dev_info, tensor, std::nullopt, kernel_name,
+        if (auto status = ggml_hsa_compile_aie_kernel(dev_info, tensor, op_name, kernel_name,
                                                       cached_kernel_dir);
             status != GGML_STATUS_SUCCESS) {
             return status;
@@ -218,12 +221,13 @@ static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device
 }
 
 ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                   const std::string & kernel_name,
                                    const ggml_tensor & tensor,
+                                   std::optional<std::string> op_name,
+                                   const std::string & kernel_name,
                                    std::shared_ptr<ggml_hsa_kernel> & kernel) {
     switch (dev_info.type) {
         case HSA_DEVICE_TYPE_AIE:
-            return ggml_hsa_create_aie_kernel(dev_info, kernel_name, tensor, kernel);
+            return ggml_hsa_create_aie_kernel(dev_info, tensor, op_name, kernel_name, kernel);
 
         // unsupported device types
         default:
