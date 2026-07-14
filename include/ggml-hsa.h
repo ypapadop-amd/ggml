@@ -33,6 +33,16 @@ GGML_BACKEND_API void ggml_backend_hsa_unregister_host_buffer(void * buffer);
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
 
+// Builds and dispatches an internal single-input transform kernel on the HSA backend, then waits
+// for completion. Compiles (or fetches from cache) the kernel named op_name for the (src, dst)
+// shape/dtype pair, dispatches it with src as the sole source and dst as the destination. src and
+// dst must already be allocated on backend (device-resident data pointers). This is the same
+// builder used by graph_compute, so the test path matches production. Intended for tests that drive
+// individual internal kernels (e.g. the MUL_MAT convert/pad pre-amble "HSA_CONVERT_PAD" and de-pad
+// post-amble "HSA_DEPAD") which are not reachable through ggml_backend_graph_compute.
+GGML_BACKEND_API enum ggml_status ggml_hsa_test_dispatch_transform(
+    ggml_backend_t backend, const char * op_name, const struct ggml_tensor * src, struct ggml_tensor * dst);
+
 #ifdef  __cplusplus
 }
 #endif

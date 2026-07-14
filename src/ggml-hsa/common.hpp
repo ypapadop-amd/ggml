@@ -345,12 +345,28 @@ struct ggml_backend_hsa_tensor_extra {
                                    ///< copied to/from the (smaller) parent tensor sub-block.
     };
 
-    std::int32_t nsrcs{};                         ///< Number of source tensors.
-    node_t node{};                                ///< Internal graph node.
-    std::array<node_t, GGML_MAX_SRC> src_nodes{}; ///< Internal graph node sources.
-    std::shared_ptr<ggml_hsa_kernel> kernel;      ///< Kernel associated with the tensor.
-    ggml_hsa_unique_ptr<std::byte> buffer;        ///< Temporary storage for tensor data.
-    bool requires_sync{false}; ///< True if CPU tensor transformations are necessary.
+    /// @brief Number of source tensors.
+    std::int32_t nsrcs{};
+    /// @brief Internal graph node.
+    node_t node{};
+    /// @brief Internal graph node sources, including holes for null sources.
+    std::array<node_t, GGML_MAX_SRC> src_nodes{};
+    /// @brief Kernel associated with the tensor.
+    std::shared_ptr<ggml_hsa_kernel> kernel;
+    /// @brief Temporary storage for tensor data, allocated if the kernel requires an intermediate
+    /// buffer.
+    ggml_hsa_unique_ptr<std::byte> buffer;
+    /// @brief True if synchronization before and after the kernel is required, e.g., if host-based
+    /// transformations are necessary.
+    bool requires_sync{false};
+    /// @brief Optional on-device pre-processing kernel per source: transforms a parent source
+    /// tensor into its internal buffer (e.g., dtype conversion and/or zero-padding) on the device
+    /// queue instead of on the host. Entry is null when a source needs no on-device pre-processing.
+    std::array<std::shared_ptr<ggml_hsa_kernel>, GGML_MAX_SRC> src_preprocess_kernels{};
+    /// @brief Optional on-device post-processing kernel for the result: transforms the internal
+    /// output buffer back into the parent tensor (e.g., de-padding and/or dtype conversion) on the
+    /// device queue. Null when the output needs no on-device post-processing.
+    std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);

@@ -20,7 +20,8 @@
  * @param[in] dev_info device information
  * @param[in] tensor tensor to find the kernel for
  * @param[in] op_name operation name; if provided, it overrides the default op name derived from the
- * tensor's operation type
+ * tensor's operation type (used for internal kernels such as the MUL_MAT convert/pad pre/post-amble
+ * whose carrier tensor has no GGML op of its own)
  * @param[in] kernel_name kernel name
  * @param[out] kernel kernel for the operation of @p tensor
  */

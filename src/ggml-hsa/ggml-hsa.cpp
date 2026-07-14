@@ -516,6 +516,47 @@ ggml_hsa_get_cached_kernel(const std::string & kernel_name,
 }
 
 /**
+ * @brief Builds (or fetches from cache) an internal single-input transform kernel.
+ *
+ * Used for the MUL_MAT convert/pad pre-amble and de-pad post-amble, which are not GGML ops. A
+ * carrier tensor is synthesized from @p out (shape/dtype/strides of the transform's destination)
+ * with its single source set to @p in, then compiled under @p op_name (e.g. "HSA_CONVERT_PAD" or
+ * "HSA_DEPAD"). The (in, out) shapes/dtypes flow into the kernel name so each distinct
+ * padded/unpadded combination caches its own PDI.
+ *
+ * @param[in] dev_info device information
+ * @param[in] op_name internal operation name selecting the kernel source
+ * @param[in] in transform input tensor (metadata only; data pointer not required here)
+ * @param[in] out transform output tensor (metadata only)
+ * @return the compiled/cached kernel, or nullptr on failure (caller falls back to the host path)
+ */
+static std::shared_ptr<ggml_hsa_kernel>
+ggml_hsa_build_transform_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                const std::string & op_name,
+                                const ggml_tensor & in,
+                                const ggml_tensor & out) {
+    // carrier tensor: destination metadata, single source = transform input
+    ggml_tensor carrier = out;
+    ggml_tensor source = in;
+    for (auto & s : carrier.src) {
+        s = nullptr;
+    }
+    carrier.src[0] = &source;
+
+    auto kernel_name = ggml_hsa_create_kernel_name(carrier, op_name);
+    auto kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
+    if (kernel != nullptr) {
+        return kernel;
+    }
+    if (ggml_hsa_create_kernel(dev_info, carrier, op_name, kernel_name, kernel) !=
+        GGML_STATUS_SUCCESS) {
+        return nullptr;
+    }
+    ggml_hsa_cache_kernel(kernel_name, dev_info.device, kernel);
+    return kernel;
+}
+
+/**
  * @brief Deletes all unused cached kernels.
  */
 static void ggml_hsa_purge_unused_cached_kernels(std::int32_t device_id) {
@@ -779,6 +820,24 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                                          .append(")")};
         }
         ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
+    }
+
+    // For the padded f32 MUL_MAT path, build on-device pre-processing kernels (per source; here
+    // convert f32->bf16 + zero-pad) and a post-processing kernel (here de-pad the result). These
+    // run on the device queue in place of the host copies in graph_compute, removing the per-op
+    // queue drains that would otherwise flush the packet batch. If any fails to compile the pointer
+    // stays null and graph_compute falls back to the host copy path.
+    if (node.depad) {
+        for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+            if (!src_nodes[src_idx].convert_dtype) {
+                continue;
+            }
+            src_preprocess_kernels[src_idx] = ggml_hsa_build_transform_kernel(
+                dev_info, "HSA_CONVERT_PAD", *parent_tensor.src[src_idx],
+                src_nodes[src_idx].tensor);
+        }
+        postprocess_kernel =
+            ggml_hsa_build_transform_kernel(dev_info, "HSA_DEPAD", node.tensor, parent_tensor);
     }
 }
 
@@ -1447,21 +1506,49 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
         ggml_tensor & internal_node = tensor_extra.node.tensor;
 
+        // Prefer on-device pre/post-processing kernels when the node provides them: they run on the
+        // same in-order queue as the main kernel, so no host queue drain is needed and the packets
+        // batch with surrounding work. This requires the full chain (a pre-processing kernel for
+        // every source that needs one, plus the post-processing kernel) to be available; otherwise
+        // we fall back to the host copy path (which must drain first, since the host may not touch
+        // a buffer the device is still using).
+        bool use_device_transforms =
+            tensor_extra.node.depad && (tensor_extra.postprocess_kernel != nullptr);
+        if (use_device_transforms) {
+            for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
+                if (tensor_extra.src_nodes[src_idx].buffer_size != 0 &&
+                    tensor_extra.src_preprocess_kernels[src_idx] == nullptr) {
+                    use_device_transforms = false;
+                    break;
+                }
+            }
+        }
+
         if (tensor_extra.requires_sync) {
-            ggml_hsa_wait_dispatches(ctx);
+            if (!use_device_transforms) {
+                ggml_hsa_wait_dispatches(ctx);
+            }
             for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
                 if (tensor_extra.src_nodes[src_idx].buffer_size == 0) {
                     continue;
                 }
-                // A padded source has a different shape from its parent, so scatter the logical
-                // sub-block into the (pre-zeroed) padded buffer; otherwise the shapes match and a
-                // plain layout/dtype copy suffices.
-                status =
-                    tensor_extra.node.depad
-                        ? ggml_hsa_copy_subblock(node->src[src_idx], internal_node.src[src_idx])
-                        : ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
+                if (use_device_transforms) {
+                    // on-device source pre-processing: transform the parent source into its
+                    // internal buffer on-queue (e.g. convert+pad), no drain
+                    ggml_tensor * preprocess_src = node->src[src_idx];
+                    status = tensor_extra.src_preprocess_kernels[src_idx]->dispatch(
+                        ctx, &preprocess_src, 1, *internal_node.src[src_idx]);
+                } else {
+                    // A padded source has a different shape from its parent, so scatter the logical
+                    // sub-block into the (pre-zeroed) padded buffer; otherwise the shapes match and
+                    // a plain layout/dtype copy suffices.
+                    status =
+                        tensor_extra.node.depad
+                            ? ggml_hsa_copy_subblock(node->src[src_idx], internal_node.src[src_idx])
+                            : ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
+                }
                 if (status != GGML_STATUS_SUCCESS) {
-                    GGML_HSA_LOG_ERROR("%s: failed to copy source %i for tensor \"%s (%s)\"",
+                    GGML_HSA_LOG_ERROR("%s: failed to prepare source %i for tensor \"%s (%s)\"",
                                        __func__, src_idx, node->name, ggml_op_desc(node));
                     break;
                 }
@@ -1480,7 +1567,17 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             break;
         }
 
-        if (tensor_extra.node.convert_dtype || tensor_extra.node.depad) {
+        if (use_device_transforms) {
+            // on-device result post-processing: transform the internal output back into the parent
+            // tensor on-queue (e.g. de-pad), no drain. Reads the internal node, writes the parent.
+            ggml_tensor * postprocess_src = &internal_node;
+            status = tensor_extra.postprocess_kernel->dispatch(ctx, &postprocess_src, 1, *node);
+            if (status != GGML_STATUS_SUCCESS) {
+                GGML_HSA_LOG_ERROR("%s: failed to de-pad result for tensor \"%s\" (%s)", __func__,
+                                   node->name, ggml_op_desc(node));
+                break;
+            }
+        } else if (tensor_extra.node.convert_dtype || tensor_extra.node.depad) {
             // gather the padded result sub-block back into the parent tensor (de-pad), or convert
             // the datatype in place for the same-shape case
             ggml_hsa_wait_dispatches(ctx);
@@ -1500,6 +1597,30 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     ggml_hsa_flush_dispatches(ctx);
 
     return status;
+}
+
+// test support (see ggml-hsa.h)
+
+ggml_status ggml_hsa_test_dispatch_transform(ggml_backend_t backend,
+                                             const char * op_name,
+                                             const ggml_tensor * src,
+                                             ggml_tensor * dst) {
+    auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
+    const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
+
+    auto kernel = ggml_hsa_build_transform_kernel(dev_info, op_name, *src, *dst);
+    if (kernel == nullptr) {
+        GGML_HSA_LOG_ERROR("%s: failed to build transform kernel %s", __func__, op_name);
+        return GGML_STATUS_FAILED;
+    }
+
+    ggml_tensor * dispatch_src = const_cast<ggml_tensor *>(src);
+    if (auto status = kernel->dispatch(ctx, &dispatch_src, 1, *dst);
+        status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
+    ggml_hsa_wait_dispatches(ctx);
+    return GGML_STATUS_SUCCESS;
 }
 
 // event
