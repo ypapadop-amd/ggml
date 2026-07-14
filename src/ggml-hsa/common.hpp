@@ -6,6 +6,7 @@
 #include "ggml.h"
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -248,7 +249,7 @@ class ggml_hsa_kernarg_pool {
      * @param[in] index slot index
      */
     void * slot(std::size_t index) const {
-        GGML_ASSERT(index < m_slot_count);
+        assert(index < m_slot_count);
         return static_cast<std::byte *>(m_buffer.get()) + index * m_slot_size;
     }
 
