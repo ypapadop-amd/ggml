@@ -10,7 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -30,6 +30,23 @@ bool g_ggml_hsa_verbose = [] {
 #else
     return true;
 #endif
+}();
+
+/// @brief Packets to accumulate before ringing the doorbell, or 0 if unset/invalid (use the
+/// per-queue default). Read once from @c GGML_HSA_DISPATCH_BATCH_SIZE at startup.
+static const std::size_t g_ggml_hsa_dispatch_batch_size = [] {
+    const char * env = std::getenv("GGML_HSA_DISPATCH_BATCH_SIZE");
+    if (env == nullptr) {
+        return static_cast<std::size_t>(0);
+    }
+    std::size_t parsed = 0;
+    const auto * end = env + std::strlen(env);
+    const auto [ptr, ec] = std::from_chars(env, end, parsed);
+    if (ec != std::errc{} || ptr != end || parsed == 0) {
+        GGML_HSA_LOG_WARN("ggml_hsa: ignoring invalid GGML_HSA_DISPATCH_BATCH_SIZE (\"%s\")", env);
+        return static_cast<std::size_t>(0);
+    }
+    return parsed;
 }();
 
 /// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
@@ -752,19 +769,9 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     // larger value would never be reached before the queue-full drain, so it is clamped with a
     // warning.
     constexpr std::size_t default_batch_size = 32;
-    std::size_t batch_size = std::min<std::size_t>(default_batch_size, queue->size);
-    if (const char * env = std::getenv("GGML_HSA_DISPATCH_BATCH_SIZE"); env != nullptr) {
-        errno = 0;
-        char * end = nullptr;
-        const long parsed = std::strtol(env, &end, 10);
-        if (end == env || *end != '\0' || errno == ERANGE || parsed <= 0) {
-            GGML_HSA_LOG_WARN("%s: ignoring invalid GGML_HSA_DISPATCH_BATCH_SIZE (\"%s\"); "
-                              "using default (%zu)",
-                              __func__, env, batch_size);
-        } else {
-            batch_size = static_cast<std::size_t>(parsed);
-        }
-    }
+    std::size_t batch_size = g_ggml_hsa_dispatch_batch_size != 0
+                                 ? g_ggml_hsa_dispatch_batch_size
+                                 : std::min<std::size_t>(default_batch_size, queue->size);
     if (batch_size > queue->size) {
         GGML_HSA_LOG_WARN("%s: GGML_HSA_DISPATCH_BATCH_SIZE (%zu) exceeds queue size (%u); "
                           "clamping to queue size",
