@@ -74,10 +74,13 @@ static py::tuple ggml_hsa_tensor_nb_as_pytuple(const ggml_tensor & tensor) {
 
 ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                         const ggml_tensor & tensor,
-                                        const std::string & op_name,
+                                        std::optional<std::string> op_name,
                                         const std::string & kernel_name,
                                         const std::filesystem::path & output_path) {
     using namespace py::literals;
+
+    const std::string op_name_to_use =
+        op_name.has_value() ? std::move(op_name.value()) : ggml_op_desc(&tensor);
 
     const auto output_directory = output_path / dev_info.name;
 
@@ -112,7 +115,7 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
         // compile the kernel
         auto build_mod = py::module_::import("build");
         auto compile_kernel = build_mod.attr("ggml_compile_op");
-        compile_kernel("op_name"_a = op_name, "arch"_a = dev_info.name,
+        compile_kernel("op_name"_a = op_name_to_use, "arch"_a = dev_info.name,
                        "input_tensors"_a = std::move(input_tensors),
                        "output_tensor"_a = std::move(output_tensor),
                        "op_params"_a = std::move(op_params), "exported_name"_a = kernel_name,
@@ -120,20 +123,13 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
                        "verbose"_a = verbose_compilation);
     } catch (const py::error_already_set & ex) {
         GGML_HSA_LOG_INFO("%s: failed to compile kernel %s for tensor \"%s\" (%s): %s", __func__,
-                          kernel_name.c_str(), tensor.name, op_name.c_str(), ex.what());
+                          kernel_name.c_str(), tensor.name, op_name_to_use.c_str(), ex.what());
         return GGML_STATUS_FAILED;
     }
 
     GGML_HSA_LOG_INFO("%s: generated kernel %s in %s for tensor \"%s\" (%s)", __func__,
-                      kernel_name.c_str(), output_directory.c_str(), tensor.name, op_name.c_str());
+                      kernel_name.c_str(), output_directory.c_str(), tensor.name,
+                      op_name_to_use.c_str());
 
     return GGML_STATUS_SUCCESS;
-}
-
-ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                        const ggml_tensor & tensor,
-                                        const std::string & kernel_name,
-                                        const std::filesystem::path & output_path) {
-    return ggml_hsa_compile_aie_kernel(dev_info, tensor, ggml_op_desc(&tensor), kernel_name,
-                                       output_path);
 }
