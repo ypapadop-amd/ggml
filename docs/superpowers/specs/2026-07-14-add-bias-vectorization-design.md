@@ -1,6 +1,9 @@
 # Vectorized ADD bias path (co-design `.py` + `.cc`)
 
-Status: **approved design**, pre-implementation. Date: 2026-07-14.
+Status: **approved design**, pre-implementation. Date: 2026-07-14. Tiling revised from "replicated
+super-row" to "plain row-tiling" during planning (the super-row needed an unproven on-core scratch
+replication with DMA risk; row-tiling reaches ~99.2% vectorization on fc1 via the proven `scale.cc`
+pattern with no replication).
 
 ## Motivation
 
@@ -31,69 +34,78 @@ For this broadcast pattern the entire index computation collapses to `src1[i % n
 
 ## Scope
 
-Per user decision: **ADD entry points only.** Only `ggml_op_add` / the ADD broadcast dispatch gains
-the optimized path. SUB / MUL / DIV and every non-row-broadcast case keep calling the existing scalar
-templates unchanged. Multi-core is a **separate follow-up phase**, out of scope here (this pass is
-single-core vectorization).
+Per user decision: **ADD entry points only.** Only the ADD single-row-bias broadcast gains the
+optimized path. SUB / MUL / DIV and every non-single-row-broadcast case keep calling the existing
+scalar templates unchanged. Multi-core is a **separate follow-up phase**, out of scope here (this
+pass is single-core vectorization).
 
 ## Architecture & dispatch
 
-Add a **new vectorized bias entry point** in `binary_ops.cc`, selected in `binary_op()` (Python)
-**only when** all of:
+Add a **new bias entry point** in `binary_ops.cc`, selected in `binary_op()` (Python) **only when**
+all of:
 
 1. `op_name == "GGML_OP_ADD"`, and
 2. src1 is a single row broadcast over rows: `src1_ne0 == dst_ne0` and
-   `src1_ne1 == src1_ne2 == src1_ne3 == 1` and `dst_ne0 == src0_ne0`, and
-3. a clean "replicated super-row" tiling exists (predicate below).
+   `src1_ne1 == src1_ne2 == src1_ne3 == 1` and `src0.shape == dst.shape`.
 
 ```
 binary_op(op_name, ...)
-├─ ADD AND single-row-bias AND super-row tiling exists → NEW vectorized bias design (.cc + .py)
+├─ ADD AND single-row-bias  → NEW row-tiled bias design (.cc + .py)
 └─ else (SUB/MUL/DIV, general 4D broadcast, elementwise) → existing scalar path (UNTOUCHED)
 ```
 
-Anything failing the predicate (including fc2, SUB/MUL/DIV, true multi-dim broadcasts) falls to the
-existing `transform_binary_broadcast_n` / `transform_binary_n`. No behavior change for those.
+Anything failing the predicate (SUB/MUL/DIV, true multi-dim broadcasts, plain element-wise) falls to
+the existing `transform_binary_broadcast_n` / `transform_binary_n`. No behavior change for those.
 
-## The "replicated super-row" tiling
+Both MNIST bias adds match the predicate, so **both** use the new path — fc2 included (it runs the
+same kernel; it just doesn't vectorize because its row is shorter than one vector — see below).
 
-To keep the kernel hot loop a clean, tail-free vector add even when `ne0` is not a multiple of the
-vector width `V`, replicate `src1` and tile `src0`/`out` on the least common multiple:
+## The row-tiling scheme
 
-- `V = 512 / (8 * sizeof(dtype))` — 16 for f32.
-- `g = gcd(ne0, V)`, `R = V / g` (rows after which the src1 phase realigns to a vector boundary).
-- `L = R * ne0 = lcm(ne0, V)` — the super-row tile size (a multiple of `V`).
-- Pre-replicate `src1` `R` times into an `L`-element buffer, loaded **once** (`ObjectFifo depth=1`).
-- Stream `src0`/`out` in tiles of `L`. Every tile aligns to the same replicated src1 buffer, so all
-  src1 vector loads are aligned and the loop is a pure `aie::add` with **zero scalar tail**.
+Tile on **one dst row** so `src1` (one contiguous row, `ne0` elements) is loaded **once** and reused
+for every row — no replication, no strided DMA (avoids the known shim-DMA strided-transfer limit that
+silently drops data), no per-element index math.
 
-**Tiling-existence predicate:** `L` must divide the padded total, i.e. `num_rows % R == 0`
-(equivalently `total_elements % L == 0`).
+- `tile_size = ne0` (one full dst row). One `ObjectFifo` object == one row.
+- `num_tiles = num_rows = total_elements / ne0` (always integer; `total = num_rows * ne0`, and f32
+  arch-alignment is a no-op so `num_elements == numel` exactly).
+- Three fifos: `src0` (tile = ne0), `out` (tile = ne0), and `src1` (`depth=1`, full ne0 row, acquired
+  **once** outside the tile loop — mirrors the existing broadcast path's src1 handling).
+- The kernel adds one row per call: `out[i] = src0[i] + src1[i]` for `i in [0, ne0)`, vectorized over
+  a `V`-wide interior with a scalar tail (the `scale.cc` idiom).
 
-- **fc1** `[500, 500]`: `g = gcd(500,16) = 4`, `R = 4`, `L = 2000`. `num_rows = 500`,
-  `500 % 4 == 0` ✓ → **125 tiles of 2000, zero tail, pure `aie::add`.** This is the 98%-of-cost case.
-- **fc2** `[10, 500]`: `g = gcd(10,16) = 2`, `R = 8`, `L = 80`. `num_rows = 500`,
-  `500 % 8 != 0` ✗ → **no clean super-row tiling; falls back to the existing scalar path.**
+**Why the tail is cheap:** `V = 16` for f32. `vend = (ne0 / V) * V` is the vector interior; `[vend,
+ne0)` is a scalar tail. Because the object is exactly `ne0` long, `aie::load_v<V>` at any interior
+offset `i` (with `i + V <= vend <= ne0`) never reads past the object boundary — this sidesteps the
+known `load_v` row-boundary over-read gotcha.
 
-fc2 falling back is acceptable and explicitly accepted: it is ~2% of ADD volume and already cheap.
-This pass targets the fc1 bias that dominates.
+- **fc1** `ne0 = 500`: `vend = 496`, tail = 4 → **99.2% of elements vectorized, 0.8% scalar.** This
+  is the ~98%-of-ADD-cost case.
+- **fc2** `ne0 = 10 < V`: `vend = 0` → entire row scalar. Acceptable: ~2% of ADD volume, and still
+  **strictly better than today** because the new kernel has **no `__divsi3`** (a plain row add), vs.
+  the current 7 signed div/mod per element.
 
-## Kernel hot loop (follows in-tree `scale.cc` convention)
+## Kernel loop (follows in-tree `scale.cc` convention)
 
 ```cpp
-void ggml_op_add_bias(const T * __restrict src0,   // L-element tile
-                      const T * __restrict src1,   // L-element pre-replicated row (loaded once)
-                      T * __restrict out,          // L-element tile
-                      int32_t L) {
+void ggml_op_add_bias(const T * __restrict src0,   // one row: ne0 elements
+                      const T * __restrict src1,   // one row: ne0 elements (loaded once, reused)
+                      T * __restrict out,           // one row: ne0 elements
+                      int32_t N) {                  // N == ne0
     event0();
     constexpr int32_t V = 512 / (sizeof(T) * 8);
-    // L is a multiple of V by construction (super-row tiling).
+    const int32_t vend = (N / V) * V;               // division by CONSTEXPR V → inline shift, once (not __divsi3)
+
     AIE_PREPARE_FOR_PIPELINING
     AIE_LOOP_MIN_ITERATION_COUNT(1)
-    for (int32_t i = 0; i < L; i += V) {
+    for (int32_t i = 0; i < vend; i += V) {
         aie::vector<T, V> a = aie::load_v<V>(src0 + i);
         aie::vector<T, V> b = aie::load_v<V>(src1 + i);
         aie::store_v(out + i, aie::add(a, b));
+    }
+
+    for (int32_t i = vend; i < N; ++i) {
+        out[i] = src0[i] + src1[i];
     }
     event1();
 }
@@ -101,15 +113,16 @@ void ggml_op_add_bias(const T * __restrict src0,   // L-element tile
 
 - `__restrict` on every pointer (pipelining lever), `constexpr V` (folds to shifts),
   `AIE_PREPARE_FOR_PIPELINING` + `AIE_LOOP_MIN_ITERATION_COUNT` (Peano pipelining).
-- No `__divsi3`, no per-element index math, no scalar tail (L % V == 0 by construction).
+- **No `__divsi3` on any path:** the only division is `N / V` by a compile-time-constant `V`, once,
+  outside the loop — the compiler lowers constant-pow2 division to an inline shift sequence, not a
+  libcall. (The current kernel's `__divsi3` storm was division by *runtime* `src1_ne`/`dst_ne` values,
+  per element.)
 - `#include "aie_kernel_utils.h"` (not currently included by `binary_ops.cc`).
 - Preserve numerics: f32 add is exact vs the scalar path; correctness gate is the existing 1e-7 /
   bf16 1e-4 tolerance in `test-backend-ops-mnist`.
 
-The exact entry-point name and whether it is a new `#ifdef GGML_OP_ADD_BIAS` block vs. a variant of
-the existing `ggml_op_add_broadcast` is an implementation detail for the plan; the Python
-`ExternalFunction` name/signature and the `extern "C"` symbol must match whatever the new design
-dispatches.
+The exact `extern "C"` symbol is `ggml_op_add_bias`, gated by a new `#ifdef GGML_OP_ADD_BIAS` block;
+the Python `ExternalFunction` name/signature must match it.
 
 ## Verification (full profile)
 
@@ -130,8 +143,9 @@ dispatches.
 
 ## Risks / open items
 
-- **fc2 unchanged:** accepted; ~2% of ADD volume, no clean super-row tiling.
-- **Replicated src1 buffer size:** `L` elements held on-tile (fc1: 2000 f32 = 8 KB, well within the
-  ~64 KB L1). Confirm for any larger future ne0 before reuse.
-- **DMA linearity:** src1 replication is a linear fill of a contiguous buffer — respects the known
-  strided-DMA limit (fill/drain stay linear).
+- **fc2 not vectorized:** accepted; ~2% of ADD volume, `ne0=10 < V`. Still `__divsi3`-free, so still
+  faster than the current scalar broadcast path.
+- **DMA linearity:** all three fifos stream contiguous rows (one object == one `ne0` row); fill and
+  drain stay linear, respecting the known strided-DMA limit.
+- **On-tile footprint:** three `ne0`-element objects (fc1: 3 × 500 f32 = 6 KB, well within ~64 KB L1;
+  fifo double-buffering at most doubles the src0/out portion). No large replicated buffer.
