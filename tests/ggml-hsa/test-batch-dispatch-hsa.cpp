@@ -1,12 +1,14 @@
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
-// Baseline / benchmark for batched packet dispatch on the HSA (AIE/NPU) backend.
+// Benchmark for batched packet dispatch on the HSA (AIE/NPU) backend.
 //
 // Builds a single graph containing a long chain of vector additions. None of the
 // ops require host-side synchronization (native f32 element-wise), so the whole
-// chain is dispatched back-to-back and drained once at the end. This isolates the
-// per-dispatch doorbell cost that the multi-packet-per-doorbell work targets.
+// chain is dispatched back-to-back and drained once at the end. This exercises the
+// multi-packet-per-doorbell path and measures its per-dispatch cost.
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -88,9 +90,11 @@ int run(ggml_backend_t backend, std::size_t N, std::size_t n_ops, int iters) {
     }
 
     ggml_time_init();
-    // Split each iteration into the host-side dispatch phase (building/writing packets and ringing
-    // doorbells, measured by graph_compute_async) and the device-drain phase (waiting for the queue
-    // to empty, measured by synchronize). This isolates where the per-op time actually goes.
+    // Split each iteration into the graph_compute_async phase and the synchronize phase. Note the
+    // doorbell store is currently synchronous (it blocks until the command chain completes), so the
+    // device time is absorbed into the compute_async phase and the synchronize phase is near zero;
+    // the split is reported to surface that behavior and will become meaningful if submission ever
+    // becomes asynchronous.
     int64_t dispatch_us = 0;
     int64_t drain_us = 0;
     const int64_t t0 = ggml_time_us();
@@ -117,9 +121,12 @@ int run(ggml_backend_t backend, std::size_t N, std::size_t n_ops, int iters) {
     std::vector<float> out(N);
     ggml_backend_tensor_get(result, std::data(out), 0, ggml_nbytes(result));
 
-    // result[j] = A[j] + (n_ops * B[j])
+    // result[j] = A[j] + (n_ops * B[j]). The device accumulates iteratively (n_ops sequential
+    // additions) while the reference uses a single multiply, so the two can differ by rounding
+    // for large n_ops; compare with a small relative tolerance rather than exact equality.
     const float expected0 = A[0] + static_cast<float>(n_ops) * B[0];
-    const bool ok = out[0] == expected0;
+    const float tol = 1e-4f * std::max(1.0f, std::fabs(expected0));
+    const bool ok = std::fabs(out[0] - expected0) <= tol;
 
     std::cout << "N=" << N << "  n_ops=" << n_ops << "  iters=" << iters << '\n';
     std::cout << "total=" << total_us << " us"
@@ -136,10 +143,9 @@ int run(ggml_backend_t backend, std::size_t N, std::size_t n_ops, int iters) {
 } // namespace
 
 int main(int argc, char * argv[]) {
-    // NOTE: with the current single-packet-per-doorbell dispatch the kernarg arena is
-    // sized to the queue depth and only recycled on a queue-full stall, so a long
-    // back-to-back chain overflows it. Default n_ops is kept at/under a typical queue
-    // depth; raise it once multi-packet batching lands.
+    // n_ops may exceed the queue depth: the kernarg pool has one fixed slot per ring slot and the
+    // doorbell is rung per batch, so a long back-to-back chain drains as the queue fills rather
+    // than overflowing. Raise n_ops on the command line to stress deeper chains.
     std::size_t N = 1024;
     std::size_t n_ops = 32;
     int iters = 20;

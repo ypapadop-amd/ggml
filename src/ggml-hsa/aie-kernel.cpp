@@ -19,8 +19,8 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
 
     const auto num_kernargs = num_src_tensors + 1 /* destination tensor */;
 
-    // bytes from completion_signal to kernarg_address; AIE packet ABI requires exactly 24
-    // (see hsa_amd_aie_kernel_dispatch_packet_t)
+    // number of bytes in the packet after completion_signal up to kernarg_address; the AIE dispatch
+    // packet ABI requires this to be exactly 24 (see hsa_amd_aie_kernel_dispatch_packet_t)
     constexpr std::uint16_t aie_packet_count = 24;
 
     // create packet (kernarg_address is filled in once the kernargs are allocated below)
@@ -39,9 +39,10 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
 
     auto queue = ctx.queue;
 
-    // Wait for a free ring slot (queue full when write_index - read_index >= queue->size); this
-    // also drains completed packets. Safe under HSA_QUEUE_TYPE_SINGLE: no other thread advances
-    // the write index between this check and the reservation below, so the free slot stays free.
+    // Wait for a free ring slot (queue full when write_index - read_index >= queue->size) and
+    // drain; this also drains completed packets. Safe under HSA_QUEUE_TYPE_SINGLE: no other thread
+    // advances the write index between this check and the reservation below, so the free slot stays
+    // free.
     while (hsa_queue_load_write_index_relaxed(queue) - hsa_queue_load_read_index_scacquire(queue) >=
            queue->size) {
         ggml_hsa_wait_dispatches(ctx);
@@ -52,11 +53,10 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     const std::uint64_t packet_id = wr_idx % queue->size;
 
     // Each ring slot owns a fixed kernarg slot of the same index, sized for the worst case, so the
-    // slot claimed above always has room. Reusing slot (wr_idx % size) is safe only once the prior
-    // kernel using it has finished reading its kernargs; today the doorbell store is synchronous
-    // (blocks until the command chain completes, see ggml_hsa_flush_dispatches), so that holds.
-    // WARNING: if submission ever becomes asynchronous, this reuse must instead be gated on the
-    // completion signal — read_index advancing only means a packet was dequeued, not finished.
+    // slot claimed above always has room. Reusing slot packet_id is safe only once the prior kernel
+    // using it has finished reading its kernargs.
+    // NOTE: under async submission, we need to revisit if reuse must be gated on the completion
+    // signal.
     auto * kernargs = static_cast<uint64_t *>(ctx.kernargs.slot(packet_id));
 
     // add tensor kernargs

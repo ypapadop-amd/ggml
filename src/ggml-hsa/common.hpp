@@ -215,8 +215,8 @@ class ggml_hsa_kernarg_pool {
      * @brief Constructs a pool of @p slot_count slots, each at least @p slot_size bytes.
      *
      * @param[in] memory_pool HSA memory pool to allocate the backing buffer from
-     * @param[in] slot_count number of fixed slots (one per queue ring slot)
-     * @param[in] slot_size minimum size of each slot in bytes; rounded up to @p alignment
+     * @param[in] slot_count number of fixed slots (one per HSA queue ring slot)
+     * @param[in] slot_size minimum size of each slot in bytes
      * @param[in] alignment alignment applied to the start of every slot; must be a power of two
      * @throws std::invalid_argument if @p alignment is not a power of two
      * @throws std::runtime_error if the backing buffer cannot be allocated
@@ -225,37 +225,37 @@ class ggml_hsa_kernarg_pool {
                           std::size_t slot_count,
                           std::size_t slot_size,
                           std::size_t alignment) :
-        slot_count_{slot_count} {
+        m_slot_count{slot_count} {
         if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
             throw std::invalid_argument{"Kernarg pool alignment must be a power of two"};
         }
         // Pad each slot to alignment so every slot start is aligned.
-        slot_size_ = GGML_PAD(slot_size, alignment);
+        m_slot_size = GGML_PAD(slot_size, alignment);
         void * buffer = nullptr;
         if (auto status =
-                hsa_amd_memory_pool_allocate(memory_pool, slot_size_ * slot_count_, 0, &buffer);
+                hsa_amd_memory_pool_allocate(memory_pool, m_slot_size * m_slot_count, 0, &buffer);
             status != HSA_STATUS_SUCCESS) {
             throw std::runtime_error{std::string("Could not allocate kernarg pool buffer (")
                                          .append(ggml_hsa_get_status_string(status))
                                          .append(")")};
         }
-        buffer_.reset(buffer);
+        m_buffer.reset(buffer);
     }
 
     /**
      * @brief Returns the address of slot @p index.
      *
-     * @param[in] index slot index; must be less than the slot count
+     * @param[in] index slot index
      */
     void * slot(std::size_t index) const {
-        GGML_ASSERT(index < slot_count_);
-        return static_cast<std::byte *>(buffer_.get()) + index * slot_size_;
+        GGML_ASSERT(index < m_slot_count);
+        return static_cast<std::byte *>(m_buffer.get()) + index * m_slot_size;
     }
 
   private:
-    ggml_hsa_unique_ptr<void> buffer_; ///< Backing storage.
-    std::size_t slot_size_{};          ///< Size of each slot in bytes (padded to alignment).
-    std::size_t slot_count_{};         ///< Number of slots.
+    ggml_hsa_unique_ptr<void> m_buffer; ///< Backing storage.
+    std::size_t m_slot_size{};          ///< Size of each slot in bytes (padded to alignment).
+    std::size_t m_slot_count{};         ///< Number of slots.
 };
 
 struct ggml_backend_hsa_context;
@@ -369,13 +369,11 @@ struct ggml_backend_hsa_tensor_extra {
  * @brief Context for HSA backend operations.
  */
 struct ggml_backend_hsa_context {
-    std::int32_t device{};          ///< Device ID.
-    std::string name;               ///< Device name.
-    hsa_queue_t * queue{};          ///< HSA queue.
-    hsa_signal_t dispatch_signal{}; ///< Signal for packet completion.
-
-    ggml_hsa_kernarg_pool kernargs; ///< Per-ring-slot kernarg buffers for in-flight packets.
-
+    std::int32_t device{};              ///< Device ID.
+    std::string name;                   ///< Device name.
+    hsa_queue_t * queue{};              ///< HSA queue.
+    hsa_signal_t dispatch_signal{};     ///< Signal for packet completion.
+    ggml_hsa_kernarg_pool kernargs;     ///< Per-ring-slot kernarg buffers for in-flight packets.
     std::size_t dispatch_batch_size{1}; ///< Packets accumulated before the doorbell is rung.
     std::size_t n_batched{};            ///< Packets written since the last doorbell ring.
 

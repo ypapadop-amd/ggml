@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -65,7 +66,8 @@ void ggml_hsa_error(
 }
 
 std::int32_t ggml_hsa_nsrcs(const ggml_tensor & tensor) {
-    // count backwards to handle "holes" in src[], e.g., SOFT_MAX with mask=nullptr, sinks!=nullptr
+    // count backwards to handle "holes" in the src[] array - e.g., for SOFT_MAX with mask=nullptr
+    // but sinks!=nullptr has src[0]=input, src[1]=nullptr, src[2]=sinks
     std::int32_t last_src_idx = GGML_MAX_SRC - 1;
     for (; (last_src_idx >= 0) && (tensor.src[last_src_idx] == nullptr); --last_src_idx) {
     }
@@ -556,8 +558,9 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) :
     nsrcs{ggml_hsa_nsrcs(parent_tensor)} {
 
-    // View tensors are generally unsupported, but some ops like GGML_OP_CLAMP are created as
-    // views even though they can be treated as non-in-place; allow those to proceed.
+    // View tensors are generally not supported, but some operations like GGML_OP_CLAMP
+    // are created as views in GGML even though they can be treated as non-in-place.
+    // We allow these specific operations to proceed.
     if (ggml_is_view(&parent_tensor) && parent_tensor.op != GGML_OP_CLAMP) {
         throw std::runtime_error{"View tensor is not supported."};
     }
@@ -751,8 +754,14 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     constexpr std::size_t default_batch_size = 32;
     std::size_t batch_size = std::min<std::size_t>(default_batch_size, queue->size);
     if (const char * env = std::getenv("GGML_HSA_DISPATCH_BATCH_SIZE"); env != nullptr) {
+        errno = 0;
         char * end = nullptr;
-        if (const long parsed = std::strtol(env, &end, 10); end != env && parsed > 0) {
+        const long parsed = std::strtol(env, &end, 10);
+        if (end == env || *end != '\0' || errno == ERANGE || parsed <= 0) {
+            GGML_HSA_LOG_WARN("%s: ignoring invalid GGML_HSA_DISPATCH_BATCH_SIZE (\"%s\"); "
+                              "using default (%zu)",
+                              __func__, env, batch_size);
+        } else {
             batch_size = static_cast<std::size_t>(parsed);
         }
     }
@@ -1325,8 +1334,12 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     status != GGML_STATUS_SUCCESS) {
                     GGML_HSA_LOG_ERROR("%s: failed to copy source %i for tensor \"%s (%s)\"",
                                        __func__, src_idx, node->name, ggml_op_desc(node));
-                    return status;
+                    break;
                 }
+            }
+            // break out of the node loop on failure so the trailing flush still runs
+            if (status != GGML_STATUS_SUCCESS) {
+                break;
             }
         }
 
@@ -1335,7 +1348,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             status != GGML_STATUS_SUCCESS) {
             GGML_HSA_LOG_ERROR("%s: failed to dispatch kernel for tensor \"%s\" (%s)", __func__,
                                node->name, ggml_op_desc(node));
-            return status;
+            break;
         }
 
         if (tensor_extra.node.convert_dtype) {
@@ -1345,13 +1358,14 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 status != GGML_STATUS_SUCCESS) {
                 GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__,
                                    node->name, ggml_op_desc(node));
-                return status;
+                break;
             }
         }
     }
 
-    // Flush so all graph work is in flight when this returns. Callers may read results via the
-    // buffer get/copy paths, which don't synchronize, so a trailing partial batch must be flushed.
+    // Flush unconditionally, including on the error paths above: packets written for
+    // successfully-dispatched earlier nodes must be rung so their work reaches the device and
+    // callers reading via the buffer get/copy paths (which don't synchronize) see complete results.
     ggml_hsa_flush_dispatches(ctx);
 
     return status;
@@ -1362,28 +1376,30 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 /**
  * @brief Per-event data captured at record time.
  *
- * The dispatch signal is a counting signal (incremented per submission, decremented per
- * completion), so there is no cheap point-in-time fence. Instead we record whether work was
+ * Because the dispatch signal is a counting signal (incremented per submission, decremented per
+ * completion), there is no cheap point-in-time fence.  We instead record whether any work was
  * in-flight at record time; if so, the wait drains the entire queue (conservative but correct).
  */
 struct ggml_hsa_event_context {
     /// Backend context the event was recorded on, used to flush pending packets before waiting.
     /// Only valid when @ref snapshot is non-zero. Not owned; the caller must ensure the recording
-    /// backend outlives every wait on this event (ggml's contract: events are waited on before
-    /// their backend is freed).
+    /// backend outlives every wait on this event.
     ggml_backend_hsa_context * ctx{};
-    hsa_signal_t signal{};         ///< The backend's dispatch signal at record time.
     hsa_signal_value_t snapshot{}; ///< Non-zero means work was in flight; wait must drain fully.
     hsa_queue_t * queue{};         ///< Queue the event was recorded on (for same-queue detection).
+
+    /// @brief Dispatch signal at record time. Only valid when @ref snapshot is non-zero.
+    hsa_signal_t signal() const { return ctx->dispatch_signal; }
 };
 
 /**
  * @brief Blocks until all work submitted before the corresponding @c event_record call completes.
  *
- * @c dispatch_signal is a counting signal (incremented per submission, decremented per
- * completion), so waiting for it to drop below the recorded snapshot would only guarantee one
- * dispatch completed, not all pre-record work. When work was in flight at record time
- * (@p ec.snapshot != 0), this conservatively drains the entire queue by waiting for zero.
+ * Because @c dispatch_signal is a counting signal (incremented on each submission, decremented on
+ * each completion), waiting for it to drop below the recorded snapshot would only guarantee that
+ * at least one dispatch completed, not all pre-record work.  When work was in flight at record
+ * time (@p ec.snapshot != 0), this function conservatively drains the entire queue by waiting for
+ * the signal to reach zero.
  *
  * @param[in] ec Event context populated by @c ggml_backend_hsa_event_record.
  */
@@ -1392,20 +1408,21 @@ static void ggml_hsa_event_wait_for_snapshot(const ggml_hsa_event_context & ec) 
         return;
     }
     // Non-zero snapshot is only ever set together with ec.ctx, so ctx is valid here.
-    GGML_ASSERT(ec.ctx != nullptr);
+    assert(ec.ctx != nullptr);
     // Flush pending packets on the recording context; the drain below waits for the dispatch
     // signal to reach zero, which never happens if written packets were never rung.
     ggml_hsa_flush_dispatches(*ec.ctx);
-    hsa_signal_wait_scacquire(ec.signal, HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX,
+    hsa_signal_wait_scacquire(ec.signal(), HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX,
                               HSA_WAIT_STATE_BLOCKED);
 }
 
 /**
  * @brief Records a fence point on @p backend into @p event.
  *
- * Snapshots the backend's dispatch signal. A non-zero snapshot means work was in flight at record
- * time; a later @c ggml_backend_hsa_device_event_synchronize or cross-queue
- * @c ggml_backend_hsa_event_wait will conservatively drain the entire queue.
+ * Snapshots the current value of the backend's dispatch signal.  A non-zero snapshot indicates
+ * that work was in flight at record time; a later @c ggml_backend_hsa_device_event_synchronize or
+ * cross-queue @c ggml_backend_hsa_event_wait will conservatively drain the entire queue to ensure
+ * all pre-record work has completed.
  *
  * @param[in]  backend Backend whose in-flight work the event should fence.
  * @param[out] event   Event to record into; must have been created with
@@ -1418,7 +1435,6 @@ static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_e
     // later wait on the snapshot could block on packets that were never rung.
     ggml_hsa_flush_dispatches(ctx);
     ec.ctx = &ctx;
-    ec.signal = ctx.dispatch_signal;
     ec.snapshot = hsa_signal_load_scacquire(ctx.dispatch_signal);
     ec.queue = ctx.queue;
 }
@@ -1426,10 +1442,10 @@ static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_e
 /**
  * @brief Inserts a device-side dependency on @p event into @p backend's command stream.
  *
- * The AIE queue only accepts kernel dispatch packets, so a true GPU-side barrier can't be
- * enqueued. Work on the same in-order queue is implicitly ordered, so this is a no-op when
- * @p backend uses the recording backend's queue; otherwise the CPU blocks until the recorded
- * work completes (conservative but correct).
+ * The AIE queue only accepts kernel dispatch packets, so a true GPU-side barrier cannot be
+ * enqueued.  Work on the same in-order queue is implicitly ordered, so when @p backend uses the
+ * same queue as the recording backend this is a no-op.  For a different queue the CPU blocks until
+ * the recorded work completes (conservative but correct).
  *
  * @param[in] backend Backend that should wait for @p event before proceeding.
  * @param[in] event   Event previously populated by @c ggml_backend_hsa_event_record.
