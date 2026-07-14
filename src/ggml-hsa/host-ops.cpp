@@ -10,10 +10,8 @@
 #include "ggml-hsa/type-traits.hpp"
 
 /**
- * @brief Copies the data from the source tensor to a destination tensor with the same shape.
- *
- * This function handles different types of tensors and performs necessary conversions
- * based on the type traits defined for each tensor type.
+ * @brief Copies data from a source tensor to a destination tensor with the same shape, converting
+ * between types as needed based on their type traits.
  */
 struct ggml_hsa_copy_same_shape_tensors_f {
     template <ggml_type SrcT, ggml_type DstT = SrcT>
@@ -68,10 +66,8 @@ struct ggml_hsa_copy_same_shape_tensors_f {
 };
 
 /**
- * @brief Copies the data from the source tensor to a contiguous destination tensor.
- *
- * This function handles different types of tensors and performs necessary conversions
- * based on the type traits defined for each tensor type.
+ * @brief Copies data from a source tensor to a contiguous destination tensor, converting between
+ * types as needed based on their type traits.
  */
 struct ggml_hsa_copy_tensor_to_cont_tensor_f {
     template <ggml_type SrcT, ggml_type DstT = SrcT>

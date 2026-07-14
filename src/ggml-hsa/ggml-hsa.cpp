@@ -10,7 +10,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -28,6 +30,23 @@ bool g_ggml_hsa_verbose = [] {
 #else
     return true;
 #endif
+}();
+
+/// @brief Packets to accumulate before ringing the doorbell, or 0 if unset/invalid (use the
+/// per-queue default). Read once from @c GGML_HSA_DISPATCH_BATCH_SIZE at startup.
+static const std::size_t g_ggml_hsa_dispatch_batch_size = [] {
+    const char * env = std::getenv("GGML_HSA_DISPATCH_BATCH_SIZE");
+    if (env == nullptr) {
+        return static_cast<std::size_t>(0);
+    }
+    std::size_t parsed = 0;
+    const auto * end = env + std::strlen(env);
+    const auto [ptr, ec] = std::from_chars(env, end, parsed);
+    if (ec != std::errc{} || ptr != end || parsed == 0) {
+        GGML_HSA_LOG_WARN("ggml_hsa: ignoring invalid GGML_HSA_DISPATCH_BATCH_SIZE (\"%s\")", env);
+        return static_cast<std::size_t>(0);
+    }
+    return parsed;
 }();
 
 /// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
@@ -728,41 +747,73 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
                                      .append(")")};
     }
 
-    // Each dispatch consumes one slice from the bump allocator; slices are recycled in bulk at
-    // every synchronization point (@ref free_kernargs). The queue-full check bounds the number of
-    // in-flight packets to queue->size, so sizing the buffer for that many worst-case slices
-    // guarantees it can never overflow before the queue itself blocks.
+    // One kernarg slot per queue ring slot, reused only once the device consumes the packet that
+    // referenced it. Sized for the worst-case kernarg region (all sources + destination, pointer +
+    // size each), so a free ring slot always has a free kernarg slot.
     const std::size_t kernarg_alignment =
         std::max<std::size_t>(dev_info.kernarg_memory.alignment, alignof(std::uint64_t));
     constexpr std::size_t max_kernarg_entries =
         (GGML_MAX_SRC + 1 /* destination */) * 2 /* pointer + size */;
-    const std::size_t slice_bytes =
-        GGML_PAD(max_kernarg_entries * sizeof(std::uint64_t), kernarg_alignment);
+    const std::size_t slot_size = max_kernarg_entries * sizeof(std::uint64_t);
     try {
-        kernargs = ggml_hsa_bump_allocator{dev_info.kernarg_memory.memory_pool,
-                                           slice_bytes * queue->size, kernarg_alignment};
+        kernargs = ggml_hsa_kernarg_pool{dev_info.kernarg_memory.memory_pool, queue->size,
+                                         slot_size, kernarg_alignment};
     } catch (...) {
         // release the HSA resources acquired above before propagating the failure
         GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
         GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
         throw;
     }
+
+    // Packets to accumulate before ringing the doorbell. Defaults to min(32, queue depth); a
+    // larger value would never be reached before the queue-full drain, so it is clamped with a
+    // warning.
+    constexpr std::size_t default_batch_size = 32;
+    std::size_t batch_size = g_ggml_hsa_dispatch_batch_size != 0
+                                 ? g_ggml_hsa_dispatch_batch_size
+                                 : std::min<std::size_t>(default_batch_size, queue->size);
+    if (batch_size > queue->size) {
+        GGML_HSA_LOG_WARN("%s: GGML_HSA_DISPATCH_BATCH_SIZE (%zu) exceeds queue size (%u); "
+                          "clamping to queue size",
+                          __func__, batch_size, queue->size);
+        batch_size = queue->size;
+    }
+    dispatch_batch_size = batch_size;
 }
 
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
+    // Drain outstanding work before tearing down the queue and signal; otherwise batched-but-
+    // unrung packets would be lost and in-flight packets would reference a destroyed signal.
+    ggml_hsa_wait_dispatches(*this);
     ggml_hsa_purge_unused_cached_kernels(device);
     GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
     GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
 }
 
+void ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
+    if (ctx.n_batched == 0) {
+        return;
+    }
+    // Ring the doorbell for the last written packet (write_index - 1, since write_index points one
+    // past the last reserved slot); the device processes every packet up to it, and the release
+    // fence publishes all pending packet writes. Safe because submission is single-producer
+    // (HSA_QUEUE_TYPE_SINGLE, one thread): no other thread reserves a slot between a packet write
+    // and this ring. Concurrent submission would need to track the last fully-published index.
+    const std::uint64_t last_packet = hsa_queue_load_write_index_relaxed(ctx.queue) - 1;
+    hsa_signal_store_screlease(ctx.queue->doorbell_signal, last_packet);
+    ctx.n_batched = 0;
+}
+
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
+    // Flush pending packets first, otherwise the wait below could block forever on packets that
+    // were written but never rung.
+    ggml_hsa_flush_dispatches(ctx);
+
     if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
                                              UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
         val != 0) {
         GGML_ABORT("%s: unexpected signal value (%ld)\n", __func__, val);
     }
-
-    ctx.free_kernargs();
 }
 
 // HSA buffer
@@ -1292,8 +1343,12 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     status != GGML_STATUS_SUCCESS) {
                     GGML_HSA_LOG_ERROR("%s: failed to copy source %i for tensor \"%s (%s)\"",
                                        __func__, src_idx, node->name, ggml_op_desc(node));
-                    return status;
+                    break;
                 }
+            }
+            // break out of the node loop on failure so the trailing flush still runs
+            if (status != GGML_STATUS_SUCCESS) {
+                break;
             }
         }
 
@@ -1302,7 +1357,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             status != GGML_STATUS_SUCCESS) {
             GGML_HSA_LOG_ERROR("%s: failed to dispatch kernel for tensor \"%s\" (%s)", __func__,
                                node->name, ggml_op_desc(node));
-            return status;
+            break;
         }
 
         if (tensor_extra.node.convert_dtype) {
@@ -1312,10 +1367,15 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 status != GGML_STATUS_SUCCESS) {
                 GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__,
                                    node->name, ggml_op_desc(node));
-                return status;
+                break;
             }
         }
     }
+
+    // Flush unconditionally, including on the error paths above: packets written for
+    // successfully-dispatched earlier nodes must be rung so their work reaches the device and
+    // callers reading via the buffer get/copy paths (which don't synchronize) see complete results.
+    ggml_hsa_flush_dispatches(ctx);
 
     return status;
 }
@@ -1330,10 +1390,15 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
  * in-flight at record time; if so, the wait drains the entire queue (conservative but correct).
  */
 struct ggml_hsa_event_context {
-    hsa_signal_t signal{};         ///< The backend's dispatch signal at record time.
-    hsa_signal_value_t snapshot{}; ///< Signal value at event_record: non-zero means work was
-                                   ///< in flight and the queue must be fully drained to wait.
+    /// Backend context the event was recorded on, used to flush pending packets before waiting.
+    /// Only valid when @ref snapshot is non-zero. Not owned; the caller must ensure the recording
+    /// backend outlives every wait on this event.
+    ggml_backend_hsa_context * ctx{};
+    hsa_signal_value_t snapshot{}; ///< Non-zero means work was in flight; wait must drain fully.
     hsa_queue_t * queue{};         ///< Queue the event was recorded on (for same-queue detection).
+
+    /// @brief Dispatch signal at record time. Only valid when @ref snapshot is non-zero.
+    hsa_signal_t signal() const { return ctx->dispatch_signal; }
 };
 
 /**
@@ -1351,7 +1416,12 @@ static void ggml_hsa_event_wait_for_snapshot(const ggml_hsa_event_context & ec) 
     if (ec.snapshot == 0) {
         return;
     }
-    hsa_signal_wait_scacquire(ec.signal, HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX,
+    // Non-zero snapshot is only ever set together with ec.ctx, so ctx is valid here.
+    assert(ec.ctx != nullptr);
+    // Flush pending packets on the recording context; the drain below waits for the dispatch
+    // signal to reach zero, which never happens if written packets were never rung.
+    ggml_hsa_flush_dispatches(*ec.ctx);
+    hsa_signal_wait_scacquire(ec.signal(), HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX,
                               HSA_WAIT_STATE_BLOCKED);
 }
 
@@ -1370,7 +1440,10 @@ static void ggml_hsa_event_wait_for_snapshot(const ggml_hsa_event_context & ec) 
 static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
     auto & ec = *static_cast<ggml_hsa_event_context *>(event->context);
-    ec.signal = ctx.dispatch_signal;
+    // Flush pending packets so the work fenced by this event is actually in flight; otherwise a
+    // later wait on the snapshot could block on packets that were never rung.
+    ggml_hsa_flush_dispatches(ctx);
+    ec.ctx = &ctx;
     ec.snapshot = hsa_signal_load_scacquire(ctx.dispatch_signal);
     ec.queue = ctx.queue;
 }
