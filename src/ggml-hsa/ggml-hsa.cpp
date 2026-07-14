@@ -666,7 +666,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
     if (kernel == nullptr) {
         // kernel not in cache; create a new one and store it in the cache
-        if (ggml_hsa_create_kernel(dev_info, kernel_name, node.tensor, kernel) !=
+        if (ggml_hsa_create_kernel(dev_info, node.tensor, std::nullopt, kernel_name, kernel) !=
             GGML_STATUS_SUCCESS) {
             throw std::runtime_error{std::string{"Could not create kernel for tensor \""}
                                          .append(node.tensor.name)
