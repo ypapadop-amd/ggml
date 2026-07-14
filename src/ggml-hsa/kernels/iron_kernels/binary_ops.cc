@@ -8,6 +8,7 @@
  * element-wise and broadcasting variants.
  */
 
+#include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
 /**
@@ -353,5 +354,45 @@ void ggml_op_div_broadcast(const INPUT0_DTYPE * __restrict in0,
 }
 
 #endif // GGML_OP_DIV_BROADCAST
+
+#ifdef GGML_OP_ADD_BIAS
+
+/**
+ * @brief Row bias add: out[i] = src0[i] + src1[i] for one dst row.
+ *
+ * src1 is a single bias row (N == ne0 elements) reused across all dst rows;
+ * the IRON design streams one src0/out row per call. Vectorized over a
+ * V-wide interior with a scalar tail (N need not be a multiple of V).
+ *
+ * @param[in]  src0 First input row of N elements.
+ * @param[in]  src1 Bias row of N elements.
+ * @param[out] out  Output row of N elements.
+ * @param[in]  N    Elements per row (== ne0).
+ */
+void ggml_op_add_bias(const INPUT0_DTYPE * __restrict src0,
+                      const INPUT1_DTYPE * __restrict src1,
+                      OUTPUT_DTYPE * __restrict out,
+                      int32_t N) {
+    event0();
+
+    constexpr int32_t V = 512 / (sizeof(OUTPUT_DTYPE) * 8);
+    const int32_t vend = (N / V) * V; // division by constexpr V → inline shift, once
+
+    AIE_PREPARE_FOR_PIPELINING
+    AIE_LOOP_MIN_ITERATION_COUNT(1)
+    for (int32_t i = 0; i < vend; i += V) {
+        aie::vector<INPUT0_DTYPE, V> a = aie::load_v<V>(src0 + i);
+        aie::vector<INPUT1_DTYPE, V> b = aie::load_v<V>(src1 + i);
+        aie::store_v(out + i, aie::add(a, b));
+    }
+
+    for (int32_t i = vend; i < N; ++i) {
+        out[i] = src0[i] + src1[i];
+    }
+
+    event1();
+}
+
+#endif // GGML_OP_ADD_BIAS
 
 } // extern "C"
