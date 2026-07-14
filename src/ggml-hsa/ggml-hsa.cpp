@@ -794,9 +794,11 @@ void ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
     if (ctx.n_batched == 0) {
         return;
     }
-    // Ring the doorbell for the last written packet (write_index - 1, since write_index points
-    // one past the last reserved slot); the device processes every packet up to it. The release
-    // fence publishes all pending packet writes.
+    // Ring the doorbell for the last written packet (write_index - 1, since write_index points one
+    // past the last reserved slot); the device processes every packet up to it, and the release
+    // fence publishes all pending packet writes. Safe because submission is single-producer
+    // (HSA_QUEUE_TYPE_SINGLE, one thread): no other thread reserves a slot between a packet write
+    // and this ring. Concurrent submission would need to track the last fully-published index.
     const std::uint64_t last_packet = hsa_queue_load_write_index_relaxed(ctx.queue) - 1;
     hsa_signal_store_screlease(ctx.queue->doorbell_signal, last_packet);
     ctx.n_batched = 0;

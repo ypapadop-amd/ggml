@@ -90,11 +90,8 @@ int run(ggml_backend_t backend, std::size_t N, std::size_t n_ops, int iters) {
     }
 
     ggml_time_init();
-    // Split each iteration into the graph_compute_async phase and the synchronize phase. Note the
-    // doorbell store is currently synchronous (it blocks until the command chain completes), so the
-    // device time is absorbed into the compute_async phase and the synchronize phase is near zero;
-    // the split is reported to surface that behavior and will become meaningful if submission ever
-    // becomes asynchronous.
+    // Time the compute_async and synchronize phases separately; how device time splits across them
+    // depends on the runtime's submission/queue-drain behavior.
     int64_t dispatch_us = 0;
     int64_t drain_us = 0;
     const int64_t t0 = ggml_time_us();
@@ -121,12 +118,24 @@ int run(ggml_backend_t backend, std::size_t N, std::size_t n_ops, int iters) {
     std::vector<float> out(N);
     ggml_backend_tensor_get(result, std::data(out), 0, ggml_nbytes(result));
 
-    // result[j] = A[j] + (n_ops * B[j]). The device accumulates iteratively (n_ops sequential
-    // additions) while the reference uses a single multiply, so the two can differ by rounding
-    // for large n_ops; compare with a small relative tolerance rather than exact equality.
-    const float expected0 = A[0] + static_cast<float>(n_ops) * B[0];
-    const float tol = 1e-4f * std::max(1.0f, std::fabs(expected0));
-    const bool ok = std::fabs(out[0] - expected0) <= tol;
+    // result[j] = A[j] + n_ops * B[j]. The device accumulates iteratively while the reference uses
+    // a single multiply, so compare with a relative tolerance. Check every element to catch
+    // stride/addressing bugs that leave out[0] correct.
+    bool ok = true;
+    std::size_t bad_index = 0;
+    float bad_value = 0.0f;
+    float bad_expected = 0.0f;
+    for (std::size_t j = 0; j < N; ++j) {
+        const float expected = A[j] + static_cast<float>(n_ops) * B[j];
+        const float tol = 1e-4f * std::max(1.0f, std::fabs(expected));
+        if (std::fabs(out[j] - expected) > tol) {
+            ok = false;
+            bad_index = j;
+            bad_value = out[j];
+            bad_expected = expected;
+            break;
+        }
+    }
 
     std::cout << "N=" << N << "  n_ops=" << n_ops << "  iters=" << iters << '\n';
     std::cout << "total=" << total_us << " us"
@@ -134,8 +143,12 @@ int run(ggml_backend_t backend, std::size_t N, std::size_t n_ops, int iters) {
               << "  per_op=" << per_op_us << " us\n";
     std::cout << "per_op breakdown: dispatch=" << dispatch_per_op << " us"
               << "  drain=" << drain_per_op << " us\n";
-    std::cout << "check: out[0]=" << out[0] << " expected=" << expected0 << " -> "
-              << (ok ? "OK" : "FAIL") << '\n';
+    if (ok) {
+        std::cout << "check: all " << N << " elements OK\n";
+    } else {
+        std::cout << "check: out[" << bad_index << "]=" << bad_value << " expected=" << bad_expected
+                  << " -> FAIL\n";
+    }
 
     return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
@@ -158,6 +171,12 @@ int main(int argc, char * argv[]) {
     }
     if (argc > 3) {
         iters = std::atoi(argv[3]);
+    }
+
+    // n_ops == 0 under-allocates the graph; n_ops == 0 or iters <= 0 divides by zero in timing.
+    if (n_ops == 0 || iters <= 0) {
+        std::cerr << "n_ops must be >= 1 and iters must be >= 1\n";
+        return EXIT_FAILURE;
     }
 
     ggml_backend_t backend = {};
