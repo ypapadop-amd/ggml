@@ -138,6 +138,7 @@ def _create_external_function(
             f"-D{op_name}=1",
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            f"-DGGML_TILE_SIZE={tile_size}",
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)

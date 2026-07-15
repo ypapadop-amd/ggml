@@ -172,8 +172,27 @@ void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
     event0();
 
     constexpr int32_t V = 512 / (sizeof(INPUT_DTYPE) * 8);
-    const int32_t vend = (N / V) * V;
     const aie::vector<INPUT_DTYPE, V> zero = aie::broadcast<INPUT_DTYPE, V>(0);
+
+#ifdef GGML_TILE_SIZE
+    // The design compiles one specialization per tile size, so N == GGML_TILE_SIZE is a
+    // compile-time constant here. Folding it lets Peano drop the runtime N/V division and
+    // zero-overhead-loop setup; the interior count and tail bound become literals.
+    (void)N;
+    constexpr int32_t NC = GGML_TILE_SIZE;
+    constexpr int32_t vend = (NC / V) * V;
+
+    AIE_PREPARE_FOR_PIPELINING
+    for (int32_t i = 0; i < vend; i += V) {
+        aie::vector<INPUT_DTYPE, V> v = aie::load_v<V>(in + i);
+        aie::store_v(out + i, aie::max(v, zero));
+    }
+
+    for (int32_t i = vend; i < NC; ++i) {
+        out[i] = std::max<INPUT_DTYPE>(in[i], 0);
+    }
+#else
+    const int32_t vend = (N / V) * V;
 
     // No AIE_LOOP_MIN_ITERATION_COUNT: max_tile_size may pick a tile < V when
     // num_elements is not a multiple of V, giving vend == 0 (see binary_ops ADD).
@@ -186,6 +205,7 @@ void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
     for (int32_t i = vend; i < N; ++i) {
         out[i] = std::max<INPUT_DTYPE>(in[i], 0);
     }
+#endif
 
     event1();
 }
