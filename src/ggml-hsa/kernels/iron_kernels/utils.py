@@ -5,6 +5,32 @@
 import numpy as np
 from aie.iron.device import NPU1, NPU2
 
+# Per-architecture on-tile resources. Add a new NPU generation by adding one entry.
+_ARCH_PARAMS = {
+    "aie2": {"core_data_mem_bytes": 64 * 1024, "vector_reg_bits": 512},  # NPU1/Phoenix (AIE-ML)
+    "aie2p": {"core_data_mem_bytes": 64 * 1024, "vector_reg_bits": 512},  # NPU2/Strix (XDNA2)
+}
+
+
+def _arch_params(arch: str) -> dict:
+    """Return the on-tile resource parameters for an architecture.
+
+    Parameters:
+        arch: Target architecture.
+
+    Returns:
+        The parameter dict for the architecture.
+
+    Raises:
+        ValueError: If the architecture is unknown.
+
+    """
+    params = _ARCH_PARAMS.get(arch)
+    if params is None:
+        msg = f"Unsupported architecture: {arch}"
+        raise ValueError(msg)
+    return params
+
 
 def align_to_arch(
     arch: str, size: int, dtype: np.dtype, alignment_bytes: int = 4
@@ -61,12 +87,7 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
         The chosen tile size.
 
     """
-    vector_register_width = 0
-    if arch in {"aie2", "aie2p"}:
-        vector_register_width = 512  # bits
-    else:
-        msg = f"Unsupported architecture: {arch}"
-        raise ValueError(msg)
+    vector_register_width = _arch_params(arch)["vector_reg_bits"]
     tile_size = int(vector_register_width / dtype.itemsize)
 
     while num_elements % tile_size != 0 and tile_size > 1:
