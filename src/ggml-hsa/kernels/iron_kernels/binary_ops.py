@@ -493,13 +493,20 @@ def binary_op(
     needs_broadcast = src1_shape != dst_shape
 
     # ADD-only fast path: src1 is a single bias row broadcast over dst rows.
+    # The kernel adds vectors directly (aie::add, no per-element cast), so it is
+    # gated on all three dtypes matching; a mismatched-dtype bias falls through to
+    # the scalar broadcast path, which casts per element.
     src1_is_bias_row = (
         src1_shape[0] == dst_shape[0]
         and src1_shape[1] == 1
         and src1_shape[2] == 1
         and src1_shape[3] == 1
     )
-    if op_name == "GGML_OP_ADD" and needs_broadcast and src1_is_bias_row:
+    same_dtype = (
+        input_tensors[0].dtype == input_tensors[1].dtype
+        and input_tensors[0].dtype == output_tensor.dtype
+    )
+    if op_name == "GGML_OP_ADD" and needs_broadcast and src1_is_bias_row and same_dtype:
         function_spec = _create_bias_external_function(
             arch=arch,
             input_tensors=input_tensors,
