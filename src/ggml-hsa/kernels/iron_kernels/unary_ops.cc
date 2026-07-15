@@ -6,6 +6,7 @@
  */
 
 #include "aie_kernel_math.h"
+#include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
 /**
@@ -166,7 +167,27 @@ void ggml_unary_op_step(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
                         OUTPUT_DTYPE * __restrict out,
                         int32_t N) {
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return std::max<INPUT_DTYPE>(v, 0); });
+    static_assert(std::is_same_v<INPUT_DTYPE, OUTPUT_DTYPE>,
+                  "ReLU requires matching input and output types");
+    event0();
+
+    constexpr int32_t V = 512 / (sizeof(INPUT_DTYPE) * 8);
+    const int32_t vend = (N / V) * V;
+    const aie::vector<INPUT_DTYPE, V> zero = aie::broadcast<INPUT_DTYPE, V>(0);
+
+    // No AIE_LOOP_MIN_ITERATION_COUNT: max_tile_size may pick a tile < V when
+    // num_elements is not a multiple of V, giving vend == 0 (see binary_ops ADD).
+    AIE_PREPARE_FOR_PIPELINING
+    for (int32_t i = 0; i < vend; i += V) {
+        aie::vector<INPUT_DTYPE, V> v = aie::load_v<V>(in + i);
+        aie::store_v(out + i, aie::max(v, zero));
+    }
+
+    for (int32_t i = vend; i < N; ++i) {
+        out[i] = std::max<INPUT_DTYPE>(in[i], 0);
+    }
+
+    event1();
 }
 
 #endif // GGML_UNARY_OP_RELU

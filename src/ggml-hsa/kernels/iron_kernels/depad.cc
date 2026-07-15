@@ -10,6 +10,9 @@
  * limits that a single large strided gather would hit.
  */
 
+#include <aie_api/aie.hpp>
+
+#include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
 extern "C" {
@@ -26,7 +29,19 @@ void ggml_hsa_depad(const f32 * __restrict in, f32 * __restrict out, int32_t d0,
     event0();
     (void)d0pad;
 
-    for (int32_t i = 0; i < d0; ++i) {
+    constexpr int32_t V = 512 / (sizeof(f32) * 8);
+    const int32_t vend = (d0 / V) * V;
+
+    // Unaligned load/store: rows stream through double-buffered fifos at a per-row
+    // stride that is not vector-aligned (same as binary_ops bias). No
+    // AIE_LOOP_MIN_ITERATION_COUNT: d0 can be < V (fc2 d0=10) so vend may be 0.
+    AIE_PREPARE_FOR_PIPELINING
+    for (int32_t i = 0; i < vend; i += V) {
+        aie::vector<f32, V> v = aie::load_unaligned_v<V>(in + i);
+        aie::store_unaligned_v(out + i, v);
+    }
+
+    for (int32_t i = vend; i < d0; ++i) {
         out[i] = in[i];
     }
 
