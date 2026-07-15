@@ -378,12 +378,17 @@ void ggml_op_add_bias(const INPUT0_DTYPE * __restrict src0,
     constexpr int32_t V = 512 / (sizeof(OUTPUT_DTYPE) * 8);
     const int32_t vend = (N / V) * V; // division by constexpr V → inline shift, once
 
+    // Unaligned loads/stores: the IRON design streams rows through double-buffered
+    // fifos whose per-row object stride (N elements) need not be vector-aligned, so
+    // aligned load_v/store_v would corrupt alternate (ping-pong) rows.
+    // No AIE_LOOP_MIN_ITERATION_COUNT: when N < V (e.g. a 10-wide bias row) vend is 0,
+    // and promising >=1 iteration makes the pipelined prologue run the body on too few
+    // elements. AIE_PREPARE_FOR_PIPELINING alone suffices for the N >> V rows.
     AIE_PREPARE_FOR_PIPELINING
-    AIE_LOOP_MIN_ITERATION_COUNT(1)
     for (int32_t i = 0; i < vend; i += V) {
-        aie::vector<INPUT0_DTYPE, V> a = aie::load_v<V>(src0 + i);
-        aie::vector<INPUT1_DTYPE, V> b = aie::load_v<V>(src1 + i);
-        aie::store_v(out + i, aie::add(a, b));
+        aie::vector<INPUT0_DTYPE, V> a = aie::load_unaligned_v<V>(src0 + i);
+        aie::vector<INPUT1_DTYPE, V> b = aie::load_unaligned_v<V>(src1 + i);
+        aie::store_unaligned_v(out + i, aie::add(a, b));
     }
 
     for (int32_t i = vend; i < N; ++i) {
