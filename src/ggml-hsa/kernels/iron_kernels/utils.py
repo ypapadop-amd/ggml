@@ -101,6 +101,28 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     return tile_size
 
 
+def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
+    """Largest multiple-of-V tile whose in+out double-buffered fifos fit half the
+    core data memory, capped at num_elements and floored at the vector width V.
+
+    Parameters:
+        arch: Target architecture.
+        dtype: Element data type.
+        num_elements: Total number of elements to tile.
+
+    Returns:
+        The chosen tile size (a multiple of the vector width in elements).
+
+    """
+    params = _arch_params(arch)
+    v = params["vector_reg_bits"] // (8 * dtype.itemsize)
+    budget = params["core_data_mem_bytes"] // 2  # half DM: leave room for stack + locals
+    # in + out fifos, each double-buffered (depth 2) => 4 buffers of tile*itemsize bytes.
+    max_by_mem = (budget // (4 * dtype.itemsize) // v) * v
+    max_by_n = (num_elements // v) * v
+    return max(v, min(max_by_mem, max_by_n))
+
+
 def arch_to_device(device):
     """Map "aie2" -> NPU1, "aie2p" -> NPU2; pass through existing device objects.
 
