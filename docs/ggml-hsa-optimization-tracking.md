@@ -108,6 +108,73 @@ warmup outlier. All subsequent warm runs were steady. Numbers match §1 within n
 
 ---
 
+## 7. Post-vectorization re-benchmark + corrected CPU baseline (2026-07-15)
+
+After vectorizing all inference-relevant AIE kernels (ADD §6, then RELU, depad, convert_pad — the
+last three this session), and — critically — **rebuilding the host with `-DCMAKE_BUILD_TYPE=Release`
+and OpenMP enabled**. The §1/§1b CPU numbers (~30 µs/image) were taken from a **Debug (`-O0`),
+effectively single-threaded** build and are NOT a fair CPU baseline. Corrected below.
+
+Build note (OpenMP with clang): the host compiler is clang-22, which ships no bundled `omp.h` and no
+`-lomp` dev symlink; only llvm-20's libomp is installed. Configure with an isolated include dir
+holding just `omp.h` (copied from llvm-20) so it does not shadow clang-22's own `stdint.h`:
+`-DOpenMP_CXX_FLAGS="-fopenmp=libomp -isystem <dir-with-only-omp.h>"`,
+`-DOpenMP_omp_LIBRARY=/usr/lib/llvm-20/lib/libomp.so`, `OpenMP_{C,CXX}_LIB_NAMES=omp`.
+
+### End-to-end (10k images, warm cache)
+
+| Config | µs/image | notes |
+| --- | ---: | --- |
+| NPU (HSA0), start of session | ~333 | before RELU/depad/convert_pad vectorization |
+| NPU (HSA0), **now** | **~54** | all inference kernels vectorized; **6.2× vs session start** |
+| CPU 1 core (`taskset -c 0`, `OMP_NUM_THREADS=1`), Release | ~16 | fair 1-core compute baseline |
+| CPU all 16 cores, Release+OpenMP | ~2.6 | full-chip |
+
+Accuracy 98.00% (NPU) / 98.01% (CPU); loss 0.066372 / 0.066352 (5th-decimal bf16 diff), unchanged.
+
+**Corrected gap:** NPU is **~3.4× slower than 1 CPU core**, **~21× slower than the full 16-core CPU**.
+The §1 "~11.4×" was against the crippled Debug CPU and is superseded. The kernel work was real (NPU
+333→54) but earlier gap framing compared it to an -O0 CPU.
+
+### Per-op comparison, CPU vs NPU (per-node eval-callback profiler, 2026-07-15)
+
+Backend-agnostic probe: `ggml_backend_sched_set_eval_callback` with a `ggml_backend_sched_synchronize`
+after each node (env `GGML_MNIST_PROFILE_LAYERS`). **Serializes execution** (defeats batching), so
+absolute totals are inflated — use per-op SHARE, not throughput. Temporary; reverted after measuring.
+Eval-only ops (CROSS_ENTROPY_LOSS / ARGMAX / COUNT_EQUAL) are the loss/accuracy harness and vanish in
+real inference. `UNARY` = RELU; `NONE` = views/reshape (no compute).
+
+| op | NPU µs/disp | NPU % | CPU-1core µs/disp | CPU-1c % | NPU/CPU-1c ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **MUL_MAT** | 8,665 | **33.0%** | 3,713 | 92.9% | **2.3×** |
+| ADD (bias) | 4,634 | 17.6% | 116 | 2.9% | 40× |
+| UNARY (RELU) | 6,059 | 11.5% | 52 | 0.6% | 117× |
+| CROSS_ENTROPY_LOSS | 12,227 | 23.3% | 132 | 1.7% | 93× (eval-only) |
+| ARGMAX | 1,968 | 7.5% | 2.2 | 0.1% | 894× (eval-only) |
+| COUNT_EQUAL | 3,762 | 7.2% | 107 | 1.3% | 35× (eval-only) |
+
+(NPU total serialized ~1.05 s/run; CPU-1core ~0.16 s/run. CPU-16core MUL_MAT drops to ~530 µs/disp,
+88% — MUL_MAT dominates on every backend.)
+
+### Next big NPU target: MUL_MAT (the GEMM path)
+
+- **MUL_MAT is now the top NPU cost at 33%** (8,665 µs/disp), and unlike the eval-only ops it is
+  inference-relevant. It is also the only op where the NPU is *close* to the CPU (2.3× a single core
+  vs 40–117× on the elementwise ops), i.e. the AIE is being used well but there is still headroom.
+- The 8,665 µs/disp still bundles the GEMM proper plus its convert_pad pre-amble and depad post-amble
+  (attributed to the MUL_MAT node). Now that convert_pad/depad are vectorized, the remaining cost is
+  more genuinely the GEMM + DMA. Split the pre/gemm/post with the §4 per-dispatch probe to confirm the
+  mix before optimizing.
+- Candidate levers (in rough priority): (a) **cache converted+padded weights** — weights are constant
+  across batches but re-converted every batch (§ candidate #3); (b) larger GEMM tiles / better AIE
+  utilization in `gemm.py`; (c) multi-column fan-out. The elementwise ops (ADD/RELU), though 40–117×
+  the CPU per-op, are small absolute shares now and dominated by per-dispatch/DMA overhead, not
+  compute — a design-level tile-granularity change, not more kernel vectorization.
+- The eval-only ops (CROSS_ENTROPY_LOSS 23%, ARGMAX, COUNT_EQUAL) are the largest serialized shares
+  but are NOT worth optimizing for inference — they only run in the accuracy/loss harness.
+
+---
+
 ## 6. ADD bias-add optimization — the §4 #1 target, resolved (2026-07-14)
 
 Acting on §4's ranking (ADD = 55% of serialized dispatch, the top candidate). The expensive ADDs
