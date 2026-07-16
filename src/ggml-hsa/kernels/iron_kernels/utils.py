@@ -7,8 +7,14 @@ from aie.iron.device import NPU1, NPU2
 
 # Per-architecture on-tile resources. Add a new NPU generation by adding one entry.
 _ARCH_PARAMS = {
-    "aie2": {"core_data_mem_bytes": 64 * 1024, "vector_reg_bits": 512},  # NPU1/Phoenix (AIE-ML)
-    "aie2p": {"core_data_mem_bytes": 64 * 1024, "vector_reg_bits": 512},  # NPU2/Strix (XDNA2)
+    "aie2": {
+        "core_data_mem_bytes": 64 * 1024,
+        "vector_reg_bits": 512,
+    },  # NPU1/Phoenix (AIE-ML)
+    "aie2p": {
+        "core_data_mem_bytes": 64 * 1024,
+        "vector_reg_bits": 512,
+    },  # NPU2/Strix (XDNA2)
 }
 
 
@@ -122,7 +128,9 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """
     params = _arch_params(arch)
     v = params["vector_reg_bits"] // (8 * dtype.itemsize)
-    budget = params["core_data_mem_bytes"] // 2  # half DM: leave room for stack + locals
+    budget = (
+        params["core_data_mem_bytes"] // 2
+    )  # half DM: leave room for stack + locals
     # in + out fifos, each double-buffered (depth 2) => 4 buffers of tile*itemsize bytes.
     max_by_mem = (budget // (4 * dtype.itemsize) // v) * v
     cap = min(max_by_mem, num_elements)
