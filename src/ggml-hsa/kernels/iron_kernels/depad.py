@@ -143,5 +143,8 @@ def _create_external_function(output_tensor, d0: int, d0pad: int) -> ExternalFun
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            # Row width is fixed per kernel instance (each shape JITs its own .o), so pass it
+            # as a compile-time constant: lets Peano fold the trip count and pipeline the hot loop.
+            f"-DDEPAD_D0={d0}",
         ],
     )

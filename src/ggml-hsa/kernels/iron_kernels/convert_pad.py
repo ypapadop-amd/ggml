@@ -147,5 +147,9 @@ def _create_external_function(
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(src.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            # Row shape is fixed per kernel instance (each shape JITs its own .o), so pass it
+            # as compile-time constants: lets Peano fold the trip count and pipeline the hot loop.
+            f"-DCONVERT_PAD_D0={d0}",
+            f"-DCONVERT_PAD_D0PAD={d0pad}",
         ],
     )

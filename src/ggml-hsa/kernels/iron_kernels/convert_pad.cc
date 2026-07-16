@@ -56,15 +56,35 @@ void ggml_hsa_convert_pad(const f32 * __restrict in,
     event0();
 
     constexpr int32_t V = 512 / (sizeof(f32) * 8);
-    const int32_t vend = (d0 / V) * V;
+
+    // Row shape is fixed per JIT-compiled kernel instance, so convert_pad.py passes it as -D
+    // defines. Using the compile-time bounds lets Peano fold the vector trip count and
+    // software-pipeline the hot loop (fills the VLIW nop slots the runtime-bound version left).
+    // The runtime args still arrive over the ABI; fall back to them if the defines are absent.
+#ifdef CONVERT_PAD_D0
+    constexpr int32_t d0v = CONVERT_PAD_D0;
+    constexpr int32_t d0padv = CONVERT_PAD_D0PAD;
+    (void)d0;
+    (void)d0pad;
+#else
+    const int32_t d0v = d0;
+    const int32_t d0padv = d0pad;
+#endif
+
+    const int32_t nblk = d0v / V;
+    const int32_t vend = nblk * V;
 
     // Vectorized f32 -> bf16, replicating ggml_compute_fp32_to_bf16's integer arithmetic
     // lane-wise so the result is bit-identical to the scalar host reference (rather than
     // relying on hardware rounding/NaN handling). Unaligned load/store: rows stream through
     // double-buffered fifos at a non-vector-aligned per-row stride (same as binary_ops bias).
-    // No AIE_LOOP_MIN_ITERATION_COUNT: d0 can be < V, giving vend == 0.
+    // No AIE_LOOP_MIN_ITERATION_COUNT: d0 can be < V, giving nblk == 0.
     AIE_PREPARE_FOR_PIPELINING
-    for (int32_t i = 0; i < vend; i += V) {
+#ifdef CONVERT_PAD_D0
+    AIE_LOOP_RANGE(nblk, nblk)
+#endif
+    for (int32_t b = 0; b < nblk; ++b) {
+        const int32_t i = b * V;
         const aie::vector<f32, V> fv = aie::load_unaligned_v<V>(in + i);
         const aie::vector<uint32_t, V> u = aie::vector_cast<uint32_t>(fv);
         const aie::vector<uint32_t, V> hi16 = aie::logical_downshift(u, 16);
@@ -83,12 +103,11 @@ void ggml_hsa_convert_pad(const f32 * __restrict in,
 
         // The bf16 bits sit in the low 16 of each u32 lane; grab the even (low) uint16 halves.
         // Output rows are d0pad-wide (tile-multiple, vector-aligned), so an aligned store is safe.
-        const aie::vector<uint16_t, V> res16 =
-            aie::filter_even(aie::vector_cast<uint16_t>(res32));
+        const aie::vector<uint16_t, V> res16 = aie::filter_even(aie::vector_cast<uint16_t>(res32));
         aie::store_v(out + i, aie::vector_cast<bf16>(res16));
     }
 
-    for (int32_t i = vend; i < d0; ++i) {
+    for (int32_t i = vend; i < d0v; ++i) {
         const uint16_t hi = convert_scalar(in[i]);
         __builtin_memcpy(&out[i], &hi, sizeof(bf16));
     }
@@ -96,7 +115,7 @@ void ggml_hsa_convert_pad(const f32 * __restrict in,
     // Zero-fill the [d0, d0pad) tail. Small and off the hot path; kept scalar because the 16-bit
     // unaligned vector store is broken in this aie_api version and d0 is not vector-aligned.
     const bf16 zero = {};
-    for (int32_t i = d0; i < d0pad; ++i) {
+    for (int32_t i = d0v; i < d0padv; ++i) {
         out[i] = zero;
     }
 
