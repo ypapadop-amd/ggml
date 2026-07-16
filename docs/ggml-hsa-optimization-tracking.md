@@ -149,6 +149,70 @@ Spec/plan: `docs/superpowers/{specs,plans}/2026-07-15-relu-tile-granularity*.md`
 
 ---
 
+## 8. convert_pad compile-time shapes → hot-loop pipelining (2026-07-16)
+
+Re-opened the already-vectorized convert_pad (§7) with the AIE-kernel-opt methodology (disasm before
+modeling). The vector loop was correct but **not software-pipelined**: `d0`/`d0pad` arrived as runtime
+int32 kernel args, so the vector trip count `(d0/V)*V` was unknown at compile time and Peano could not
+pipeline. The `.o` hot loop ran ~14 real ops interleaved with **~14 nops** — roughly 2× the necessary
+slots per iteration (verified in `llvm-objdump`, not modeled).
+
+**Fix (levers #2 + #1):** each shape already JIT-compiles its own cached `.o`, so passing the row shape
+as `-DCONVERT_PAD_D0`/`-DCONVERT_PAD_D0PAD` compile-time constants is free (no binary bloat, no runtime
+fallback needed in practice — an `#ifdef` fallback to the runtime args is kept for ABI safety). With the
+trip count a compile-time constant, `AIE_LOOP_RANGE(nblk, nblk)` binds and Peano fully pipelines the
+steady-state loop.
+
+Codegen (shape 784x500, `ggml_hsa_convert_pad_core_function.o`):
+
+| | before | after |
+| --- | ---: | ---: |
+| nops inside hot loop | ~14 | **0** |
+| steady-state issue | scalar-serial, nop-padded | software-pipelined, multi-vector-op bundles |
+
+The pipelined loop now issues e.g. `vsrs + vldb + vshuffle` in one bundle and pairs `vldb + vadd`,
+`vst + lshl + mov` — the compute of one iteration overlaps the load of the next.
+
+### End-to-end (10k images, warm cache, Release)
+
+| Config | µs/image | notes |
+| --- | ---: | --- |
+| NPU (HSA0), §7 baseline | ~50.6 | convert_pad vectorized but runtime-bound loop (median of 49.35/50.65/51.47) |
+| NPU (HSA0), **compile-time shapes** | **~47.8** | median of 6 runs 47.43–48.91; ranges don't overlap baseline |
+
+**~2.8 µs/image, ~5.5% e2e.** Bit-exact gate (`test-convert-pad-hsa`) stays 8/8; loss bit-identical
+0.066372; accuracy 98.00%. Same lever should apply to depad and the other per-row streaming kernels
+(their loops are also runtime-bound today).
+
+### Same lever applied to depad — codegen win, e2e in the noise (2026-07-16)
+
+Applied the identical `-DDEPAD_D0` compile-time-shape lever to depad (the MUL_MAT post-amble). Codegen
+improved on every cached shape (baseline was 24 nops / 9 vecops / size 0x1e0 for ALL shapes, because
+the runtime-bound loop compiled the same regardless of d0):
+
+| shape (d0) | before | after |
+| --- | --- | --- |
+| d0=128 | 24 nops, 9 vecops | 21 nops, **34 vecops** (unrolled ×8 + pipelined) |
+| d0=500 | 24 nops, 9 vecops | 5 nops, 18 vecops, size 0x1e0→0x1b0 |
+| d0=40 | 24 nops, 9 vecops | 1 nop, 17 vecops, size 0x1e0→0x150 |
+| d0=10, d0=8 (< V=16) | 24 nops, 9 vecops | **dead vector loop removed entirely**, size 0x1e0→0x60/0x50 |
+
+The small-d0 shapes are the notable case: FC2's output is 10 class scores (d0=10 < V=16), so the vector
+loop never ran — yet the runtime-bound `.o` still carried it as 24 nops of dead code. With d0 a
+compile-time constant the whole loop compiles away.
+
+**e2e: ~48.4 µs/image (median of 6, 47.28–48.46) vs ~47.8 convert_pad-only — ranges overlap, no
+measurable additional win.** Expected: depad operates on tiny post-GEMM outputs, so its absolute share
+is small. Kept because it's a strict codegen improvement (cleaner/smaller `.o`, no dead code) with no
+regression and no correctness cost — gate `test-depad-hsa` stays 8/8, loss/acc unchanged.
+
+**Gotcha (differs from convert_pad):** depad's d0 can be < V (=16 f32 lanes), giving nblk==0, for which
+`AIE_LOOP_RANGE(0,0)` is a hard Peano error (`invalid value '0'; must be positive`). The range hint is
+guarded `#if defined(DEPAD_D0) && (DEPAD_D0) >= 16` so it only binds when the row spans ≥1 full vector.
+convert_pad didn't hit this because its d0 is always ≥500.
+
+---
+
 ## 7. Post-vectorization re-benchmark + corrected CPU baseline (2026-07-15)
 
 After vectorizing all inference-relevant AIE kernels (ADD §6, then RELU, depad, convert_pad — the
