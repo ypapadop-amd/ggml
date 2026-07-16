@@ -36,26 +36,42 @@ def test_max_tile_size_unchanged_pow2():
     assert max_tile_size("aie2", np.dtype(np.float32), 2048) == 128
 
 
+def test_tiled_tile_size_divides_num_elements():
+    # The tile must divide N exactly (fixed-size ObjectFifo DMA; no remainder tail).
+    for n in (250000, 3136000, 1568000, 2048, 48, 50, 8, 16):
+        t = tiled_tile_size("aie2", np.dtype(np.float32), n)
+        assert n % t == 0, f"tile {t} does not divide {n}"
+
+
 def test_tiled_tile_size_f32_mnist():
     # aie2 f32: V=16, budget=32768 bytes, 4 buffers (in+out, depth 2) of tile*4 bytes.
-    # max_by_mem = (32768 // (4*4) // 16) * 16 = (2048 // 16) * 16 = 2048
-    assert tiled_tile_size("aie2", np.dtype(np.float32), 250000) == 2048
+    # max_by_mem = (32768 // (4*4) // 16) * 16 = 2048. Largest multiple-of-16 divisor of
+    # 250000 (= 2^4 * 5^6) that is <= 2048 is 2000.
+    assert tiled_tile_size("aie2", np.dtype(np.float32), 250000) == 2000
 
 
-def test_tiled_tile_size_multiple_of_vector_width():
+def test_tiled_tile_size_all_mnist_relu_shapes():
+    # All three MNIST RELU element counts share the same divisor-based tile.
+    assert tiled_tile_size("aie2", np.dtype(np.float32), 3136000) == 2000
+    assert tiled_tile_size("aie2", np.dtype(np.float32), 1568000) == 2000
+
+
+def test_tiled_tile_size_multiple_of_vector_width_when_possible():
+    # 250000 is divisible by 16, so the chosen tile is a multiple of V.
     t = tiled_tile_size("aie2", np.dtype(np.float32), 250000)
     assert t % 16 == 0
 
 
 def test_tiled_tile_size_capped_by_num_elements():
-    # tiny tensor: capped at largest multiple of V <= N
+    # tiny tensor that V divides: largest multiple-of-V divisor <= N.
     assert tiled_tile_size("aie2", np.dtype(np.float32), 48) == 48
-    assert tiled_tile_size("aie2", np.dtype(np.float32), 50) == 48  # floor to mult of 16
 
 
-def test_tiled_tile_size_floor_is_vector_width():
-    # N smaller than V still returns V (kernel handles sub-V via scalar tail)
-    assert tiled_tile_size("aie2", np.dtype(np.float32), 8) == 16
+def test_tiled_tile_size_falls_back_when_v_not_a_divisor():
+    # V=16 does not divide 50 (=2*5^2) or 8, so fall back to max_tile_size's
+    # pow2-divisor search (50 -> 2; 8 -> 8). Result must still divide N.
+    assert tiled_tile_size("aie2", np.dtype(np.float32), 50) == 2
+    assert tiled_tile_size("aie2", np.dtype(np.float32), 8) == 8
 
 
 def test_tiled_tile_size_unknown_arch_raises():

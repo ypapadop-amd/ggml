@@ -102,8 +102,14 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
 
 
 def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
-    """Largest multiple-of-V tile whose in+out double-buffered fifos fit half the
-    core data memory, capped at num_elements and floored at the vector width V.
+    """Largest tile that divides num_elements and fits half the core data memory.
+
+    The tile must divide num_elements exactly: an ObjectFifo's DMA transfer size is
+    fixed at construction, so every acquire moves a full tile regardless of any
+    runtime element count. A tile that did not divide num_elements would make the
+    total streamed (num_tiles * tile) exceed the tensor and deadlock the DMA. Prefer
+    the largest multiple-of-V divisor within the L1 budget; if none exists (V does not
+    divide num_elements), fall back to max_tile_size, which halves V down to a divisor.
 
     Parameters:
         arch: Target architecture.
@@ -111,7 +117,7 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
         num_elements: Total number of elements to tile.
 
     Returns:
-        The chosen tile size (a multiple of the vector width in elements).
+        The chosen tile size in elements; always divides num_elements.
 
     """
     params = _arch_params(arch)
@@ -119,8 +125,20 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     budget = params["core_data_mem_bytes"] // 2  # half DM: leave room for stack + locals
     # in + out fifos, each double-buffered (depth 2) => 4 buffers of tile*itemsize bytes.
     max_by_mem = (budget // (4 * dtype.itemsize) // v) * v
-    max_by_n = (num_elements // v) * v
-    return max(v, min(max_by_mem, max_by_n))
+    cap = min(max_by_mem, num_elements)
+
+    # Largest multiple of V that is <= cap and divides num_elements exactly.
+    best = 0
+    tile = v
+    while tile <= cap:
+        if num_elements % tile == 0:
+            best = tile
+        tile += v
+    if best:
+        return best
+
+    # V does not divide num_elements: fall back to a power-of-two divisor.
+    return max_tile_size(arch, dtype, num_elements)
 
 
 def arch_to_device(device):
