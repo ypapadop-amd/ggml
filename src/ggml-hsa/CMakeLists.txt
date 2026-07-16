@@ -160,11 +160,13 @@ if (GGML_HSA_GPU_DELEGATE)
     endif ()
     message(STATUS "ggml-hsa delegate BLAS: ${GGML_HSA_BLAS_LIB}")
 
-    # hip::device provides the AMDGPU device libraries for the .cu compilation. Link with the C++
-    # driver; the HIP language pulls libamdhip64 as an implicit NEEDED lib, so -Bsymbolic-functions
-    # makes this library bind its own (hip-abi.cpp) hip* definitions first — the real HIP runtime is
-    # never used.
-    target_link_libraries(ggml-hsa PRIVATE hip::device ${GGML_HSA_BLAS_LIB})
+    # The HIP-language (.cu) sources get their GPU arch + device libraries from the HIP compiler via
+    # CMAKE_HIP_ARCHITECTURES; we deliberately do NOT link hip::device (its interface options add
+    # --offload-arch, which the plain-C++ TUs in this target reject). Link with the C++ driver; the
+    # HIP language still pulls libamdhip64 as an implicit NEEDED lib, so -Bsymbolic-functions makes
+    # this library bind its own (hip-abi.cpp) hip* definitions first — the real HIP runtime is never
+    # used.
+    target_link_libraries(ggml-hsa PRIVATE ${GGML_HSA_BLAS_LIB})
     set_target_properties(ggml-hsa PROPERTIES LINKER_LANGUAGE CXX)
     target_link_options(ggml-hsa PRIVATE "-Wl,-Bsymbolic-functions")
 endif ()
