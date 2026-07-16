@@ -42,7 +42,6 @@ if (GGML_HSA_JIT_COMPILE)
         GIT_TAG        v3.0
         )
 
-    set(PYBIND11_FINDPYTHON OFF)
     FetchContent_MakeAvailable(pybind11)
 
     set(GGML_SOURCES_HSA aie-kernel-compiler.cpp ${GGML_SOURCES_HSA})
