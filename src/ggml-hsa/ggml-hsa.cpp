@@ -8,6 +8,13 @@
 #include "ggml-hsa/host-ops.hpp"
 #include "ggml-hsa/kernel-discovery.hpp"
 
+#ifdef GGML_HSA_GPU_DELEGATE
+// The gfx GPU is owned by ggml-hsa but its op coverage is provided by the ggml-cuda kernel set
+// (compiled with hipcc) executed on the native ggml-hsa HSA machinery via the HIP host ABI
+// (hip-abi.cpp). A ggml-hsa GPU device delegates compute/memory to an internal ggml-cuda backend.
+#include "ggml-cuda.h"
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -1721,6 +1728,278 @@ static const ggml_backend_device_i ggml_backend_hsa_device_interface = {
     /* .event_synchronize    = */ ggml_backend_hsa_device_event_synchronize,
 };
 
+// GPU delegation
+//
+// On Strix Halo the gfx1151 iGPU is owned by the ggml-hsa backend, but its full op coverage is
+// provided by reusing the ggml-cuda kernel set compiled with hipcc and executed on the native HSA
+// runtime through the HIP host ABI (hip-abi.cpp). A ggml-hsa GPU device therefore delegates all
+// compute and memory to an internal ggml-cuda backend/device, while presenting itself under the
+// ggml-hsa registry (device name "HSAn") so that llama.cpp enumerates a single, ggml-hsa-owned GPU
+// device (no separate ROCm device is registered).
+
+#ifdef GGML_HSA_GPU_DELEGATE
+
+/**
+ * @brief Returns the ggml-cuda device that backs the @p cuda_index-th GPU.
+ *
+ * @note The ggml-cuda registry object is created on demand; it is intentionally NOT added to the
+ *       global backend registry (that would expose a separate ROCm device for the same GPU).
+ */
+static ggml_backend_dev_t ggml_hsa_gpu_cuda_dev(int cuda_index) {
+    ggml_backend_reg_t creg = ggml_backend_cuda_reg();
+    GGML_ASSERT(creg != nullptr);
+    GGML_ASSERT(cuda_index < static_cast<int>(ggml_backend_reg_dev_count(creg)));
+    return ggml_backend_reg_dev_get(creg, cuda_index);
+}
+
+/**
+ * @brief Context for a ggml-hsa GPU device that delegates to ggml-cuda.
+ */
+struct ggml_hsa_gpu_device_context {
+    std::int32_t       device{};        ///< ggml-hsa device id.
+    int                cuda_index{};    ///< Corresponding ggml-cuda device index.
+    ggml_backend_dev_t cuda_dev{};      ///< Underlying ggml-cuda device.
+    std::string        name;            ///< ggml-hsa device name (e.g. "HSA0").
+    std::string        description;     ///< ggml-cuda device description.
+};
+
+/**
+ * @brief Context for a ggml-hsa GPU backend that wraps a ggml-cuda backend.
+ */
+struct ggml_hsa_gpu_backend_context {
+    ggml_backend_t cuda_backend{}; ///< Wrapped ggml-cuda backend (runs on hip-abi.cpp).
+    std::string    name;           ///< ggml-hsa backend name.
+};
+
+static const char * ggml_hsa_gpu_backend_get_name(ggml_backend_t backend) {
+    return static_cast<ggml_hsa_gpu_backend_context *>(backend->context)->name.c_str();
+}
+
+static void ggml_hsa_gpu_backend_free(ggml_backend_t backend) {
+    auto * ctx = static_cast<ggml_hsa_gpu_backend_context *>(backend->context);
+    ggml_backend_free(ctx->cuda_backend);
+    delete ctx;
+    delete backend;
+}
+
+/**
+ * @brief Returns whether @p backend is a ggml-hsa GPU (ggml-cuda delegate) backend.
+ *
+ * The native HSA backend shares the HSA guid, so the interface is used to disambiguate. Guards
+ * forwarding paths (e.g. cpy_tensor_async) that receive arbitrary peer backends from the scheduler.
+ */
+static bool ggml_backend_is_hsa_gpu(ggml_backend_t backend) {
+    return backend != nullptr && ggml_backend_is_hsa(backend) &&
+           backend->iface.get_name == ggml_hsa_gpu_backend_get_name;
+}
+
+static ggml_backend_t ggml_hsa_gpu_inner(ggml_backend_t backend) {
+    return static_cast<ggml_hsa_gpu_backend_context *>(backend->context)->cuda_backend;
+}
+
+static void ggml_hsa_gpu_backend_set_tensor_async(
+    ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    ggml_backend_t c = ggml_hsa_gpu_inner(backend);
+    if (c->iface.set_tensor_async) {
+        c->iface.set_tensor_async(c, tensor, data, offset, size);
+    } else {
+        ggml_backend_tensor_set(tensor, data, offset, size);
+    }
+}
+
+static void ggml_hsa_gpu_backend_get_tensor_async(
+    ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+    ggml_backend_t c = ggml_hsa_gpu_inner(backend);
+    if (c->iface.get_tensor_async) {
+        c->iface.get_tensor_async(c, tensor, data, offset, size);
+    } else {
+        ggml_backend_tensor_get(tensor, data, offset, size);
+    }
+}
+
+static bool ggml_hsa_gpu_backend_cpy_tensor_async(ggml_backend_t backend_src,
+                                                  ggml_backend_t backend_dst,
+                                                  const ggml_tensor * src,
+                                                  ggml_tensor * dst) {
+    // The scheduler may pass a non-delegate peer (CPU, native HSA); only the GPU->GPU delegate case
+    // can be forwarded to ggml-cuda.
+    if (!ggml_backend_is_hsa_gpu(backend_src) || !ggml_backend_is_hsa_gpu(backend_dst)) {
+        return false;
+    }
+    ggml_backend_t cs = ggml_hsa_gpu_inner(backend_src);
+    ggml_backend_t cd = ggml_hsa_gpu_inner(backend_dst);
+    if (cs->iface.cpy_tensor_async) {
+        return cs->iface.cpy_tensor_async(cs, cd, src, dst);
+    }
+    return false;
+}
+
+static void ggml_hsa_gpu_backend_synchronize(ggml_backend_t backend) {
+    ggml_backend_t c = ggml_hsa_gpu_inner(backend);
+    if (c->iface.synchronize) {
+        c->iface.synchronize(c);
+    }
+}
+
+static enum ggml_status ggml_hsa_gpu_backend_graph_compute(ggml_backend_t backend,
+                                                           ggml_cgraph * cgraph) {
+    ggml_backend_t c = ggml_hsa_gpu_inner(backend);
+    return c->iface.graph_compute(c, cgraph);
+}
+
+static void ggml_hsa_gpu_backend_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
+    ggml_backend_t c = ggml_hsa_gpu_inner(backend);
+    if (c->iface.event_record) {
+        c->iface.event_record(c, event);
+    }
+}
+
+static void ggml_hsa_gpu_backend_event_wait(ggml_backend_t backend, ggml_backend_event_t event) {
+    ggml_backend_t c = ggml_hsa_gpu_inner(backend);
+    if (c->iface.event_wait) {
+        c->iface.event_wait(c, event);
+    }
+}
+
+static const ggml_backend_i ggml_hsa_gpu_backend_interface = {
+    /* .get_name            = */ ggml_hsa_gpu_backend_get_name,
+    /* .free                = */ ggml_hsa_gpu_backend_free,
+    /* .set_tensor_async    = */ ggml_hsa_gpu_backend_set_tensor_async,
+    /* .get_tensor_async    = */ ggml_hsa_gpu_backend_get_tensor_async,
+    /* .set_tensor_2d_async = */ nullptr,
+    /* .get_tensor_2d_async = */ nullptr,
+    /* .cpy_tensor_async    = */ ggml_hsa_gpu_backend_cpy_tensor_async,
+    /* .synchronize         = */ ggml_hsa_gpu_backend_synchronize,
+    /* .graph_plan_create   = */ nullptr,
+    /* .graph_plan_free     = */ nullptr,
+    /* .graph_plan_update   = */ nullptr,
+    /* .graph_plan_compute  = */ nullptr,
+    /* .graph_compute       = */ ggml_hsa_gpu_backend_graph_compute,
+    /* .event_record        = */ ggml_hsa_gpu_backend_event_record,
+    /* .event_wait          = */ ggml_hsa_gpu_backend_event_wait,
+    /* .graph_optimize      = */ nullptr,
+};
+
+// device interface (delegates to the underlying ggml-cuda device)
+
+static const char * ggml_hsa_gpu_device_get_name(ggml_backend_dev_t dev) {
+    return static_cast<ggml_hsa_gpu_device_context *>(dev->context)->name.c_str();
+}
+
+static const char * ggml_hsa_gpu_device_get_description(ggml_backend_dev_t dev) {
+    return static_cast<ggml_hsa_gpu_device_context *>(dev->context)->description.c_str();
+}
+
+static void ggml_hsa_gpu_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    ggml_backend_dev_memory(dctx.cuda_dev, free, total);
+}
+
+static enum ggml_backend_dev_type ggml_hsa_gpu_device_get_type(ggml_backend_dev_t /*dev*/) {
+    return GGML_BACKEND_DEVICE_TYPE_GPU;
+}
+
+static void ggml_hsa_gpu_device_get_props(ggml_backend_dev_t dev,
+                                          ggml_backend_dev_props * props) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    ggml_backend_dev_get_props(dctx.cuda_dev, props);
+    // present the device as ggml-hsa owned
+    props->name        = dctx.name.c_str();
+    props->description  = dctx.description.c_str();
+    props->type         = GGML_BACKEND_DEVICE_TYPE_GPU;
+}
+
+static ggml_backend_t ggml_hsa_gpu_device_init_backend(ggml_backend_dev_t dev,
+                                                       const char * /*params*/) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    ggml_backend_t cuda_backend = ggml_backend_cuda_init(dctx.cuda_index);
+    if (cuda_backend == nullptr) {
+        return nullptr;
+    }
+    auto * bctx = new ggml_hsa_gpu_backend_context{cuda_backend, dctx.name};
+    return new ggml_backend{
+        /* .guid      = */ ggml_backend_hsa_guid(),
+        /* .interface = */ ggml_hsa_gpu_backend_interface,
+        /* .device    = */ dev,
+        /* .context   = */ bctx,
+    };
+}
+
+static ggml_backend_buffer_type_t ggml_hsa_gpu_device_get_buffer_type(ggml_backend_dev_t dev) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    return ggml_backend_dev_buffer_type(dctx.cuda_dev);
+}
+
+static ggml_backend_buffer_type_t ggml_hsa_gpu_device_get_host_buffer_type(ggml_backend_dev_t dev) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    return ggml_backend_dev_host_buffer_type(dctx.cuda_dev);
+}
+
+static ggml_backend_buffer_t ggml_hsa_gpu_device_buffer_from_host_ptr(
+    ggml_backend_dev_t dev, void * ptr, size_t size, size_t max_tensor_size) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    return ggml_backend_dev_buffer_from_host_ptr(dctx.cuda_dev, ptr, size, max_tensor_size);
+}
+
+static bool ggml_hsa_gpu_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    return ggml_backend_dev_supports_op(dctx.cuda_dev, op);
+}
+
+static bool ggml_hsa_gpu_device_supports_buft(ggml_backend_dev_t dev,
+                                              ggml_backend_buffer_type_t buft) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    return ggml_backend_dev_supports_buft(dctx.cuda_dev, buft);
+}
+
+static bool ggml_hsa_gpu_device_offload_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    return ggml_backend_dev_offload_op(dctx.cuda_dev, op);
+}
+
+static ggml_backend_event_t ggml_hsa_gpu_device_event_new(ggml_backend_dev_t dev) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    if (dctx.cuda_dev->iface.event_new == nullptr) {
+        return nullptr;
+    }
+    return dctx.cuda_dev->iface.event_new(dctx.cuda_dev);
+}
+
+static void ggml_hsa_gpu_device_event_free(ggml_backend_dev_t dev, ggml_backend_event_t event) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    if (dctx.cuda_dev->iface.event_free != nullptr) {
+        dctx.cuda_dev->iface.event_free(dctx.cuda_dev, event);
+    }
+}
+
+static void ggml_hsa_gpu_device_event_synchronize(ggml_backend_dev_t dev,
+                                                  ggml_backend_event_t event) {
+    auto & dctx = *static_cast<ggml_hsa_gpu_device_context *>(dev->context);
+    if (dctx.cuda_dev->iface.event_synchronize != nullptr) {
+        dctx.cuda_dev->iface.event_synchronize(dctx.cuda_dev, event);
+    }
+}
+
+static const ggml_backend_device_i ggml_hsa_gpu_device_interface = {
+    /* .get_name             = */ ggml_hsa_gpu_device_get_name,
+    /* .get_description      = */ ggml_hsa_gpu_device_get_description,
+    /* .get_memory           = */ ggml_hsa_gpu_device_get_memory,
+    /* .get_type             = */ ggml_hsa_gpu_device_get_type,
+    /* .get_props            = */ ggml_hsa_gpu_device_get_props,
+    /* .init_backend         = */ ggml_hsa_gpu_device_init_backend,
+    /* .get_buffer_type      = */ ggml_hsa_gpu_device_get_buffer_type,
+    /* .get_host_buffer_type = */ ggml_hsa_gpu_device_get_host_buffer_type,
+    /* .buffer_from_host_ptr = */ ggml_hsa_gpu_device_buffer_from_host_ptr,
+    /* .supports_op          = */ ggml_hsa_gpu_device_supports_op,
+    /* .supports_buft        = */ ggml_hsa_gpu_device_supports_buft,
+    /* .offload_op           = */ ggml_hsa_gpu_device_offload_op,
+    /* .event_new            = */ ggml_hsa_gpu_device_event_new,
+    /* .event_free           = */ ggml_hsa_gpu_device_event_free,
+    /* .event_synchronize    = */ ggml_hsa_gpu_device_event_synchronize,
+};
+
+#endif // GGML_HSA_GPU_DELEGATE
+
 // backend reg
 
 /**
@@ -1790,7 +2069,35 @@ ggml_backend_reg_t ggml_backend_hsa_reg() try {
         auto * reg_ctx = new ggml_backend_hsa_reg_context;
 
         reg_ctx->devices.reserve(info.device_count);
+#ifdef GGML_HSA_GPU_DELEGATE
+        int cuda_index = 0;
+#endif
         for (std::int32_t i = 0; i < info.device_count; i++) {
+#ifdef GGML_HSA_GPU_DELEGATE
+            // GPU agents are owned by ggml-hsa but delegate compute/memory to the ggml-cuda backend
+            // (running on hip-abi.cpp). Present a single ggml-hsa GPU device.
+            if (info.devices[i].type == HSA_DEVICE_TYPE_GPU) {
+                ggml_backend_dev_t cuda_dev = ggml_hsa_gpu_cuda_dev(cuda_index);
+                char desc[256] = {};
+                ggml_backend_cuda_get_device_description(cuda_index, desc, sizeof(desc));
+
+                auto * dev_ctx = new ggml_hsa_gpu_device_context{
+                    /* .device      = */ i,
+                    /* .cuda_index  = */ cuda_index,
+                    /* .cuda_dev    = */ cuda_dev,
+                    /* .name        = */ ggml_hsa_format_name(i),
+                    /* .description = */ std::string{desc},
+                };
+
+                auto dev = new ggml_backend_device{
+                    /* .iface   = */ ggml_hsa_gpu_device_interface,
+                    /* .reg     = */ &ggml_backend_hsa_reg_metadata.reg,
+                    /* .context = */ dev_ctx};
+                reg_ctx->devices.push_back(dev);
+                ++cuda_index;
+                continue;
+            }
+#endif
             auto * dev_ctx = new ggml_backend_hsa_device_context{i, info.devices[i].agent};
 
             auto dev = new ggml_backend_device{/* .iface   = */ ggml_backend_hsa_device_interface,
