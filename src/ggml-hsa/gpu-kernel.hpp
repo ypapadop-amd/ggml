@@ -65,3 +65,48 @@ class ggml_hsa_gpu_kernel : public ggml_hsa_kernel {
                          std::size_t num_src_tensors,
                          ggml_tensor & dst_tensor) const override;
 };
+
+/**
+ * @brief A 3-D launch dimension (workgroup or grid), mirroring HIP's @c dim3.
+ *
+ * Declared locally so the generic dispatcher stays free of any HIP dependency (gpu-kernel.cpp is
+ * plain HSA C++); the HIP host ABI (hip-abi.cpp) converts @c dim3 to this.
+ */
+struct ggml_hsa_dim3 {
+    std::uint32_t x{1};
+    std::uint32_t y{1};
+    std::uint32_t z{1};
+};
+
+/**
+ * @brief Dispatches an arbitrary GPU kernel with an explicit, positional argument list.
+ *
+ * This is the generic counterpart to @ref ggml_hsa_gpu_kernel::dispatch: instead of a fixed
+ * source/destination tensor layout, the caller supplies the kernel descriptor handle, the argument
+ * layout (from code-object metadata), and a HIP-style @c void** array of pointers to argument
+ * values. Explicit arguments (@c global_buffer / @c by_value / @c dynamic_shared_pointer) are packed
+ * positionally from @p kernel_params; the COV5 hidden arguments are derived from @p grid / @p block.
+ * It reuses the exact native machinery — kernarg pool allocation + alignment + unified-access grant,
+ * queue reservation, per-packet completion signalling on @c ctx.dispatch_signal, and the doorbell.
+ * The dispatch is asynchronous; the caller synchronises with @ref ggml_hsa_wait_dispatches.
+ *
+ * @param[in] ctx backend context (queue + dispatch signal)
+ * @param[in] kernel_object HSA kernel descriptor handle
+ * @param[in] args argument layout parsed from the code-object metadata
+ * @param[in] kernel_params HIP-style array of pointers to explicit argument values
+ * @param[in] grid number of workgroups per dimension
+ * @param[in] block workgroup size per dimension
+ * @param[in] dynamic_shared dynamic shared-memory bytes (added to the kernel's group segment)
+ * @param[in] private_segment_size kernel private (scratch) segment size in bytes
+ * @param[in] group_segment_size kernel static group (LDS) segment size in bytes
+ * @param[in] kernarg_size kernel argument segment size in bytes
+ * @param[in] kernarg_align kernel argument segment alignment in bytes
+ */
+ggml_status ggml_hsa_gpu_dispatch_generic(ggml_backend_hsa_context & ctx,
+                                          std::uint64_t kernel_object,
+                                          const std::vector<ggml_hsa_gpu_kernel_arg> & args,
+                                          void ** kernel_params, ggml_hsa_dim3 grid,
+                                          ggml_hsa_dim3 block, std::uint32_t dynamic_shared,
+                                          std::uint32_t private_segment_size,
+                                          std::uint32_t group_segment_size,
+                                          std::uint32_t kernarg_size, std::uint32_t kernarg_align);

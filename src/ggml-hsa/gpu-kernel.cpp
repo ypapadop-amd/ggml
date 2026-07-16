@@ -252,3 +252,141 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
 
     return GGML_STATUS_SUCCESS;
 }
+
+ggml_status ggml_hsa_gpu_dispatch_generic(ggml_backend_hsa_context & ctx,
+                                          std::uint64_t kernel_object,
+                                          const std::vector<ggml_hsa_gpu_kernel_arg> & args,
+                                          void ** kernel_params, ggml_hsa_dim3 grid,
+                                          ggml_hsa_dim3 block, std::uint32_t dynamic_shared,
+                                          std::uint32_t private_segment_size,
+                                          std::uint32_t group_segment_size,
+                                          std::uint32_t kernarg_size, std::uint32_t kernarg_align) {
+    const auto & info = ggml_hsa_info();
+    const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
+
+    // Allocate + align the kernarg segment from the device kernarg pool (same as ::dispatch). The
+    // unaligned base is tracked for freeing; the aligned interior pointer is handed to the packet.
+    const std::uint32_t align = kernarg_align != 0 ? kernarg_align : 16;
+    const std::size_t buf_size = kernarg_size + (static_cast<std::size_t>(align) << 1);
+
+    void * kernarg_base = nullptr;
+    if (auto status = hsa_amd_memory_pool_allocate(dev_info.kernarg_memory.memory_pool, buf_size, 0,
+                                                   &kernarg_base);
+        status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: failed to allocate kernargs (%zu bytes) (%s)", __func__, buf_size,
+                           ggml_hsa_get_status_string(status));
+        return GGML_STATUS_ALLOC_FAILED;
+    }
+    ctx.kernargs.emplace_back(kernarg_base); // track base allocation for cleanup after dispatch
+
+    auto * kernarg = reinterpret_cast<std::byte *>(
+        align_up(reinterpret_cast<std::uintptr_t>(kernarg_base), align));
+    std::memset(kernarg, 0, kernarg_size);
+
+    const std::uint32_t ngx = grid.x, ngy = grid.y, ngz = grid.z;
+    const std::uint32_t wgx = block.x, wgy = block.y, wgz = block.z;
+    const std::uint32_t dims = (ngz > 1 || wgz > 1) ? 3u : (ngy > 1 || wgy > 1) ? 2u : 1u;
+
+    const auto put = [&](std::uint32_t off, const void * src, std::uint32_t sz) {
+        if (static_cast<std::size_t>(off) + sz <= kernarg_size) {
+            std::memcpy(kernarg + off, src, sz);
+        }
+    };
+    // Generic HIP kernarg packing (mirrors hipLaunchKernel): explicit arguments
+    // (global_buffer / by_value / dynamic_shared_pointer) are taken positionally from
+    // kernel_params[]; the COV5 hidden arguments are computed from the HIP grid/block.
+    std::size_t explicit_idx = 0;
+    for (const auto & a : args) {
+        const std::string & k = a.value_kind;
+        if (k == "global_buffer" || k == "by_value" || k == "dynamic_shared_pointer") {
+            if (kernel_params && kernel_params[explicit_idx]) {
+                put(a.offset, kernel_params[explicit_idx], a.size);
+            }
+            ++explicit_idx;
+        } else if (k == "hidden_block_count_x") {
+            put(a.offset, &ngx, a.size);
+        } else if (k == "hidden_block_count_y") {
+            put(a.offset, &ngy, a.size);
+        } else if (k == "hidden_block_count_z") {
+            put(a.offset, &ngz, a.size);
+        } else if (k == "hidden_group_size_x") {
+            std::uint16_t v = static_cast<std::uint16_t>(wgx);
+            put(a.offset, &v, a.size);
+        } else if (k == "hidden_group_size_y") {
+            std::uint16_t v = static_cast<std::uint16_t>(wgy);
+            put(a.offset, &v, a.size);
+        } else if (k == "hidden_group_size_z") {
+            std::uint16_t v = static_cast<std::uint16_t>(wgz);
+            put(a.offset, &v, a.size);
+        } else if (k == "hidden_remainder_x" || k == "hidden_remainder_y" ||
+                   k == "hidden_remainder_z") {
+            std::uint16_t v = 0;
+            put(a.offset, &v, a.size);
+        } else if (k == "hidden_grid_dims") {
+            std::uint16_t v = static_cast<std::uint16_t>(dims);
+            put(a.offset, &v, a.size);
+        }
+        // other hidden args (global_offset_*, hostcall_buffer, etc.) remain zero
+    }
+
+    // Grant the GPU and CPU agents access to the kernarg allocation (unified memory).
+    std::vector<hsa_agent_t> agents;
+    if (dev_info.agent.handle != 0) {
+        agents.push_back(dev_info.agent);
+    }
+    if (info.cpu_agent.handle != 0) {
+        agents.push_back(info.cpu_agent);
+    }
+    if (!agents.empty()) {
+        if (auto status = hsa_amd_agents_allow_access(static_cast<std::uint32_t>(agents.size()),
+                                                      agents.data(), nullptr, kernarg_base);
+            status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: failed to grant kernarg access (%s)", __func__,
+                               ggml_hsa_get_status_string(status));
+            return GGML_STATUS_FAILED;
+        }
+    }
+
+    // Build the AQL kernel dispatch packet.
+    hsa_kernel_dispatch_packet_t pkt{};
+    pkt.setup = dims << HSA_KERNEL_DISPATCH_PACKET_SETUP_DIMENSIONS;
+    pkt.workgroup_size_x = static_cast<std::uint16_t>(wgx);
+    pkt.workgroup_size_y = static_cast<std::uint16_t>(wgy);
+    pkt.workgroup_size_z = static_cast<std::uint16_t>(wgz);
+    pkt.grid_size_x = ngx * wgx;
+    pkt.grid_size_y = ngy * wgy;
+    pkt.grid_size_z = ngz * wgz;
+    pkt.private_segment_size = private_segment_size;
+    pkt.group_segment_size = group_segment_size + dynamic_shared;
+    pkt.kernel_object = kernel_object;
+    pkt.kernarg_address = kernarg;
+    pkt.completion_signal = ctx.dispatch_signal;
+
+    auto * queue = ctx.queue;
+
+    // Reserve a slot, waiting for space if the queue is full.
+    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
+    while (wr_idx - hsa_queue_load_read_index_scacquire(queue) >= queue->size) {
+        ggml_hsa_wait_dispatches(ctx);
+    }
+
+    // Account for this dispatch on the completion signal; the packet processor decrements it back
+    // to zero when the kernel finishes (see ggml_hsa_wait_dispatches).
+    hsa_signal_add_screlease(ctx.dispatch_signal, 1);
+
+    write_aql_to_queue(pkt, queue, wr_idx);
+
+    std::uint16_t header = HSA_PACKET_TYPE_KERNEL_DISPATCH << HSA_PACKET_HEADER_TYPE;
+    header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE;
+    header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE;
+
+    const std::uint32_t mask = queue->size - 1;
+    atomic_set_packet_header(
+        header, pkt.setup,
+        &(static_cast<hsa_kernel_dispatch_packet_t *>(queue->base_address))[wr_idx & mask]);
+
+    // Ring the doorbell with the packet index to launch the kernel.
+    hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
+
+    return GGML_STATUS_SUCCESS;
+}

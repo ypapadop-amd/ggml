@@ -17,11 +17,11 @@
 
 #ifdef GGML_HSA_GPU
 #include <string>
+#include <unordered_map>
 #include <vector>
 
-#include <amd_comgr/amd_comgr.h>
-
 #include "ggml-hsa/gpu-kernel.hpp"
+#include "ggml-hsa/hsaco-metadata.hpp"
 #endif
 
 // The kernel compiler bridge (Python JIT) is shared by all device backends.
@@ -286,46 +286,14 @@ static bool ggml_hsa_find_gpu_kernel_files(const std::string & device_name,
 }
 
 /**
- * @brief Reads the string value of a comgr metadata node.
- */
-static bool ggml_hsa_comgr_get_string(amd_comgr_metadata_node_t node, std::string & out) {
-    std::size_t sz = 0;
-    if (amd_comgr_get_metadata_string(node, &sz, nullptr) != AMD_COMGR_STATUS_SUCCESS) {
-        return false;
-    }
-    std::string s(sz, '\0');
-    if (amd_comgr_get_metadata_string(node, &sz, s.data()) != AMD_COMGR_STATUS_SUCCESS) {
-        return false;
-    }
-    if (!s.empty() && s.back() == '\0') {
-        s.pop_back();
-    }
-    out = std::move(s);
-    return true;
-}
-
-/**
- * @brief Looks up a string-valued key in a comgr metadata map.
- */
-static bool ggml_hsa_comgr_lookup_string(amd_comgr_metadata_node_t map, const char * key,
-                                         std::string & out) {
-    amd_comgr_metadata_node_t node;
-    if (amd_comgr_metadata_lookup(map, key, &node) != AMD_COMGR_STATUS_SUCCESS) {
-        return false;
-    }
-    bool ok = ggml_hsa_comgr_get_string(node, out);
-    amd_comgr_destroy_metadata(node);
-    return ok;
-}
-
-/**
- * @brief Parses the kernel symbol and argument layout from a code object's metadata.
+ * @brief Parses the kernel symbol and argument layout from a single-kernel code object.
  *
- * Reads the AMDGPU code object metadata (via comgr) for the single kernel it contains, recording
- * the kernel descriptor symbol and the value kind, byte offset, and size of each argument
- * (including the hidden arguments). Reading the symbol from the metadata makes the loader
- * independent of the producer's naming (e.g. hipcc's ggml kernel name vs Triton's function name),
- * and reading the layout avoids hardcoding the kernarg ABI.
+ * Thin wrapper over the shared multi-kernel parser @ref ggml_hsaco_parse_kernels (hsaco-metadata),
+ * which walks the AMDGPU "amdhsa.kernels" metadata via comgr. A native (Triton/hipcc single-op)
+ * @c .hsaco contains exactly one kernel, so the first parsed entry is used. Reading the symbol and
+ * layout from the code object itself keeps the loader independent of the producer's naming and
+ * avoids hardcoding the kernarg ABI. The same parser resolves the many kernels of a hipcc fatbin in
+ * the HIP host ABI (hip-abi.cpp).
  *
  * @param[in] blob in-memory code object bytes
  * @param[out] out_symbol kernel descriptor symbol (e.g. "add_8f32_8f32_8f32.kd" or "vecadd.kd")
@@ -333,76 +301,123 @@ static bool ggml_hsa_comgr_lookup_string(amd_comgr_metadata_node_t map, const ch
  */
 static bool ggml_hsa_parse_kernel_metadata(const std::vector<char> & blob, std::string & out_symbol,
                                            std::vector<ggml_hsa_gpu_kernel_arg> & out_args) {
-    amd_comgr_data_t data;
-    if (amd_comgr_create_data(AMD_COMGR_DATA_KIND_EXECUTABLE, &data) != AMD_COMGR_STATUS_SUCCESS) {
+    std::unordered_map<std::string, ggml_hsaco_kernel> kernels;
+    if (!ggml_hsaco_parse_kernels(blob.data(), blob.size(), kernels)) {
+        return false;
+    }
+    // Each native code object contains exactly one kernel; use the first.
+    const auto & kernel = kernels.begin()->second;
+    out_symbol = kernel.symbol;
+    out_args.clear();
+    out_args.reserve(kernel.args.size());
+    for (const auto & a : kernel.args) {
+        ggml_hsa_gpu_kernel_arg info;
+        info.name = a.name;
+        info.value_kind = a.value_kind;
+        info.offset = a.offset;
+        info.size = a.size;
+        out_args.push_back(std::move(info));
+    }
+    return !out_args.empty() && !out_symbol.empty();
+}
+
+/**
+ * @brief Shared low-level loader helpers (see kernel-discovery.hpp).
+ *
+ * Factored out of @ref ggml_hsa_create_gpu_kernel so the HIP host ABI (hip-abi.cpp) reuses the exact
+ * native loader sequence rather than duplicating it: @ref ggml_hsa_load_executable performs the
+ * code-object load/freeze once per fatbin, and @ref ggml_hsa_resolve_kernel_symbol resolves each of
+ * the (potentially many) kernels a fatbin contains.
+ */
+bool ggml_hsa_load_executable(const ggml_hsa_device_info::device_info & dev_info,
+                              const void * code_object, std::size_t size,
+                              hsa_executable_t & executable) {
+    hsa_code_object_reader_t reader{};
+    auto status = hsa_code_object_reader_create_from_memory(code_object, size, &reader);
+    if (status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: failed to read code object (%s)", __func__,
+                           ggml_hsa_get_status_string(status));
         return false;
     }
 
-    bool result = false;
-    bool have_root = false;
-    amd_comgr_metadata_node_t root{};
-    do {
-        if (amd_comgr_set_data(data, blob.size(), blob.data()) != AMD_COMGR_STATUS_SUCCESS) {
-            break;
-        }
-        if (amd_comgr_get_data_metadata(data, &root) != AMD_COMGR_STATUS_SUCCESS) {
-            break;
-        }
-        have_root = true;
-
-        amd_comgr_metadata_node_t kernels;
-        if (amd_comgr_metadata_lookup(root, "amdhsa.kernels", &kernels) !=
-            AMD_COMGR_STATUS_SUCCESS) {
-            break;
-        }
-
-        std::size_t nkernels = 0;
-        amd_comgr_get_metadata_list_size(kernels, &nkernels);
-        // Each code object we load contains exactly one kernel; use the first.
-        for (std::size_t i = 0; i < nkernels && !result; ++i) {
-            amd_comgr_metadata_node_t kernel;
-            if (amd_comgr_index_list_metadata(kernels, i, &kernel) != AMD_COMGR_STATUS_SUCCESS) {
-                continue;
-            }
-
-            if (ggml_hsa_comgr_lookup_string(kernel, ".symbol", out_symbol)) {
-                amd_comgr_metadata_node_t args;
-                if (amd_comgr_metadata_lookup(kernel, ".args", &args) == AMD_COMGR_STATUS_SUCCESS) {
-                    std::size_t nargs = 0;
-                    amd_comgr_get_metadata_list_size(args, &nargs);
-                    for (std::size_t j = 0; j < nargs; ++j) {
-                        amd_comgr_metadata_node_t arg;
-                        if (amd_comgr_index_list_metadata(args, j, &arg) !=
-                            AMD_COMGR_STATUS_SUCCESS) {
-                            continue;
-                        }
-                        std::string name, kind, off, size;
-                        ggml_hsa_comgr_lookup_string(arg, ".name", name); // explicit args only
-                        ggml_hsa_comgr_lookup_string(arg, ".value_kind", kind);
-                        ggml_hsa_comgr_lookup_string(arg, ".offset", off);
-                        ggml_hsa_comgr_lookup_string(arg, ".size", size);
-                        ggml_hsa_gpu_kernel_arg info;
-                        info.name = std::move(name);
-                        info.value_kind = std::move(kind);
-                        info.offset = off.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(off));
-                        info.size = size.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(size));
-                        out_args.push_back(std::move(info));
-                        amd_comgr_destroy_metadata(arg);
-                    }
-                    amd_comgr_destroy_metadata(args);
-                    result = !out_args.empty() && !out_symbol.empty();
-                }
-            }
-            amd_comgr_destroy_metadata(kernel);
-        }
-        amd_comgr_destroy_metadata(kernels);
-    } while (false);
-
-    if (have_root) {
-        amd_comgr_destroy_metadata(root);
+    if (status = hsa_executable_create_alt(HSA_PROFILE_FULL,
+                                           HSA_DEFAULT_FLOAT_ROUNDING_MODE_DEFAULT, nullptr,
+                                           &executable);
+        status != HSA_STATUS_SUCCESS) {
+        hsa_code_object_reader_destroy(reader);
+        GGML_HSA_LOG_ERROR("%s: failed to create executable (%s)", __func__,
+                           ggml_hsa_get_status_string(status));
+        return false;
     }
-    amd_comgr_release_data(data);
-    return result;
+
+    if (status = hsa_executable_load_agent_code_object(executable, dev_info.agent, reader, nullptr,
+                                                       nullptr);
+        status != HSA_STATUS_SUCCESS) {
+        hsa_code_object_reader_destroy(reader);
+        GGML_HSA_LOG_ERROR("%s: failed to load code object (%s)", __func__,
+                           ggml_hsa_get_status_string(status));
+        return false;
+    }
+
+    if (status = hsa_executable_freeze(executable, nullptr); status != HSA_STATUS_SUCCESS) {
+        hsa_code_object_reader_destroy(reader);
+        GGML_HSA_LOG_ERROR("%s: failed to freeze executable (%s)", __func__,
+                           ggml_hsa_get_status_string(status));
+        return false;
+    }
+    hsa_code_object_reader_destroy(reader);
+    return true;
+}
+
+bool ggml_hsa_resolve_kernel_symbol(const ggml_hsa_device_info::device_info & dev_info,
+                                    hsa_executable_t executable, const std::string & symbol,
+                                    ggml_hsa_loaded_kernel & out) {
+    hsa_executable_symbol_t sym{};
+    if (auto status = hsa_executable_get_symbol(executable, nullptr, symbol.c_str(), dev_info.agent,
+                                                0, &sym);
+        status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: failed to find symbol %s (%s)", __func__, symbol.c_str(),
+                           ggml_hsa_get_status_string(status));
+        return false;
+    }
+
+    struct symbol_query {
+        hsa_executable_symbol_info_t info;
+        void * dst;
+    };
+    const symbol_query queries[] = {
+        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT, &out.kernel_object},
+        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_PRIVATE_SEGMENT_SIZE, &out.private_segment_size},
+        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_GROUP_SEGMENT_SIZE, &out.group_segment_size},
+        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_KERNARG_SEGMENT_SIZE, &out.kernarg_size},
+        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_KERNARG_SEGMENT_ALIGNMENT, &out.kernarg_align},
+    };
+    for (const auto & query : queries) {
+        if (auto status = hsa_executable_symbol_get_info(sym, query.info, query.dst);
+            status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: failed to query symbol info (%s)", __func__,
+                               ggml_hsa_get_status_string(status));
+            return false;
+        }
+    }
+    if (out.kernarg_align < 16) {
+        out.kernarg_align = 16;
+    }
+    return true;
+}
+
+bool ggml_hsa_load_code_object(const ggml_hsa_device_info::device_info & dev_info,
+                               const void * code_object, std::size_t size,
+                               const std::string & symbol, ggml_hsa_loaded_kernel & out) {
+    if (!ggml_hsa_load_executable(dev_info, code_object, size, out.executable)) {
+        return false;
+    }
+    if (!ggml_hsa_resolve_kernel_symbol(dev_info, out.executable, symbol, out)) {
+        hsa_executable_destroy(out.executable);
+        out.executable = hsa_executable_t{};
+        return false;
+    }
+    return true;
 }
 
 /**
@@ -483,84 +498,29 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
         return GGML_STATUS_FAILED;
     }
 
-    hsa_code_object_reader_t reader{};
-    auto status = hsa_code_object_reader_create_from_memory(blob.data(), blob.size(), &reader);
-    if (status != HSA_STATUS_SUCCESS) {
-        GGML_HSA_LOG_ERROR("%s: failed to read code object %s (%s)", __func__, hsaco_path.c_str(),
-                           ggml_hsa_get_status_string(status));
-        return GGML_STATUS_FAILED;
-    }
-
-    auto gpu_kernel = std::make_shared<ggml_hsa_gpu_kernel>();
-
-    if (status = hsa_executable_create_alt(HSA_PROFILE_FULL,
-                                           HSA_DEFAULT_FLOAT_ROUNDING_MODE_DEFAULT, nullptr,
-                                           &gpu_kernel->executable);
-        status != HSA_STATUS_SUCCESS) {
-        hsa_code_object_reader_destroy(reader);
-        GGML_HSA_LOG_ERROR("%s: failed to create executable (%s)", __func__,
-                           ggml_hsa_get_status_string(status));
-        return GGML_STATUS_FAILED;
-    }
-
-    if (status = hsa_executable_load_agent_code_object(gpu_kernel->executable, dev_info.agent,
-                                                       reader, nullptr, nullptr);
-        status != HSA_STATUS_SUCCESS) {
-        hsa_code_object_reader_destroy(reader);
-        GGML_HSA_LOG_ERROR("%s: failed to load code object (%s)", __func__,
-                           ggml_hsa_get_status_string(status));
-        return GGML_STATUS_FAILED;
-    }
-
-    if (status = hsa_executable_freeze(gpu_kernel->executable, nullptr);
-        status != HSA_STATUS_SUCCESS) {
-        hsa_code_object_reader_destroy(reader);
-        GGML_HSA_LOG_ERROR("%s: failed to freeze executable (%s)", __func__,
-                           ggml_hsa_get_status_string(status));
-        return GGML_STATUS_FAILED;
-    }
-    hsa_code_object_reader_destroy(reader);
-
     // Read the kernel symbol and argument layout from the code object metadata. This makes the
     // loader independent of the producer's naming (hipcc uses the ggml kernel name, Triton uses
     // the @triton.jit function name).
+    auto gpu_kernel = std::make_shared<ggml_hsa_gpu_kernel>();
     std::string symbol_name;
     if (!ggml_hsa_parse_kernel_metadata(blob, symbol_name, gpu_kernel->args)) {
         GGML_HSA_LOG_ERROR("%s: failed to parse metadata for %s", __func__, symbol_base.c_str());
         return GGML_STATUS_FAILED;
     }
 
-    hsa_executable_symbol_t symbol{};
-    if (status = hsa_executable_get_symbol(gpu_kernel->executable, nullptr, symbol_name.c_str(),
-                                           dev_info.agent, 0, &symbol);
-        status != HSA_STATUS_SUCCESS) {
-        GGML_HSA_LOG_ERROR("%s: failed to find symbol %s (%s)", __func__, symbol_name.c_str(),
-                           ggml_hsa_get_status_string(status));
+    // Load the code object and resolve the kernel using the shared native loader helpers (also used
+    // by the HIP host ABI for hipcc fatbins).
+    ggml_hsa_loaded_kernel loaded;
+    if (!ggml_hsa_load_code_object(dev_info, blob.data(), blob.size(), symbol_name, loaded)) {
+        GGML_HSA_LOG_ERROR("%s: failed to load code object %s", __func__, hsaco_path.c_str());
         return GGML_STATUS_FAILED;
     }
-
-    struct symbol_query {
-        hsa_executable_symbol_info_t info;
-        void * dst;
-    };
-    const symbol_query queries[] = {
-        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT, &gpu_kernel->kernel_object},
-        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_PRIVATE_SEGMENT_SIZE, &gpu_kernel->private_segment_size},
-        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_GROUP_SEGMENT_SIZE, &gpu_kernel->group_segment_size},
-        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_KERNARG_SEGMENT_SIZE, &gpu_kernel->kernarg_size},
-        {HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_KERNARG_SEGMENT_ALIGNMENT, &gpu_kernel->kernarg_align},
-    };
-    for (const auto & query : queries) {
-        if (status = hsa_executable_symbol_get_info(symbol, query.info, query.dst);
-            status != HSA_STATUS_SUCCESS) {
-            GGML_HSA_LOG_ERROR("%s: failed to query symbol info (%s)", __func__,
-                               ggml_hsa_get_status_string(status));
-            return GGML_STATUS_FAILED;
-        }
-    }
-    if (gpu_kernel->kernarg_align < 16) {
-        gpu_kernel->kernarg_align = 16;
-    }
+    gpu_kernel->executable = loaded.executable;
+    gpu_kernel->kernel_object = loaded.kernel_object;
+    gpu_kernel->private_segment_size = loaded.private_segment_size;
+    gpu_kernel->group_segment_size = loaded.group_segment_size;
+    gpu_kernel->kernarg_size = loaded.kernarg_size;
+    gpu_kernel->kernarg_align = loaded.kernarg_align;
 
     // Optional launch geometry (Triton kernels bake grid/block at compile time).
     ggml_hsa_read_launch_sidecar(hsaco_path, gpu_kernel->grid_size_x, gpu_kernel->workgroup_size_x);
