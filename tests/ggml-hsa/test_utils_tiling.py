@@ -74,6 +74,15 @@ def test_tiled_tile_size_falls_back_when_v_not_a_divisor():
     assert tiled_tile_size("aie2", np.dtype(np.float32), 8) == 8
 
 
+def test_tiled_tile_size_divides_for_non_f32_dtypes():
+    # V differs by dtype (512 bits / itemsize): int8 V=64, float16 V=32. The
+    # divisor invariant must hold regardless of dtype, including the fallback path.
+    for dtype in (np.int8, np.float16, np.float32):
+        for n in (250000, 3136000, 50, 8, 1, 65536):
+            t = tiled_tile_size("aie2", np.dtype(dtype), n)
+            assert n % t == 0, f"{dtype}: tile {t} does not divide {n}"
+
+
 def test_tiled_tile_size_unknown_arch_raises():
     with pytest.raises(ValueError):
         tiled_tile_size("nope", np.dtype(np.float32), 250000)
