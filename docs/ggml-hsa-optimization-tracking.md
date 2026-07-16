@@ -108,6 +108,47 @@ warmup outlier. All subsequent warm runs were steady. Numbers match §1 within n
 
 ---
 
+## 8. RELU tile-granularity — implemented, no batched win (2026-07-15)
+
+Followed §7's "next lever" note: the RELU IRON design streamed 16-element tiles
+(`max_tile_size` returns the largest **power-of-two** divisor of N; 250000 = 2^4·5^6 →
+16), so the worker made 15,625 `acquire/release` calls per dispatch. The per-node profiler
+(§ the serialized eval-callback probe) attributed ~11.5% of NPU time to RELU and ~98% of a
+RELU call to per-call overhead, making tile granularity look like the top RELU lever.
+
+**Change (design-only):** new `tiled_tile_size` selector in `utils.py` picks the largest
+multiple-of-vector-width tile that **divides N exactly** and fits half the core data memory
+(arch constants now in an `_ARCH_PARAMS` dict: aie2 + aie2p, 64 KB DM, 512-bit vectors).
+For MNIST f32 that is **2000** (125 calls/dispatch, 125× fewer). RELU routes through a
+tiled external-function factory that omits `-DGGML_TILE_SIZE`, so N stays a runtime arg and
+one kernel serves all shapes (respects the 32-unique-functions-per-queue limit).
+
+**Result: no end-to-end change.** ~51.5 µs/image before and after (identical to the §7
+constexpr-fold number); accuracy 98.00%, loss bit-identical 0.066372; RELU op test 3/3.
+
+**Why (the honest finding):** at batch=500 the whole 13-node FC graph already rides a single
+doorbell (§2: 15 packets, 1 ring, 0 mid-graph flushes). RELU's many small calls were being
+**pipelined/batched**, so their per-call overhead was hidden in the batched run — it only
+dominated under the **serialized** per-node profiler, which pays a full drain per node and
+therefore over-attributes fixed dispatch cost to whichever op has the most calls. The
+profiler's per-op *share* is not a reliable predictor of batched wall-clock for a
+high-call-count op. The tiling is still correct and strictly reduces work (and would help a
+latency-bound / small-batch regime, or a backend that doesn't batch doorbells), but it is
+not a throughput lever at this batch size.
+
+**Design gotcha recorded:** an ObjectFifo's DMA transfer size is fixed at construction, so a
+"remainder tail" (stream floor(N/tile) full tiles + one short tile, passing a smaller runtime
+N) does NOT shrink the tail DMA — the short acquire still pulls a full-tile transfer, the
+fill/drain totals mismatch, and the NPU **deadlocks (device TDR hang)**. The fix is to
+require the tile to divide N exactly (fall back to `max_tile_size` when the vector width does
+not divide N). Verified: exact-divisor tiling runs clean; the remainder-tail variant hung the
+device twice.
+
+Commits: arch dict + max_tile_size refactor; `tiled_tile_size` (exact-divisor); RELU route.
+Spec/plan: `docs/superpowers/{specs,plans}/2026-07-15-relu-tile-granularity*.md`.
+
+---
+
 ## 7. Post-vectorization re-benchmark + corrected CPU baseline (2026-07-15)
 
 After vectorizing all inference-relevant AIE kernels (ADD §6, then RELU, depad, convert_pad — the
