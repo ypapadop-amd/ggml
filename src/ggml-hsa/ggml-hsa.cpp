@@ -647,8 +647,12 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     ggml_tensor & a = src_nodes[0].tensor; // [K, M]
     ggml_tensor & b = src_nodes[1].tensor; // [K, N]
 
-    // only the plain contiguous f32 x f32 -> f32 case is supported
-    if (a.type != GGML_TYPE_F32 || b.type != GGML_TYPE_F32 || dst.type != GGML_TYPE_F32) {
+    // The GEMM microkernel runs in bf16, so both operands must be either f32 (converted to bf16
+    // below) or already bf16 (converted in the graph, e.g. the bf16 MNIST variant). ggml always
+    // produces an f32 MUL_MAT result, so the destination is f32 regardless of the input dtype.
+    const bool a_ok = a.type == GGML_TYPE_F32 || a.type == GGML_TYPE_BF16;
+    const bool b_ok = b.type == GGML_TYPE_F32 || b.type == GGML_TYPE_BF16;
+    if (!a_ok || !b_ok || dst.type != GGML_TYPE_F32) {
         return false;
     }
     if (!ggml_hsa_has_trivial_layout(a) || !ggml_hsa_has_trivial_layout(b) ||
@@ -681,14 +685,18 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     const std::int64_t Mpad = GGML_PAD(M, tile * n_aie_rows);
     const std::int64_t Npad = GGML_PAD(N, tile * n_aie_cols);
 
-    // rewrite sources to padded bf16
+    // rewrite sources to padded bf16; only sources that arrive as f32 need a dtype conversion,
+    // bf16 sources are just zero-padded to the tile multiples.
+    const bool a_convert = a.type == GGML_TYPE_F32;
+    const bool b_convert = b.type == GGML_TYPE_F32;
+
     a.type = GGML_TYPE_BF16;
     a.ne[0] = Kpad;
     a.ne[1] = Mpad;
     ggml_hsa_set_contiguous_strides(a);
     src_nodes[0].tensor.data = nullptr;
     src_nodes[0].buffer_size = GGML_PAD(ggml_nbytes(&a), dev_info.alignment);
-    src_nodes[0].convert_dtype = true;
+    src_nodes[0].convert_dtype = a_convert;
 
     b.type = GGML_TYPE_BF16;
     b.ne[0] = Kpad;
@@ -696,7 +704,7 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     ggml_hsa_set_contiguous_strides(b);
     src_nodes[1].tensor.data = nullptr;
     src_nodes[1].buffer_size = GGML_PAD(ggml_nbytes(&b), dev_info.alignment);
-    src_nodes[1].convert_dtype = true;
+    src_nodes[1].convert_dtype = b_convert;
 
     // rewrite output to a padded f32 temporary; it must be de-padded back into the parent tensor
     dst.ne[0] = Mpad;

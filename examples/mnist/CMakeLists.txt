@@ -13,6 +13,13 @@ add_executable(${TEST_TARGET} mnist-eval.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml common mnist-common)
 
 #
+# mnist-eval-bf16
+
+set(TEST_TARGET mnist-eval-bf16)
+add_executable(${TEST_TARGET} mnist-eval-bf16.cpp)
+target_link_libraries(${TEST_TARGET} PRIVATE ggml common mnist-common)
+
+#
 # mnist-train
 
 set(TEST_TARGET mnist-train)
