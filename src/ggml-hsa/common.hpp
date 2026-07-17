@@ -367,6 +367,14 @@ struct ggml_backend_hsa_tensor_extra {
     /// output buffer back into the parent tensor (e.g., de-padding and/or dtype conversion) on the
     /// device queue. Null when the output needs no on-device post-processing.
     std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
+    /// @brief Per source: true if the source is a graph-constant leaf (e.g. a weight or bias) whose
+    /// converted/padded contents can be cached in the (persistent) internal buffer and reused across
+    /// dispatches instead of re-running the pre-processing every time.
+    std::array<bool, GGML_MAX_SRC> src_is_constant{};
+    /// @brief Per source: the parent data pointer whose converted contents currently sit in the
+    /// internal buffer. Null until the first conversion. The pre-processing is skipped while this
+    /// matches the parent's data pointer (constant sources only), guarding against a moved buffer.
+    std::array<const void *, GGML_MAX_SRC> src_converted_ptr{};
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);

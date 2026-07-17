@@ -754,6 +754,18 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // depad), so the generic dtype/layout/flatten handling below is skipped.
     if (ggml_hsa_prepare_mul_mat_f32(dev_info, node, src_nodes.data(), nsrcs)) {
         requires_sync = true;
+
+        // A source that is a graph-constant leaf (a weight/bias: op == GGML_OP_NONE, not a graph
+        // input) has contents that never change across dispatches, so its converted+padded bf16
+        // form can be produced once into the persistent internal buffer and reused. graph_compute
+        // skips the pre-processing while the cached pointer matches (see src_converted_ptr).
+        for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+            const ggml_tensor * src = parent_tensor.src[src_idx];
+            if (src_nodes[src_idx].convert_dtype && src->op == GGML_OP_NONE &&
+                (src->flags & GGML_TENSOR_FLAG_INPUT) == 0) {
+                src_is_constant[src_idx] = true;
+            }
+        }
     } else {
         // convert tensor data types if needed
         if (dev_info.substitute_fp16_bf16) {
@@ -1531,6 +1543,16 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
                 if (tensor_extra.src_nodes[src_idx].buffer_size == 0) {
                     continue;
+                }
+                // A constant source (weight/bias) is converted+padded into the persistent internal
+                // buffer only once; once cached, its contents are identical on every later dispatch,
+                // so skip the pre-processing entirely. Keyed on the parent data pointer so a moved
+                // buffer forces a re-conversion.
+                if (tensor_extra.src_is_constant[src_idx]) {
+                    if (tensor_extra.src_converted_ptr[src_idx] == node->src[src_idx]->data) {
+                        continue;
+                    }
+                    tensor_extra.src_converted_ptr[src_idx] = node->src[src_idx]->data;
                 }
                 if (use_device_transforms) {
                     // on-device source pre-processing: transform the parent source into its
