@@ -792,12 +792,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         requires_sync = true;
 
         // A source that is a graph-constant leaf (a weight/bias: op == GGML_OP_NONE, not a graph
-        // input) has contents that never change across dispatches, so its converted+padded bf16
-        // form can be produced once into the persistent internal buffer and reused. graph_compute
-        // skips the pre-processing while the cached pointer matches (see src_converted_ptr).
+        // input) has contents that never change across dispatches, so its converted+padded (or
+        // just padded) form can be produced once into the persistent internal buffer and reused.
+        // graph_compute skips the pre-processing while the cached pointer matches (src_converted_ptr).
         for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
             const ggml_tensor * src = parent_tensor.src[src_idx];
-            if (src_nodes[src_idx].convert_dtype && src->op == GGML_OP_NONE &&
+            if (src_nodes[src_idx].buffer_size != 0 && src->op == GGML_OP_NONE &&
                 (src->flags & GGML_TENSOR_FLAG_INPUT) == 0) {
                 src_is_constant[src_idx] = true;
             }
@@ -870,14 +870,17 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
     }
 
-    // For the padded f32 MUL_MAT path, build on-device pre-processing kernels (per source; here
-    // convert f32->bf16 + zero-pad) and a post-processing kernel (here de-pad the result). These
-    // run on the device queue in place of the host copies in graph_compute, removing the per-op
-    // queue drains that would otherwise flush the packet batch. If any fails to compile the pointer
-    // stays null and graph_compute falls back to the host copy path.
+    // For the padded MUL_MAT path, build on-device pre-processing kernels (per source; convert
+    // f32->bf16 and/or zero-pad) and a post-processing kernel (de-pad the result). These run on the
+    // device queue in place of the host copies in graph_compute, removing the per-op queue drains
+    // that would otherwise flush the packet batch. If any fails to compile the pointer stays null
+    // and graph_compute falls back to the host copy path. A source whose operand is already bf16
+    // needs no dtype conversion but still needs zero-padding to the tile multiples, so build the
+    // pre-processing kernel for every source that has a padded internal buffer (HSA_CONVERT_PAD
+    // selects convert+pad or pad-only from the source dtype).
     if (node.depad) {
         for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-            if (!src_nodes[src_idx].convert_dtype) {
+            if (src_nodes[src_idx].buffer_size == 0) {
                 continue;
             }
             src_preprocess_kernels[src_idx] = ggml_hsa_build_transform_kernel(

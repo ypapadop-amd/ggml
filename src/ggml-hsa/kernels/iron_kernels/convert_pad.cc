@@ -2,14 +2,17 @@
 
 /**
  * @file convert_pad.cc
- * @brief f32 -> bf16 conversion with row zero-padding for the MUL_MAT pre-amble.
+ * @brief Row zero-padding for the MUL_MAT pre-amble, with an optional f32 -> bf16 conversion.
  *
- * Processes one logical row at a time: converts @p d0 f32 elements to bf16 (bit-identical to the
- * host reference @c ggml_compute_fp32_to_bf16, round-to-nearest-even) into a @p d0pad-wide output
- * row, zero-filling the [d0, d0pad) tail. Streaming both sides one row at a time keeps the shim DMA
- * transfers linear (no strided 2D descriptor), which avoids the hardware wrap-size limits that a
- * single large strided scatter would hit. The trailing rows [d1, d1pad) of the destination are left
- * untouched (the buffer is pre-zeroed before dispatch).
+ * Processes one logical row at a time: writes @p d0 valid elements into a @p d0pad-wide output row
+ * and zero-fills the [d0, d0pad) tail. Two modes, selected at compile time:
+ *   - default (f32 -> bf16): converts each element bit-identically to the host reference
+ *     @c ggml_compute_fp32_to_bf16 (round-to-nearest-even);
+ *   - CONVERT_PAD_PAD_ONLY (bf16 -> bf16): copies the elements unchanged (the operand is already
+ *     bf16, e.g. produced by an in-graph cast), so only the tile padding is added.
+ * Streaming both sides one row at a time keeps the shim DMA transfers linear (no strided 2D
+ * descriptor), which avoids the hardware wrap-size limits a single large strided scatter would hit.
+ * The trailing rows [d1, d1pad) of the destination are left untouched (buffer pre-zeroed).
  */
 
 #include <aie_api/aie.hpp>
@@ -20,17 +23,7 @@
 
 extern "C" {
 
-/**
- * @brief Converts one row of @p d0 f32 elements to bf16 into a @p d0pad-wide row.
- *
- * The valid [0, d0) elements are converted (round-to-nearest-even, matching the host); the
- * [d0, d0pad) tail is zeroed so the padded GEMM operand reads zero there.
- *
- * @param[in]  in     Input row of @p d0 f32 elements.
- * @param[out] out    Output row of @p d0pad bf16 elements.
- * @param[in]  d0     Number of valid elements to convert.
- * @param[in]  d0pad  Padded row width (>= d0).
- */
+#ifndef CONVERT_PAD_PAD_ONLY
 /**
  * @brief Converts one f32 element to bf16 (RNE, NaN->quiet), bit-identical to the host.
  *
@@ -48,14 +41,25 @@ static inline uint16_t convert_scalar(f32 v) {
     }
     return static_cast<uint16_t>((bits.u + (0x7fffu + ((bits.u >> 16) & 1u))) >> 16);
 }
+#endif
 
-void ggml_hsa_convert_pad(const f32 * __restrict in,
-                          bf16 * __restrict out,
+/**
+ * @brief Writes one row of @p d0 valid elements into a @p d0pad-wide output row (padding the tail).
+ *
+ * In the default mode @p in is f32 and each element is converted to bf16 (round-to-nearest-even,
+ * matching the host). In CONVERT_PAD_PAD_ONLY mode both sides are bf16 and elements are copied
+ * unchanged. The [d0, d0pad) tail is zeroed so the padded GEMM operand reads zero there.
+ *
+ * @param[in]  in     Input row of @p d0 elements (INPUT_DTYPE).
+ * @param[out] out    Output row of @p d0pad elements (OUTPUT_DTYPE).
+ * @param[in]  d0     Number of valid elements.
+ * @param[in]  d0pad  Padded row width (>= d0).
+ */
+void ggml_hsa_convert_pad(const INPUT_DTYPE * __restrict in,
+                          OUTPUT_DTYPE * __restrict out,
                           int32_t d0,
                           int32_t d0pad) {
     event0();
-
-    constexpr int32_t V = 512 / (sizeof(f32) * 8);
 
     // Row shape is fixed per JIT-compiled kernel instance, so convert_pad.py passes it as -D
     // defines. Using the compile-time bounds lets Peano fold the vector trip count and
@@ -71,6 +75,29 @@ void ggml_hsa_convert_pad(const f32 * __restrict in,
     const int32_t d0padv = d0pad;
 #endif
 
+#ifdef CONVERT_PAD_PAD_ONLY
+    // bf16 -> bf16: pad only, no conversion. V = 512 / 16 = 32 bf16 lanes. Unaligned load (the
+    // per-row fifo stride is not vector-aligned) + aligned store (output rows are d0pad-wide, a
+    // tile multiple, so vector-aligned; also dodges the broken 16-bit unaligned vector store).
+    constexpr int32_t V = 512 / (sizeof(OUTPUT_DTYPE) * 8);
+    const int32_t nblk = d0v / V;
+    const int32_t vend = nblk * V;
+
+    AIE_PREPARE_FOR_PIPELINING
+#if defined(CONVERT_PAD_D0) && (CONVERT_PAD_D0) >= 32
+    AIE_LOOP_RANGE(nblk, nblk)
+#endif
+    for (int32_t b = 0; b < nblk; ++b) {
+        const int32_t i = b * V;
+        const aie::vector<OUTPUT_DTYPE, V> v = aie::load_unaligned_v<V>(in + i);
+        aie::store_v(out + i, v);
+    }
+
+    for (int32_t i = vend; i < d0v; ++i) {
+        out[i] = in[i];
+    }
+#else
+    constexpr int32_t V = 512 / (sizeof(f32) * 8);
     const int32_t nblk = d0v / V;
     const int32_t vend = nblk * V;
 
@@ -111,10 +138,11 @@ void ggml_hsa_convert_pad(const f32 * __restrict in,
         const uint16_t hi = convert_scalar(in[i]);
         __builtin_memcpy(&out[i], &hi, sizeof(bf16));
     }
+#endif
 
     // Zero-fill the [d0, d0pad) tail. Small and off the hot path; kept scalar because the 16-bit
     // unaligned vector store is broken in this aie_api version and d0 is not vector-aligned.
-    const bf16 zero = {};
+    const OUTPUT_DTYPE zero = {};
     for (int32_t i = d0v; i < d0padv; ++i) {
         out[i] = zero;
     }

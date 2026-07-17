@@ -64,11 +64,13 @@ def convert_pad(arch: str, input_tensors: list, output_tensor, op_params: bytear
 
     src = input_tensors[0]
 
-    if src.dtype != np.float32:
-        msg = f"convert_pad source must be float32; got {src.dtype}."
-        raise ValueError(msg)
+    # Two modes: f32 -> bf16 (convert + pad) or bf16 -> bf16 (pad only, operand already bf16).
     if output_tensor.dtype != bfloat16:
         msg = f"convert_pad destination must be bfloat16; got {output_tensor.dtype}."
+        raise ValueError(msg)
+    pad_only = src.dtype == bfloat16
+    if src.dtype != np.float32 and not pad_only:
+        msg = f"convert_pad source must be float32 or bfloat16; got {src.dtype}."
         raise ValueError(msg)
     if not src.contiguous or not output_tensor.contiguous:
         msg = "convert_pad tensors must be contiguous in memory."
@@ -134,6 +136,19 @@ def _create_external_function(
 
     """
     current_dir = Path(__file__).resolve().parent
+    compile_flags = [
+        f"-DINPUT_DTYPE={dtype_to_str(src.dtype)}",
+        f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        # Row shape is fixed per kernel instance (each shape JITs its own .o), so pass it
+        # as compile-time constants: lets Peano fold the trip count and pipeline the hot loop.
+        f"-DCONVERT_PAD_D0={d0}",
+        f"-DCONVERT_PAD_D0PAD={d0pad}",
+    ]
+    # bf16 -> bf16 selects the pad-only kernel body (no dtype conversion); f32 -> bf16 keeps the
+    # default convert+pad body.
+    if src.dtype == bfloat16:
+        compile_flags.append("-DCONVERT_PAD_PAD_ONLY=1")
+
     return ExternalFunction(
         name="ggml_hsa_convert_pad",
         object_file_name="ggml_hsa_convert_pad_core_function.o",
@@ -144,12 +159,5 @@ def _create_external_function(
             np.int32,  # d0
             np.int32,  # d0pad
         ],
-        compile_flags=[
-            f"-DINPUT_DTYPE={dtype_to_str(src.dtype)}",
-            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            # Row shape is fixed per kernel instance (each shape JITs its own .o), so pass it
-            # as compile-time constants: lets Peano fold the trip count and pipeline the hot loop.
-            f"-DCONVERT_PAD_D0={d0}",
-            f"-DCONVERT_PAD_D0PAD={d0pad}",
-        ],
+        compile_flags=compile_flags,
     )
