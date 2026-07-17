@@ -603,6 +603,26 @@ static void ggml_hsa_set_contiguous_strides(ggml_tensor & tensor) {
 }
 
 /**
+ * @brief Returns whether a CPY/DUP node is a pure element-wise dtype conversion.
+ *
+ * True when the copy just changes dtype: source and destination are both contiguous, have the same
+ * element count, and differ only in type. Such a copy can run on-device via the HSA_CONVERT kernel
+ * (batched on the queue) instead of the host copy path (which drains the queue). Strided copies,
+ * reshapes-via-cont, and same-dtype copies are excluded (the last has nothing to convert).
+ */
+static bool ggml_hsa_is_convert_copy(const ggml_tensor & tensor) {
+    if (tensor.op != GGML_OP_CPY && tensor.op != GGML_OP_DUP) {
+        return false;
+    }
+    const ggml_tensor * src = tensor.src[0];
+    if (src == nullptr) {
+        return false;
+    }
+    return src->type != tensor.type && ggml_nelements(src) == ggml_nelements(&tensor) &&
+           ggml_is_contiguous(src) && ggml_is_contiguous(&tensor);
+}
+
+/**
  * @brief Flattens @p tensor.
  */
 static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
@@ -746,10 +766,18 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     }
 
     switch (node.tensor.op) {
-        // implemented as host kernels; nothing to be done
         case GGML_OP_DUP:
         case GGML_OP_CPY:
+            // A pure dtype-conversion copy runs on-device via HSA_CONVERT (flattened element-wise
+            // cast), so it batches on the queue instead of the host copy path that drains it. Any
+            // other copy (strided, reshape) stays on the host.
+            if (ggml_hsa_is_convert_copy(node.tensor)) {
+                convert_copy_kernel = ggml_hsa_build_transform_kernel(
+                    dev_info, "HSA_CONVERT", *parent_tensor.src[0], parent_tensor);
+            }
+            return;
         case GGML_OP_CONT:
+            // implemented as a host kernel; nothing to be done
             return;
         default:
             break;
@@ -1511,11 +1539,19 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         switch (node->op) {
             // implemented as host kernels, so no dispatch required
             case GGML_OP_DUP:
-                status = ggml_hsa_compute_dup(ctx, node);
+            case GGML_OP_CPY: {
+                // A pure dtype-conversion copy dispatches on-device (no queue drain); other copies
+                // fall back to the host path.
+                auto & extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+                if (extra.convert_copy_kernel != nullptr) {
+                    status = extra.convert_copy_kernel->dispatch(ctx, node->src, 1, *node);
+                } else if (node->op == GGML_OP_DUP) {
+                    status = ggml_hsa_compute_dup(ctx, node);
+                } else {
+                    status = ggml_hsa_compute_cpy(ctx, node);
+                }
                 continue;
-            case GGML_OP_CPY:
-                status = ggml_hsa_compute_cpy(ctx, node);
-                continue;
+            }
             case GGML_OP_CONT:
                 status = ggml_hsa_compute_cont(ctx, node);
                 continue;

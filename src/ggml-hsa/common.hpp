@@ -367,6 +367,10 @@ struct ggml_backend_hsa_tensor_extra {
     /// output buffer back into the parent tensor (e.g., de-padding and/or dtype conversion) on the
     /// device queue. Null when the output needs no on-device post-processing.
     std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
+    /// @brief Optional on-device kernel for a pure dtype-conversion CPY/DUP node: casts the single
+    /// source into this tensor on the device queue (no host drain). Null for copies handled on the
+    /// host (strided, reshape, or same-dtype).
+    std::shared_ptr<ggml_hsa_kernel> convert_copy_kernel;
     /// @brief Per source: true if the source is a graph-constant leaf (e.g. a weight or bias) whose
     /// converted/padded contents can be cached in the (persistent) internal buffer and reused across
     /// dispatches instead of re-running the pre-processing every time.

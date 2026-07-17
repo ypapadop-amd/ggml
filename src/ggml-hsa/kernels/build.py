@@ -101,6 +101,8 @@ _OP_KERNEL_MAP: dict[str, Kernel] = {
     # internal MUL_MAT pre/post-amble kernels (not GGML ops)
     "HSA_CONVERT_PAD": Kernel("ggml_hsa_convert_pad", "convert_pad.py"),
     "HSA_DEPAD": Kernel("ggml_hsa_depad", "depad.py"),
+    # internal element-wise dtype cast (on-device GGML_OP_CPY convert)
+    "HSA_CONVERT": Kernel("ggml_hsa_convert", "convert.py"),
 }
 
 

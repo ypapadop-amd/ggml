@@ -11,6 +11,8 @@ set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/binary_ops.py
     ${CMAKE_CURRENT_SOURCE_DIR}/clamp.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/clamp.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/convert.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/convert.py
     ${CMAKE_CURRENT_SOURCE_DIR}/convert_pad.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/convert_pad.py
     ${CMAKE_CURRENT_SOURCE_DIR}/count_equal.cc
