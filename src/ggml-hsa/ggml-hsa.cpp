@@ -794,7 +794,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         // A source that is a graph-constant leaf (a weight/bias: op == GGML_OP_NONE, not a graph
         // input) has contents that never change across dispatches, so its converted+padded (or
         // just padded) form can be produced once into the persistent internal buffer and reused.
-        // graph_compute skips the pre-processing while the cached pointer matches (src_converted_ptr).
+        // graph_compute skips the pre-processing while the cached pointer matches
+        // (src_converted_ptr).
         for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
             const ggml_tensor * src = parent_tensor.src[src_idx];
             if (src_nodes[src_idx].buffer_size != 0 && src->op == GGML_OP_NONE &&
@@ -1511,12 +1512,13 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
  *
  * Whole-graph pass (tensor_extra is built per node and cannot see a node's consumers, so this must
  * run once all extras exist). For every MUL_MAT on the padded-GEMM device-transform path whose only
- * consumer is a pure f32->bf16 convert-CPY, builds a de-pad kernel that also narrows to bf16, points
- * it at the CPY's output buffer, and marks the CPY skipped. Opportunistic: if the fused kernel fails
- * to build nothing changes and the graph runs the original de-pad + separate cast. Latched per
- * MUL_MAT via @c fusion_analyzed so the scan runs once, not on every forward pass.
+ * consumer is a pure f32->bf16 convert-CPY, builds a de-pad kernel that also narrows to bf16,
+ * points it at the CPY's output buffer, and marks the CPY skipped. Opportunistic: if the fused
+ * kernel fails to build nothing changes and the graph runs the original de-pad + separate cast.
+ * Latched per MUL_MAT via @c fusion_analyzed so the scan runs once, not on every forward pass.
  */
-static void ggml_hsa_fuse_mul_mat_narrow(const ggml_backend_hsa_context & ctx, ggml_cgraph * cgraph,
+static void ggml_hsa_fuse_mul_mat_narrow(const ggml_backend_hsa_context & ctx,
+                                         ggml_cgraph * cgraph,
                                          std::int32_t node_count) {
     const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
 
@@ -1581,8 +1583,8 @@ static void ggml_hsa_fuse_mul_mat_narrow(const ggml_backend_hsa_context & ctx, g
 
         // Build a de-pad kernel that narrows the padded f32 result to bf16 straight into the
         // consumer's buffer. The distinct (f32 in, bf16 out) dtype pair caches its own PDI.
-        auto fused = ggml_hsa_build_transform_kernel(dev_info, "HSA_DEPAD", mm_extra.node.tensor,
-                                                     *consumer);
+        auto fused =
+            ggml_hsa_build_transform_kernel(dev_info, "HSA_DEPAD", mm_extra.node.tensor, *consumer);
         if (fused == nullptr) {
             continue; // fall back to the original de-pad + separate cast
         }
@@ -1590,6 +1592,17 @@ static void ggml_hsa_fuse_mul_mat_narrow(const ggml_backend_hsa_context & ctx, g
         mm_extra.fused_narrow_dst = consumer;
         static_cast<ggml_backend_hsa_tensor_extra *>(consumer->extra)->skip_dispatch = true;
     }
+}
+
+/**
+ * @brief Host-path copy from @p src to @p dst, choosing sub-block or plain copy based on @p depad.
+ *
+ * A padded tensor (@p depad) has a different shape from its counterpart, so the logical sub-block
+ * must be scattered/gathered; otherwise the shapes match and a plain layout/dtype copy suffices.
+ */
+static ggml_status
+ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool depad) {
+    return depad ? ggml_hsa_copy_subblock(src, dst) : ggml_hsa_copy_tensor(src, dst);
 }
 
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
@@ -1618,11 +1631,12 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     }
 
     // Fuse the per-layer f32->bf16 cast into the MUL_MAT de-pad post-amble. A padded-GEMM MUL_MAT
-    // produces an f32 result that HSA_DEPAD strips into the f32 parent, which a following convert-CPY
-    // then re-reads to write a bf16 copy for the next op. When the MUL_MAT's sole consumer is exactly
-    // that cast, redirect the de-pad to narrow-and-write bf16 straight into the cast's output buffer
-    // and skip the cast dispatch, removing a kernel launch and a full [M, N] f32 memory round trip.
-    // The ggml graph is left untouched (no tensor type mutated); this is a device-side rewrite only.
+    // produces an f32 result that HSA_DEPAD strips into the f32 parent, which a following
+    // convert-CPY then re-reads to write a bf16 copy for the next op. When the MUL_MAT's sole
+    // consumer is exactly that cast, redirect the de-pad to narrow-and-write bf16 straight into the
+    // cast's output buffer and skip the cast dispatch, removing a kernel launch and a full [M, N]
+    // f32 memory round trip. The ggml graph is left untouched (no tensor type mutated); this is a
+    // device-side rewrite only.
     ggml_hsa_fuse_mul_mat_narrow(ctx, cgraph, node_count);
 
     for (std::int32_t i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
@@ -1636,24 +1650,26 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         switch (node->op) {
             // implemented as host kernels, so no dispatch required
             case GGML_OP_DUP:
-            case GGML_OP_CPY: {
-                // A pure dtype-conversion copy dispatches on-device (no queue drain); other copies
-                // fall back to the host path.
-                auto & extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-                // This cast was fused into its producer's de-pad, which already wrote the narrowed
-                // bf16 result here. Running the copy would read the never-written f32 parent.
-                if (extra.skip_dispatch) {
+            case GGML_OP_CPY:
+                {
+                    // A pure dtype-conversion copy dispatches on-device (no queue drain); other
+                    // copies fall back to the host path.
+                    auto & extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+                    // This cast was fused into its producer's de-pad, which already wrote the
+                    // narrowed bf16 result here. Running the copy would read the never-written f32
+                    // parent.
+                    if (extra.skip_dispatch) {
+                        continue;
+                    }
+                    if (extra.convert_copy_kernel != nullptr) {
+                        status = extra.convert_copy_kernel->dispatch(ctx, node->src, 1, *node);
+                    } else if (node->op == GGML_OP_DUP) {
+                        status = ggml_hsa_compute_dup(ctx, node);
+                    } else {
+                        status = ggml_hsa_compute_cpy(ctx, node);
+                    }
                     continue;
                 }
-                if (extra.convert_copy_kernel != nullptr) {
-                    status = extra.convert_copy_kernel->dispatch(ctx, node->src, 1, *node);
-                } else if (node->op == GGML_OP_DUP) {
-                    status = ggml_hsa_compute_dup(ctx, node);
-                } else {
-                    status = ggml_hsa_compute_cpy(ctx, node);
-                }
-                continue;
-            }
             case GGML_OP_CONT:
                 status = ggml_hsa_compute_cont(ctx, node);
                 continue;
@@ -1691,9 +1707,9 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     continue;
                 }
                 // A constant source (weight/bias) is converted+padded into the persistent internal
-                // buffer only once; once cached, its contents are identical on every later dispatch,
-                // so skip the pre-processing entirely. Keyed on the parent data pointer so a moved
-                // buffer forces a re-conversion.
+                // buffer only once; once cached, its contents are identical on every later
+                // dispatch, so skip the pre-processing entirely. Keyed on the parent data pointer
+                // so a moved buffer forces a re-conversion.
                 if (tensor_extra.src_is_constant[src_idx]) {
                     if (tensor_extra.src_converted_ptr[src_idx] == node->src[src_idx]->data) {
                         continue;
@@ -1710,10 +1726,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     // A padded source has a different shape from its parent, so scatter the logical
                     // sub-block into the (pre-zeroed) padded buffer; otherwise the shapes match and
                     // a plain layout/dtype copy suffices.
-                    status =
-                        tensor_extra.node.depad
-                            ? ggml_hsa_copy_subblock(node->src[src_idx], internal_node.src[src_idx])
-                            : ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
+                    status = ggml_hsa_copy_padded_or_plain(
+                        node->src[src_idx], internal_node.src[src_idx], tensor_extra.node.depad);
                 }
                 if (status != GGML_STATUS_SUCCESS) {
                     GGML_HSA_LOG_ERROR("%s: failed to prepare source %i for tensor \"%s (%s)\"",
@@ -1753,8 +1767,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             // gather the padded result sub-block back into the parent tensor (de-pad), or convert
             // the datatype in place for the same-shape case
             ggml_hsa_wait_dispatches(ctx);
-            status = tensor_extra.node.depad ? ggml_hsa_copy_subblock(&internal_node, node)
-                                             : ggml_hsa_copy_tensor(&internal_node, node);
+            status = ggml_hsa_copy_padded_or_plain(&internal_node, node, tensor_extra.node.depad);
             if (status != GGML_STATUS_SUCCESS) {
                 GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__,
                                    node->name, ggml_op_desc(node));
