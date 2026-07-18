@@ -1515,7 +1515,7 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
  * consumer is a pure f32->bf16 convert-CPY, builds a de-pad kernel that also narrows to bf16,
  * points it at the CPY's output buffer, and marks the CPY skipped. Opportunistic: if the fused
  * kernel fails to build nothing changes and the graph runs the original de-pad + separate cast.
- * Latched per MUL_MAT via @c fusion_analyzed so the scan runs once, not on every forward pass.
+ * Latched per MUL_MAT via @c fusion.analyzed so the scan runs once, not on every forward pass.
  */
 static void ggml_hsa_fuse_mul_mat_narrow(const ggml_backend_hsa_context & ctx,
                                          ggml_cgraph * cgraph,
@@ -1528,10 +1528,10 @@ static void ggml_hsa_fuse_mul_mat_narrow(const ggml_backend_hsa_context & ctx,
             continue;
         }
         auto & mm_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(mm->extra);
-        if (mm_extra.fusion_analyzed) {
+        if (mm_extra.fusion.analyzed) {
             continue;
         }
-        mm_extra.fusion_analyzed = true;
+        mm_extra.fusion.analyzed = true;
 
         // Only a padded MUL_MAT on the on-device de-pad path is a candidate. Require the full
         // device-transform chain (post-processing + a pre-processing kernel for every buffered
@@ -1589,8 +1589,8 @@ static void ggml_hsa_fuse_mul_mat_narrow(const ggml_backend_hsa_context & ctx,
             continue; // fall back to the original de-pad + separate cast
         }
         mm_extra.postprocess_kernel = std::move(fused);
-        mm_extra.fused_narrow_dst = consumer;
-        static_cast<ggml_backend_hsa_tensor_extra *>(consumer->extra)->skip_dispatch = true;
+        mm_extra.fusion.narrow_dst = consumer;
+        static_cast<ggml_backend_hsa_tensor_extra *>(consumer->extra)->fusion.skip_dispatch = true;
     }
 }
 
@@ -1658,7 +1658,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     // This cast was fused into its producer's de-pad, which already wrote the
                     // narrowed bf16 result here. Running the copy would read the never-written f32
                     // parent.
-                    if (extra.skip_dispatch) {
+                    if (extra.fusion.skip_dispatch) {
                         continue;
                     }
                     if (extra.convert_copy_kernel != nullptr) {
@@ -1756,7 +1756,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             // that consumer's buffer (skipping the separate cast dispatch).
             ggml_tensor * postprocess_src = &internal_node;
             ggml_tensor & post_dst =
-                tensor_extra.fused_narrow_dst ? *tensor_extra.fused_narrow_dst : *node;
+                tensor_extra.fusion.narrow_dst ? *tensor_extra.fusion.narrow_dst : *node;
             status = tensor_extra.postprocess_kernel->dispatch(ctx, &postprocess_src, 1, post_dst);
             if (status != GGML_STATUS_SUCCESS) {
                 GGML_HSA_LOG_ERROR("%s: failed to de-pad result for tensor \"%s\" (%s)", __func__,
