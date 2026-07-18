@@ -15,7 +15,7 @@ def ggml_op_cross_entropy_loss(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_OP_CROSS_ENTROPY_LOSS.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: [logits, labels].
         output_tensor: Scalar loss value.

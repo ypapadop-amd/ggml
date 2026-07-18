@@ -4,9 +4,6 @@
 /**
  * @file zero.cc
  * @brief Zero-initialization kernels for AIE2 matrix buffers.
- *
- * Provides scalar and vectorized functions to zero-initialize output matrices
- * before matrix multiplication accumulation.
  */
 
 #ifndef ZERO_CC

@@ -17,9 +17,8 @@ extern "C" {
  * the first occurrence.
  *
  * @param[in]  in  Input array of N elements.
- * @param[out] out Output array containing the index of the maximum element.
- *                 Only the first element (out[0]) is written.
- * @param[in]  N   Number of elements to search. If N <= 0, no output is written.
+ * @param[out] out Index of the max element, written to out[0].
+ * @param[in]  N   Number of elements to search.
  */
 void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     event0();

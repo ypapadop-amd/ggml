@@ -5,27 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON design for the MUL_MAT post-amble: de-pad an f32 result.
-
-The source is a padded, contiguous f32 buffer of shape [d0pad, d1pad] (GGML
-convention: d0pad = ne[0] innermost/contiguous). The destination is a dense
-tensor of logical shape [d0, d1] (d0 <= d0pad, d1 <= d1pad). The first d1 rows
-are gathered; each is narrowed from d0pad to d0 by the compute kernel (which
-copies only the first d0 elements).
-
-Two modes, selected by the destination dtype: f32 -> f32 (plain de-pad) or
-f32 -> bf16 (de-pad + convert). The bf16 mode fuses the per-layer f32->bf16 cast
-that would otherwise follow the MUL_MAT as a separate CPY, so the padded GEMM
-result is narrowed as it is de-padded (bit-identical to the separate cast).
-
-Data movement is kept fully linear on both the fill and drain sides: the input
-streams the first d1 rows of the padded buffer (d0pad elements each, contiguous
-from the buffer start), and the output streams d1 contiguous rows of d0. Row-
-narrowing is done on the compute tile rather than via a strided shim DMA, because
-a single large strided (2D) shim transfer silently exceeds the hardware BD
-wrap-size limits for the shapes this kernel sees; linear transfers have no such
-limit.
-"""
+"""IRON kernel implementation for the depad operation."""
 
 from pathlib import Path
 
@@ -45,21 +25,22 @@ from .utils import arch_to_device
 
 
 def depad(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """Build the de-pad IRON program.
+    """Build the de-pad IRON program: MUL_MAT post-amble, narrowing each row from d0pad to d0.
+
+    f32 -> bf16 fuses the per-layer cast that would otherwise follow the MUL_MAT
+    as a separate CPY (bit-identical to the separate cast).
 
     Parameters:
         arch: Target architecture.
-        input_tensors: [src] padded f32 buffer of shape [d0pad, d1pad].
-        output_tensor: dense f32 tensor of logical shape [d0, d1] (d0 <= d0pad,
-            d1 <= d1pad).
-        op_params: unused (kept for the dispatch ABI).
+        input_tensors: [src] padded source tensor.
+        output_tensor: Dense destination tensor.
+        op_params: Unused (kept for the dispatch ABI).
 
     Returns:
         The resolved IRON program (MLIR module).
 
     Raises:
         ValueError: On invalid tensor count, dtype, contiguity, or shape.
-
     """
     del op_params  # placement is derived from shapes, not op_params
 
@@ -69,14 +50,25 @@ def depad(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
 
     src = input_tensors[0]
 
-    # Source is always the f32 padded GEMM temporary. Destination is f32 (plain de-pad) or
-    # bf16 (de-pad + convert, fusing the per-layer cast).
-    convert = output_tensor.dtype == bfloat16
-    if src.dtype != np.float32 or (output_tensor.dtype != np.float32 and not convert):
-        msg = (
-            f"depad requires an f32 source and an f32 or bf16 destination; got src "
-            f"{src.dtype}, dst {output_tensor.dtype}."
-        )
+    # Source is the f32 padded GEMM temporary (destination f32 or bf16, the latter fusing the
+    # per-layer cast) or an already-bf16 padded temporary (destination must also be bf16, plain
+    # de-pad with no conversion).
+    if src.dtype == np.float32:
+        if output_tensor.dtype not in (np.float32, bfloat16):
+            msg = (
+                f"depad with an f32 source requires an f32 or bf16 destination; got "
+                f"{output_tensor.dtype}."
+            )
+            raise ValueError(msg)
+    elif src.dtype == bfloat16:
+        if output_tensor.dtype != bfloat16:
+            msg = (
+                f"depad with a bf16 source requires a bf16 destination; got "
+                f"{output_tensor.dtype}."
+            )
+            raise ValueError(msg)
+    else:
+        msg = f"depad requires an f32 or bf16 source; got {src.dtype}."
         raise ValueError(msg)
     if not src.contiguous or not output_tensor.contiguous:
         msg = "depad tensors must be contiguous in memory."
@@ -132,14 +124,13 @@ def _create_external_function(
     """Create the ExternalFunction for the depad core function.
 
     Parameters:
-        src: Source tensor (f32 padded temporary).
-        output_tensor: Destination tensor (f32 or bf16).
+        src: Source tensor (padded temporary).
+        output_tensor: Destination tensor.
         d0: Number of valid elements in one logical row.
         d0pad: Padded input row width.
 
     Returns:
         The configured ExternalFunction.
-
     """
     current_dir = Path(__file__).resolve().parent
     compile_flags = [
@@ -149,9 +140,8 @@ def _create_external_function(
         # as a compile-time constant: lets Peano fold the trip count and pipeline the hot loop.
         f"-DDEPAD_D0={d0}",
     ]
-    # f32 -> bf16 selects the de-pad + convert kernel body; f32 -> f32 keeps the plain copy.
-    if output_tensor.dtype == bfloat16:
-        compile_flags.append("-DDEPAD_CONVERT_F32_TO_BF16=1")
+    # The kernel selects its mode (plain copy vs. f32 -> bf16 convert) at compile time via
+    # `if constexpr` on INPUT_DTYPE/OUTPUT_DTYPE; no extra flag is needed.
 
     return ExternalFunction(
         name="ggml_hsa_depad",

@@ -15,12 +15,11 @@ from .kernel import Backend, KernelSpec
 def _validate_binary_inputs(input_tensors: list) -> None:
     """Validate that a binary operation has exactly two input tensors.
 
-    Parameters:
+    Args:
         input_tensors: List of input tensors to validate.
 
     Raises:
         ValueError: If the number of input tensors is not exactly two.
-
     """
     if len(input_tensors) != 2:
         msg = f"Operation requires exactly two input tensors, got {len(input_tensors)}."
@@ -35,7 +34,7 @@ def _make_iron_binary_kernel_spec(
 ) -> KernelSpec:
     """Create an IRON-backend KernelSpec for a binary operation.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
@@ -43,7 +42,6 @@ def _make_iron_binary_kernel_spec(
 
     Returns:
         KernelSpec configured for the IRON backend.
-
     """
     from functools import partial
 
@@ -72,7 +70,7 @@ def _make_triton_add_kernel_spec(
 ) -> KernelSpec:
     """Create a TRITON-backend KernelSpec for ADD.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
@@ -83,7 +81,6 @@ def _make_triton_add_kernel_spec(
     Raises:
         ValueError: If the tensors require broadcasting or are non-contiguous
             (raised lazily when the returned compile function is invoked).
-
     """
     n_elements = output_tensor.numel()
 
@@ -152,7 +149,7 @@ def ggml_op_add(
 ) -> list[KernelSpec]:
     """Return KernelSpecs for GGML_OP_ADD (IRON primary, Triton fallback).
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
@@ -161,7 +158,6 @@ def ggml_op_add(
 
     Returns:
         List of KernelSpecs for the ADD operation.
-
     """
     _validate_binary_inputs(input_tensors)
 
@@ -178,7 +174,7 @@ def ggml_op_sub(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_OP_SUB.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
@@ -187,7 +183,6 @@ def ggml_op_sub(
 
     Returns:
         KernelSpec for the SUB operation.
-
     """
     _validate_binary_inputs(input_tensors)
 
@@ -201,7 +196,7 @@ def ggml_op_mul(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_OP_MUL.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
@@ -210,7 +205,6 @@ def ggml_op_mul(
 
     Returns:
         KernelSpec for the MUL operation.
-
     """
     _validate_binary_inputs(input_tensors)
 
@@ -224,7 +218,7 @@ def ggml_op_div(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_OP_DIV.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of two input tensors.
         output_tensor: Output tensor.
@@ -233,7 +227,6 @@ def ggml_op_div(
 
     Returns:
         KernelSpec for the DIV operation.
-
     """
     _validate_binary_inputs(input_tensors)
 

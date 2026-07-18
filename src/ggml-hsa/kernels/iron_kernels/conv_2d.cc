@@ -3,6 +3,19 @@
 /**
  * @file conv_2d.cc
  * @brief Direct 2D convolution for AIE kernels.
+ */
+
+#include <type_traits>
+
+#include <aie_api/aie.hpp>
+
+#include "aie_kernel_utils.h"
+#include "ggml-aie.hpp"
+
+namespace {
+
+/**
+ * @brief Direct 2D convolution over one output plane.
  *
  * Computes one output plane [OW, OH] of a 2D convolution for a single batch
  * element and a fixed output channel (oc_idx). Streaming planes in
@@ -28,22 +41,24 @@
  * the OUTERMOST loop, accumulating into the output plane, to avoid a Peano
  * miscompile that dropped the iic>=1 contribution when the channel loop sat
  * between the spatial loops.
- */
-
-#include <type_traits>
-
-#include <aie_api/aie.hpp>
-
-#include "aie_kernel_utils.h"
-#include "ggml-aie.hpp"
-
-namespace {
-
-/**
- * @brief Direct 2D convolution over one output plane (see file header).
  *
- * @tparam T_in  Input/weight element type (floating point).
- * @tparam T_out Output element type (floating point).
+ * @param[in]  in      Input image: IC planes of IH * IW elements.
+ * @param[in]  wts     Weight tensor: KW*KH*IC*OC elements, layout [KW,KH,IC,OC].
+ * @param[out] out     Output plane: OW * OH elements, layout [OW, OH] (row-major).
+ * @param[in]  oc_idx  Output channel index.
+ * @param[in]  iw      Input width.
+ * @param[in]  ih      Input height.
+ * @param[in]  ic      Input channels.
+ * @param[in]  kw      Kernel width.
+ * @param[in]  kh      Kernel height.
+ * @param[in]  ow      Output width.
+ * @param[in]  oh      Output height.
+ * @param[in]  s0      Stride along width.
+ * @param[in]  s1      Stride along height.
+ * @param[in]  p0      Padding along width.
+ * @param[in]  p1      Padding along height.
+ * @param[in]  d0      Dilation along width.
+ * @param[in]  d1      Dilation along height.
  */
 template <typename T_in, typename T_out>
 void conv_2d_impl(const T_in * __restrict in,
@@ -110,6 +125,9 @@ void conv_2d_impl(const T_in * __restrict in,
     const int32_t interior = ox_hi - ox_lo;
     const int32_t ox_vec_end = vectorize ? (ox_lo + (interior / V) * V) : ox_lo;
 
+    // Channel reduction stays the outermost loop, accumulating into the output
+    // plane, to avoid a Peano miscompile that dropped the iic>=1 contribution
+    // when the channel loop sat between the spatial loops.
     for (int32_t iic = 0; iic < ic; ++iic) {
         const T_in * __restrict src_plane = in + iic * plane_size;
         // Weight base for this (oc_idx, iic) slice.

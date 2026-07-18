@@ -15,10 +15,10 @@ def ggml_hsa_depad(
 ) -> KernelSpec:
     """Return the KernelSpec for the de-pad post-amble.
 
-    Parameters:
+    Args:
         arch: Target architecture.
-        input_tensors: [src] padded f32 buffer of shape [d0pad, d1pad].
-        output_tensor: dense f32 tensor of logical shape [d0, d1].
+        input_tensors: [src] padded f32 or bf16 buffer of shape [d0pad, d1pad].
+        output_tensor: dense f32 or bf16 tensor of logical shape [d0, d1].
         op_params: unused.
 
     Returns:

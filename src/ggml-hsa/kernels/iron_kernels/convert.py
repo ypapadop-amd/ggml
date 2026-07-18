@@ -33,7 +33,7 @@ from .utils import arch_aligned_num_elements, arch_to_device, max_tile_size
 def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """Build the element-wise dtype-conversion IRON program.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: [src] dense contiguous tensor.
         output_tensor: dense contiguous tensor, same element count, different dtype.
@@ -103,7 +103,7 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 def _create_external_function(src, output_tensor, tile_size: int) -> ExternalFunction:
     """Create the ExternalFunction for the convert core function.
 
-    Parameters:
+    Args:
         src: Source tensor.
         output_tensor: Destination tensor (different dtype).
         tile_size: Number of elements per streamed tile.

@@ -15,11 +15,12 @@ def ggml_op_mul_mat(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_OP_MUL_MAT.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: Input tensors A and B.
         output_tensor: Output tensor C.
-        op_params: Operation parameters.
+        op_params: Operation parameters (unused; GEMM shape/dtype come from the
+            tensors themselves).
 
     Returns:
         KernelSpec for the MUL_MAT operation.

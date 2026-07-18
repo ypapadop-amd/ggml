@@ -5,12 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON design for softmax over dim 0, one row per tile.
-
-Three variants by input count: plain softmax, masked softmax (mask added before
-exp, ALiBi slopes when max_bias > 0), and masked softmax with per-head sinks.
-The sink array is loaded once and indexed by tile via rows_per_head.
-"""
+"""IRON design for softmax over dim 0, one row per tile."""
 
 import struct
 from pathlib import Path
@@ -35,18 +30,16 @@ from .utils import arch_to_device
 def get_softmax_dimensions(tensor) -> tuple[int, int]:
     """Return (row_length, num_rows) for a GGML-ordered tensor.
 
-    Softmax is over dim 0 (ne00), so row_length = ne00 and
-    num_rows = ne01 * ne02 * ne03.
+    Softmax is over dim 0 (ne00): row_length = ne00, num_rows = ne01*ne02*ne03.
 
-    Parameters:
-        tensor: GGML-ordered tensor of rank 1 to 4.
+    Args:
+        tensor: GGML-ordered tensor to inspect.
 
     Returns:
         The (row_length, num_rows) pair.
 
     Raises:
         ValueError: If the tensor rank is unsupported.
-
     """
     shape = tensor.shape
 
@@ -67,14 +60,16 @@ def get_softmax_dimensions(tensor) -> tuple[int, int]:
 
 
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """Build the softmax IRON program, dispatching by input count.
+    """Build the softmax IRON program, dispatching by input count (1=plain, 2=masked, 3=sinks).
 
-    Parameters:
-        arch: Target architecture.
-        input_tensors: [input, optional mask, optional sink].
+    Args:
+        arch: Target AIE architecture.
+        input_tensors: Input tensors (input, optional mask, optional sinks).
         output_tensor: Output tensor.
-        op_params: scale and max_bias as 2 x float32.
+        op_params: Serialized op params (scale, max_bias).
 
+    Returns:
+        The resolved IRON program.
     """
     input_tensor_count = len(input_tensors)
 
@@ -151,17 +146,16 @@ def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_bias):
     """Plain softmax without mask or sink (max_bias unused).
 
-    Parameters:
-        arch: Target architecture.
-        op_name: GGML operation name.
+    Args:
+        arch: Target AIE architecture.
+        op_name: GGML op name.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
-        scale: Scale applied before exp.
-        max_bias: Unused in this variant.
+        scale: Scale applied to the input before softmax.
+        max_bias: Unused for this variant.
 
     Returns:
         The resolved IRON program.
-
     """
     function, num_elements, tile_size = _create_external_function(
         op_name=op_name,
@@ -207,18 +201,17 @@ def create_binary_program(
 ):
     """Masked softmax; max_bias > 0 enables ALiBi positional encoding.
 
-    Parameters:
-        arch: Target architecture.
-        op_name: GGML operation name.
+    Args:
+        arch: Target AIE architecture.
+        op_name: GGML op name.
         input_tensor: Input tensor.
-        mask_tensor: Additive mask applied before exp.
+        mask_tensor: ALiBi mask tensor.
         output_tensor: Output tensor.
-        scale: Scale applied before exp.
-        max_bias: ALiBi max bias; > 0 enables positional slopes.
+        scale: Scale applied to the input before softmax.
+        max_bias: ALiBi max bias.
 
     Returns:
         The resolved IRON program.
-
     """
     func_result = _create_external_function(
         op_name=op_name,
@@ -310,19 +303,18 @@ def create_ternary_program(
 ):
     """Masked softmax with a per-head sink array (loaded once, indexed by tile).
 
-    Parameters:
-        arch: Target architecture.
-        op_name: GGML operation name.
+    Args:
+        arch: Target AIE architecture.
+        op_name: GGML op name.
         input_tensor: Input tensor.
-        mask_tensor: Additive mask applied before exp.
-        sink_tensor: Per-head sink values, one per head.
+        mask_tensor: ALiBi mask tensor.
+        sink_tensor: Per-head sink logits tensor.
         output_tensor: Output tensor.
-        scale: Scale applied before exp.
-        max_bias: ALiBi max bias; > 0 enables positional slopes.
+        scale: Scale applied to the input before softmax.
+        max_bias: ALiBi max bias.
 
     Returns:
         The resolved IRON program.
-
     """
     func_result = _create_external_function(
         op_name=op_name,
@@ -429,23 +421,20 @@ def _create_external_function(
 ) -> tuple:
     """Create an external function specification for softmax variants.
 
-    Parameters:
-        op_name: GGML operation name.
+    Args:
+        op_name: GGML op name.
         input_tensor: Input tensor.
-        mask_tensor: Optional additive mask, or None.
-        sink_tensor: Optional per-head sink array, or None.
+        mask_tensor: Optional ALiBi mask tensor.
+        sink_tensor: Optional per-head sink logits tensor.
         output_tensor: Output tensor.
 
     Returns:
-        If no mask or sink tensor:
-            (func, num_elements_in, tile_size_in)
-        If mask tensor only:
-            (func, num_elements_in, tile_size_in, tile_size_mask, num_rows_mask,
-                num_elements_mask, n_head, rows_per_head)
-        If mask and sink tensor:
-            (func, num_elements_in, tile_size_in, tile_size_mask, num_rows_mask,
-                num_elements_mask, num_sinks, rows_per_head)
-
+        A variable-length tuple depending on which of mask_tensor/sink_tensor are set:
+          none: (func, num_elements_in, tile_size_in)
+          mask only: (..., tile_size_mask, num_rows_mask, num_elements_mask, n_head,
+            rows_per_head)
+          mask+sink: (..., tile_size_mask, num_rows_mask, num_elements_mask, num_sinks,
+            rows_per_head)
     """
     row_length_in, num_rows_in = get_softmax_dimensions(input_tensor)
 

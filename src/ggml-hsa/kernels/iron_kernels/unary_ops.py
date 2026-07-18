@@ -36,7 +36,6 @@ class CoreFunctionSpec:
     Attributes:
         external_function: External function implementing the operation.
         num_elements: Total number of elements to process.
-
     """
 
     external_function: ExternalFunction
@@ -56,12 +55,17 @@ def _unary_op(
 ):
     """Element-wise output_tensor = op(input_tensors[0]).
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         function_spec: Core function specification.
         output_tensor: Output tensor.
 
+    Returns:
+        The resolved IRON program.
+
+    Raises:
+        ValueError: If num_elements is not divisible by tile_size.
     """
     input_tensor = input_tensors[0]
 
@@ -119,12 +123,14 @@ def _create_external_function(
 ) -> CoreFunctionSpec:
     """Create the CoreFunctionSpec for a unary op.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         op_name: Name of the unary operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
 
+    Returns:
+        The core function spec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
     tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
@@ -163,12 +169,14 @@ def _create_tiled_external_function(
     differs per tensor shape, so N stays a runtime kernel argument and one compiled
     kernel serves every shape (respecting the 32-unique-functions-per-queue limit).
 
-    Parameters:
+    Args:
         arch: Target architecture.
         op_name: Name of the unary operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
 
+    Returns:
+        The core function spec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
     tile_size = tiled_tile_size(arch, input_tensor.dtype, num_elements)
@@ -200,12 +208,17 @@ def unary_op(
 ):
     """IRON design for unary element-wise operations.
 
-    Parameters:
+    Args:
         op_name: Name of the unary operation.
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
 
+    Returns:
+        The resolved IRON program.
+
+    Raises:
+        ValueError: If the input/output tensor counts, contiguity, or shapes are invalid.
     """
     if len(input_tensors) != 1:
         msg = "Operation requires exactly one input tensor."

@@ -15,7 +15,7 @@ def ggml_hsa_convert(
 ) -> KernelSpec:
     """Return the KernelSpec for an element-wise dtype conversion.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: [src] dense contiguous tensor.
         output_tensor: dense contiguous tensor, same element count, different dtype.

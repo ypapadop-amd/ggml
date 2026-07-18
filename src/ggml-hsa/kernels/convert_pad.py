@@ -15,9 +15,9 @@ def ggml_hsa_convert_pad(
 ) -> KernelSpec:
     """Return the KernelSpec for the convert+pad pre-amble.
 
-    Parameters:
+    Args:
         arch: Target architecture.
-        input_tensors: [src] dense f32 tensor of logical shape [d0, d1].
+        input_tensors: [src] dense f32 or bf16 tensor of logical shape [d0, d1].
         output_tensor: padded bf16 tensor of shape [d0pad, d1pad].
         op_params: unused.
 

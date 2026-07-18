@@ -5,22 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON design for the MUL_MAT pre-amble: f32 -> bf16 convert + zero-pad.
-
-The source is a dense, contiguous f32 tensor of logical shape [d0, d1] (GGML
-convention: d0 = ne[0] innermost/contiguous). The destination is a larger,
-pre-zeroed bf16 buffer of shape [d0pad, d1pad] (d0pad >= d0, d1pad >= d1). The
-first d1 rows are converted; each is widened from d0 to d0pad by the compute
-kernel (which zero-fills the [d0, d0pad) tail), and the trailing rows
-[d1, d1pad) are left as the pre-zeroed buffer contents.
-
-Data movement is kept fully linear on both the fill and drain sides: the input
-streams d1 contiguous rows of d0 elements, the output streams d1 contiguous rows
-of d0pad elements into the front of the destination buffer. Row-widening is done
-on the compute tile rather than via a strided shim DMA, because a single large
-strided (2D) shim transfer silently exceeds the hardware BD wrap-size limits for
-the shapes this kernel sees; linear transfers have no such limit.
-"""
+"""IRON kernel implementation for the convert_pad operation."""
 
 from pathlib import Path
 
@@ -40,13 +25,16 @@ from .utils import arch_to_device
 
 
 def convert_pad(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """Build the convert+pad IRON program.
+    """Build the convert_pad IRON program: zero-pad a tensor, with an optional f32 -> bf16 convert.
 
-    Parameters:
+    MUL_MAT pre-amble. Widens each of the first d1 rows from d0 to d0pad elements
+    (compute kernel zero-fills the tail); trailing rows [d1, d1pad) are left as
+    the pre-zeroed destination buffer contents.
+
+    Args:
         arch: Target architecture.
-        input_tensors: [src] dense f32 tensor of logical shape [d0, d1].
-        output_tensor: padded bf16 tensor of shape [d0pad, d1pad] (d0pad >= d0,
-            d1pad >= d1).
+        input_tensors: [src] input tensor.
+        output_tensor: padded bf16 output tensor.
         op_params: unused (kept for the dispatch ABI).
 
     Returns:
@@ -54,7 +42,6 @@ def convert_pad(arch: str, input_tensors: list, output_tensor, op_params: bytear
 
     Raises:
         ValueError: On invalid tensor count, dtype, contiguity, or shape.
-
     """
     del op_params  # placement is derived from shapes, not op_params
 
@@ -125,15 +112,14 @@ def _create_external_function(
 ) -> ExternalFunction:
     """Create the ExternalFunction for the convert_pad core function.
 
-    Parameters:
-        src: Source tensor (f32).
-        output_tensor: Destination tensor (bf16).
+    Args:
+        src: Source tensor.
+        output_tensor: Destination tensor.
         d0: Number of valid elements in one logical row.
         d0pad: Padded row width.
 
     Returns:
         The configured ExternalFunction.
-
     """
     current_dir = Path(__file__).resolve().parent
     compile_flags = [

@@ -21,7 +21,7 @@ _ARCH_PARAMS = {
 def _arch_params(arch: str) -> dict:
     """Return the on-tile resource parameters for an architecture.
 
-    Parameters:
+    Args:
         arch: Target architecture.
 
     Returns:
@@ -29,7 +29,6 @@ def _arch_params(arch: str) -> dict:
 
     Raises:
         ValueError: If the architecture is unknown.
-
     """
     params = _ARCH_PARAMS.get(arch)
     if params is None:
@@ -43,7 +42,7 @@ def align_to_arch(
 ) -> int:
     """Align an element count so its byte size is a multiple of alignment_bytes.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         size: Element count to align.
         dtype: Element data type.
@@ -51,7 +50,6 @@ def align_to_arch(
 
     Returns:
         The aligned element count.
-
     """
     if arch in ["aie2", "aie2p"]:
         dtype_size = dtype.itemsize
@@ -70,13 +68,12 @@ def align_to_arch(
 def arch_aligned_num_elements(arch: str, tensor) -> int:
     """Tensor element count aligned to the architecture for its dtype.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         tensor: Tensor whose element count is aligned.
 
     Returns:
         The arch-aligned element count.
-
     """
     return align_to_arch(arch, tensor.numel(), tensor.dtype)
 
@@ -84,14 +81,13 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """Largest power-of-two tile within a 512-bit vector dividing num_elements.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         dtype: Element data type.
         num_elements: Total number of elements to tile.
 
     Returns:
         The chosen tile size.
-
     """
     vector_register_width = _arch_params(arch)["vector_reg_bits"]
     tile_size = int(vector_register_width / dtype.itemsize)
@@ -117,14 +113,13 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     the largest multiple-of-V divisor within the L1 budget; if none exists (V does not
     divide num_elements), fall back to max_tile_size, which halves V down to a divisor.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         dtype: Element data type.
         num_elements: Total number of elements to tile.
 
     Returns:
         The chosen tile size in elements; always divides num_elements.
-
     """
     params = _arch_params(arch)
     v = params["vector_reg_bits"] // (8 * dtype.itemsize)
@@ -152,12 +147,11 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
 def arch_to_device(device):
     """Map "aie2" -> NPU1, "aie2p" -> NPU2; pass through existing device objects.
 
-    Parameters:
+    Args:
         device: Architecture string or an existing device object.
 
     Returns:
         The corresponding device object.
-
     """
     if isinstance(device, str):
         if device == "aie2":
