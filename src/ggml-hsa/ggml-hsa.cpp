@@ -759,7 +759,11 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     src_nodes[1].tensor.data = nullptr;
     src_nodes[1].buffer_size = GGML_PAD(ggml_nbytes(&b), dev_info.alignment);
 
-    // rewrite output to a padded f32 temporary; it must be de-padded back into the parent tensor
+    // rewrite output to a padded f32 temporary; it must be de-padded back into the parent tensor.
+    // The GEMM microkernel always produces f32, and HSA_DEPAD always consumes an f32 source, so the
+    // temporary is f32 even when the parent has been retyped to bf16 by graph_optimize (the de-pad
+    // then narrows f32->bf16 into the bf16 parent in one pass).
+    dst.type = GGML_TYPE_F32;
     dst.ne[0] = Mpad;
     dst.ne[1] = Npad;
     ggml_hsa_set_contiguous_strides(dst);
@@ -1936,6 +1940,95 @@ static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_eve
 }
 
 /**
+ * @brief Retypes qualifying padded-GEMM MUL_MAT nodes to bf16 and blanks the following cast(s).
+ *
+ * ggml_mul_mat always produces f32, so a bf16 graph wraps each GEMM in an f32->bf16 cast. This hook
+ * runs per split before allocation and before tensor_extra construction, the sanctioned point to
+ * rewrite the graph. For a MUL_MAT eligible for the padded bf16 GEMM path whose every consumer is a
+ * non-output f32->bf16 convert-cast, it retypes the MUL_MAT to bf16 (the de-pad then narrows
+ * f32->bf16 in one pass), rewires each cast's downstream readers onto the MUL_MAT, and sets each
+ * orphaned cast's op to GGML_OP_NONE. The framework's ggml_op_is_empty skip then drops the blanked
+ * casts and gallocr gives them no buffer (0 children). All-or-nothing: if any consumer reads the
+ * MUL_MAT as f32, or any cast is a graph output, the node is left untouched (normal f32 de-pad).
+ *
+ * Node removal is not possible here (the scheduler rebuilds the split from the original node range),
+ * so the cast node persists but is neutralized to a no-op.
+ */
+static void ggml_backend_hsa_graph_optimize(ggml_backend_t /*backend*/, ggml_cgraph * cgraph) {
+    const std::int32_t node_count = ggml_graph_n_nodes(cgraph);
+
+    for (std::int32_t i = 0; i < node_count; ++i) {
+        ggml_tensor * mm = ggml_graph_node(cgraph, i);
+        if (!ggml_hsa_mul_mat_is_padded_gemm(*mm)) {
+            continue;
+        }
+        if ((mm->flags & GGML_TENSOR_FLAG_OUTPUT) != 0) {
+            continue;
+        }
+
+        // Collect all consumers of mm; require at least one and every one a non-output
+        // f32->bf16 convert-cast. Any f32 reader (matmul, add, output, or a cast to another dtype)
+        // disqualifies: retyping mm would feed bf16 where f32 is expected.
+        bool qualifies = true;
+        bool has_consumer = false;
+        for (std::int32_t j = 0; j < node_count && qualifies; ++j) {
+            ggml_tensor * c = ggml_graph_node(cgraph, j);
+            for (auto s = 0; s < GGML_MAX_SRC; ++s) {
+                if (c->src[s] != mm) {
+                    continue;
+                }
+                has_consumer = true;
+                const bool is_bf16_cast = ggml_hsa_is_convert_copy(*c) &&
+                                          c->src[0] != nullptr &&
+                                          c->src[0]->type == GGML_TYPE_F32 &&
+                                          c->type == GGML_TYPE_BF16 &&
+                                          (c->flags & GGML_TENSOR_FLAG_OUTPUT) == 0;
+                if (!is_bf16_cast) {
+                    qualifies = false;
+                }
+                break; // a node lists mm in at most one meaningful src slot for this check
+            }
+        }
+        if (!qualifies || !has_consumer) {
+            continue;
+        }
+
+        // Snapshot the cast consumers of mm before any rewrite. Rewiring below repoints the casts'
+        // downstream readers onto mm, so a rescan for "src == mm" would then re-match those readers
+        // and cascade the blanking through the whole graph. Capturing the genuine casts up front
+        // keeps the set fixed.
+        std::vector<ggml_tensor *> casts;
+        for (std::int32_t j = 0; j < node_count; ++j) {
+            ggml_tensor * cast = ggml_graph_node(cgraph, j);
+            for (auto s = 0; s < GGML_MAX_SRC; ++s) {
+                if (cast->src[s] == mm) {
+                    casts.push_back(cast);
+                    break;
+                }
+            }
+        }
+
+        // Retype the MUL_MAT result to bf16; the de-pad post-amble now narrows f32->bf16 directly.
+        mm->type = GGML_TYPE_BF16;
+        ggml_hsa_set_contiguous_strides(*mm);
+
+        // For each cast consumer: rewire its downstream readers onto mm, then blank it to a no-op.
+        for (ggml_tensor * cast : casts) {
+            // rewire everything that reads the cast to read mm instead
+            for (std::int32_t k = 0; k < node_count; ++k) {
+                ggml_tensor * r = ggml_graph_node(cgraph, k);
+                for (auto s = 0; s < GGML_MAX_SRC; ++s) {
+                    if (r->src[s] == cast) {
+                        r->src[s] = mm;
+                    }
+                }
+            }
+            cast->op = GGML_OP_NONE;
+        }
+    }
+}
+
+/**
  * @brief Interface for managing HSA backends.
  */
 static const ggml_backend_i ggml_backend_hsa_interface = {
@@ -1954,7 +2047,7 @@ static const ggml_backend_i ggml_backend_hsa_interface = {
     /* .graph_compute       = */ ggml_backend_hsa_graph_compute,
     /* .event_record        = */ ggml_backend_hsa_event_record,
     /* .event_wait          = */ ggml_backend_hsa_event_wait,
-    /* .graph_optimize      = */ nullptr,
+    /* .graph_optimize      = */ ggml_backend_hsa_graph_optimize,
 };
 
 /**
