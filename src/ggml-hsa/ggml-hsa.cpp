@@ -768,8 +768,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             // cast), so it batches on the queue instead of the host copy path that drains it. Any
             // other copy (strided, reshape) stays on the host.
             if (ggml_hsa_is_convert_copy(node.tensor)) {
-                convert_copy_kernel = ggml_hsa_build_transform_kernel(
-                    dev_info, "HSA_CONVERT", *parent_tensor.src[0], parent_tensor);
+                kernel = ggml_hsa_build_transform_kernel(dev_info, "HSA_CONVERT",
+                                                         *parent_tensor.src[0], parent_tensor);
             }
             return;
         case GGML_OP_CONT:
@@ -897,9 +897,10 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     if (!requires_sync) {
         sync_mode = sync_mode_t::none;
     } else if (node.depad && postprocess_kernel != nullptr &&
-               std::all_of(src_nodes.begin(), src_nodes.begin() + nsrcs, [](const node_t & src_node) {
-                   return src_node.buffer_size == 0 || src_node.preprocess_kernel != nullptr;
-               })) {
+               std::all_of(
+                   src_nodes.begin(), src_nodes.begin() + nsrcs, [](const node_t & src_node) {
+                       return src_node.buffer_size == 0 || src_node.preprocess_kernel != nullptr;
+                   })) {
         sync_mode = sync_mode_t::device;
     } else {
         sync_mode = sync_mode_t::host;
@@ -1660,29 +1661,29 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             continue;
         }
 
+        auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+
+        // This node was fused into its producer's de-pad (only possible for a convert-CPY/DUP
+        // consumer of a MUL_MAT), which already wrote the narrowed bf16 result here. Running it
+        // would read the never-written f32 parent.
+        if (tensor_extra.fusion.skip_dispatch) {
+            continue;
+        }
+
         switch (node->op) {
             // implemented as host kernels, so no dispatch required
             case GGML_OP_DUP:
             case GGML_OP_CPY:
-                {
-                    // A pure dtype-conversion copy dispatches on-device (no queue drain); other
-                    // copies fall back to the host path.
-                    auto & extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-                    // This cast was fused into its producer's de-pad, which already wrote the
-                    // narrowed bf16 result here. Running the copy would read the never-written f32
-                    // parent.
-                    if (extra.fusion.skip_dispatch) {
-                        continue;
-                    }
-                    if (extra.convert_copy_kernel != nullptr) {
-                        status = extra.convert_copy_kernel->dispatch(ctx, node->src, 1, *node);
-                    } else if (node->op == GGML_OP_DUP) {
-                        status = ggml_hsa_compute_dup(ctx, node);
-                    } else {
-                        status = ggml_hsa_compute_cpy(ctx, node);
-                    }
-                    continue;
+                // A pure dtype-conversion copy dispatches on-device (no queue drain); other
+                // copies fall back to the host path.
+                if (tensor_extra.kernel != nullptr) {
+                    status = tensor_extra.kernel->dispatch(ctx, node->src, 1, *node);
+                } else if (node->op == GGML_OP_DUP) {
+                    status = ggml_hsa_compute_dup(ctx, node);
+                } else {
+                    status = ggml_hsa_compute_cpy(ctx, node);
                 }
+                continue;
             case GGML_OP_CONT:
                 status = ggml_hsa_compute_cont(ctx, node);
                 continue;
@@ -1690,7 +1691,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
         }
 
-        auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
         ggml_tensor & internal_node = tensor_extra.node.tensor;
 
         // Prefer on-device pre/post-processing kernels when the node provides them: they run on the
