@@ -1563,93 +1563,6 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
 }
 
 /**
- * @brief Fuses each padded MUL_MAT's de-pad with a following f32->bf16 convert-CPY.
- *
- * Whole-graph pass (tensor_extra is built per node and cannot see a node's consumers, so this must
- * run once all extras exist). For every MUL_MAT on the padded-GEMM device-transform path whose only
- * consumer is a pure f32->bf16 convert-CPY, builds a de-pad kernel that also narrows to bf16,
- * points it at the CPY's output buffer, and marks the CPY skipped. Opportunistic: if the fused
- * kernel fails to build nothing changes and the graph runs the original de-pad + separate cast.
- * Latched per MUL_MAT via @c fusion.analyzed so the scan runs once, not on every forward pass.
- */
-static void ggml_hsa_fuse_mul_mat_narrow(const ggml_backend_hsa_context & ctx,
-                                         ggml_cgraph * cgraph,
-                                         std::int32_t node_count) {
-    const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
-
-    for (std::int32_t i = 0; i < node_count; ++i) {
-        ggml_tensor * mm = ggml_graph_node(cgraph, i);
-        if (mm->op != GGML_OP_MUL_MAT || mm->extra == nullptr) {
-            continue;
-        }
-        auto & mm_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(mm->extra);
-        if (mm_extra.fusion.analyzed) {
-            continue;
-        }
-        mm_extra.fusion.analyzed = true;
-
-        // Only a padded MUL_MAT on the on-device de-pad path is a candidate. Require the full
-        // device-transform chain (post-processing + a pre-processing kernel for every buffered
-        // source) so use_device_transforms is guaranteed true at dispatch: otherwise the host
-        // fallback would write f32 to the parent while the fused (skipped) cast leaves the bf16
-        // consumer unwritten. Kernel pointers are fixed after construction, so this holds per pass.
-        if (!mm_extra.node.depad || mm_extra.postprocess_kernel == nullptr) {
-            continue;
-        }
-        bool device_transforms = true;
-        for (auto src_idx = 0; src_idx < mm_extra.nsrcs; ++src_idx) {
-            if (mm_extra.src_nodes[src_idx].buffer_size != 0 &&
-                mm_extra.src_nodes[src_idx].preprocess_kernel == nullptr) {
-                device_transforms = false;
-                break;
-            }
-        }
-        if (!device_transforms) {
-            continue;
-        }
-        // The f32 parent must not be read by anything but the fused consumer.
-        if ((mm->flags & GGML_TENSOR_FLAG_OUTPUT) != 0) {
-            continue;
-        }
-
-        // Find the sole consumer of the MUL_MAT in the graph (graphs here are small).
-        ggml_tensor * consumer = nullptr;
-        bool multiple = false;
-        for (std::int32_t j = 0; j < node_count && !multiple; ++j) {
-            ggml_tensor * c = ggml_graph_node(cgraph, j);
-            for (auto s = 0; s < GGML_MAX_SRC; ++s) {
-                if (c->src[s] == mm) {
-                    if (consumer != nullptr && consumer != c) {
-                        multiple = true;
-                    }
-                    consumer = c;
-                    break;
-                }
-            }
-        }
-        if (multiple || consumer == nullptr || consumer->extra == nullptr) {
-            continue;
-        }
-        // The consumer must be a pure f32->bf16 dtype-convert copy.
-        if (!ggml_hsa_is_convert_copy(*consumer) || consumer->src[0]->type != GGML_TYPE_F32 ||
-            consumer->type != GGML_TYPE_BF16) {
-            continue;
-        }
-
-        // Build a de-pad kernel that narrows the padded f32 result to bf16 straight into the
-        // consumer's buffer. The distinct (f32 in, bf16 out) dtype pair caches its own PDI.
-        auto fused =
-            ggml_hsa_build_transform_kernel(dev_info, "HSA_DEPAD", mm_extra.node.tensor, *consumer);
-        if (fused == nullptr) {
-            continue; // fall back to the original de-pad + separate cast
-        }
-        mm_extra.postprocess_kernel = std::move(fused);
-        mm_extra.fusion.narrow_dst = consumer;
-        static_cast<ggml_backend_hsa_tensor_extra *>(consumer->extra)->fusion.skip_dispatch = true;
-    }
-}
-
-/**
  * @brief Host-path copy from @p src to @p dst, choosing sub-block or plain copy based on @p depad.
  *
  * A padded tensor (@p depad) has a different shape from its counterpart, so the logical sub-block
@@ -1685,15 +1598,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         }
     }
 
-    // Fuse the per-layer f32->bf16 cast into the MUL_MAT de-pad post-amble. A padded-GEMM MUL_MAT
-    // produces an f32 result that HSA_DEPAD strips into the f32 parent, which a following
-    // convert-CPY then re-reads to write a bf16 copy for the next op. When the MUL_MAT's sole
-    // consumer is exactly that cast, redirect the de-pad to narrow-and-write bf16 straight into the
-    // cast's output buffer and skip the cast dispatch, removing a kernel launch and a full [M, N]
-    // f32 memory round trip. The ggml graph is left untouched (no tensor type mutated); this is a
-    // device-side rewrite only.
-    ggml_hsa_fuse_mul_mat_narrow(ctx, cgraph, node_count);
-
     for (std::int32_t i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
         ggml_tensor * node = ggml_graph_node(cgraph, i);
 
@@ -1703,13 +1607,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         }
 
         auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-
-        // This node was fused into its producer's de-pad (only possible for a convert-CPY/DUP
-        // consumer of a MUL_MAT), which already wrote the narrowed bf16 result here. Running it
-        // would read the never-written f32 parent.
-        if (tensor_extra.fusion.skip_dispatch) {
-            continue;
-        }
 
         switch (node->op) {
             // implemented as host kernels, so no dispatch required
@@ -1795,13 +1692,10 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 
         if (use_device_transforms) {
             // on-device result post-processing: transform the internal output back into the parent
-            // tensor on-queue (e.g. de-pad), no drain. Reads the internal node, writes the parent —
-            // or, when the de-pad was fused with a following f32->bf16 cast, narrows straight into
-            // that consumer's buffer (skipping the separate cast dispatch).
+            // tensor on-queue (e.g. de-pad), no drain. When the MUL_MAT was retyped to bf16 by
+            // graph_optimize, the parent is bf16 and the de-pad narrows f32->bf16 in one pass.
             ggml_tensor * postprocess_src = &internal_node;
-            ggml_tensor & post_dst =
-                tensor_extra.fusion.narrow_dst ? *tensor_extra.fusion.narrow_dst : *node;
-            status = tensor_extra.postprocess_kernel->dispatch(ctx, &postprocess_src, 1, post_dst);
+            status = tensor_extra.postprocess_kernel->dispatch(ctx, &postprocess_src, 1, *node);
             if (status != GGML_STATUS_SUCCESS) {
                 GGML_HSA_LOG_ERROR("%s: failed to de-pad result for tensor \"%s\" (%s)", __func__,
                                    node->name, ggml_op_desc(node));

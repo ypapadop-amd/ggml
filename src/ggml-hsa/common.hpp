@@ -388,23 +388,6 @@ struct ggml_backend_hsa_tensor_extra {
     /// output buffer back into the parent tensor (e.g., de-padding and/or dtype conversion) on the
     /// device queue. Null when the output needs no on-device post-processing.
     std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
-    /// @brief State for the whole-graph MUL_MAT de-pad + f32->bf16 cast fusion (see
-    /// @c ggml_hsa_fuse_mul_mat_narrow). Set on the MUL_MAT (narrow_dst, analyzed) and, when fusion
-    /// applies, on the fused-away consumer CPY/DUP (skip_dispatch).
-    struct fusion_t {
-        /// @brief When non-null (this is a MUL_MAT whose de-pad post-amble was fused with the
-        /// following f32->bf16 cast), the post-processing kernel narrows and writes the result into
-        /// this consumer tensor instead of the f32 parent.
-        ggml_tensor * narrow_dst{nullptr};
-        /// @brief When true (this is a convert-CPY whose cast was fused into its producer's
-        /// de-pad), graph compute skips this node entirely: the producer already wrote the narrowed
-        /// bf16 result into this tensor, so re-running the copy would read the never-written f32
-        /// parent and clobber it.
-        bool skip_dispatch{false};
-        /// @brief Latches the one-time fusion pre-pass so the whole-graph consumer scan and
-        /// fused-kernel lookup run once, not on every forward pass.
-        bool analyzed{false};
-    } fusion;
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);
