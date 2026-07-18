@@ -633,6 +633,42 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
 }
 
 /**
+ * @brief Eligibility for the padded bf16 GEMM path, over a raw tensor.
+ *
+ * Shared by @c ggml_hsa_prepare_mul_mat_f32 (which additionally constrains the destination dtype)
+ * and @c ggml_backend_hsa_graph_optimize (which runs before tensor_extra exists, so it only has the
+ * raw graph tensor). Deliberately does NOT check @c mm.type: the two callers disagree on the
+ * destination dtype, so each applies its own rule.
+ *
+ * @param[in] mm candidate MUL_MAT node.
+ * @return @c true if @p mm is a 2-source MUL_MAT with f32/bf16 operands, trivial layout on both
+ *         operands and the destination, and no batch/broadcast.
+ */
+static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
+    if (mm.op != GGML_OP_MUL_MAT || mm.src[0] == nullptr || mm.src[1] == nullptr ||
+        mm.src[2] != nullptr) {
+        return false;
+    }
+    const ggml_tensor & a = *mm.src[0]; // [K, M]
+    const ggml_tensor & b = *mm.src[1]; // [K, N]
+
+    const bool a_ok = a.type == GGML_TYPE_F32 || a.type == GGML_TYPE_BF16;
+    const bool b_ok = b.type == GGML_TYPE_F32 || b.type == GGML_TYPE_BF16;
+    if (!a_ok || !b_ok) {
+        return false;
+    }
+    if (!ggml_hsa_has_trivial_layout(a) || !ggml_hsa_has_trivial_layout(b) ||
+        !ggml_hsa_has_trivial_layout(mm)) {
+        return false;
+    }
+    // no batching / broadcasting
+    if (a.ne[2] != 1 || a.ne[3] != 1 || b.ne[2] != 1 || b.ne[3] != 1) {
+        return false;
+    }
+    return true;
+}
+
+/**
  * @brief Prepares an F32 @c MUL_MAT node for the AIE whole-array GEMM kernel.
  *
  * The GEMM microkernel has no native f32 path and the whole-array tiling requires the matrix
@@ -660,27 +696,28 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
                                          ggml_backend_hsa_tensor_extra::node_t * src_nodes,
                                          std::int32_t nsrcs) {
     ggml_tensor & dst = node.tensor;
-    if (dst.op != GGML_OP_MUL_MAT || nsrcs != 2) {
+
+    // The GEMM microkernel runs in bf16, so both operands must be f32 (converted to bf16 below) or
+    // already bf16 (converted in the graph, e.g. the bf16 MNIST variant). Shared eligibility is
+    // checked over the internal source tensors via the raw-tensor predicate; here we additionally
+    // require an f32 destination (ggml's native MUL_MAT output) or a bf16 destination (retyped by
+    // graph_optimize so the de-pad narrows f32->bf16 in one pass).
+    if (nsrcs != 2) {
         return false;
     }
-
     ggml_tensor & a = src_nodes[0].tensor; // [K, M]
     ggml_tensor & b = src_nodes[1].tensor; // [K, N]
 
-    // The GEMM microkernel runs in bf16, so both operands must be either f32 (converted to bf16
-    // below) or already bf16 (converted in the graph, e.g. the bf16 MNIST variant). ggml always
-    // produces an f32 MUL_MAT result, so the destination is f32 regardless of the input dtype.
-    const bool a_ok = a.type == GGML_TYPE_F32 || a.type == GGML_TYPE_BF16;
-    const bool b_ok = b.type == GGML_TYPE_F32 || b.type == GGML_TYPE_BF16;
-    if (!a_ok || !b_ok || dst.type != GGML_TYPE_F32) {
+    // Build a raw view of the node/sources for the shared predicate: node_t.tensor already mirrors
+    // the parent's op/type/shape at this point in construction.
+    ggml_tensor probe = dst;
+    probe.src[0] = &a;
+    probe.src[1] = &b;
+    probe.src[2] = nullptr;
+    if (!ggml_hsa_mul_mat_is_padded_gemm(probe)) {
         return false;
     }
-    if (!ggml_hsa_has_trivial_layout(a) || !ggml_hsa_has_trivial_layout(b) ||
-        !ggml_hsa_has_trivial_layout(dst)) {
-        return false;
-    }
-    // no batching / broadcasting
-    if (a.ne[2] != 1 || a.ne[3] != 1 || b.ne[2] != 1 || b.ne[3] != 1) {
+    if (dst.type != GGML_TYPE_F32 && dst.type != GGML_TYPE_BF16) {
         return false;
     }
 
