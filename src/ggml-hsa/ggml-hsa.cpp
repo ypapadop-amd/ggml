@@ -1845,6 +1845,12 @@ static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_eve
  * casts and gallocr gives them no buffer (0 children). All-or-nothing: if any consumer reads the
  * MUL_MAT as f32, or any cast is a graph output, the node is left untouched (normal f32 de-pad).
  *
+ * The passed cgraph is a view over only the current scheduler split's node range, so its scans see
+ * only in-split consumers. Consumers in other splits are handled too: using the full-graph
+ * use_counts (shared by the view) the hook refuses to retype any MUL_MAT whose total consumer count
+ * exceeds the count visible in this split -- an out-of-split consumer would otherwise receive a
+ * type-inconsistent cross-split copy and trip a layout assert.
+ *
  * Node removal is not possible here (the scheduler rebuilds the split from the original node range),
  * so the cast node persists but is neutralized to a no-op.
  */
@@ -1884,6 +1890,29 @@ static void ggml_backend_hsa_graph_optimize(ggml_backend_t /*backend*/, ggml_cgr
             }
         }
         if (!qualifies || !has_consumer) {
+            continue;
+        }
+
+        // Cross-split guard: cgraph is a view over ONE scheduler split's node range, so the scans
+        // above only see consumers within this split. The view shares the full-graph use_counts
+        // array (ggml_graph_view copies it, hash-keyed by tensor over the whole graph), so
+        // ggml_node_get_use_count reports mm's TOTAL operand references across every split. Count
+        // mm's in-view operand references with the SAME convention use_counts uses -- one increment
+        // per (consumer,src-slot) appearance, no break -- so the two counts are apples-to-apples. If
+        // the full-graph count exceeds the in-view count, mm has a consumer in another split that is
+        // invisible here; retyping to bf16 would leave that consumer's cross-split f32 input copy
+        // (captured before this hook ran) type-inconsistent and trip a layout assert at compute
+        // time. Refuse outright -- pure no-op, no partial rewrite.
+        std::int32_t in_view_uses = 0;
+        for (std::int32_t j = 0; j < node_count; ++j) {
+            ggml_tensor * c = ggml_graph_node(cgraph, j);
+            for (auto s = 0; s < GGML_MAX_SRC; ++s) {
+                if (c->src[s] == mm) {
+                    ++in_view_uses;
+                }
+            }
+        }
+        if (ggml_node_get_use_count(cgraph, i) > in_view_uses) {
             continue;
         }
 
