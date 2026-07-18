@@ -379,6 +379,17 @@ struct ggml_backend_hsa_tensor_extra {
     /// internal buffer. Null until the first conversion. The pre-processing is skipped while this
     /// matches the parent's data pointer (constant sources only), guarding against a moved buffer.
     std::array<const void *, GGML_MAX_SRC> src_converted_ptr{};
+    /// @brief When set (a MUL_MAT whose de-pad post-amble was fused with the following f32->bf16
+    /// cast), the post-processing kernel narrows and writes the result into this consumer tensor
+    /// instead of the f32 parent. Null when no fusion applies.
+    ggml_tensor * fused_narrow_dst{nullptr};
+    /// @brief When true (a convert-CPY whose cast was fused into its producer's de-pad), graph
+    /// compute skips this node entirely: the producer already wrote the narrowed bf16 result into
+    /// this tensor, so re-running the copy would read the never-written f32 parent and clobber it.
+    bool skip_dispatch{false};
+    /// @brief Latches the one-time fusion pre-pass so the whole-graph consumer scan and fused-kernel
+    /// lookup run once, not on every forward pass.
+    bool fusion_analyzed{false};
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);

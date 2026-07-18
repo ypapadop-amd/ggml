@@ -8,10 +8,15 @@
 """IRON design for the MUL_MAT post-amble: de-pad an f32 result.
 
 The source is a padded, contiguous f32 buffer of shape [d0pad, d1pad] (GGML
-convention: d0pad = ne[0] innermost/contiguous). The destination is a dense f32
+convention: d0pad = ne[0] innermost/contiguous). The destination is a dense
 tensor of logical shape [d0, d1] (d0 <= d0pad, d1 <= d1pad). The first d1 rows
 are gathered; each is narrowed from d0pad to d0 by the compute kernel (which
 copies only the first d0 elements).
+
+Two modes, selected by the destination dtype: f32 -> f32 (plain de-pad) or
+f32 -> bf16 (de-pad + convert). The bf16 mode fuses the per-layer f32->bf16 cast
+that would otherwise follow the MUL_MAT as a separate CPY, so the padded GEMM
+result is narrowed as it is de-padded (bit-identical to the separate cast).
 
 Data movement is kept fully linear on both the fill and drain sides: the input
 streams the first d1 rows of the padded buffer (d0pad elements each, contiguous
@@ -34,6 +39,7 @@ from aie.iron import (
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
+from ml_dtypes import bfloat16
 
 from .utils import arch_to_device
 
@@ -63,10 +69,13 @@ def depad(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
 
     src = input_tensors[0]
 
-    if src.dtype != np.float32 or output_tensor.dtype != np.float32:
+    # Source is always the f32 padded GEMM temporary. Destination is f32 (plain de-pad) or
+    # bf16 (de-pad + convert, fusing the per-layer cast).
+    convert = output_tensor.dtype == bfloat16
+    if src.dtype != np.float32 or (output_tensor.dtype != np.float32 and not convert):
         msg = (
-            f"depad only supports float32; got src {src.dtype}, dst "
-            f"{output_tensor.dtype}."
+            f"depad requires an f32 source and an f32 or bf16 destination; got src "
+            f"{src.dtype}, dst {output_tensor.dtype}."
         )
         raise ValueError(msg)
     if not src.contiguous or not output_tensor.contiguous:
@@ -85,10 +94,10 @@ def depad(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         raise ValueError(msg)
 
     function = _create_external_function(
-        output_tensor=output_tensor, d0=d0, d0pad=d0pad
+        src=src, output_tensor=output_tensor, d0=d0, d0pad=d0pad
     )
 
-    row_in_ty = np.ndarray[(d0pad,), np.dtype[output_tensor.dtype]]
+    row_in_ty = np.ndarray[(d0pad,), np.dtype[src.dtype]]
     row_out_ty = np.ndarray[(d0,), np.dtype[output_tensor.dtype]]
 
     of_in = ObjectFifo(row_in_ty, name="in")
@@ -117,11 +126,14 @@ def depad(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     return Program(arch_to_device(arch), rt).resolve_program()
 
 
-def _create_external_function(output_tensor, d0: int, d0pad: int) -> ExternalFunction:
+def _create_external_function(
+    src, output_tensor, d0: int, d0pad: int
+) -> ExternalFunction:
     """Create the ExternalFunction for the depad core function.
 
     Parameters:
-        output_tensor: Destination tensor (f32).
+        src: Source tensor (f32 padded temporary).
+        output_tensor: Destination tensor (f32 or bf16).
         d0: Number of valid elements in one logical row.
         d0pad: Padded input row width.
 
@@ -130,21 +142,26 @@ def _create_external_function(output_tensor, d0: int, d0pad: int) -> ExternalFun
 
     """
     current_dir = Path(__file__).resolve().parent
+    compile_flags = [
+        f"-DINPUT_DTYPE={dtype_to_str(src.dtype)}",
+        f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        # Row width is fixed per kernel instance (each shape JITs its own .o), so pass it
+        # as a compile-time constant: lets Peano fold the trip count and pipeline the hot loop.
+        f"-DDEPAD_D0={d0}",
+    ]
+    # f32 -> bf16 selects the de-pad + convert kernel body; f32 -> f32 keeps the plain copy.
+    if output_tensor.dtype == bfloat16:
+        compile_flags.append("-DDEPAD_CONVERT_F32_TO_BF16=1")
+
     return ExternalFunction(
         name="ggml_hsa_depad",
         object_file_name="ggml_hsa_depad_core_function.o",
         source_file=str(current_dir / "depad.cc"),
         arg_types=[
-            np.ndarray[(d0pad,), np.dtype[output_tensor.dtype]],
+            np.ndarray[(d0pad,), np.dtype[src.dtype]],
             np.ndarray[(d0,), np.dtype[output_tensor.dtype]],
             np.int32,  # d0
             np.int32,  # d0pad
         ],
-        compile_flags=[
-            f"-DINPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            # Row width is fixed per kernel instance (each shape JITs its own .o), so pass it
-            # as a compile-time constant: lets Peano fold the trip count and pipeline the hot loop.
-            f"-DDEPAD_D0={d0}",
-        ],
+        compile_flags=compile_flags,
     )
