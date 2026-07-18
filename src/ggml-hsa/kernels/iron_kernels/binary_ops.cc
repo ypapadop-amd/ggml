@@ -122,7 +122,9 @@ void ggml_op_add(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a + b; });
+    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(a + b);
+    });
 }
 
 #endif // GGML_OP_ADD
@@ -141,7 +143,9 @@ void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a - b; });
+    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(a - b);
+    });
 }
 
 #endif // GGML_OP_SUB
@@ -160,7 +164,9 @@ void ggml_op_mul(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a * b; });
+    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(a * b);
+    });
 }
 
 #endif // GGML_OP_MUL
@@ -179,7 +185,9 @@ void ggml_op_div(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a / b; });
+    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(a / b);
+    });
 }
 
 #endif // GGML_OP_DIV
@@ -364,6 +372,10 @@ void ggml_op_add_bias(const INPUT0_DTYPE * __restrict src0,
                       const INPUT1_DTYPE * __restrict src1,
                       OUTPUT_DTYPE * __restrict out,
                       int32_t N) {
+    static_assert(std::is_same_v<INPUT0_DTYPE, INPUT1_DTYPE> &&
+                      std::is_same_v<INPUT0_DTYPE, OUTPUT_DTYPE>,
+                  "ggml_op_add_bias requires matching input and output types");
+
     event0();
 
     constexpr int32_t V = 512 / (sizeof(OUTPUT_DTYPE) * 8);
@@ -383,7 +395,7 @@ void ggml_op_add_bias(const INPUT0_DTYPE * __restrict src0,
     }
 
     for (int32_t i = vend; i < N; ++i) {
-        out[i] = src0[i] + src1[i];
+        out[i] = static_cast<OUTPUT_DTYPE>(src0[i] + src1[i]);
     }
 
     event1();

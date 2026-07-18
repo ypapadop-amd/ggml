@@ -45,7 +45,7 @@ inline float compute_alibi_slope(float max_bias, int32_t n_head, int32_t head_id
         }
     } else {
         // slope = m1^(2*(head_idx - n_head_log2) + 1)
-        uint32_t exp = 2 * (head_idx - n_head_log2) + 1;
+        uint32_t exp = 2 * (static_cast<uint32_t>(head_idx) - n_head_log2) + 1;
         slope = m1;
         for (uint32_t j = 1; j < exp; ++j) {
             slope *= m1;

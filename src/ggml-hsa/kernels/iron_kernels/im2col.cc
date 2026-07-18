@@ -49,6 +49,7 @@ void ggml_op_im2col(const INPUT_DTYPE * __restrict in,
                     int32_t d0,
                     int32_t d1) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "INPUT_DTYPE must be a floating-point type");
+    static_assert(is_floating_point_v<OUTPUT_DTYPE>, "OUTPUT_DTYPE must be a floating-point type");
 
     event0();
 

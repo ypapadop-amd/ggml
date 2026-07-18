@@ -29,7 +29,7 @@
 template <typename T, int32_t M, int32_t N>
 void zero_scalar(T * __restrict c) {
     for (int32_t i = 0; i < M * N; i++) {
-        c[i] = 0;
+        c[i] = static_cast<T>(0);
     }
 }
 

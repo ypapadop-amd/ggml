@@ -49,6 +49,8 @@ depad_impl(const IN * __restrict in, OUT * __restrict out, int32_t d0, int32_t d
             aie::store_v(out + i, convert_f32_to_bf16_vector<V>(fv));
         } else {
             // f32 -> f32 or bf16 -> bf16: plain copy, no conversion.
+            static_assert(std::is_same_v<IN, OUT>,
+                          "Plain-copy depad requires matching IN/OUT types");
             const aie::vector<OUT, V> v = aie::load_unaligned_v<V>(in + i);
             aie::store_unaligned_v(out + i, v);
         }
@@ -59,6 +61,8 @@ depad_impl(const IN * __restrict in, OUT * __restrict out, int32_t d0, int32_t d
             const uint16_t hi = convert_f32_to_bf16_scalar(in[i]);
             __builtin_memcpy(&out[i], &hi, sizeof(bf16));
         } else {
+            static_assert(std::is_same_v<IN, OUT>,
+                          "Plain-copy depad requires matching IN/OUT types");
             out[i] = in[i];
         }
     }

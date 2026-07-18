@@ -34,6 +34,8 @@ void ggml_hsa_convert_pad(const INPUT_DTYPE * __restrict in,
 #endif
 
 #ifdef CONVERT_PAD_PAD_ONLY
+    static_assert(std::is_same_v<INPUT_DTYPE, OUTPUT_DTYPE>,
+                  "CONVERT_PAD_PAD_ONLY requires matching input and output types");
     // bf16 -> bf16: pad only. Aligned store dodges the broken 16-bit unaligned vector store
     // (output rows are d0pad-wide, a tile multiple, so vector-aligned; input load stays
     // unaligned since the per-row fifo stride is not).
