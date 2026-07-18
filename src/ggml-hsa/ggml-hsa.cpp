@@ -706,17 +706,14 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     const std::int64_t Npad = GGML_PAD(N, tile * n_aie_cols);
 
     // rewrite sources to padded bf16; only sources that arrive as f32 need a dtype conversion,
-    // bf16 sources are just zero-padded to the tile multiples.
-    const bool a_convert = a.type == GGML_TYPE_F32;
-    const bool b_convert = b.type == GGML_TYPE_F32;
-
+    // bf16 sources are just zero-padded to the tile multiples (handled by the pre-processing
+    // kernel below, which is selected from the parent tensor's own dtype).
     a.type = GGML_TYPE_BF16;
     a.ne[0] = Kpad;
     a.ne[1] = Mpad;
     ggml_hsa_set_contiguous_strides(a);
     src_nodes[0].tensor.data = nullptr;
     src_nodes[0].buffer_size = GGML_PAD(ggml_nbytes(&a), dev_info.alignment);
-    src_nodes[0].convert_dtype = a_convert;
 
     b.type = GGML_TYPE_BF16;
     b.ne[0] = Kpad;
@@ -724,7 +721,6 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     ggml_hsa_set_contiguous_strides(b);
     src_nodes[1].tensor.data = nullptr;
     src_nodes[1].buffer_size = GGML_PAD(ggml_nbytes(&b), dev_info.alignment);
-    src_nodes[1].convert_dtype = b_convert;
 
     // rewrite output to a padded f32 temporary; it must be de-padded back into the parent tensor
     dst.ne[0] = Mpad;
@@ -784,6 +780,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     }
 
     std::array<bool, GGML_MAX_SRC> update_src_buffer_size = {};
+    bool requires_sync = false;
 
     // F32 MUL_MAT is handled specially: the operands are converted to bf16 and zero-padded to the
     // GEMM tile multiples. This fully sets up the internal nodes (dtype, shape, buffer sizes,
@@ -795,12 +792,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         // input) has contents that never change across dispatches, so its converted+padded (or
         // just padded) form can be produced once into the persistent internal buffer and reused.
         // graph_compute skips the pre-processing while the cached pointer matches
-        // (src_converted_ptr).
+        // (converted_ptr).
         for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
             const ggml_tensor * src = parent_tensor.src[src_idx];
             if (src_nodes[src_idx].buffer_size != 0 && src->op == GGML_OP_NONE &&
                 (src->flags & GGML_TENSOR_FLAG_INPUT) == 0) {
-                src_is_constant[src_idx] = true;
+                src_nodes[src_idx].is_constant = true;
             }
         }
     } else {
@@ -818,7 +815,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 if (src_node.tensor.type == GGML_TYPE_F16) {
                     update_src_buffer_size[src_idx] = true;
                     src_node.tensor.type = GGML_TYPE_BF16;
-                    src_node.convert_dtype = true;
                 }
             }
         }
@@ -884,12 +880,29 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             if (src_nodes[src_idx].buffer_size == 0) {
                 continue;
             }
-            src_preprocess_kernels[src_idx] = ggml_hsa_build_transform_kernel(
+            src_nodes[src_idx].preprocess_kernel = ggml_hsa_build_transform_kernel(
                 dev_info, "HSA_CONVERT_PAD", *parent_tensor.src[src_idx],
                 src_nodes[src_idx].tensor);
         }
         postprocess_kernel =
             ggml_hsa_build_transform_kernel(dev_info, "HSA_DEPAD", node.tensor, parent_tensor);
+    }
+
+    // Prefer on-device pre/post-processing kernels when the node provides them: they run on the
+    // same in-order queue as the main kernel, so no host queue drain is needed and the packets
+    // batch with surrounding work. This requires the full chain (a pre-processing kernel for every
+    // source that needs one, plus the post-processing kernel) to be available; otherwise fall back
+    // to the host copy path (which must drain first, since the host may not touch a buffer the
+    // device is still using).
+    if (!requires_sync) {
+        sync_mode = sync_mode_t::none;
+    } else if (node.depad && postprocess_kernel != nullptr &&
+               std::all_of(src_nodes.begin(), src_nodes.begin() + nsrcs, [](const node_t & src_node) {
+                   return src_node.buffer_size == 0 || src_node.preprocess_kernel != nullptr;
+               })) {
+        sync_mode = sync_mode_t::device;
+    } else {
+        sync_mode = sync_mode_t::host;
     }
 }
 
@@ -1544,7 +1557,7 @@ static void ggml_hsa_fuse_mul_mat_narrow(const ggml_backend_hsa_context & ctx,
         bool device_transforms = true;
         for (auto src_idx = 0; src_idx < mm_extra.nsrcs; ++src_idx) {
             if (mm_extra.src_nodes[src_idx].buffer_size != 0 &&
-                mm_extra.src_preprocess_kernels[src_idx] == nullptr) {
+                mm_extra.src_nodes[src_idx].preprocess_kernel == nullptr) {
                 device_transforms = false;
                 break;
             }
@@ -1682,23 +1695,13 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 
         // Prefer on-device pre/post-processing kernels when the node provides them: they run on the
         // same in-order queue as the main kernel, so no host queue drain is needed and the packets
-        // batch with surrounding work. This requires the full chain (a pre-processing kernel for
-        // every source that needs one, plus the post-processing kernel) to be available; otherwise
-        // we fall back to the host copy path (which must drain first, since the host may not touch
-        // a buffer the device is still using).
-        bool use_device_transforms =
-            tensor_extra.node.depad && (tensor_extra.postprocess_kernel != nullptr);
-        if (use_device_transforms) {
-            for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
-                if (tensor_extra.src_nodes[src_idx].buffer_size != 0 &&
-                    tensor_extra.src_preprocess_kernels[src_idx] == nullptr) {
-                    use_device_transforms = false;
-                    break;
-                }
-            }
-        }
+        // batch with surrounding work. Otherwise fall back to the host copy path (which must drain
+        // first, since the host may not touch a buffer the device is still using). Fixed once at
+        // tensor-extra construction time.
+        const bool use_device_transforms =
+            tensor_extra.sync_mode == ggml_backend_hsa_tensor_extra::sync_mode_t::device;
 
-        if (tensor_extra.requires_sync) {
+        if (tensor_extra.sync_mode != ggml_backend_hsa_tensor_extra::sync_mode_t::none) {
             if (!use_device_transforms) {
                 ggml_hsa_wait_dispatches(ctx);
             }
@@ -1710,17 +1713,17 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 // buffer only once; once cached, its contents are identical on every later
                 // dispatch, so skip the pre-processing entirely. Keyed on the parent data pointer
                 // so a moved buffer forces a re-conversion.
-                if (tensor_extra.src_is_constant[src_idx]) {
-                    if (tensor_extra.src_converted_ptr[src_idx] == node->src[src_idx]->data) {
+                if (tensor_extra.src_nodes[src_idx].is_constant) {
+                    if (tensor_extra.src_nodes[src_idx].converted_ptr == node->src[src_idx]->data) {
                         continue;
                     }
-                    tensor_extra.src_converted_ptr[src_idx] = node->src[src_idx]->data;
+                    tensor_extra.src_nodes[src_idx].converted_ptr = node->src[src_idx]->data;
                 }
                 if (use_device_transforms) {
                     // on-device source pre-processing: transform the parent source into its
                     // internal buffer on-queue (e.g. convert+pad), no drain
                     ggml_tensor * preprocess_src = node->src[src_idx];
-                    status = tensor_extra.src_preprocess_kernels[src_idx]->dispatch(
+                    status = tensor_extra.src_nodes[src_idx].preprocess_kernel->dispatch(
                         ctx, &preprocess_src, 1, *internal_node.src[src_idx]);
                 } else {
                     // A padded source has a different shape from its parent, so scatter the logical

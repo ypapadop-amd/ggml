@@ -340,9 +340,25 @@ struct ggml_backend_hsa_tensor_extra {
     struct node_t {
         ggml_tensor tensor{};      ///< Transformed tensor.
         std::size_t buffer_size{}; ///< Temporary storage size in bytes.
-        bool convert_dtype{};      ///< True if data conversion is necessary.
+        bool convert_dtype{};      ///< True if data conversion is necessary. Only meaningful for
+                                   ///< the output node.
         bool depad{};              ///< True if the transformed tensor is zero-padded and must be
                                    ///< copied to/from the (smaller) parent tensor sub-block.
+        /// @brief Optional on-device pre-processing kernel: transforms the parent source tensor
+        /// into this internal buffer (e.g., dtype conversion and/or zero-padding) on the device
+        /// queue instead of on the host. Null when the source needs no on-device pre-processing.
+        /// Only meaningful for a source node (unused on the output node).
+        std::shared_ptr<ggml_hsa_kernel> preprocess_kernel;
+        /// @brief True if the source is a graph-constant leaf (e.g. a weight or bias) whose
+        /// converted/padded contents can be cached in the (persistent) internal buffer and reused
+        /// across dispatches instead of re-running the pre-processing every time. Only meaningful
+        /// for a source node.
+        bool is_constant{};
+        /// @brief The parent data pointer whose converted contents currently sit in the internal
+        /// buffer. Null until the first conversion. The pre-processing is skipped while this
+        /// matches the parent's data pointer (constant sources only), guarding against a moved
+        /// buffer. Only meaningful for a source node.
+        const void * converted_ptr{nullptr};
     };
 
     /// @brief Number of source tensors.
@@ -356,13 +372,18 @@ struct ggml_backend_hsa_tensor_extra {
     /// @brief Temporary storage for tensor data, allocated if the kernel requires an intermediate
     /// buffer.
     ggml_hsa_unique_ptr<std::byte> buffer;
-    /// @brief True if synchronization before and after the kernel is required, e.g., if host-based
-    /// transformations are necessary.
-    bool requires_sync{false};
-    /// @brief Optional on-device pre-processing kernel per source: transforms a parent source
-    /// tensor into its internal buffer (e.g., dtype conversion and/or zero-padding) on the device
-    /// queue instead of on the host. Entry is null when a source needs no on-device pre-processing.
-    std::array<std::shared_ptr<ggml_hsa_kernel>, GGML_MAX_SRC> src_preprocess_kernels{};
+    /// @brief How the parent<->internal tensor transformations (dtype conversion, padding) are
+    /// synchronized around the main kernel dispatch.
+    enum class sync_mode_t {
+        none,   ///< No pre/post-processing is required.
+        host,   ///< Pre/post-processing runs on the host; requires a queue drain before (and,
+                ///< for `depad`/`convert_dtype` outputs, after) the main kernel dispatch.
+        device, ///< Pre/post-processing runs on the device queue via `preprocess_kernel` /
+                ///< `postprocess_kernel`; no queue drain needed.
+    };
+    /// @brief Synchronization mode for this node, fixed once the tensor extra is built (kernel
+    /// pointers never change from null to non-null afterwards).
+    sync_mode_t sync_mode{sync_mode_t::none};
     /// @brief Optional on-device post-processing kernel for the result: transforms the internal
     /// output buffer back into the parent tensor (e.g., de-padding and/or dtype conversion) on the
     /// device queue. Null when the output needs no on-device post-processing.
@@ -371,14 +392,6 @@ struct ggml_backend_hsa_tensor_extra {
     /// source into this tensor on the device queue (no host drain). Null for copies handled on the
     /// host (strided, reshape, or same-dtype).
     std::shared_ptr<ggml_hsa_kernel> convert_copy_kernel;
-    /// @brief Per source: true if the source is a graph-constant leaf (e.g. a weight or bias) whose
-    /// converted/padded contents can be cached in the (persistent) internal buffer and reused
-    /// across dispatches instead of re-running the pre-processing every time.
-    std::array<bool, GGML_MAX_SRC> src_is_constant{};
-    /// @brief Per source: the parent data pointer whose converted contents currently sit in the
-    /// internal buffer. Null until the first conversion. The pre-processing is skipped while this
-    /// matches the parent's data pointer (constant sources only), guarding against a moved buffer.
-    std::array<const void *, GGML_MAX_SRC> src_converted_ptr{};
     /// @brief State for the whole-graph MUL_MAT de-pad + f32->bf16 cast fusion (see
     /// @c ggml_hsa_fuse_mul_mat_narrow). Set on the MUL_MAT (narrow_dst, analyzed) and, when fusion
     /// applies, on the fused-away consumer CPY/DUP (skip_dispatch).
