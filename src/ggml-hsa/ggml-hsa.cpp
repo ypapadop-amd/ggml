@@ -1761,14 +1761,12 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
         }
 
-        ggml_tensor & internal_node = tensor_extra.node.tensor;
-
-        // break out of the node loop on failure so the trailing flush still runs
         if (status = ggml_hsa_dispatch_preprocess(ctx, tensor_extra, node);
             status != GGML_STATUS_SUCCESS) {
             break;
         }
 
+        ggml_tensor & internal_node = tensor_extra.node.tensor;
         if (status = tensor_extra.kernel->dispatch(ctx, internal_node.src,
                                                    tensor_extra.sources.count, internal_node);
             status != GGML_STATUS_SUCCESS) {
@@ -1783,9 +1781,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         }
     }
 
-    // Flush unconditionally, including on the error paths above: packets written for
-    // successfully-dispatched earlier nodes must be rung so their work reaches the device and
-    // callers reading via the buffer get/copy paths (which don't synchronize) see complete results.
+    // Flush all packets unconditionally, including on the error paths above.
     ggml_hsa_flush_dispatches(ctx);
 
     return status;
