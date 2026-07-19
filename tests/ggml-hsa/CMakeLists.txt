@@ -1,4 +1,9 @@
 #
+# benchmarks
+
+add_subdirectory(benchmarks)
+
+#
 # test-mul-mat-hsa
 
 set(TEST_TARGET test-mul-mat-hsa)
