@@ -144,6 +144,15 @@ void bench_mul_mat(benchmark::State & state) {
     ggml_backend_tensor_set(tensor_a, A.data(), 0, ggml_nbytes(tensor_a));
     ggml_backend_tensor_set(tensor_b, B.data(), 0, ggml_nbytes(tensor_b));
 
+    // warm up (also triggers any one-time JIT compile so it's not measured)
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        state.SkipWithError("Warm-up graph compute error.");
+        ggml_backend_buffer_free(buf);
+        ggml_free(ctx);
+        ggml_backend_free(backend);
+        return;
+    }
+
     // execute
     for (auto _ : state) {
         if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
@@ -152,8 +161,8 @@ void bench_mul_mat(benchmark::State & state) {
         }
     }
 
-    const double flops_per_iter = 2.0 * static_cast<double>(M) * static_cast<double>(N) *
-                                   static_cast<double>(K);
+    const double flops_per_iter =
+        2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
     state.counters["FLOPS"] =
         benchmark::Counter(flops_per_iter, benchmark::Counter::kIsIterationInvariantRate);
 
@@ -162,17 +171,29 @@ void bench_mul_mat(benchmark::State & state) {
     ggml_backend_free(backend);
 }
 
-BENCHMARK(bench_mul_mat<BackendType::CPU, float>)->Args({256, 256, 256})->Args({512, 512, 512});
+BENCHMARK(bench_mul_mat<BackendType::CPU, float>)
+    ->Args({256, 256, 256})
+    ->Args({512, 512, 512})
+    ->UseRealTime();
 BENCHMARK(bench_mul_mat<BackendType::CPU, ggml_bf16_t>)
     ->Args({256, 256, 256})
-    ->Args({512, 512, 512});
+    ->Args({512, 512, 512})
+    ->UseRealTime();
 
-BENCHMARK(bench_mul_mat<BackendType::HSA, float>)->Args({256, 256, 256})->Args({512, 512, 512});
+BENCHMARK(bench_mul_mat<BackendType::HSA, float>)
+    ->Args({256, 256, 256})
+    ->Args({512, 512, 512})
+    ->UseRealTime();
 BENCHMARK(bench_mul_mat<BackendType::HSA, ggml_bf16_t>)
     ->Args({256, 256, 256})
-    ->Args({512, 512, 512});
+    ->Args({512, 512, 512})
+    ->UseRealTime();
 
-BENCHMARK(bench_mul_mat<BackendType::GPU, float>)->Args({256, 256, 256})->Args({512, 512, 512});
+BENCHMARK(bench_mul_mat<BackendType::GPU, float>)
+    ->Args({256, 256, 256})
+    ->Args({512, 512, 512})
+    ->UseRealTime();
 BENCHMARK(bench_mul_mat<BackendType::GPU, ggml_bf16_t>)
     ->Args({256, 256, 256})
-    ->Args({512, 512, 512});
+    ->Args({512, 512, 512})
+    ->UseRealTime();
