@@ -4,7 +4,11 @@
 set(TRITON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
     ${CMAKE_CURRENT_SOURCE_DIR}/vecadd_aie2.mlir
+    ${CMAKE_CURRENT_SOURCE_DIR}/vecadd_aie2p.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/vecadd.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/matmul_aie2.mlir
+    ${CMAKE_CURRENT_SOURCE_DIR}/matmul_aie2p.mlir
+    ${CMAKE_CURRENT_SOURCE_DIR}/matmul.py
     ${CMAKE_CURRENT_SOURCE_DIR}/utils.py
     )
 ggml_hsa_copy_files(ggml_hsa_copy_triton_files
