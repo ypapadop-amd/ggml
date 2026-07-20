@@ -1,4 +1,5 @@
 #include "ggml-cuda.h"
+#include "ggml-cuda-delegate.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 
@@ -3129,6 +3130,11 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
     }
 
     return true;
+}
+
+bool ggml_cuda_delegate_forward_op(ggml_backend_cuda_context * ctx, ggml_tensor * node) {
+    ggml_cuda_set_device(ctx->device);
+    return ggml_cuda_compute_forward(*ctx, node);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

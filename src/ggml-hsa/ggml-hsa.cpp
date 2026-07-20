@@ -13,6 +13,7 @@
 // (compiled with hipcc) executed on the native ggml-hsa HSA machinery via the HIP host ABI
 // (hip-abi.cpp). A ggml-hsa GPU device delegates compute/memory to an internal ggml-cuda backend.
 #include "ggml-cuda.h"
+#include "ggml-cuda-delegate.h"
 #endif
 
 #include <algorithm>
@@ -1843,8 +1844,31 @@ static void ggml_hsa_gpu_backend_synchronize(ggml_backend_t backend) {
 
 static enum ggml_status ggml_hsa_gpu_backend_graph_compute(ggml_backend_t backend,
                                                            ggml_cgraph * cgraph) {
-    ggml_backend_t c = ggml_hsa_gpu_inner(backend);
-    return c->iface.graph_compute(c, cgraph);
+    // ggml-hsa OWNS the node loop: it drives GPU op execution itself and only reuses ggml-cuda's
+    // per-op kernels via ggml_cuda_delegate_forward_op(). Memory, events, and tensor I/O remain
+    // delegated. This trades ggml-cuda op-fusion and multi-stream concurrency for honest ownership.
+    // The opaque ggml_backend_cuda_context* is passed straight through; it is never dereferenced here.
+    auto * cuda_ctx = static_cast<ggml_backend_cuda_context *>(ggml_hsa_gpu_inner(backend)->context);
+
+    for (int i = 0; i < cgraph->n_nodes; i++) {
+        ggml_tensor * node = cgraph->nodes[i];
+
+        if (ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE) {
+            continue;
+        }
+
+        if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+            continue;
+        }
+
+        bool ok = ggml_cuda_delegate_forward_op(cuda_ctx, node);
+        if (!ok) {
+            GGML_LOG_ERROR("%s: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
+        }
+        GGML_ASSERT(ok);
+    }
+
+    return GGML_STATUS_SUCCESS;
 }
 
 static void ggml_hsa_gpu_backend_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
