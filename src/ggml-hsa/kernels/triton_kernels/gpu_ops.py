@@ -191,3 +191,222 @@ def argmax_kernel(
     x = tl.load(X + row * n_cols + offs, mask=mask, other=float("-inf"))
     idx = tl.argmax(x, axis=0)
     tl.store(Y + row, idx.to(tl.int32))
+
+
+# ---------------------------------------------------------------------------
+# IM2COL (GGML_OP_IM2COL, is_2D): masked gather of input patches
+#   src1 (image, contiguous): ne=[IW, IH, IC, N]
+#   dst (contiguous): ne=[IC*KH*KW, OW, OH, N]
+#   dst[(in*OH*OW + ioh*OW + iow)*ICKHKW + iic*KH*KW + ikh*KW + ikw]
+#       = image(iiw, iih, iic, in), with iiw = iow*S0 + ikw*D0 - P0,
+#         iih = ioh*S1 + ikh*D1 - P1 (0 if out of bounds).
+# ``KERN`` is the (unused) kernel/src0 pointer, present only so the kernarg
+# order matches the dispatch (src0, src1, dst).
+# ---------------------------------------------------------------------------
+@triton.jit
+def im2col_kernel(
+    KERN,
+    SRC,
+    DST,
+    n_elements: tl.constexpr,
+    ICKHKW: tl.constexpr,
+    KW: tl.constexpr,
+    KH: tl.constexpr,
+    OW: tl.constexpr,
+    OH: tl.constexpr,
+    IW: tl.constexpr,
+    IH: tl.constexpr,
+    IWIH: tl.constexpr,
+    IWIHIC: tl.constexpr,
+    S0: tl.constexpr,
+    S1: tl.constexpr,
+    P0: tl.constexpr,
+    P1: tl.constexpr,
+    D0: tl.constexpr,
+    D1: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    """GGML 2-D im2col as a per-destination-element masked gather."""
+    pid = tl.program_id(0)
+    e = pid * BLOCK + tl.arange(0, BLOCK)
+    m = e < n_elements
+
+    col = e % ICKHKW
+    rest = e // ICKHKW
+    iow = rest % OW
+    rest2 = rest // OW
+    ioh = rest2 % OH
+    in_ = rest2 // OH
+
+    ikw = col % KW
+    c2 = col // KW
+    ikh = c2 % KH
+    iic = c2 // KH
+
+    iiw = iow * S0 + ikw * D0 - P0
+    iih = ioh * S1 + ikh * D1 - P1
+    in_bounds = (iiw >= 0) & (iiw < IW) & (iih >= 0) & (iih < IH)
+
+    src_off = in_ * IWIHIC + iic * IWIH + iih * IW + iiw
+    v = tl.load(SRC + src_off, mask=m & in_bounds, other=0.0)
+    tl.store(DST + e, v, mask=m)
+
+
+# ---------------------------------------------------------------------------
+# POOL_2D (GGML_OP_POOL_2D): max/avg pooling as a per-destination-element gather
+#   src (contiguous): planes of [IW, IH]; dst: planes of [PX, PY]
+#   OP: 0 = MAX (ggml GGML_OP_POOL_MAX), 1 = AVG (divides by k0*k1)
+# ---------------------------------------------------------------------------
+@triton.jit
+def pool2d_kernel(
+    SRC,
+    DST,
+    n_elements: tl.constexpr,
+    PX: tl.constexpr,
+    PY: tl.constexpr,
+    IW: tl.constexpr,
+    IH: tl.constexpr,
+    IWIH: tl.constexpr,
+    K0: tl.constexpr,
+    K1: tl.constexpr,
+    S0: tl.constexpr,
+    S1: tl.constexpr,
+    P0: tl.constexpr,
+    P1: tl.constexpr,
+    OP: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    """GGML 2-D pooling as a per-destination-element gather over the k0 x k1 window."""
+    pid = tl.program_id(0)
+    e = pid * BLOCK + tl.arange(0, BLOCK)
+    m = e < n_elements
+
+    ox = e % PX
+    r = e // PX
+    oy = r % PY
+    plane = r // PY
+
+    ix = ox * S0 - P0
+    iy = oy * S1 - P1
+    plane_off = plane * IWIH
+
+    if OP == 0:
+        acc = tl.full((BLOCK,), float("-inf"), dtype=tl.float32)
+    else:
+        acc = tl.zeros((BLOCK,), dtype=tl.float32)
+
+    for ky in range(K1):
+        yy = iy + ky
+        y_ok = (yy >= 0) & (yy < IH)
+        for kx in range(K0):
+            xx = ix + kx
+            ok = y_ok & (xx >= 0) & (xx < IW)
+            off = plane_off + yy * IW + xx
+            if OP == 0:
+                v = tl.load(SRC + off, mask=m & ok, other=float("-inf"))
+                acc = tl.maximum(acc, v.to(tl.float32))
+            else:
+                v = tl.load(SRC + off, mask=m & ok, other=0.0)
+                acc = acc + v.to(tl.float32)
+
+    if OP != 0:
+        acc = acc / (K0 * K1)
+    tl.store(DST + e, acc, mask=m)
+
+
+# ---------------------------------------------------------------------------
+# CONV_2D direct (GGML_OP_CONV_2D): per-output-element reduction
+#   kernel src0 (contiguous): ne=[KW, KH, IC, OC]
+#   src1 (image, contiguous): ne=[W, H, IC, N]
+#   dst (contiguous): ne=[OW, OH, OC, N]
+#   dst(ox, oy, oc, n) = sum_{ic,ky,kx} src(sx, sy, ic, n) * kernel(kx, ky, ic, oc)
+#     with sx = ox*S0 + kx*D0 - P0, sy = oy*S1 + ky*D1 - P1 (0 if out of bounds).
+# ---------------------------------------------------------------------------
+@triton.jit
+def conv2d_kernel(
+    KERN,
+    SRC,
+    DST,
+    n_elements: tl.constexpr,
+    OW: tl.constexpr,
+    OH: tl.constexpr,
+    OC: tl.constexpr,
+    KW: tl.constexpr,
+    KH: tl.constexpr,
+    IC: tl.constexpr,
+    W: tl.constexpr,
+    H: tl.constexpr,
+    WH: tl.constexpr,
+    WHC: tl.constexpr,
+    KWKH: tl.constexpr,
+    KNL_N: tl.constexpr,
+    S0: tl.constexpr,
+    S1: tl.constexpr,
+    P0: tl.constexpr,
+    P1: tl.constexpr,
+    D0: tl.constexpr,
+    D1: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    """Direct 2-D convolution as a per-destination-element reduction."""
+    pid = tl.program_id(0)
+    e = pid * BLOCK + tl.arange(0, BLOCK)
+    m = e < n_elements
+
+    ox = e % OW
+    r = e // OW
+    oy = r % OH
+    r2 = r // OH
+    oc = r2 % OC
+    batch = r2 // OC
+
+    kern_base = oc * KNL_N
+    src_batch = batch * WHC
+
+    acc = tl.zeros((BLOCK,), dtype=tl.float32)
+    for ic in range(IC):
+        for ky in range(KH):
+            sy = oy * S1 + ky * D1 - P1
+            y_ok = (sy >= 0) & (sy < H)
+            for kx in range(KW):
+                sx = ox * S0 + kx * D0 - P0
+                ok = y_ok & (sx >= 0) & (sx < W)
+                soff = src_batch + ic * WH + sy * W + sx
+                koff = kern_base + ic * KWKH + ky * KW + kx
+                sv = tl.load(SRC + soff, mask=m & ok, other=0.0)
+                kv = tl.load(KERN + koff, mask=m, other=0.0)
+                acc += sv * kv
+    tl.store(DST + e, acc, mask=m)
+
+
+# ---------------------------------------------------------------------------
+# CROSS_ENTROPY_LOSS (GGML_OP_CROSS_ENTROPY_LOSS): scalar mean cross-entropy
+#   src0 = logits [NC, NR], src1 = labels [NC, NR] (contiguous)
+#   dst = -(1/NR) * sum_{i,j} labels[i,j] * log_softmax(logits[i])[j]
+#   Single program loops over the NR rows (NR baked as constexpr).
+# ---------------------------------------------------------------------------
+@triton.jit
+def cross_entropy_loss_kernel(
+    S0,
+    S1,
+    DST,
+    NR: tl.constexpr,
+    NC: tl.constexpr,
+    INV_NR: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    """Compute the scalar mean cross-entropy loss over NR rows of NC classes."""
+    offs = tl.arange(0, BLOCK)
+    mask = offs < NC
+    total = 0.0
+    for i in range(NR):
+        base = i * NC
+        x = tl.load(S0 + base + offs, mask=mask, other=float("-inf"))
+        lbl = tl.load(S1 + base + offs, mask=mask, other=0.0)
+        mx = tl.max(x, axis=0)
+        z = x - mx
+        s = tl.sum(tl.exp(z), axis=0)
+        log_sm = z - tl.log(s)
+        contrib = tl.where(mask, lbl * log_sm, 0.0)
+        total += tl.sum(contrib, axis=0)
+    tl.store(DST, -total * INV_NR)
