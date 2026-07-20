@@ -10,48 +10,7 @@
 from functools import partial
 from pathlib import Path
 
-import numpy as np
-from ml_dtypes import bfloat16
-
 from .kernel import Backend, KernelSpec
-
-# The ported Triton matmul is specialised to a single square problem size,
-# matching the verbatim transform scripts (see the design doc). Only nodes of
-# exactly this shape/dtype are routed to Triton; everything else uses IRON.
-_TRITON_MATMUL_DIM = 256
-
-
-def _matches_triton_matmul_profile(input_tensors: list, output_tensor) -> bool:
-    """Return True if the node is the exact profile the Triton matmul supports.
-
-    The profile is: two bf16 inputs, one f32 output, all operands square with
-    leading two dims equal to _TRITON_MATMUL_DIM, higher dims trivial (== 1),
-    and all operands contiguous.
-
-    Args:
-        input_tensors: Input tensors A and B.
-        output_tensor: Output tensor C.
-
-    Returns:
-        True if the node matches the fixed Triton profile, False otherwise.
-    """
-    if len(input_tensors) != 2:
-        return False
-    tensors = [*input_tensors, output_tensor]
-    if any(not t.contiguous for t in tensors):
-        return False
-    if any(t.dtype != np.dtype(bfloat16) for t in input_tensors):
-        return False
-    if output_tensor.dtype != np.dtype(np.float32):
-        return False
-    d = _TRITON_MATMUL_DIM
-    for t in tensors:
-        shape = tuple(t.shape)
-        if shape[0] != d or shape[1] != d:
-            return False
-        if any(s != 1 for s in shape[2:]):
-            return False
-    return True
 
 
 def _make_iron_matmul_kernel_spec(
@@ -84,7 +43,7 @@ def _make_iron_matmul_kernel_spec(
 def _make_triton_matmul_kernel_spec(
     arch: str, input_tensors: list, output_tensor
 ) -> KernelSpec:
-    """Create the TRITON-backend KernelSpec for the fixed 256x256x256 bf16 matmul.
+    """Create the TRITON-backend KernelSpec for MUL_MAT.
 
     Args:
         arch: Target architecture.
@@ -95,25 +54,30 @@ def _make_triton_matmul_kernel_spec(
         KernelSpec configured for the TRITON backend.
 
     Raises:
-        ValueError: If the tensors do not match the fixed 256x256x256 bf16->f32
-            profile (raised lazily when the returned compile function is invoked).
+        ValueError: If the tensors are non-contiguous (raised lazily when the
+            returned compile function is invoked).
     """
-    dim = _TRITON_MATMUL_DIM
 
     def _compile(arch=arch, input_tensors=input_tensors, output_tensor=output_tensor):
         # Imports and tensor creation are deferred so any failure is caught by
         # the try/except fallback in build.py, mirroring the ADD Triton spec.
+        # IRON is the primary backend (tried first); this Triton spec is the
+        # fallback, reached only if IRON compilation fails.
         import torch
-        import triton
 
         from .triton_kernels.matmul import bare_matmul
         from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
 
-        if not _matches_triton_matmul_profile(input_tensors, output_tensor):
-            msg = "Triton matmul supports only 256x256x256 bf16->f32 contiguous nodes."
+        if any(not t.contiguous for t in (*input_tensors, output_tensor)):
+            msg = "Non-contiguous tensors detected."
             raise ValueError(msg)
 
-        m = n = k = dim
+        # GGML shape convention (innermost first): A is [K, M], B is [K, N],
+        # C is [M, N]. The matmul reads A as [M, K] and B as [K, N] row-major.
+        m = input_tensors[0].shape[1]
+        k = input_tensors[0].shape[0]
+        n = input_tensors[1].shape[1]
+
         device = triton_device(arch)
         a = torch.randn(
             (m, k), device=device, dtype=numpy_dtype_to_torch(input_tensors[0].dtype)
@@ -124,7 +88,8 @@ def _make_triton_matmul_kernel_spec(
         c = torch.empty(
             (m, n), device=device, dtype=numpy_dtype_to_torch(output_tensor.dtype)
         )
-        grid = (triton.cdiv(m, dim), triton.cdiv(n, dim))
+        # bare_matmul is single-block: one block covers the whole [M, N] output.
+        grid = (1, 1)
         return bare_matmul[grid](
             a,
             b,
@@ -138,8 +103,8 @@ def _make_triton_matmul_kernel_spec(
             b.stride(1),
             c.stride(0),
             c.stride(1),
-            BLOCK_SIZE_M=dim,
-            BLOCK_SIZE_N=dim,
+            BLOCK_SIZE_M=m,
+            BLOCK_SIZE_N=n,
             BLOCK_SIZE_K=k,
         )
 
@@ -163,10 +128,10 @@ def ggml_op_mul_mat(
 ) -> list[KernelSpec]:
     """Return KernelSpecs for GGML_OP_MUL_MAT (IRON primary, Triton fallback).
 
-    IRON is the general path and is always tried first. For nodes matching the
-    fixed Triton profile (256x256x256 bf16->f32), the Triton spec is appended so
+    IRON is the general path and is tried first; the Triton spec is appended so
     the build system falls back to it only if IRON compilation fails, mirroring
-    the ADD path.
+    the ADD path. The Triton kernel derives its M/N/K from the tensor shapes and
+    validates them lazily at compile time.
 
     Args:
         arch: Target architecture.
@@ -175,12 +140,9 @@ def ggml_op_mul_mat(
         op_params: Operation parameters (unused; shape/dtype come from tensors).
 
     Returns:
-        List of KernelSpecs; IRON first, plus a Triton fallback iff the profile
-        matches.
+        List of KernelSpecs: IRON first, then Triton as a fallback.
     """
-    specs = [_make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor)]
-    if _matches_triton_matmul_profile(input_tensors, output_tensor):
-        specs.append(
-            _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor)
-        )
-    return specs
+    return [
+        _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor),
+        _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor),
+    ]

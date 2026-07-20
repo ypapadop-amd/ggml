@@ -1,6 +1,11 @@
 # Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-"""Dispatch-selection tests for GGML_OP_MUL_MAT (Triton vs IRON)."""
+"""Dispatch-selection tests for GGML_OP_MUL_MAT (IRON primary, Triton fallback).
+
+Dispatch always returns [IRON, Triton]; whether Triton can actually handle a
+given node is decided lazily at compile time (build.py falls back to IRON if the
+Triton compile raises), not by a shape/dtype gate here.
+"""
 
 import pytest
 
@@ -18,7 +23,7 @@ def dispatch(import_kernel_module):
     return Backend, ggml_op_mul_mat, _td
 
 
-def test_triton_fallback_for_256_bf16(dispatch):
+def test_iron_first_triton_fallback_bf16(dispatch):
     Backend, ggml_op_mul_mat, _td = dispatch
     specs = ggml_op_mul_mat(
         "aie2", [_td("bf16"), _td("bf16")], _td("f32"), bytearray()
@@ -28,17 +33,11 @@ def test_triton_fallback_for_256_bf16(dispatch):
     assert specs[1].config["transform_script"].endswith("matmul_aie2.mlir")
 
 
-def test_iron_only_for_wrong_dtype(dispatch):
+def test_iron_first_triton_fallback_regardless_of_shape_dtype(dispatch):
     Backend, ggml_op_mul_mat, _td = dispatch
+    # A non-256 f32 node still returns both specs; Triton eligibility is decided
+    # lazily at compile time, not gated in the dispatch function.
     specs = ggml_op_mul_mat(
-        "aie2", [_td("f32"), _td("f32")], _td("f32"), bytearray()
+        "aie2", [_td("f32", 128), _td("f32", 128)], _td("f32", 128), bytearray()
     )
-    assert [s.backend for s in specs] == [Backend.IRON]
-
-
-def test_iron_only_for_wrong_shape(dispatch):
-    Backend, ggml_op_mul_mat, _td = dispatch
-    specs = ggml_op_mul_mat(
-        "aie2", [_td("bf16", 128), _td("bf16", 128)], _td("f32", 128), bytearray()
-    )
-    assert [s.backend for s in specs] == [Backend.IRON]
+    assert [s.backend for s in specs] == [Backend.IRON, Backend.TRITON]
