@@ -30,6 +30,60 @@ from .utils import arch_to_device, fan_out_worker_count
 # wrap-checked dims (chunk width and row count) at or below this.
 _MAX_DMA_WRAP = (1 << 10) - 1
 
+# Largest hardware wrap for a shim/mem-tile DMA dimension (10-bit field). A DMA
+# dimension whose element count exceeds this is rejected by the aiecc verifier
+# unless the whole transfer is contiguous (and thus linearized). We keep the two
+# wrap-checked dims (chunk width and row count) at or below this.
+_MAX_DMA_WRAP = (1 << 10) - 1
+
+
+def _choose_chunk(d0: int, itemsize: int) -> int:
+    """Pick the per-object element count C that tiles one logical row of width d0.
+
+    Each ObjectFifo object carries C valid elements (one contiguous slice of a row).
+    C must divide d0 exactly (a fixed-size fifo object streamed nC = d0 // C times
+    must cover the row with no remainder) and stay within the 10-bit DMA wrap so the
+    pad-stripping access pattern below passes the aiecc verifier. A full row that
+    already fits the wrap is streamed as a single object (C == d0), which reproduces
+    the original one-row-per-object behavior for the small GEMM/dense shapes.
+
+    Args:
+        d0: Valid row width (elements).
+        itemsize: Source element size in bytes (unused; kept for future L1 budgeting).
+
+    Returns:
+        The chosen chunk width C (divides d0, C <= d0).
+
+    Raises:
+        ValueError: If d0 exceeds the wrap limit and has no divisor within it that is
+            a multiple of the 512-bit vector width (caller falls back to the host path).
+    """
+    del itemsize
+    if d0 <= _MAX_DMA_WRAP:
+        return d0
+
+    # d0 too wide for one object: split into the largest vector-aligned divisor that
+    # fits the wrap. Multiple-of-16 keeps depad.cc's vectorized f32->bf16 loop aligned.
+    best = 0
+    c = 16
+    while c <= _MAX_DMA_WRAP:
+        if d0 % c == 0:
+            best = c
+        c += 16
+    if best:
+        return best
+
+    # No vector-aligned divisor: try any divisor within the wrap.
+    for c in range(_MAX_DMA_WRAP, 0, -1):
+        if d0 % c == 0:
+            return c
+
+    msg = (
+        f"depad row width d0={d0} exceeds the DMA wrap limit {_MAX_DMA_WRAP} and has "
+        f"no divisor within it; cannot tile on-device."
+    )
+    raise ValueError(msg)
+
 
 def _choose_chunk(d0: int, itemsize: int) -> int:
     """Pick the per-object element count C that tiles one logical row of width d0.

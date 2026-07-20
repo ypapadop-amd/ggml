@@ -10,7 +10,7 @@
 from functools import partial
 from pathlib import Path
 
-from .kernel import Backend, KernelSpec
+from .kernel import Backend, KernelSpec, order_kernel_specs
 
 
 def _make_iron_matmul_kernel_spec(
