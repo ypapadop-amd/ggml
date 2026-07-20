@@ -61,6 +61,33 @@ def triton_device(arch: str) -> str:
     raise ValueError(msg)
 
 
+def numpy_dtype_to_triton_elt(dtype) -> str:
+    """Map a numpy dtype to a Triton pointer element-type string (e.g. 'fp32').
+
+    Parameters:
+        dtype: The numpy dtype to map.
+
+    Raises:
+        ValueError: If the dtype has no Triton element-type equivalent.
+
+    """
+    name = np.dtype(dtype).name
+    mapping = {
+        "float32": "fp32",
+        "float16": "fp16",
+        "bfloat16": "bf16",
+        "int8": "i8",
+        "int16": "i16",
+        "int32": "i32",
+        "int64": "i64",
+    }
+    try:
+        return mapping[name]
+    except KeyError:
+        msg = f"Unsupported dtype for Triton GPU kernel: {name}"
+        raise ValueError(msg) from None
+
+
 def numpy_dtype_to_torch(dtype: np.dtype) -> torch.dtype:
     """Convert a numpy dtype to the corresponding torch dtype.
 
