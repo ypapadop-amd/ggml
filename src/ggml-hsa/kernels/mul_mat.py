@@ -27,6 +27,13 @@ def _matches_triton_matmul_profile(input_tensors: list, output_tensor) -> bool:
     The profile is: two bf16 inputs, one f32 output, all operands square with
     leading two dims equal to _TRITON_MATMUL_DIM, higher dims trivial (== 1),
     and all operands contiguous.
+
+    Args:
+        input_tensors: Input tensors A and B.
+        output_tensor: Output tensor C.
+
+    Returns:
+        True if the node matches the fixed Triton profile, False otherwise.
     """
     if len(input_tensors) != 2:
         return False
@@ -50,7 +57,16 @@ def _matches_triton_matmul_profile(input_tensors: list, output_tensor) -> bool:
 def _make_iron_matmul_kernel_spec(
     arch: str, input_tensors: list, output_tensor
 ) -> KernelSpec:
-    """Create the IRON-backend KernelSpec for MUL_MAT (the general path)."""
+    """Create the IRON-backend KernelSpec for MUL_MAT (the general path).
+
+    Args:
+        arch: Target architecture.
+        input_tensors: Input tensors A and B.
+        output_tensor: Output tensor C.
+
+    Returns:
+        KernelSpec configured for the IRON backend.
+    """
     from .iron_kernels.gemm import gemm
 
     return KernelSpec(
@@ -68,7 +84,20 @@ def _make_iron_matmul_kernel_spec(
 def _make_triton_matmul_kernel_spec(
     arch: str, input_tensors: list, output_tensor
 ) -> KernelSpec:
-    """Create the TRITON-backend KernelSpec for the fixed 256x256x256 bf16 matmul."""
+    """Create the TRITON-backend KernelSpec for the fixed 256x256x256 bf16 matmul.
+
+    Args:
+        arch: Target architecture.
+        input_tensors: Input tensors A and B.
+        output_tensor: Output tensor C.
+
+    Returns:
+        KernelSpec configured for the TRITON backend.
+
+    Raises:
+        ValueError: If the tensors do not match the fixed 256x256x256 bf16->f32
+            profile (raised lazily when the returned compile function is invoked).
+    """
     dim = _TRITON_MATMUL_DIM
 
     def _compile(arch=arch, input_tensors=input_tensors, output_tensor=output_tensor):
