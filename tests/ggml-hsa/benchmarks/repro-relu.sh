@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-# Reproduce the bench-mul-mat-hsa matmul benchmark for one backend and emit both
-# a Google Benchmark JSON file and a markdown report.
+# Reproduce the bench-relu-hsa RELU benchmark for one backend and emit both a
+# Google Benchmark JSON file and a markdown report.
 #
 # The benchmark binary contains CPU, GPU (HIP via the CUDA path) and HSA (NPU)
 # registrations; we isolate one backend per invocation with --benchmark_filter.
 #
-# Output files are named after the hardware architecture actually running the
-# benchmark (detected at run time), not just the generic target: e.g.
-# results-cpu-znver4.json, results-gpu-gfx1150.json, results-npu-aie2p.json.
+# The NPU RELU op ships both an IRON and a Triton kernel. Which one runs is chosen
+# at JIT time by GGML_HSA_PREFER_TRITON (unset/0 = IRON, 1 = Triton). To compare
+# the two, run this twice:
+#     ./repro-relu.sh npu                          # -> results-relu-npu-<arch>.*        (IRON)
+#     GGML_HSA_PREFER_TRITON=1 ./repro-relu.sh npu # -> results-relu-npu-<arch>-triton.* (Triton)
 #
 # Usage:
-#   ./repro-matmul.sh cpu|gpu|npu
+#   ./repro-relu.sh cpu|gpu|npu
 #
 # Env vars:
 #   BUILD_DIR    build directory containing the benchmark  (default: build-bench-<target>)
 #   REPS         --benchmark_repetitions                    (default: 10)
 #   MIN_TIME     per-benchmark min wall time, e.g. 0.5s     (default: 0.5s)
 #   OUTDIR       where JSON + reports are written           (default: script dir)
+#   GGML_HSA_PREFER_TRITON  (NPU only) 1 = Triton kernel, tag output -triton
 set -euo pipefail
 
 TARGET="${1:-}"
@@ -39,13 +42,13 @@ OUTDIR="${OUTDIR:-${SCRIPT_DIR}}"
 # but fall back to the source-mirrored path just in case)
 BENCH_BIN=""
 for cand in \
-    "${REPO_ROOT}/${BUILD_DIR}/bin/bench-mul-mat-hsa" \
-    "${REPO_ROOT}/${BUILD_DIR}/tests/ggml-hsa/benchmarks/bench-mul-mat-hsa"; do
+    "${REPO_ROOT}/${BUILD_DIR}/bin/bench-relu-hsa" \
+    "${REPO_ROOT}/${BUILD_DIR}/tests/ggml-hsa/benchmarks/bench-relu-hsa"; do
     if [[ -x "${cand}" ]]; then BENCH_BIN="${cand}"; break; fi
 done
 if [[ -z "${BENCH_BIN}" ]]; then
-    echo "error: bench-mul-mat-hsa binary not found under ${REPO_ROOT}/${BUILD_DIR}" >&2
-    echo "       build it with: cmake --build ${BUILD_DIR} --target bench-mul-mat-hsa" >&2
+    echo "error: bench-relu-hsa binary not found under ${REPO_ROOT}/${BUILD_DIR}" >&2
+    echo "       build it with: cmake --build ${BUILD_DIR} --target bench-relu-hsa" >&2
     exit 1
 fi
 
@@ -63,9 +66,9 @@ ARCH="${ARCH:-unknown}"
 
 # map target -> (google-benchmark filter regex, HIP visibility, output stem)
 case "${TARGET}" in
-    cpu) FILTER="BackendType::CPU"; HIPVIS="-1"; STEM="results-cpu-${ARCH}" ;;
-    gpu) FILTER="BackendType::GPU"; HIPVIS="0";  STEM="results-gpu-${ARCH}" ;;
-    npu) FILTER="BackendType::HSA"; HIPVIS="-1"; STEM="results-npu-${ARCH}" ;;
+    cpu) FILTER="BackendType::CPU"; HIPVIS="-1"; STEM="results-relu-cpu-${ARCH}" ;;
+    gpu) FILTER="BackendType::GPU"; HIPVIS="0";  STEM="results-relu-gpu-${ARCH}" ;;
+    npu) FILTER="BackendType::HSA"; HIPVIS="-1"; STEM="results-relu-npu-${ARCH}" ;;
 esac
 
 # GGML_HSA_PREFER_TRITON flips the NPU kernel to the Triton path; tag the
@@ -85,6 +88,9 @@ fi
 
 echo "==> ${TARGET}: ${BENCH_BIN}"
 echo "    filter=${FILTER}  reps=${REPS}  min_time=${MIN_TIME}  HIP_VISIBLE_DEVICES=${HIPVIS}"
+if [[ "${TARGET}" == "npu" ]]; then
+    echo "    GGML_HSA_PREFER_TRITON=${GGML_HSA_PREFER_TRITON:-0}"
+fi
 echo "    json=${JSON}"
 
 # The HSA backend currently segfaults during process teardown *after* all
@@ -110,11 +116,11 @@ fi
 
 # generate the markdown report from the JSON
 case "${TARGET}" in
-    gpu) LABEL="GPU (HIP, ${ARCH})" ;;
-    npu) LABEL="NPU (HSA, ${ARCH})" ;;
-    cpu) LABEL="CPU (${ARCH})" ;;
+    gpu) LABEL="RELU GPU (HIP, ${ARCH})" ;;
+    npu) LABEL="RELU NPU (HSA, ${ARCH})" ;;
+    cpu) LABEL="RELU CPU (${ARCH})" ;;
 esac
-python3 "${SCRIPT_DIR}/report_benchmarks.py" "${JSON}" -o "${REPORT}" --title "${LABEL}"
+python3 "${SCRIPT_DIR}/report_relu_benchmarks.py" "${JSON}" -o "${REPORT}" --title "${LABEL}"
 
 echo "==> done: ${JSON}"
 echo "         ${REPORT}"

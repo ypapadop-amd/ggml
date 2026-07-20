@@ -27,3 +27,11 @@ set(BENCH_TARGET bench-mul-mat-hsa)
 add_executable(${BENCH_TARGET} ${BENCH_TARGET}.cpp)
 target_link_libraries(${BENCH_TARGET} PRIVATE benchmark::benchmark_main ggml)
 target_compile_features(${BENCH_TARGET} PRIVATE cxx_std_17)
+
+#
+# bench-relu-hsa
+
+set(BENCH_TARGET bench-relu-hsa)
+add_executable(${BENCH_TARGET} ${BENCH_TARGET}.cpp)
+target_link_libraries(${BENCH_TARGET} PRIVATE benchmark::benchmark_main ggml)
+target_compile_features(${BENCH_TARGET} PRIVATE cxx_std_17)

@@ -7,11 +7,10 @@
 
 """Top-level entry point for the matrix multiplication operation (GGML_OP_MUL_MAT)."""
 
-import os
 from functools import partial
 from pathlib import Path
 
-from .kernel import Backend, KernelSpec
+from .kernel import Backend, KernelSpec, order_kernel_specs
 
 
 def _make_iron_matmul_kernel_spec(
@@ -145,9 +144,8 @@ def ggml_op_mul_mat(
     the ADD path. The Triton kernel derives its M/N/K from the tensor shapes and
     validates them lazily at compile time.
 
-    Setting ``GGML_HSA_MUL_MAT_PREFER_TRITON=1`` flips the order so Triton is
-    tried first and IRON becomes the fallback (used to benchmark the Triton
-    path).
+    Setting ``GGML_HSA_PREFER_TRITON=1`` flips the order so Triton is tried first
+    and IRON becomes the fallback (used to benchmark the Triton path).
 
     Args:
         arch: Target architecture.
@@ -157,12 +155,11 @@ def ggml_op_mul_mat(
 
     Returns:
         List of KernelSpecs: IRON first, then Triton as a fallback (or the
-        reverse when ``GGML_HSA_MUL_MAT_PREFER_TRITON`` is set).
+        reverse when ``GGML_HSA_PREFER_TRITON`` is set).
     """
-    iron_spec = _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor)
-    triton_spec = _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor)
-
-    if os.environ.get("GGML_HSA_MUL_MAT_PREFER_TRITON", "0") == "1":
-        return [triton_spec, iron_spec]
-
-    return [iron_spec, triton_spec]
+    return order_kernel_specs(
+        [
+            _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor),
+            _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor),
+        ]
+    )

@@ -97,16 +97,16 @@ cd tests/ggml-hsa/benchmarks
 ```
 
 The NPU MUL_MAT kernel defaults to the IRON path. Set
-`GGML_HSA_MUL_MAT_PREFER_TRITON=1` to benchmark the Triton path instead — it
+`GGML_HSA_PREFER_TRITON=1` to benchmark the Triton path instead — it
 flips the kernel-spec order (Triton primary, IRON fallback) and tags the output
 files with `-triton` so they don't overwrite the IRON results:
 
 ```bash
-GGML_HSA_MUL_MAT_PREFER_TRITON=1 ./repro-matmul.sh npu   # -> results-npu-aie2-triton.*
+GGML_HSA_PREFER_TRITON=1 ./repro-matmul.sh npu   # -> results-npu-aie2-triton.*
 ```
 
 Env vars: `BUILD_DIR`, `REPS` (default 10), `MIN_TIME` (default `0.5s`),
-`OUTDIR` (default: this directory), `GGML_HSA_MUL_MAT_PREFER_TRITON` (NPU only:
+`OUTDIR` (default: this directory), `GGML_HSA_PREFER_TRITON` (NPU only:
 `1` = use the Triton kernel and tag output `-triton`).
 
 Notes:
@@ -130,6 +130,72 @@ Notes:
   `HSA_OVERRIDE_GFX_VERSION=11.5.0 ./repro-matmul.sh gpu`. On a GPU whose arch
   rocBLAS supports natively (e.g. gfx1100/gfx1150 hardware), no override is
   needed.
+
+## RELU benchmark (`bench-relu-hsa`)
+
+Google Benchmark microbenchmark for `GGML_UNARY_OP_RELU` (`out = relu(a)`,
+element-wise and memory-bound) across the CPU, GPU (HIP) and NPU (HSA) backends,
+for `F32` at the realistic MNIST activation shapes (`ne0×ne1×ne2×ne3`):
+
+| shape | elements | origin |
+|---|---:|---|
+| `500×500×1×1` | 250 000 | FC1 hidden activation |
+| `14×14×16×500` | 1 568 000 | conv2 output (post-bias) × batch 500 |
+| `28×28×8×500` | 3 136 000 | conv1 output (post-bias) × batch 500 |
+
+Same build/run model as matmul (one isolated build dir per backend; the target is
+`bench-relu-hsa`). The reported metric is memory bandwidth (`GB/s`, counting one
+read + one write per element) since RELU does negligible compute. Reports use
+`report_relu_benchmarks.py` (not the matmul reporter — different name/shape regex).
+
+```bash
+cd tests/ggml-hsa/benchmarks
+BUILD_DIR=build-bench-cpu ./repro-relu.sh cpu   # -> results-relu-cpu-<arch>.*
+BUILD_DIR=build-bench-gpu ./repro-relu.sh gpu   # -> results-relu-gpu-<arch>.*
+BUILD_DIR=build-bench-npu ./repro-relu.sh npu   # -> results-relu-npu-<arch>.*
+```
+
+### IRON vs. Triton on the NPU
+
+The NPU RELU op ships both an IRON and a Triton kernel, selected by
+`GGML_HSA_PREFER_TRITON` (see [`../../../src/ggml-hsa/kernels`], `order_kernel_specs`).
+The intent is to run the benchmark twice and diff:
+
+```bash
+BUILD_DIR=build-bench-npu ./repro-relu.sh npu                          # IRON   (default)
+GGML_HSA_PREFER_TRITON=1 BUILD_DIR=build-bench-npu ./repro-relu.sh npu # Triton (tag -triton)
+```
+
+**Result on this box (aie2 / Phoenix NPU, 2026-07-20): a true head-to-head is not
+currently possible — the Triton RELU kernel fails to compile.** With
+`GGML_HSA_PREFER_TRITON=1`, Triton is tried first, its `aircc` step fails
+(`'transform.structured.pad' op expects a padding value of type 'f32', got
+0.000000e+00 : bf16` in `relu_aie2.mlir`, plus `'aie.tile' op allocated buffers
+exceeded available memory`), and the dispatch **falls back to IRON**. So both the
+default and the `-triton`-tagged run measure the *same* IRON kernel and report
+identical times. To get a real Triton number, the `relu_aie2.mlir` transform
+script needs the bf16/f32 pad-value fix first. Always confirm which backend
+actually ran by checking the cached artifact: a successful Triton compile leaves
+`~/.cache/ggml/aie2/relu-<n>f32-<n>f32.pdi` sourced from `*-triton-artifacts`; on
+this box only `*-iron-artifacts` produces the `.pdi`.
+
+Cache caveat: the kernel cache key (`relu-<nelem>f32-<nelem>f32`) does **not**
+encode the backend, so a `.pdi` compiled by one backend is reused by the other.
+When comparing, clear the relevant `~/.cache/ggml/aie2/relu-*` entries between runs
+(move them aside; `rm` is blocked in this env) and use `GGML_HSA_ENABLE_LOG=1` to
+see which backend compiles.
+
+### Measured numbers (aie2 NPU, znver4 CPU, IRON kernel; REPS=5, MIN_TIME=0.3s)
+
+| shape | CPU µs (GB/s) | NPU-IRON µs (GB/s) |
+|---|---:|---:|
+| `500×500×1×1`   | 19.0 (105) | 602 (3.3) |
+| `14×14×16×500`  | 1073 (11.7) | 3061 (4.1) |
+| `28×28×8×500`   | 1072 (23.4) | 5968 (4.2) |
+
+RELU alone is memory-bound and small, so the NPU's DMA-in/compute/DMA-out round
+trip loses to the CPU on this op in isolation — the NPU win comes from fusing RELU
+into a larger on-device graph (no host round-trip), not from RELU standalone.
 
 ## Plotting
 

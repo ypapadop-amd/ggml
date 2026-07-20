@@ -17,11 +17,17 @@ Example:
 
 """
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any
+
+# Common env var gating backend preference for ops that ship both an IRON and a Triton
+# kernel (MUL_MAT, ADD, RELU). When set to "1", Triton specs are tried first and IRON
+# becomes the fallback; otherwise IRON is primary. See order_kernel_specs().
+PREFER_TRITON_ENV = "GGML_HSA_PREFER_TRITON"
 
 
 class Backend(Enum):
@@ -84,3 +90,32 @@ class KernelSpec:
             backend_type = type(self.backend).__name__
             msg = f"backend must be a Backend enum, got {backend_type}"
             raise TypeError(msg)
+
+
+def order_kernel_specs(specs: list[KernelSpec]) -> list[KernelSpec]:
+    """Order candidate KernelSpecs so the preferred backend is tried first.
+
+    The build system compiles the specs in order and uses the first that succeeds,
+    falling back to the next. For ops that ship both an IRON and a Triton kernel, the
+    default is IRON-first (Triton is a fallback reached only if IRON compilation fails).
+    Setting ``GGML_HSA_PREFER_TRITON=1`` promotes every Triton-backed spec ahead of the
+    rest, so Triton is tried first and IRON becomes the fallback.
+
+    Ordering is stable: within each group (Triton-backed vs. the rest) the caller's
+    original order is preserved, so a caller that already lists IRON before Triton gets
+    IRON-first by default and Triton-first under the flag with no other change.
+
+    Args:
+        specs: Candidate KernelSpecs for one op, in the caller's default (IRON-first)
+            order.
+
+    Returns:
+        The specs reordered with Triton-backed specs first when the flag is set;
+        otherwise the input order unchanged.
+    """
+    if os.environ.get(PREFER_TRITON_ENV, "0") != "1":
+        return specs
+
+    triton_specs = [s for s in specs if s.backend == Backend.TRITON]
+    other_specs = [s for s in specs if s.backend != Backend.TRITON]
+    return triton_specs + other_specs

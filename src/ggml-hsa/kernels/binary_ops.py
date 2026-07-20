@@ -9,7 +9,7 @@
 
 from pathlib import Path
 
-from .kernel import Backend, KernelSpec
+from .kernel import Backend, KernelSpec, order_kernel_specs
 
 
 def _validate_binary_inputs(input_tensors: list) -> None:
@@ -149,6 +149,10 @@ def ggml_op_add(
 ) -> list[KernelSpec]:
     """Return KernelSpecs for GGML_OP_ADD (IRON primary, Triton fallback).
 
+    IRON is tried first; the Triton spec is the fallback, reached only if IRON
+    compilation fails. Setting ``GGML_HSA_PREFER_TRITON=1`` flips the order so
+    Triton is tried first.
+
     Args:
         arch: Target architecture.
         input_tensors: List of two input tensors.
@@ -161,12 +165,14 @@ def ggml_op_add(
     """
     _validate_binary_inputs(input_tensors)
 
-    return [
-        _make_iron_binary_kernel_spec(
-            arch, input_tensors, output_tensor, "GGML_OP_ADD"
-        ),
-        _make_triton_add_kernel_spec(arch, input_tensors, output_tensor),
-    ]
+    return order_kernel_specs(
+        [
+            _make_iron_binary_kernel_spec(
+                arch, input_tensors, output_tensor, "GGML_OP_ADD"
+            ),
+            _make_triton_add_kernel_spec(arch, input_tensors, output_tensor),
+        ]
+    )
 
 
 def ggml_op_sub(

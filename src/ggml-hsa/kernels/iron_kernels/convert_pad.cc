@@ -66,7 +66,9 @@ void ggml_hsa_convert_pad(const INPUT_DTYPE * __restrict in,
     // Vectorized f32 -> bf16, replicating ggml_compute_fp32_to_bf16's integer arithmetic
     // lane-wise for bit-identical results (not relying on hardware rounding/NaN handling).
     AIE_PREPARE_FOR_PIPELINING
-#ifdef CONVERT_PAD_D0
+    // Only bind the trip-count hint when the row spans a full vector; nblk == 0 (row < V) makes
+    // AIE_LOOP_RANGE(0, 0) an invalid Peano pragma. V == 16 here (512 / (sizeof(f32) * 8)).
+#if defined(CONVERT_PAD_D0) && (CONVERT_PAD_D0) >= 16
     AIE_LOOP_RANGE(nblk, nblk)
 #endif
     for (int32_t b = 0; b < nblk; ++b) {
@@ -84,9 +86,8 @@ void ggml_hsa_convert_pad(const INPUT_DTYPE * __restrict in,
 
     // Scalar: 16-bit unaligned vector store is broken in this aie_api version, and d0 is not
     // vector-aligned.
-    const OUTPUT_DTYPE zero = {};
     for (int32_t i = d0v; i < d0padv; ++i) {
-        out[i] = zero;
+        out[i] = static_cast<OUTPUT_DTYPE>(0);
     }
 
     event1();
