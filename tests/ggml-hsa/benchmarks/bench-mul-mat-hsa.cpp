@@ -176,12 +176,14 @@ BENCHMARK(bench_mul_mat<BackendType::CPU, float>)
     ->Args({512, 512, 512})
     ->Args({1024, 1024, 1024})
     ->Args({2048, 2048, 2048})
+    ->Args({4096, 4096, 4096})
     ->UseRealTime();
 BENCHMARK(bench_mul_mat<BackendType::CPU, ggml_bf16_t>)
     ->Args({256, 256, 256})
     ->Args({512, 512, 512})
     ->Args({1024, 1024, 1024})
     ->Args({2048, 2048, 2048})
+    ->Args({4096, 4096, 4096})
     ->UseRealTime();
 
 BENCHMARK(bench_mul_mat<BackendType::HSA, float>)
@@ -189,12 +191,14 @@ BENCHMARK(bench_mul_mat<BackendType::HSA, float>)
     ->Args({512, 512, 512})
     ->Args({1024, 1024, 1024})
     ->Args({2048, 2048, 2048})
+    ->Args({4096, 4096, 4096})
     ->UseRealTime();
 BENCHMARK(bench_mul_mat<BackendType::HSA, ggml_bf16_t>)
     ->Args({256, 256, 256})
     ->Args({512, 512, 512})
     ->Args({1024, 1024, 1024})
     ->Args({2048, 2048, 2048})
+    ->Args({4096, 4096, 4096})
     ->UseRealTime();
 
 BENCHMARK(bench_mul_mat<BackendType::GPU, float>)
@@ -202,10 +206,12 @@ BENCHMARK(bench_mul_mat<BackendType::GPU, float>)
     ->Args({512, 512, 512})
     ->Args({1024, 1024, 1024})
     ->Args({2048, 2048, 2048})
+    ->Args({4096, 4096, 4096})
     ->UseRealTime();
 BENCHMARK(bench_mul_mat<BackendType::GPU, ggml_bf16_t>)
     ->Args({256, 256, 256})
     ->Args({512, 512, 512})
     ->Args({1024, 1024, 1024})
     ->Args({2048, 2048, 2048})
+    ->Args({4096, 4096, 4096})
     ->UseRealTime();

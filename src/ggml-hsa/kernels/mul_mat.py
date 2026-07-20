@@ -161,11 +161,12 @@ def _make_triton_matmul_kernel_spec(
 def ggml_op_mul_mat(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> list[KernelSpec]:
-    """Return KernelSpecs for GGML_OP_MUL_MAT.
+    """Return KernelSpecs for GGML_OP_MUL_MAT (IRON primary, Triton fallback).
 
-    IRON is always available (the general path). For nodes matching the fixed
-    Triton profile (256x256x256 bf16->f32), the Triton spec is returned first so
-    the build system tries it before falling back to IRON.
+    IRON is the general path and is always tried first. For nodes matching the
+    fixed Triton profile (256x256x256 bf16->f32), the Triton spec is appended so
+    the build system falls back to it only if IRON compilation fails, mirroring
+    the ADD path.
 
     Args:
         arch: Target architecture.
@@ -174,12 +175,12 @@ def ggml_op_mul_mat(
         op_params: Operation parameters (unused; shape/dtype come from tensors).
 
     Returns:
-        List of KernelSpecs; Triton first iff the profile matches, else IRON only.
+        List of KernelSpecs; IRON first, plus a Triton fallback iff the profile
+        matches.
     """
-    iron = _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor)
+    specs = [_make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor)]
     if _matches_triton_matmul_profile(input_tensors, output_tensor):
-        return [
-            _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor),
-            iron,
-        ]
-    return [iron]
+        specs.append(
+            _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor)
+        )
+    return specs

@@ -18,14 +18,14 @@ def dispatch(import_kernel_module):
     return Backend, ggml_op_mul_mat, _td
 
 
-def test_triton_first_for_256_bf16(dispatch):
+def test_triton_fallback_for_256_bf16(dispatch):
     Backend, ggml_op_mul_mat, _td = dispatch
     specs = ggml_op_mul_mat(
         "aie2", [_td("bf16"), _td("bf16")], _td("f32"), bytearray()
     )
     assert isinstance(specs, list)
-    assert [s.backend for s in specs] == [Backend.TRITON, Backend.IRON]
-    assert specs[0].config["transform_script"].endswith("matmul_aie2.mlir")
+    assert [s.backend for s in specs] == [Backend.IRON, Backend.TRITON]
+    assert specs[1].config["transform_script"].endswith("matmul_aie2.mlir")
 
 
 def test_iron_only_for_wrong_dtype(dispatch):
