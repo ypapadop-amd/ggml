@@ -93,3 +93,52 @@ stays (CPU fallback). Do NOT link hip::device (NR3 still applies).
 llama-cli enters an interactive turn loop and spews empty `>` prompts reading EOF from /dev/null even
 with -no-cnv; generation completes first (grep the answer + "t/s" line). Wrap in `timeout` and pkill;
 the exit 143/144 is the kill, not a failure.
+
+---
+
+# LESSONS — native Triton GPU path for MNIST on ggml-hsa (gfx1151)
+
+Branch: `hsa-gpu-triton-mnist`. Goal: run the full `test-backend-ops-mnist test -b HSA0`
+op set on the gfx1151 iGPU through the NATIVE Triton -> hsaco JIT path (no HIP/ggml-cuda/shim).
+
+## Result
+All 21 MNIST eval ops pass on HSA0 via Triton-JIT'd kernels vs CPU (`21/21 tests passed`,
+`2/2 backends passed`). Ops covered: MUL_MAT, broadcast ADD, RELU, SOFT_MAX, ARGMAX,
+IM2COL, CONV_2D (direct), POOL_2D (max, incl. F16 input), CROSS_ENTROPY_LOSS.
+Perf sample: FC1 GEMM 500x500x784 ~= 990 GFLOPS.
+
+## Kernels added (src/ggml-hsa/kernels/triton_kernels/gpu_ops.py) and sources reused
+- `gemm_kernel` — dst = src0 @ src1^T. Adapted from the official Triton matmul tutorial (03),
+  PORTABLE `tl.dot` path (`input_precision="ieee"`, NO `matrix_instr_nonkdim`/MFMA — gfx1151 is
+  RDNA3.5, no MFMA). 1-D grid: `NUM_PID_N` baked as constexpr, `pid_m/pid_n = pid // NUM_PID_N`.
+- `softmax_kernel` — adapted from the fused-softmax tutorial (02), one program/row, scale baked.
+- `relu_kernel`, `bcast_binary_kernel` (GGML broadcast: src1 index modulo per-dim extent),
+  `argmax_kernel`, `im2col_kernel`, `pool2d_kernel`, `conv2d_kernel`,
+  `cross_entropy_loss_kernel` — all derived from the ggml CPU reference in
+  `src/ggml-cpu/ops.cpp` (matched indexing/normalisation exactly, e.g. AVG pool divides by full
+  k0*k1 including padded taps; MAX pool starts at -inf).
+
+## Gotchas (the ones that actually bit)
+1. **Dynamic LDS was the whole GEMM bug.** Triton kernels using `tl.dot` request shared memory as
+   *dynamic* LDS (`compiled.metadata.shared`, e.g. 16 KB) but the code object reports
+   `group_segment_fixed_size = 0`. The native dispatch read the group segment from the HSA symbol
+   (0) and under-allocated LDS in the AQL packet -> garbage/`inf`. Fix: emit
+   `group_segment_size` in the `.hsaco.json` sidecar (build_triton.py) and set
+   `pkt.group_segment_size = max(fixed_from_symbol, sidecar)` in gpu-kernel.cpp. Elementwise /
+   small-reduction kernels have shared=0 so they worked already — masked the bug until GEMM.
+2. **wave32.** gfx11/gfx115x are RDNA wave32. Pass `warp_size=32` to `GPUTarget` in build_triton.py.
+   (Triton already reports `metadata.warp_size=32` for these even if you pass 64, so the sidecar
+   block size stays self-consistent, but pass 32 to be correct for cross-lane ops.)
+3. **Constexpr-bake everything.** The native gpu-kernel.cpp kernarg ABI passes ONLY tensor
+   pointers as runtime args (srcs then dst) + hidden COV args; there is no clean slot for GEMM
+   M/N/K. Baking all dims/strides/block sizes/op_params as `tl.constexpr` matches the ABI and is
+   free (the kernel name already encodes shapes + an op_params hash, so each shape JITs separately).
+4. **Kernarg order for multi-input ops.** Dispatch maps global_buffer[i] -> src[i], then dst.
+   IM2COL/CONV_2D have src0=kernel, src1=image; include the (possibly unused) src0 pointer as the
+   FIRST kernel arg so image/dst land in the right slots. Triton keeps unused pointer params.
+5. **Triton emits extra trailing global_buffer (scratch) args** beyond the real pointers; the
+   existing dispatch already leaves them null (zero-sized here) — fine.
+6. **CROSS_ENTROPY_LOSS** (scalar out) doesn't fit a per-element grid; use a single program that
+   loops over rows with the row count baked as constexpr (500-iteration unroll compiles in <0.5s).
+7. Iterate with `GGML_HSA_KERNEL_CACHE_CLEAR=1` after changing a kernel, else the stale cached
+   hsaco is reused. `GGML_HSA_JIT_VERBOSE=1` surfaces the Python bridge tracebacks.
