@@ -44,6 +44,7 @@ class ggml_hsa_gpu_kernel : public ggml_hsa_kernel {
     std::uint32_t work_group_size{64};    ///< Default workgroup size when launch geometry is unset.
     std::uint32_t grid_size_x{};          ///< Fixed AQL grid size (total work-items); 0 = derive from N.
     std::uint32_t workgroup_size_x{};     ///< Fixed workgroup size (work-items/group); 0 = use default.
+    std::uint32_t sidecar_group_segment_size{}; ///< Dynamic LDS from the sidecar (Triton tl.dot etc.).
     std::vector<ggml_hsa_gpu_kernel_arg> args; ///< Argument layout from code object metadata.
 
     ggml_hsa_gpu_kernel() = default;
