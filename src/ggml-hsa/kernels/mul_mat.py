@@ -7,6 +7,7 @@
 
 """Top-level entry point for the matrix multiplication operation (GGML_OP_MUL_MAT)."""
 
+import os
 from functools import partial
 from pathlib import Path
 
@@ -61,8 +62,7 @@ def _make_triton_matmul_kernel_spec(
     def _compile(arch=arch, input_tensors=input_tensors, output_tensor=output_tensor):
         # Imports and tensor creation are deferred so any failure is caught by
         # the try/except fallback in build.py, mirroring the ADD Triton spec.
-        # IRON is the primary backend (tried first); this Triton spec is the
-        # fallback, reached only if IRON compilation fails.
+        import triton
         import torch
 
         from .triton_kernels.matmul import bare_matmul
@@ -78,6 +78,17 @@ def _make_triton_matmul_kernel_spec(
         k = input_tensors[0].shape[0]
         n = input_tensors[1].shape[1]
 
+        # The Triton-XDNA transform script tiles each L3 block into 64x64
+        # per-core L1 tiles across the AIE herd (4x4 on aie2, 4x8 on aie2p).
+        # M/N must therefore be decomposed into fixed L3 blocks: 256 for the
+        # 4-column aie2, 512 for the 8-column aie2p. A single whole-matrix block
+        # (grid=(1,1), BLOCK=m/n/k) exhausts the shim DMA channels, so the herd
+        # placement fails ("out of channels") — see Triton-XDNA matmul example.
+        block_mn = 512 if arch == "aie2p" else 256
+        if m % block_mn != 0 or n % block_mn != 0:
+            msg = f"M={m}, N={n} not divisible by block {block_mn} for {arch}."
+            raise ValueError(msg)
+
         device = triton_device(arch)
         a = torch.randn(
             (m, k), device=device, dtype=numpy_dtype_to_torch(input_tensors[0].dtype)
@@ -88,8 +99,9 @@ def _make_triton_matmul_kernel_spec(
         c = torch.empty(
             (m, n), device=device, dtype=numpy_dtype_to_torch(output_tensor.dtype)
         )
-        # bare_matmul is single-block: one block covers the whole [M, N] output.
-        grid = (1, 1)
+        # 2D launch: one Triton program per block_mn x block_mn output block;
+        # K stays full (the transform tiles the K reduction internally).
+        grid = (triton.cdiv(m, block_mn), triton.cdiv(n, block_mn))
         return bare_matmul[grid](
             a,
             b,
@@ -103,8 +115,8 @@ def _make_triton_matmul_kernel_spec(
             b.stride(1),
             c.stride(0),
             c.stride(1),
-            BLOCK_SIZE_M=m,
-            BLOCK_SIZE_N=n,
+            BLOCK_SIZE_M=block_mn,
+            BLOCK_SIZE_N=block_mn,
             BLOCK_SIZE_K=k,
         )
 
@@ -133,6 +145,10 @@ def ggml_op_mul_mat(
     the ADD path. The Triton kernel derives its M/N/K from the tensor shapes and
     validates them lazily at compile time.
 
+    Setting ``GGML_HSA_MUL_MAT_PREFER_TRITON=1`` flips the order so Triton is
+    tried first and IRON becomes the fallback (used to benchmark the Triton
+    path).
+
     Args:
         arch: Target architecture.
         input_tensors: Input tensors A and B.
@@ -140,9 +156,13 @@ def ggml_op_mul_mat(
         op_params: Operation parameters (unused; shape/dtype come from tensors).
 
     Returns:
-        List of KernelSpecs: IRON first, then Triton as a fallback.
+        List of KernelSpecs: IRON first, then Triton as a fallback (or the
+        reverse when ``GGML_HSA_MUL_MAT_PREFER_TRITON`` is set).
     """
-    return [
-        _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor),
-        _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor),
-    ]
+    iron_spec = _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor)
+    triton_spec = _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor)
+
+    if os.environ.get("GGML_HSA_MUL_MAT_PREFER_TRITON", "0") == "1":
+        return [triton_spec, iron_spec]
+
+    return [iron_spec, triton_spec]

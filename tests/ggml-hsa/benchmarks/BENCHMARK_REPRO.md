@@ -83,17 +83,31 @@ Output files are named after the hardware architecture actually running the
 benchmark, detected at run time (CPU: `gcc -march=native`; GPU:
 `rocm_agent_enumerator`; NPU: the `aie2`/`aie2p` agent name from `rocminfo`) —
 not just the generic `cpu`/`gpu`/`npu` target. This keeps results from
-different machines/architectures from overwriting each other.
+different machines/architectures from overwriting each other. For the GPU the
+detection strips `HSA_OVERRIDE_GFX_VERSION` first, so the file is named after
+the *physical* device (e.g. `gfx1103`) even when the run borrows another arch's
+rocBLAS via the override — the name reflects the real hardware, not the
+override target.
 
 ```bash
 cd tests/ggml-hsa/benchmarks
 ./repro-matmul.sh cpu     # -> results-cpu-<arch>.json + results-cpu-<arch>.md, e.g. results-cpu-znver4.*
-./repro-matmul.sh gpu     # -> results-gpu-<arch>.json + results-gpu-<arch>.md, e.g. results-gpu-gfx1150.*
-./repro-matmul.sh npu     # -> results-npu-<arch>.json + results-npu-<arch>.md, e.g. results-npu-aie2p.*
+./repro-matmul.sh gpu     # -> results-gpu-<arch>.json + results-gpu-<arch>.md, e.g. results-gpu-gfx1103.*
+./repro-matmul.sh npu     # -> results-npu-<arch>.json + results-npu-<arch>.md, e.g. results-npu-aie2.*
+```
+
+The NPU MUL_MAT kernel defaults to the IRON path. Set
+`GGML_HSA_MUL_MAT_PREFER_TRITON=1` to benchmark the Triton path instead — it
+flips the kernel-spec order (Triton primary, IRON fallback) and tags the output
+files with `-triton` so they don't overwrite the IRON results:
+
+```bash
+GGML_HSA_MUL_MAT_PREFER_TRITON=1 ./repro-matmul.sh npu   # -> results-npu-aie2-triton.*
 ```
 
 Env vars: `BUILD_DIR`, `REPS` (default 10), `MIN_TIME` (default `0.5s`),
-`OUTDIR` (default: this directory).
+`OUTDIR` (default: this directory), `GGML_HSA_MUL_MAT_PREFER_TRITON` (NPU only:
+`1` = use the Triton kernel and tag output `-triton`).
 
 Notes:
 - The script activates `${REPO_ROOT}/.venv` (IRON / mlir_aie toolchain) for the
@@ -124,5 +138,15 @@ Per-backend reports are generated automatically by `repro-matmul.sh`.
 
 ```bash
 ./plot_benchmarks.py --labels cpu,gpu,npu \
-  results-cpu-znver4.json results-gpu-gfx1150.json results-npu-aie2p.json -o comparison.png
+  results-cpu-znver4.json results-gpu-gfx1103.json results-npu-aie2.json -o comparison.png
+```
+
+The `--labels` become the legend entries (rendered as `<label>: <backend>`), so
+use them to distinguish two runs of the *same* backend — e.g. an IRON vs. Triton
+NPU comparison (both report backend `HSA`), keeping each in its own result file:
+
+```bash
+./plot_benchmarks.py --labels cpu,gpu,"NPU (IRON)","NPU (Triton)" \
+  results-cpu-znver4.json results-gpu-gfx1103.json \
+  results-npu-aie2.json results-npu-aie2-triton.json -o comparison.png
 ```

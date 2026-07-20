@@ -53,7 +53,10 @@ fi
 # output files are named after it instead of just the generic target
 case "${TARGET}" in
     cpu) ARCH="$(gcc -march=native -Q --help=target 2>/dev/null | awk '$1=="-march="{print $2}')" || true ;;
-    gpu) ARCH="$(rocm_agent_enumerator 2>/dev/null | awk 'NR==1')" || true ;;
+    # Detect the *physical* GPU arch: strip HSA_OVERRIDE_GFX_VERSION so the file
+    # is named after the real hardware (e.g. gfx1103), not an override target
+    # (e.g. gfx1150) used to borrow another arch's rocBLAS TensileLibrary.
+    gpu) ARCH="$(env -u HSA_OVERRIDE_GFX_VERSION rocm_agent_enumerator 2>/dev/null | awk 'NR==1')" || true ;;
     npu) ARCH="$(rocminfo 2>/dev/null | grep -oE 'Name:\s+aie2p?' | awk 'NR==1{print $2}')" || true ;;
 esac
 ARCH="${ARCH:-unknown}"
@@ -64,6 +67,12 @@ case "${TARGET}" in
     gpu) FILTER="BackendType::GPU"; HIPVIS="0";  STEM="results-gpu-${ARCH}" ;;
     npu) FILTER="BackendType::HSA"; HIPVIS="-1"; STEM="results-npu-${ARCH}" ;;
 esac
+
+# GGML_HSA_MUL_MAT_PREFER_TRITON flips the NPU kernel to the Triton path; tag the
+# output so it doesn't overwrite the default (IRON) NPU results.
+if [[ "${TARGET}" == "npu" && "${GGML_HSA_MUL_MAT_PREFER_TRITON:-0}" == "1" ]]; then
+    STEM="${STEM}-triton"
+fi
 
 JSON="${OUTDIR}/${STEM}.json"
 REPORT="${OUTDIR}/${STEM}.md"
