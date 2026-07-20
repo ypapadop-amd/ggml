@@ -62,8 +62,8 @@ def _make_triton_matmul_kernel_spec(
     def _compile(arch=arch, input_tensors=input_tensors, output_tensor=output_tensor):
         # Imports and tensor creation are deferred so any failure is caught by
         # the try/except fallback in build.py, mirroring the ADD Triton spec.
-        import triton
         import torch
+        import triton
 
         from .triton_kernels.matmul import bare_matmul
         from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
