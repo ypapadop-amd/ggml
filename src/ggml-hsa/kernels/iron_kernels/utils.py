@@ -144,6 +144,22 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     return max_tile_size(arch, dtype, num_elements)
 
 
+def arch_num_columns(arch: str) -> int:
+    """Number of array columns for an architecture (aie2p -> 8, aie2 -> 4).
+
+    Each column has its own shim tile / external-DMA path, so the column count is the natural
+    upper bound on independent data-parallel workers streaming to/from external memory: one worker
+    per column saturates the available shim-DMA bandwidth without oversubscribing a column.
+
+    Args:
+        arch: Target architecture.
+
+    Returns:
+        The number of columns in the array.
+    """
+    return arch_to_device(arch).cols
+
+
 def arch_to_device(device):
     """Map "aie2" -> NPU1, "aie2p" -> NPU2; pass through existing device objects.
 

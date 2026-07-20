@@ -35,3 +35,11 @@ set(BENCH_TARGET bench-relu-hsa)
 add_executable(${BENCH_TARGET} ${BENCH_TARGET}.cpp)
 target_link_libraries(${BENCH_TARGET} PRIVATE benchmark::benchmark_main ggml)
 target_compile_features(${BENCH_TARGET} PRIVATE cxx_std_17)
+
+#
+# bench-convert-pad-hsa
+
+set(BENCH_CONVERT_PAD_TARGET bench-convert-pad-hsa)
+add_executable(${BENCH_CONVERT_PAD_TARGET} ${BENCH_CONVERT_PAD_TARGET}.cpp)
+target_link_libraries(${BENCH_CONVERT_PAD_TARGET} PRIVATE benchmark::benchmark_main ggml)
+target_compile_features(${BENCH_CONVERT_PAD_TARGET} PRIVATE cxx_std_17)

@@ -10,6 +10,7 @@
 from pathlib import Path
 
 import numpy as np
+from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
@@ -21,29 +22,48 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_to_device
+from .utils import arch_num_columns, arch_to_device
 
 
-def convert_pad(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def convert_pad(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+    op_params: bytearray,
+    max_workers: int | None = None,
+):
     """Build the convert_pad IRON program: zero-pad a tensor, with an optional f32 -> bf16 convert.
 
     MUL_MAT pre-amble. Widens each of the first d1 rows from d0 to d0pad elements
     (compute kernel zero-fills the tail); trailing rows [d1, d1pad) are left as
     the pre-zeroed destination buffer contents.
 
+    The d1 independent rows are fanned out across up to ``max_workers`` compute tiles: the convert
+    is compute-bound per core (full RNE f32 -> bf16 emulation), so distributing rows scales
+    throughput until the shim-DMA bandwidth saturates. Each worker owns an independent in/out
+    ObjectFifo (its own shim-DMA path), so the natural default is one worker per array column.
+
     Args:
         arch: Target architecture.
         input_tensors: [src] input tensor.
         output_tensor: padded bf16 output tensor.
         op_params: unused (kept for the dispatch ABI).
+        max_workers: Max compute tiles to fan the row loop across. Defaults to the array's column
+            count (one worker per shim-DMA path); the actual count is further capped at d1.
 
     Returns:
         The resolved IRON program (MLIR module).
 
     Raises:
-        ValueError: On invalid tensor count, dtype, contiguity, or shape.
+        ValueError: On invalid tensor count, dtype, contiguity, shape, or non-positive max_workers.
     """
     del op_params  # placement is derived from shapes, not op_params
+
+    if max_workers is None:
+        max_workers = arch_num_columns(arch)
+    if max_workers < 1:
+        msg = f"convert_pad max_workers must be >= 1; got {max_workers}."
+        raise ValueError(msg)
 
     if len(input_tensors) != 1:
         msg = "convert_pad requires exactly one input tensor."
@@ -81,28 +101,64 @@ def convert_pad(arch: str, input_tensors: list, output_tensor, op_params: bytear
     row_in_ty = np.ndarray[(d0,), np.dtype[src.dtype]]
     row_out_ty = np.ndarray[(d0pad,), np.dtype[output_tensor.dtype]]
 
-    of_in = ObjectFifo(row_in_ty, name="in")
-    of_out = ObjectFifo(row_out_ty, name="out")
+    # Fan the d1 independent rows across up to max_workers compute tiles. Each worker gets a
+    # contiguous band of rows; the first (d1 % n_workers) workers take one extra row so the bands
+    # cover d1 exactly.
+    n_workers = min(max_workers, d1)
+    base, rem = divmod(d1, n_workers)
+    rows_per_worker = [base + (1 if w < rem else 0) for w in range(n_workers)]
 
-    def core_fn(of_in, of_out, function):
-        for _ in range_(d1):
+    of_ins = [ObjectFifo(row_in_ty, name=f"in{w}") for w in range(n_workers)]
+    of_outs = [ObjectFifo(row_out_ty, name=f"out{w}") for w in range(n_workers)]
+
+    def core_fn(of_in, of_out, function, n_rows):
+        for _ in range_(n_rows):
             row_in = of_in.acquire(1)
             row_out = of_out.acquire(1)
             function(row_in, row_out, d0, d0pad)
             of_in.release(1)
             of_out.release(1)
 
-    worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+    workers = [
+        Worker(
+            core_fn,
+            fn_args=[of_ins[w].cons(), of_outs[w].prod(), function, rows_per_worker[w]],
+        )
+        for w in range(n_workers)
+    ]
 
     rt = Runtime()
-    # Linear fill/drain: the input is d1 contiguous rows of d0; the output is d1
-    # contiguous rows of d0pad written to the front of the (pre-zeroed) buffer.
+    # Per-worker fill/drain: worker w reads its band of rows from the contiguous src buffer and
+    # writes them to the matching band of the (pre-zeroed) dst buffer. Each band is a contiguous
+    # 1-D slice (offset, size) of the flat buffer, so every worker drives its own shim DMA path.
     src_ty = np.ndarray[(d0 * d1,), np.dtype[src.dtype]]
     dst_ty = np.ndarray[(d0pad * d1,), np.dtype[output_tensor.dtype]]
     with rt.sequence(src_ty, dst_ty) as (a_in, b_out):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.drain(of_out.cons(), b_out, wait=True)
+        for worker in workers:
+            rt.start(worker)
+        # Issue every worker's fill and drain up front so their DMAs run concurrently; wait only on
+        # the last drain (a single wait=True suffices to fence the whole batch). Waiting on each
+        # drain in turn would serialize the workers through the host sequence.
+        in_off = 0
+        out_off = 0
+        out_taps = []
+        for w in range(n_workers):
+            n_rows = rows_per_worker[w]
+            in_len = n_rows * d0
+            out_len = n_rows * d0pad
+            in_tap = TensorAccessPattern(
+                (d0 * d1,), offset=in_off, sizes=[1, 1, 1, in_len], strides=[0, 0, 0, 1]
+            )
+            out_taps.append(
+                TensorAccessPattern(
+                    (d0pad * d1,), offset=out_off, sizes=[1, 1, 1, out_len], strides=[0, 0, 0, 1]
+                )
+            )
+            rt.fill(of_ins[w].prod(), a_in, tap=in_tap)
+            in_off += in_len
+            out_off += out_len
+        for w in range(n_workers):
+            rt.drain(of_outs[w].cons(), b_out, tap=out_taps[w], wait=(w == n_workers - 1))
 
     return Program(arch_to_device(arch), rt).resolve_program()
 
