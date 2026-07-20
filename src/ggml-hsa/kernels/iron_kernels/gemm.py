@@ -39,6 +39,127 @@ microkernel_mac_dim_map = {
 }
 
 
+def resolve_mac_dims(dev, dtype_in_str, emulate_bf16_mmul_with_bfp16=False):
+    """Return the (r, s, t) microkernel MAC-instruction dims for a device/dtype.
+
+    Args:
+        dev: Target device ("npu" or "npu2").
+        dtype_in_str: Input dtype name (e.g. "bf16", "i8", "i16").
+        emulate_bf16_mmul_with_bfp16: Whether npu2 bf16 mmul is emulated via bfp16.
+
+    Returns:
+        The (r, s, t) tuple from microkernel_mac_dim_map.
+    """
+    mac_dims = microkernel_mac_dim_map[dev][dtype_in_str]
+    if dev == "npu2" and dtype_in_str == "bf16":
+        return mac_dims[emulate_bf16_mmul_with_bfp16]
+    return mac_dims
+
+
+# Per-core L1 data-memory budget (bytes) for the double-buffered A/B/C
+# object-FIFO tiles. AIE2/AIE2P cores have 64 KiB of local data memory; we cap
+# the working set well below that to leave room for the stack (see the
+# stack_size note on the compute cores below) and scalar locals.
+L1_TILE_BUDGET_BYTES = 48 * 1024
+
+# Inclusive upper bound of the aiex.npu.dma_memcpy_nd stride range ([1, 2^20]).
+# The column-major B/C shim transfers this design emits have outer strides of
+# n * n_aie_cols * K and M * n * n_aie_cols respectively; these grow with the
+# N tile and cross the limit for large M/K, so the tile search must exclude
+# them (otherwise aiecc fails with "Stride N exceeds the [1:1048576] range").
+DMA_MAX_STRIDE = 1 << 20
+
+
+def select_gemm_tile(
+    dev,
+    M,
+    N,
+    K,
+    dtype_in,
+    dtype_out,
+    r,
+    s,
+    t,
+    n_aie_rows=4,
+    fifo_depth=2,
+    max_tile=256,
+):
+    """Pick the largest valid per-core (m, k, n) GEMM tile for a problem size.
+
+    The whole-array design distributes the MxKxN GEMM across an
+    n_aie_rows x n_aie_cols herd; each core computes (m, n) output tiles while
+    reducing over k. Larger per-core tiles amortize DMA / object-FIFO /
+    synchronization overhead and improve MAC-array utilization, so we maximize
+    the per-core tile volume (m * k * n) subject to:
+
+      * microkernel divisibility for the 2x2 mmul expansion:
+        m % (2*r) == 0, k % s == 0, n % (2*t) == 0;
+      * array tiling: M % (m * n_aie_rows) == 0, K % k == 0,
+        N % (n * n_aie_cols) == 0;
+      * even work distribution: (M // m) * (N // n) is a multiple of the number
+        of cores, so every core gets the same number of tiles;
+      * the per-core L1 budget for the double-buffered A/B/C tiles.
+
+    Ties are broken toward a larger output tile (m * n, which amortizes the C
+    zero-init and drain), then a larger k. Falls back to the smallest
+    microkernel-granular tile when no candidate satisfies the array constraints
+    (the caller's asserts then apply, mirroring the previous fixed behavior).
+
+    Args:
+        dev: Target device ("npu" or "npu2").
+        M, N, K: Full GEMM problem dimensions.
+        dtype_in: NumPy input dtype (for element size).
+        dtype_out: NumPy output dtype (for element size).
+        r, s, t: Microkernel MAC dims for the input dtype.
+        n_aie_rows: AIE array rows (4 on both npu and npu2).
+        fifo_depth: Object-FIFO depth (double buffering).
+        max_tile: Upper bound on any single tile dimension.
+
+    Returns:
+        A (m, k, n) tuple of per-core tile dimensions.
+    """
+    n_aie_cols = 8 if dev == "npu2" else 4
+    n_cores = n_aie_rows * n_aie_cols
+
+    size_in = np.dtype(dtype_in).itemsize
+    size_out = np.dtype(dtype_out).itemsize
+
+    # Microkernel-granular step sizes for the 2x2 mmul expansion.
+    gm, gk, gn = 2 * r, s, 2 * t
+
+    def working_set(m, k, n):
+        return fifo_depth * (size_in * m * k + size_in * k * n + size_out * m * n)
+
+    def valid(m, k, n):
+        if M % (m * n_aie_rows) or K % k or N % (n * n_aie_cols):
+            return False
+        if ((M // m) * (N // n)) % n_cores:
+            return False
+        # Column-major B/C shim-DMA outer strides must fit the BD stride range.
+        if M * n * n_aie_cols > DMA_MAX_STRIDE or n * n_aie_cols * K > DMA_MAX_STRIDE:
+            return False
+        return working_set(m, k, n) <= L1_TILE_BUDGET_BYTES
+
+    best_key = None
+    best_tile = None
+    for m in range(gm, min(M, max_tile) + 1, gm):
+        for k in range(gk, min(K, max_tile) + 1, gk):
+            for n in range(gn, min(N, max_tile) + 1, gn):
+                if not valid(m, k, n):
+                    continue
+                key = (m * k * n, m * n, k)
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best_tile = (m, k, n)
+
+    if best_tile is not None:
+        return best_tile
+
+    # No array-valid granular tile fit the budget; fall back to the smallest
+    # microkernel-granular tile and let my_matmul's asserts report the mismatch.
+    return (gm, gk, gn)
+
+
 def main():
     """CLI entry point: parse arguments and print the generated GEMM MLIR."""
     argparser = argparse.ArgumentParser(
@@ -704,9 +825,19 @@ def create_mat_mul_external_functions(
         k = 32
     elif arch == "aie2p":
         num_cols = 8
-        m = 16
-        n = 16
-        k = 16
+        # Pick the largest valid per-core tile for this problem size instead of a
+        # fixed small tile: a 16x16x16 tile leaves the 4x8 herd DMA/sync-bound.
+        # select_gemm_tile honors the microkernel divisibility, array tiling,
+        # even core distribution, and the L1 budget, so awkward shapes still get
+        # a valid (small) tile while large square GEMMs get much bigger ones.
+        dtype_in = input_tensors[0].dtype
+        dtype_out = output_tensor.dtype
+        r, s, t = resolve_mac_dims("npu2", dtype_to_str(dtype_in))
+        # GGML shape convention (innermost first): A is [K, M], B is [K, N].
+        M = input_tensors[0].shape[1]
+        K = input_tensors[0].shape[0]
+        N = input_tensors[1].shape[1]
+        m, k, n = select_gemm_tile("npu2", M, N, K, dtype_in, dtype_out, r, s, t)
     else:
         msg = f"Unsupported architecture: {arch}"
         raise ValueError(msg)
