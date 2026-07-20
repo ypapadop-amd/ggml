@@ -76,6 +76,10 @@ if (GGML_HSA_GPU_DELEGATE)
         ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu
         ../ggml-cuda/template-instances/fattn-vec-instance-bf16-bf16.cu)
 
+    # Our own GPU GEMM kernel (backs the hipBLAS shim). It is HIP device code like the ggml-cuda
+    # sources; add it to that list so it gets LANGUAGE HIP + the GPU arch below.
+    list(APPEND GGML_SOURCES_CUDA hip_gemm.cu)
+
     list(APPEND GGML_SOURCES_HSA ${GGML_SOURCES_CUDA} hip-abi.cpp hip_shim_blas.cpp)
 endif ()
 
