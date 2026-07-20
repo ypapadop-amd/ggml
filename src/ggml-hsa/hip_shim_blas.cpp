@@ -1,11 +1,12 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 //
 // hipBLAS shim: implements the GEMM entry points ggml-cuda calls (dense/batched
-// attention & F16/F32 matmul) on top of a host BLAS (sgemm_) over UNIFIED memory.
-// Correctness-first (Phase 4): the device pointers are CPU-accessible on the APU, so
-// we drain the HSA queue and run the GEMM on the CPU. hipBLAS is column-major, matching
-// the reference Fortran BLAS, so the layout maps 1:1. F16/BF16 operands are converted
-// to F32 around the call. A native GPU GEMM can replace this later for performance.
+// attention & F16/F32 matmul). By default the GEMM runs on the gfx1151 iGPU via a hipcc-compiled
+// kernel (hip_gemm.cu, launched through the HIP host ABI onto native ggml-hsa dispatch) — the raw
+// unified-memory device pointers are handed straight to the kernel with no host conversion. Setting
+// GGML_HSA_GEMM_CPU=1 falls back to the correctness-first host BLAS path (sgemm_ over F32-converted
+// operands) for debugging. hipBLAS is column-major, matching both the GPU kernel and reference
+// Fortran BLAS, so the layout maps 1:1.
 
 #ifndef __HIP_PLATFORM_AMD__
 #define __HIP_PLATFORM_AMD__
@@ -26,11 +27,26 @@ extern "C" void sgemm_(const char * transa, const char * transb, const int * m, 
                        const float * B, const int * ldb, const float * beta, float * C,
                        const int * ldc);
 
-// Drain outstanding HSA work (defined in hip_shim.cpp) so operands are ready and results
-// are visible before/after the CPU GEMM.
+// Drain outstanding HSA work (defined in hip-abi.cpp) so operands are ready and results
+// are visible before/after a CPU GEMM fallback.
 extern "C" hipError_t hipDeviceSynchronize();
 
+// GPU GEMM entry point (hip_gemm.cu): column-major C = alpha*op(A)*op(B) + beta*C, type codes are
+// hipDataType ints, ops are 0 (N) / 1 (T). The launch is synchronous (drains the native queue).
+extern "C" void ggml_hsa_hip_gemm(int opA, int opB, int m, int n, int k, float alpha,
+                                  const void * A, int tA, int lda, const void * B, int tB, int ldb,
+                                  float beta, void * C, int tC, int ldc);
+
 namespace {
+
+// Use the GPU GEMM kernel unless GGML_HSA_GEMM_CPU=1 selects the host BLAS fallback (debugging).
+bool use_cpu_gemm() {
+    static const bool cpu = [] {
+        const char * e = std::getenv("GGML_HSA_GEMM_CPU");
+        return e && e[0] == '1';
+    }();
+    return cpu;
+}
 
 int elem_size(hipDataType t) {
     switch (t) {
@@ -88,6 +104,14 @@ float read_scalar(const void * p, hipblasComputeType_t ct, float dflt) {
 void gemm_one(hipblasOperation_t opA, hipblasOperation_t opB, int m, int n, int k, float alpha,
               const void * A, hipDataType tA, int lda, const void * B, hipDataType tB, int ldb,
               float beta, void * C, hipDataType tC, int ldc) {
+    if (!use_cpu_gemm()) {
+        // GPU path: hand the raw unified-memory pointers straight to the device kernel (no host
+        // conversion / round-trip). op N/T map to 0/1.
+        ggml_hsa_hip_gemm(opA == HIPBLAS_OP_N ? 0 : 1, opB == HIPBLAS_OP_N ? 0 : 1, m, n, k, alpha,
+                          A, tA, lda, B, tB, ldb, beta, C, tC, ldc);
+        return;
+    }
+
     const size_t colsA = (opA == HIPBLAS_OP_N) ? (size_t) k : (size_t) m; // stored columns of A
     const size_t colsB = (opB == HIPBLAS_OP_N) ? (size_t) n : (size_t) k; // stored columns of B
     const size_t regionA = (size_t) lda * colsA;
