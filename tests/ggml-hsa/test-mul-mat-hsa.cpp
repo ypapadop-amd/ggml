@@ -295,6 +295,119 @@ void gemm(int M, int N, int K,
     }
 }
 
+#ifdef GGML_USE_HSA
+// Build an MUL_MAT node with an explicit F32 output (bf16 inputs, f32 accumulate).
+static struct ggml_tensor * ggml_mul_mat_bf16_f32(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b) {
+    GGML_ASSERT(ggml_can_mul_mat(a, b));
+    GGML_ASSERT(!ggml_is_transposed(a));
+    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+    result->op     = GGML_OP_MUL_MAT;
+    result->src[0] = a;
+    result->src[1] = b;
+    return result;
+}
+
+// Deterministic pseudo-random float in [-1, 1) from a linear index.
+static float pseudo_rand(int i) {
+    const uint32_t x = static_cast<uint32_t>(i) * 2654435761u + 1013904223u;
+    return (static_cast<float>(x >> 8) / static_cast<float>(1u << 24)) * 2.0f - 1.0f;
+}
+
+// Run the Triton-routed bf16 256x256x256 matmul on the NPU and compare to a
+// CPU f32 reference within tolerance. Returns true on pass.
+static bool run_bf16_matmul_test(int64_t M, int64_t N, int64_t K) {
+    // Host f32 operands.
+    std::vector<float> A(M * K), B(K * N);
+    for (int64_t i = 0; i < M * K; ++i) A[i] = pseudo_rand((int) i);
+    for (int64_t i = 0; i < K * N; ++i) B[i] = pseudo_rand((int) (i + 7919));
+
+    // CPU f32 reference: C[m,n] = sum_k A[m,k] * B[k,n].
+    std::vector<float> C_ref(M * N, 0.0f);
+    gemm((int) M, (int) N, (int) K, A.data(), B.data(), C_ref.data());
+
+    // bf16 copies of the operands (round-trip through the ggml bf16 encoding).
+    std::vector<ggml_bf16_t> A_bf16(M * K), B_bf16(K * N);
+    for (int64_t i = 0; i < M * K; ++i) A_bf16[i] = ggml_fp32_to_bf16(A[i]);
+    for (int64_t i = 0; i < K * N; ++i) B_bf16[i] = ggml_fp32_to_bf16(B[i]);
+
+    ggml_backend_t backend = ggml_backend_hsa_init(0);
+    if (!backend) {
+        fprintf(stderr, "%s: ggml_backend_hsa_init() failed\n", __func__);
+        return false;
+    }
+
+    const size_t buf_size = (M * K + K * N) * sizeof(ggml_bf16_t) + 1024;
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_buffer(backend, buf_size);
+
+    ggml_init_params tparams { ggml_tensor_overhead() * 2, NULL, true };
+    ggml_context * tctx = ggml_init(tparams);
+
+    // The Triton bare_matmul reads A as [M,K] and B as [K,N], both row-major.
+    // ggml tensor a (ne0=K, ne1=M) has raw buffer [M,K] row-major -> matches A.
+    // ggml tensor b (ne0=N, ne1=K) has raw buffer [K,N] row-major -> matches B.
+    ggml_tensor * a = ggml_new_tensor_2d(tctx, GGML_TYPE_BF16, K, M);
+    ggml_tensor * b = ggml_new_tensor_2d(tctx, GGML_TYPE_BF16, N, K);
+    ggml_set_name(a, "a");
+    ggml_set_name(b, "b");
+
+    ggml_tallocr alloc = ggml_tallocr_new(buffer);
+    ggml_tallocr_alloc(&alloc, a);
+    ggml_tallocr_alloc(&alloc, b);
+
+    // A is [M,K] row-major; a's raw buffer is [M,K] row-major -> set directly.
+    ggml_backend_tensor_set(a, A_bf16.data(), 0, ggml_nbytes(a));
+    // B is [K,N] row-major; b's raw buffer is [K,N] row-major -> set directly.
+    ggml_backend_tensor_set(b, B_bf16.data(), 0, ggml_nbytes(b));
+
+    // Build the graph.
+    std::vector<uint8_t> gbuf(ggml_tensor_overhead() * GGML_DEFAULT_GRAPH_SIZE + ggml_graph_overhead());
+    ggml_init_params gparams { gbuf.size(), gbuf.data(), true };
+    ggml_context * gctx = ggml_init(gparams);
+    ggml_cgraph * gf = ggml_new_graph(gctx);
+    ggml_tensor * c = ggml_mul_mat_bf16_f32(gctx, a, b);
+    ggml_set_name(c, "c");
+    ggml_build_forward_expand(gf, c);
+
+    ggml_gallocr_t allocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (!ggml_gallocr_alloc_graph(allocr, gf)) {
+        fprintf(stderr, "%s: ggml_gallocr_alloc_graph() failed\n", __func__);
+        return false;
+    }
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        fprintf(stderr, "%s: ggml_backend_graph_compute() failed\n", __func__);
+        return false;
+    }
+
+    // Read back the f32 result and compare within tolerance.
+    ggml_tensor * result = ggml_graph_node(gf, -1);
+    std::vector<float> C(ggml_nelements(result));
+    ggml_backend_tensor_get(result, C.data(), 0, ggml_nbytes(result));
+
+    const float atol = 1e1f, rtol = 1e-1f;
+    bool passed = ((int64_t) C.size() == M * N);
+    float max_abs = 0.0f;
+    for (int64_t i = 0; passed && i < M * N; ++i) {
+        const float diff = std::fabs(C[i] - C_ref[i]);
+        max_abs = std::max(max_abs, diff);
+        if (diff > atol + rtol * std::fabs(C_ref[i])) passed = false;
+    }
+    printf("bf16 matmul [%ld,%ld,%ld]: max_abs_err=%g -> %s\n",
+           M, N, K, max_abs,
+           passed ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m");
+
+    ggml_free(tctx);
+    ggml_free(gctx);
+    ggml_gallocr_free(allocr);
+    ggml_backend_buffer_free(buffer);
+    ggml_backend_free(backend);
+    return passed;
+}
+#endif // GGML_USE_HSA
+
 int main()
 {
 #if USE_NPU
@@ -309,6 +422,16 @@ int main()
     const int64_t M = 256, N = 128, K = 64;
 
     ggml_time_init();
+
+#ifdef GGML_USE_HSA
+    {
+        const bool bf16_ok = run_bf16_matmul_test(256, 256, 256);
+        if (!bf16_ok) {
+            fprintf(stderr, "bf16 Triton matmul test FAILED\n");
+            return 1;
+        }
+    }
+#endif
 
     // matrix A
     value_type matrixA[M * K] = {};
