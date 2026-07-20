@@ -141,12 +141,32 @@ Per-backend reports are generated automatically by `repro-matmul.sh`.
   results-cpu-znver4.json results-gpu-gfx1103.json results-npu-aie2.json -o comparison.png
 ```
 
-The `--labels` become the legend entries (rendered as `<label>: <backend>`), so
-use them to distinguish two runs of the *same* backend — e.g. an IRON vs. Triton
-NPU comparison (both report backend `HSA`), keeping each in its own result file:
+Explicit `--labels` are used verbatim as the legend entries (when omitted, the
+legend falls back to `<filename-stem>: <backend>`), so use them to distinguish
+two runs of the *same* backend — e.g. an IRON vs. Triton NPU comparison (both
+report backend `HSA`), keeping each in its own result file:
 
 ```bash
-./plot_benchmarks.py --labels cpu,gpu,"NPU (IRON)","NPU (Triton)" \
+./plot_benchmarks.py --labels "CPU","GPU (HIP)","NPU (HSA/IRON)","NPU (HSA/Triton)" \
+  results-cpu-znver4.json results-gpu-gfx1103.json \
+  results-npu-aie2.json results-npu-aie2-triton.json -o comparison.png
+```
+
+By default the y-axis is throughput (GFLOP/s, higher is better). Pass
+`--metric time` to plot wall time in milliseconds instead (log-scaled, lower is
+better):
+
+```bash
+./plot_benchmarks.py --metric time --labels "CPU","GPU (HIP)","NPU (HSA/IRON)","NPU (HSA/Triton)" \
+  results-cpu-znver4.json results-gpu-gfx1103.json \
+  results-npu-aie2.json results-npu-aie2-triton.json -o comparison-time.png
+```
+
+Pass `--exclude-sizes` (comma-separated square dims M=N=K) to drop shapes from
+the chart — e.g. omit the small 512 case where fixed overhead dominates:
+
+```bash
+./plot_benchmarks.py --exclude-sizes 512 --labels "CPU","GPU (HIP)","NPU (HSA/IRON)","NPU (HSA/Triton)" \
   results-cpu-znver4.json results-gpu-gfx1103.json \
   results-npu-aie2.json results-npu-aie2-triton.json -o comparison.png
 ```

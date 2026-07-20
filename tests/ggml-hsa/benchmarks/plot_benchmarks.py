@@ -35,9 +35,12 @@ DTYPE_LABELS = {
 def parse_benchmark_file(path):
     """Parse a Google Benchmark JSON output file.
 
-    Returns a list of (backend, dtype, m, n, k, gflops) tuples. Runs that
-    errored out (e.g. unsupported op) are skipped with a warning.
+    Returns a list of (backend, dtype, m, n, k, gflops, time_us) tuples. Runs
+    that errored out (e.g. unsupported op) are skipped with a warning.
     """
+    # ns -> us divisors by time_unit, so time is always reported in microseconds.
+    time_to_us = {"ns": 1e3, "us": 1.0, "ms": 1e-3, "s": 1e-6}
+
     with open(path) as f:
         data = json.load(f)
 
@@ -57,7 +60,8 @@ def parse_benchmark_file(path):
             print(f"Warning: no FLOPS counter for '{bench['name']}' in {path}", file=sys.stderr)
             continue
         gflops = flops / 1e9
-        results.append((backend, dtype, int(dim_m), int(dim_n), int(dim_k), gflops))
+        time_us = bench["real_time"] / time_to_us.get(bench.get("time_unit", "ns"), 1e3)
+        results.append((backend, dtype, int(dim_m), int(dim_n), int(dim_k), gflops, time_us))
     return results
 
 
@@ -65,24 +69,34 @@ def main():
     parser = argparse.ArgumentParser(description="Plot bench-mul-mat-hsa results as a bar graph.")
     parser.add_argument("files", nargs="+", help="Google Benchmark JSON output files")
     parser.add_argument("--labels", help="Comma-separated labels for each file (default: filenames)")
+    parser.add_argument("--metric", choices=["gflops", "time"], default="gflops",
+                        help="Plot throughput (GFLOP/s, default) or wall time (ms).")
+    parser.add_argument("--exclude-sizes",
+                        help="Comma-separated square dims (M=N=K) to drop, e.g. '512,1024'.")
     parser.add_argument("--output", "-o", help="Save plot to file instead of showing")
     args = parser.parse_args()
 
+    exclude_sizes = {int(s) for s in args.exclude_sizes.split(",")} if args.exclude_sizes else set()
+
+    labels_explicit = args.labels is not None
     labels = args.labels.split(",") if args.labels else [Path(f).stem for f in args.files]
     if len(labels) != len(args.files):
         print("Error: number of labels must match number of files", file=sys.stderr)
         sys.exit(1)
 
-    # bundles[(m, n, k, dtype)][(label, backend)] = gflops
+    # bundles[(m, n, k, dtype)][(label, backend)] = metric value
     bundles = {}
     for path, label in zip(args.files, labels):
         results = parse_benchmark_file(path)
         if not results:
             print(f"Warning: no benchmark data found in {path}", file=sys.stderr)
             continue
-        for backend, dtype, m, n, k, gflops in results:
+        for backend, dtype, m, n, k, gflops, time_us in results:
+            if m in exclude_sizes or n in exclude_sizes or k in exclude_sizes:
+                continue
             key = (m, n, k, dtype)
-            bundles.setdefault(key, {})[(label, backend)] = gflops
+            value = time_us / 1e3 if args.metric == "time" else gflops
+            bundles.setdefault(key, {})[(label, backend)] = value
 
     if not bundles:
         print("Error: no benchmark data found in any file", file=sys.stderr)
@@ -107,20 +121,37 @@ def main():
     for i, (label, backend) in enumerate(series):
         values = [bundles[key].get((label, backend), 0) for key in bundle_keys]
         offset = (i - (n_series - 1) / 2) * width
-        bar_label = f"{label}: {backend}" if multi_file else backend
+        # Explicit --labels are used verbatim as the legend text; otherwise fall
+        # back to "<label>: <backend>" (multi-file) or just the backend name.
+        if labels_explicit:
+            bar_label = label
+        else:
+            bar_label = f"{label}: {backend}" if multi_file else backend
         bars = ax.bar(x + offset, values, width, label=bar_label)
         for bar in bars:
             h = bar.get_height()
             if h > 0:
-                ax.text(bar.get_x() + bar.get_width() / 2, h, f"{h:.0f}",
-                        ha="center", va="bottom", fontsize=10, rotation=45)
+                if h >= 100:
+                    txt = f"{h:.0f}"
+                elif h >= 1:
+                    txt = f"{h:.1f}"
+                else:
+                    txt = f"{h:.2f}"
+                ax.text(bar.get_x() + bar.get_width() / 2, h, txt,
+                        ha="center", va="bottom", fontsize=16, rotation=45)
+
+    if args.metric == "time":
+        # Time spans ~4 decades across backends/sizes; log scale keeps small
+        # values readable next to the large ones.
+        ax.set_yscale("log")
 
     ax.set_xlabel("M x N x K, dtype", fontsize=16)
-    ax.set_ylabel("Throughput (GFLOPS/s)", fontsize=16)
+    ax.set_ylabel("Time (ms)" if args.metric == "time" else "Throughput (GFLOPS/s)",
+                  fontsize=16)
     ax.set_xticks(x)
-    ax.set_xticklabels([f"{m}x{n}x{k}\n{dtype}" for m, n, k, dtype in bundle_keys], fontsize=12)
+    ax.set_xticklabels([f"{m}x{n}x{k}\n{dtype}" for m, n, k, dtype in bundle_keys], fontsize=16)
     ax.tick_params(axis="y", labelsize=16)
-    ax.legend(fontsize=14)
+    ax.legend(fontsize=16)
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
 
