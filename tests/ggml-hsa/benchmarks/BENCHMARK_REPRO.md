@@ -33,14 +33,21 @@ cmake -S . -B build-bench-cpu \
 cmake --build build-bench-cpu --target bench-mul-mat-hsa -j"$(nproc)"
 ```
 
-GPU (HIP, gfx1150 — no HSA):
+GPU (HIP — no HSA):
+
+Set `GPU_TARGETS` to the arch of the GPU you are building for. Find it with
+`rocm_agent_enumerator` (e.g. `gfx1150`, `gfx1103`, `gfx1100`). Note that
+rocBLAS must ship a matching `TensileLibrary_lazy_<arch>.dat` under
+`/opt/rocm-*/lib/rocblas/library/` or the run aborts (see the run notes below
+for the gfx1103 case on this box).
 
 ```bash
+GPU_ARCH=$(rocm_agent_enumerator | awk 'NR==1')   # or hard-code e.g. gfx1150
 cmake -S . -B build-bench-gpu \
   -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_LTO=ON \
   -DGGML_CPU=ON -DGGML_OPENMP=ON \
   -DGGML_HIP=ON -DGGML_HSA=OFF -DGGML_BUILD_TESTS=ON \
-  -DGPU_TARGETS=gfx1150 \
+  -DGPU_TARGETS="${GPU_ARCH}" \
   -DCMAKE_HIP_COMPILER=/opt/rocm-7.2.4/lib/llvm/bin/clang++ \
   -DCMAKE_PREFIX_PATH="/opt/rocm/lib/cmake"
 cmake --build build-bench-gpu --target bench-mul-mat-hsa -j"$(nproc)"
@@ -48,13 +55,20 @@ cmake --build build-bench-gpu --target bench-mul-mat-hsa -j"$(nproc)"
 
 NPU (HSA/aie2p — no HIP):
 
+Point `hsa-runtime64_DIR` / `CMAKE_PREFIX_PATH` at the HSA install that
+contains the AIE headers (`include/hsa/hsa_ext_amd_aie.h`) — on this box that
+is `/home/ypapadop/workspace-raiders/opt/rocm`. If the header is missing the
+build fails with `fatal error: hsa/hsa_ext_amd_aie.h: No such file or
+directory`; adjust the two paths below to wherever your HSA-with-AIE tree
+lives.
+
 ```bash
 cmake -S . -B build-bench-npu \
   -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_LTO=ON \
   -DGGML_CPU=ON -DGGML_OPENMP=ON \
   -DGGML_HIP=OFF -DGGML_HSA=ON -DGGML_HSA_JIT_COMPILE=ON -DGGML_BUILD_TESTS=ON \
-  -Dhsa-runtime64_DIR=/scratch/ypapadop/opt/rocm/lib/cmake/hsa-runtime64 \
-  -DCMAKE_PREFIX_PATH="/scratch/ypapadop/opt/rocm/lib/cmake/hsa-runtime64;/opt/rocm/lib/cmake"
+  -Dhsa-runtime64_DIR=/home/ypapadop/workspace-raiders/opt/rocm/lib/cmake/hsa-runtime64 \
+  -DCMAKE_PREFIX_PATH="/home/ypapadop/workspace-raiders/opt/rocm/lib/cmake/hsa-runtime64;/opt/rocm/lib/cmake"
 cmake --build build-bench-npu --target bench-mul-mat-hsa -j"$(nproc)"
 ```
 
@@ -82,12 +96,26 @@ Env vars: `BUILD_DIR`, `REPS` (default 10), `MIN_TIME` (default `0.5s`),
 `OUTDIR` (default: this directory).
 
 Notes:
+- The script activates `${REPO_ROOT}/.venv` (IRON / mlir_aie toolchain) for the
+  NPU path. This `.venv` must exist — if the working IRON venv lives elsewhere
+  (e.g. `build/.venv`), symlink it: `ln -s build/.venv .venv` from the repo
+  root.
 - The first NPU run JIT-compiles the AIE kernels into `$XDG_CACHE_HOME/ggml/aie2p`
   (slow); Google Benchmark's warmup runs before timing, so JIT is not measured,
   but the wall-clock of the first run is long. Later runs reuse the cache.
 - The HSA backend currently segfaults during process teardown *after* all
   results are written. `repro-matmul.sh` tolerates this: it proceeds to report
   generation as long as the JSON was produced.
+- GPU arch vs. rocBLAS: the GPU build must target the actual device arch
+  (`GPU_TARGETS`), and rocBLAS must have a matching
+  `TensileLibrary_lazy_<arch>.dat`. On this box the iGPU is **gfx1103** (Radeon
+  780M), for which the installed rocBLAS ships **no** TensileLibrary, so a
+  native gfx1103 run aborts with `rocBLAS error: Cannot read
+  .../TensileLibrary.dat ... for GPU arch : gfx1103`. Workaround: build for a
+  supported near-arch (gfx1150) and force the runtime to match with
+  `HSA_OVERRIDE_GFX_VERSION=11.5.0 ./repro-matmul.sh gpu`. On a GPU whose arch
+  rocBLAS supports natively (e.g. gfx1100/gfx1150 hardware), no override is
+  needed.
 
 ## Plotting
 
