@@ -355,7 +355,15 @@ if (NOT GGML_BACKEND_DL)
     set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
 
     #
-    # ggml-hsa tests
+    # ggml-hsa matmul benchmark
+    # Built whenever tests are enabled; individual backend cases self-skip at
+    # runtime (SkipWithError) when their backend is not compiled in, so it does
+    # not require GGML_HSA. This lets the same benchmark be built for CPU-only
+    # and HIP-only configurations (HIP and HSA must not be compiled together).
+    add_subdirectory(ggml-hsa/benchmarks)
+
+    #
+    # ggml-hsa tests (require the HSA backend)
     if (GGML_HSA)
         add_subdirectory(ggml-hsa)
     endif()
