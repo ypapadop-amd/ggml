@@ -2,6 +2,7 @@
 
 #include "ggml-hsa/gpu-kernel.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -219,7 +220,10 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.grid_size_y = 1;
     pkt.grid_size_z = 1;
     pkt.private_segment_size = private_segment_size;
-    pkt.group_segment_size = group_segment_size;
+    // Some kernels (e.g. Triton tl.dot) request shared memory as *dynamic* LDS that the code
+    // object reports as a zero group_segment_fixed_size; the required amount is carried in the
+    // launch sidecar. Use whichever is larger so the packet always reserves enough LDS.
+    pkt.group_segment_size = std::max(group_segment_size, sidecar_group_segment_size);
     pkt.kernel_object = kernel_object;
     pkt.kernarg_address = kernarg;
     pkt.completion_signal = ctx.dispatch_signal;

@@ -176,12 +176,14 @@ def _make_triton_add_kernel_spec(
     )
 
 
-def _make_triton_gpu_add_kernel_spec(
+def _make_triton_gpu_binary_kernel_spec(
     arch: str,
     input_tensors: list,
     output_tensor,
+    op_name: str,
+    op_code: int,
 ) -> KernelSpec:
-    """Create a TRITON-backend KernelSpec for ADD targeting an AMD GPU (gfx).
+    """Create a TRITON-backend KernelSpec for an elementwise binary op on an AMD GPU (gfx).
 
     Unlike the NPU path (which JIT-launches the kernel), the GPU path is ahead-of-time
     compiled: the returned spec's ``config`` carries a backend-neutral description of the
@@ -189,66 +191,91 @@ def _make_triton_gpu_add_kernel_spec(
     ``constexprs``, ``num_warps``, ``num_programs``). ``build_triton.py`` consumes those to
     emit a ``.hsaco`` plus a ``<name>.hsaco.json`` launch sidecar required by the C++ dispatch.
 
+    Supports GGML broadcasting of src1 into the destination shape (the src1 index is taken
+    modulo the src1 extent per dimension), which covers e.g. MNIST bias adds
+    ([N, M] + [N] -> [N, M]).
+
     Parameters:
         arch: Target GPU architecture (e.g. "gfx1151").
-        input_tensors: List of two input tensors.
+        input_tensors: List of two input tensors (src0 is dst-shaped, src1 broadcasts).
         output_tensor: Output tensor.
+        op_name: GGML operation name (for the KernelSpec).
+        op_code: Kernel op selector (0:add, 1:sub, 2:mul, 3:div).
 
     Returns:
         KernelSpec configured for the TRITON backend (GPU AOT path).
 
     Raises:
-        ValueError: If the tensors require broadcasting (unmasked kernel).
+        ValueError: If the tensors are non-contiguous or src0 is not dst-shaped.
 
     """
     import triton
 
-    from .triton_kernels.vecadd import vecadd
+    from .triton_kernels.gpu_ops import bcast_binary_kernel, next_pow2
 
     n_elements = output_tensor.numel()
 
-    # vecadd is an unmasked elementwise kernel; it is only valid when both sources and the
-    # destination have the same number of elements (no broadcasting).
-    if input_tensors[0].numel() != n_elements or input_tensors[1].numel() != n_elements:
-        msg = "Triton vecadd requires matching element counts (no broadcast)."
+    src0, src1 = input_tensors[0], input_tensors[1]
+    # src0 must match the destination shape; src1 may broadcast (extent 1 per dim).
+    if any(not t.contiguous for t in (src0, src1, output_tensor)):
+        msg = "Triton GPU binary op requires contiguous tensors."
         raise ValueError(msg)
+    if tuple(src0.shape) != tuple(output_tensor.shape):
+        msg = "Triton GPU binary op requires src0 to match the destination shape."
+        raise ValueError(msg)
+    for d in range(4):
+        if src1.shape[d] not in (1, output_tensor.shape[d]):
+            msg = "Triton GPU binary op src1 dim is neither 1 nor the dst extent."
+            raise ValueError(msg)
 
-    # Triton's tl.arange requires a power-of-two range, so BLOCK_SIZE_N must be a power of two
-    # that divides n_elements (the kernel is unmasked). Pick the largest such block.
-    cap = min(1024, n_elements)
-    block_size = 1
-    power = 1
-    while power <= cap:
-        if n_elements % power == 0:
-            block_size = power
-        power *= 2
+    block_size = min(1024, next_pow2(n_elements))
     num_programs = triton.cdiv(n_elements, block_size)
 
-    # ONE canonical, backend-neutral description of the kernel's argument contract and launch
-    # geometry. The GPU compiler consumes signature/constexprs directly via ASTSource.
+    ne = output_tensor.shape
+    b = src1.shape
+
     elt = _numpy_to_triton_elt(output_tensor.dtype)
     signature = {
         "A": f"*{elt}",
         "B": f"*{elt}",
         "C": f"*{elt}",
         "n_elements": "constexpr",
-        "BLOCK_SIZE_N": "constexpr",
+        "NE0": "constexpr",
+        "NE1": "constexpr",
+        "NE2": "constexpr",
+        "B0": "constexpr",
+        "B1": "constexpr",
+        "B2": "constexpr",
+        "B3": "constexpr",
+        "OP": "constexpr",
+        "BLOCK": "constexpr",
     }
     config = {
-        "triton_fn": vecadd,
+        "triton_fn": bcast_binary_kernel,
         "signature": signature,
-        "constexprs": {"n_elements": n_elements, "BLOCK_SIZE_N": block_size},
+        "constexprs": {
+            "n_elements": n_elements,
+            "NE0": int(ne[0]),
+            "NE1": int(ne[1]),
+            "NE2": int(ne[2]),
+            "B0": int(b[0]),
+            "B1": int(b[1]),
+            "B2": int(b[2]),
+            "B3": int(b[3]),
+            "OP": op_code,
+            "BLOCK": block_size,
+        },
         "num_warps": 4,
         "num_programs": num_programs,
     }
 
     return KernelSpec(
         backend=Backend.TRITON,
-        op_name="GGML_OP_ADD",
+        op_name=op_name,
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        function=vecadd,
+        function=bcast_binary_kernel,
         config=config,
     )
 
@@ -280,7 +307,9 @@ def ggml_op_add(
     if is_gpu_arch(arch):
         try:
             return [
-                _make_triton_gpu_add_kernel_spec(arch, input_tensors, output_tensor)
+                _make_triton_gpu_binary_kernel_spec(
+                    arch, input_tensors, output_tensor, "GGML_OP_ADD", 0
+                )
             ]
         except ValueError:
             return []

@@ -269,6 +269,52 @@ def ggml_unary_op_elu(
     raise NotImplementedError
 
 
+def _make_triton_gpu_relu_kernel_spec(
+    arch: str, input_tensors: list, output_tensor
+) -> KernelSpec:
+    """Create a TRITON-backend (GPU AOT) KernelSpec for RELU.
+
+    Every dimension/block parameter is baked as a Triton constexpr; the only runtime kernel
+    arguments are the source and destination pointers, matching the ``gpu-kernel.cpp`` ABI.
+    """
+    from .triton_kernels.gpu_ops import next_pow2, relu_kernel
+    from .triton_kernels.utils import numpy_dtype_to_triton_elt
+
+    n_elements = output_tensor.numel()
+    if input_tensors[0].numel() != n_elements:
+        msg = "RELU requires matching element counts."
+        raise ValueError(msg)
+
+    block = min(1024, next_pow2(n_elements))
+    import triton
+
+    num_programs = triton.cdiv(n_elements, block)
+
+    elt = numpy_dtype_to_triton_elt(output_tensor.dtype)
+    signature = {
+        "X": f"*{elt}",
+        "Y": f"*{elt}",
+        "n_elements": "constexpr",
+        "BLOCK": "constexpr",
+    }
+    config = {
+        "triton_fn": relu_kernel,
+        "signature": signature,
+        "constexprs": {"n_elements": n_elements, "BLOCK": block},
+        "num_warps": 4,
+        "num_programs": num_programs,
+    }
+    return KernelSpec(
+        backend=Backend.TRITON,
+        op_name="GGML_UNARY_OP_RELU",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        function=relu_kernel,
+        config=config,
+    )
+
+
 def ggml_unary_op_relu(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> KernelSpec:
@@ -285,6 +331,11 @@ def ggml_unary_op_relu(
         KernelSpec for the RELU operation.
 
     """
+    from .triton_kernels.utils import is_gpu_arch
+
+    if is_gpu_arch(arch):
+        return _make_triton_gpu_relu_kernel_spec(arch, input_tensors, output_tensor)
+
     return _make_iron_unary_kernel_spec(
         arch, input_tensors, output_tensor, "GGML_UNARY_OP_RELU"
     )

@@ -90,6 +90,7 @@ _OP_KERNEL_MAP: dict[str, Kernel] = {
     "COS": Kernel("ggml_op_cos", "unary_ops.py"),
     "MUL_MAT": Kernel("ggml_op_mul_mat", "mul_mat.py"),
     "POOL_2D": Kernel("ggml_op_pool_2d", "pool_2d.py"),
+    "CONV_2D": Kernel("ggml_op_conv_2d", "conv_2d.py"),
     "IM2COL": Kernel("ggml_op_im2col", "im2col.py"),
     "SCALE": Kernel("ggml_op_scale", "scale.py"),
     "SOFT_MAX": Kernel("ggml_op_soft_max", "soft_max.py"),

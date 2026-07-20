@@ -428,7 +428,8 @@ bool ggml_hsa_load_code_object(const ggml_hsa_device_info::device_info & dev_inf
  * kernels have no sidecar and derive their grid from the element count at dispatch.
  */
 static bool ggml_hsa_read_launch_sidecar(const fs::path & hsaco_path, std::uint32_t & grid_size_x,
-                                         std::uint32_t & workgroup_size_x) {
+                                         std::uint32_t & workgroup_size_x,
+                                         std::uint32_t & group_segment_size) {
     fs::path sidecar = hsaco_path;
     sidecar += ".json";
     if (!ggml_hsa_is_file(sidecar)) {
@@ -450,6 +451,8 @@ static bool ggml_hsa_read_launch_sidecar(const fs::path & hsaco_path, std::uint3
     };
     bool ok = read_uint("\"grid_size_x\"", grid_size_x);
     ok = read_uint("\"workgroup_size_x\"", workgroup_size_x) && ok;
+    // Optional: dynamic LDS required by the kernel (Triton tl.dot etc.); absent for HIP kernels.
+    read_uint("\"group_segment_size\"", group_segment_size);
     return ok;
 }
 
@@ -523,7 +526,8 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
     gpu_kernel->kernarg_align = loaded.kernarg_align;
 
     // Optional launch geometry (Triton kernels bake grid/block at compile time).
-    ggml_hsa_read_launch_sidecar(hsaco_path, gpu_kernel->grid_size_x, gpu_kernel->workgroup_size_x);
+    ggml_hsa_read_launch_sidecar(hsaco_path, gpu_kernel->grid_size_x, gpu_kernel->workgroup_size_x,
+                                 gpu_kernel->sidecar_group_segment_size);
 
     kernel = std::move(gpu_kernel);
 

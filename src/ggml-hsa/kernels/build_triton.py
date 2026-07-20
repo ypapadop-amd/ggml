@@ -123,9 +123,13 @@ def _compile_triton_gpu_kernel(
     num_warps = int(cfg.get("num_warps", 4))
     num_programs = int(cfg["num_programs"])
 
-    # gfx11 uses wave32; the warp_size passed here is informational (Triton selects the ISA
-    # wavefront). The actual workgroup size is read back from the compiled kernel metadata.
-    target = GPUTarget("hip", kernel_spec.arch, 64)
+    # gfx11/gfx115x (RDNA) execute in wave32. Pass warp_size=32 so Triton generates wave32 ISA and
+    # the workgroup size derived below (num_warps * warp_size) matches the hardware wavefront; a
+    # mismatch here silently corrupts results for kernels with cross-lane ops (reductions, tl.dot).
+    # The actual workgroup size is read back from the compiled kernel metadata (warp_size), which
+    # Triton also reports as 32 for these targets.
+    warp_size = 32 if kernel_spec.arch.startswith("gfx11") else 64
+    target = GPUTarget("hip", kernel_spec.arch, warp_size)
     src = triton.compiler.ASTSource(fn=fn, signature=signature, constexprs=constexprs)
     compiled = triton.compile(src, target=target, options={"num_warps": num_warps})
 
@@ -134,9 +138,15 @@ def _compile_triton_gpu_kernel(
     hsaco_path.write_bytes(bytes(hsaco))
 
     block_x = int(compiled.metadata.num_warps) * int(compiled.metadata.warp_size)
+    # Triton kernels that use shared memory (e.g. tl.dot) request it as *dynamic* LDS
+    # (metadata.shared) rather than baking it into the code object's group_segment_fixed_size,
+    # which is reported as 0. The AQL dispatch packet's group_segment_size must therefore be set
+    # by the launcher; we carry the required LDS in the sidecar so the C++ dispatch can allocate it.
+    group_segment_size = int(getattr(compiled.metadata, "shared", 0) or 0)
     launch = {
         "grid_size_x": int(num_programs * block_x),  # total work-items (AQL grid_size)
         "workgroup_size_x": int(block_x),            # work-items per workgroup
+        "group_segment_size": group_segment_size,    # dynamic LDS bytes (Triton metadata.shared)
     }
     sidecar_path = output_directory / f"{exported_name}.hsaco.json"
     sidecar_path.write_text(json.dumps(launch))
