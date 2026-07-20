@@ -65,11 +65,17 @@ writes a Google Benchmark JSON, and generates a markdown report from it. It
 defaults `BUILD_DIR` to `build-bench-<target>` and, for the NPU, activates the
 repo-root `.venv` (IRON / mlir_aie toolchain) needed for AIE JIT.
 
+Output files are named after the hardware architecture actually running the
+benchmark, detected at run time (CPU: `gcc -march=native`; GPU:
+`rocm_agent_enumerator`; NPU: the `aie2`/`aie2p` agent name from `rocminfo`) —
+not just the generic `cpu`/`gpu`/`npu` target. This keeps results from
+different machines/architectures from overwriting each other.
+
 ```bash
 cd tests/ggml-hsa/benchmarks
-./repro-matmul.sh cpu     # -> results-cpu.json + results-cpu.md
-./repro-matmul.sh gpu     # -> results-gpu.json + results-gpu.md
-./repro-matmul.sh npu     # -> results-npu.json + results-npu.md
+./repro-matmul.sh cpu     # -> results-cpu-<arch>.json + results-cpu-<arch>.md, e.g. results-cpu-znver4.*
+./repro-matmul.sh gpu     # -> results-gpu-<arch>.json + results-gpu-<arch>.md, e.g. results-gpu-gfx1150.*
+./repro-matmul.sh npu     # -> results-npu-<arch>.json + results-npu-<arch>.md, e.g. results-npu-aie2p.*
 ```
 
 Env vars: `BUILD_DIR`, `REPS` (default 10), `MIN_TIME` (default `0.5s`),
@@ -90,5 +96,5 @@ Per-backend reports are generated automatically by `repro-matmul.sh`.
 
 ```bash
 ./plot_benchmarks.py --labels cpu,gpu,npu \
-  results-cpu.json results-gpu.json results-npu.json -o comparison.png
+  results-cpu-znver4.json results-gpu-gfx1150.json results-npu-aie2p.json -o comparison.png
 ```

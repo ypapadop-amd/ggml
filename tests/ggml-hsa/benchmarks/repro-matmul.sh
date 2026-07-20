@@ -52,9 +52,9 @@ fi
 # detect the hardware architecture actually running the benchmark, so the
 # output files are named after it instead of just the generic target
 case "${TARGET}" in
-    cpu) ARCH="$(gcc -march=native -Q --help=target 2>/dev/null | awk '$1=="-march="{print $2; exit}')" ;;
-    gpu) ARCH="$(rocm_agent_enumerator 2>/dev/null | head -1)" ;;
-    npu) ARCH="$(rocminfo 2>/dev/null | grep -oE 'Name:\s+aie2p?' | awk '{print $2}' | head -1)" ;;
+    cpu) ARCH="$(gcc -march=native -Q --help=target 2>/dev/null | awk '$1=="-march="{print $2}')" || true ;;
+    gpu) ARCH="$(rocm_agent_enumerator 2>/dev/null | awk 'NR==1')" || true ;;
+    npu) ARCH="$(rocminfo 2>/dev/null | grep -oE 'Name:\s+aie2p?' | awk 'NR==1{print $2}')" || true ;;
 esac
 ARCH="${ARCH:-unknown}"
 
