@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #include "ggml-impl.h"
@@ -88,7 +89,10 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
                            ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
-    ctx.kernargs.emplace_back(kernarg_base); // track base allocation for cleanup after dispatch
+    // Own the allocation locally until the packet is live; it is handed to the context's per-slot
+    // kernarg ring only after the doorbell is rung (see below). The local unique_ptr also frees the
+    // allocation automatically on any early-error return between here and the dispatch.
+    ggml_hsa_unique_ptr<void> kernarg_owner(kernarg_base);
 
     auto * kernarg = reinterpret_cast<std::byte *>(
         align_up(reinterpret_cast<std::uintptr_t>(kernarg_base), align));
@@ -229,15 +233,35 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.completion_signal = ctx.dispatch_signal;
 
     auto * queue = ctx.queue;
+    const std::uint32_t mask = queue->size - 1;
 
-    // Reserve a slot, waiting for space if the queue is full.
-    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
-    while (wr_idx - hsa_queue_load_read_index_scacquire(queue) >= queue->size) {
-        ggml_hsa_wait_dispatches(ctx);
+    // The context keeps one kernarg allocation alive per ring slot; size the ring to the queue
+    // depth on first use.
+    if (ctx.kernargs.size() != queue->size) {
+        ctx.kernargs.clear();
+        ctx.kernargs.resize(queue->size);
     }
 
-    // Account for this dispatch on the completion signal; the packet processor decrements it back
-    // to zero when the kernel finishes (see ggml_hsa_wait_dispatches).
+    // Claim the next slot, waiting for the packet processor to retire a packet if the queue is full.
+    // Progress is tracked via the read index (which the processor advances as it retires packets)
+    // rather than the counting dispatch signal, because that signal can drift under rapid many-op
+    // dispatch (see ggml_hsa_wait_dispatches). The write index is published (store_write_index
+    // below) only after the packet body and header are fully written: ring slots are never reset to
+    // HSA_PACKET_TYPE_INVALID after being consumed, so advancing the write index before overwriting
+    // a reused slot would let the processor re-fetch its stale header. The dispatch signal is used
+    // purely as a blocking hint for when a completion (hence a retirement) has occurred.
+    const std::uint64_t wr_idx = hsa_queue_load_write_index_relaxed(queue);
+    while (wr_idx - hsa_queue_load_read_index_scacquire(queue) >= queue->size) {
+        const hsa_signal_value_t v = hsa_signal_load_scacquire(ctx.dispatch_signal);
+        if (wr_idx - hsa_queue_load_read_index_scacquire(queue) < queue->size) {
+            break;
+        }
+        hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_NE, v,
+                                  GGML_HSA_WAIT_TIMEOUT, HSA_WAIT_STATE_BLOCKED);
+    }
+
+    // Account for this dispatch on the completion signal; the packet processor decrements it when
+    // the kernel finishes. Used only as an in-flight hint (drift is corrected on each full drain).
     hsa_signal_add_screlease(ctx.dispatch_signal, 1);
 
     write_aql_to_queue(pkt, queue, wr_idx);
@@ -254,13 +278,20 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // expose this because they synchronize right after the one dispatch.
     header |= 1 << HSA_PACKET_HEADER_BARRIER;
 
-    const std::uint32_t mask = queue->size - 1;
     atomic_set_packet_header(
         header, pkt.setup,
         &(static_cast<hsa_kernel_dispatch_packet_t *>(queue->base_address))[wr_idx & mask]);
 
-    // Ring the doorbell with the packet index to launch the kernel.
+    // Publish the slot now that the packet is fully valid, then ring the doorbell to launch it.
+    hsa_queue_store_write_index_screlease(queue, wr_idx + 1);
     hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
+
+    // The packet is live. Store its kernarg in this ring slot, which frees the allocation of the
+    // slot's previous occupant (whose packet we just overwrote in the queue). Every packet still
+    // resident in the ring therefore keeps its kernarg mapped, so even a spuriously re-fetched
+    // packet cannot dereference freed memory. This bounds outstanding kernargs to the queue depth
+    // and is independent of the (drift-prone) completion signal.
+    ctx.kernargs[wr_idx & mask] = std::move(kernarg_owner);
 
     return GGML_STATUS_SUCCESS;
 }
@@ -289,7 +320,10 @@ ggml_status ggml_hsa_gpu_dispatch_generic(ggml_backend_hsa_context & ctx,
                            ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
-    ctx.kernargs.emplace_back(kernarg_base); // track base allocation for cleanup after dispatch
+    // Own the allocation locally until the packet is live (see ::dispatch for the rationale): it is
+    // bound to the per-slot kernarg ring only after the doorbell, and freed automatically on any
+    // early-error return below.
+    ggml_hsa_unique_ptr<void> kernarg_owner(kernarg_base);
 
     auto * kernarg = reinterpret_cast<std::byte *>(
         align_up(reinterpret_cast<std::uintptr_t>(kernarg_base), align));
@@ -375,15 +409,28 @@ ggml_status ggml_hsa_gpu_dispatch_generic(ggml_backend_hsa_context & ctx,
     pkt.completion_signal = ctx.dispatch_signal;
 
     auto * queue = ctx.queue;
+    const std::uint32_t mask = queue->size - 1;
 
-    // Reserve a slot, waiting for space if the queue is full.
-    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
-    while (wr_idx - hsa_queue_load_read_index_scacquire(queue) >= queue->size) {
-        ggml_hsa_wait_dispatches(ctx);
+    if (ctx.kernargs.size() != queue->size) {
+        ctx.kernargs.clear();
+        ctx.kernargs.resize(queue->size);
     }
 
-    // Account for this dispatch on the completion signal; the packet processor decrements it back
-    // to zero when the kernel finishes (see ggml_hsa_wait_dispatches).
+    // Claim the next slot, waiting on the read index for room if the queue is full. As in
+    // ::dispatch, the write index is published only after the packet is fully written, and the
+    // kernarg is bound to the ring slot rather than the drift-prone completion signal (see the
+    // detailed notes there).
+    const std::uint64_t wr_idx = hsa_queue_load_write_index_relaxed(queue);
+    while (wr_idx - hsa_queue_load_read_index_scacquire(queue) >= queue->size) {
+        const hsa_signal_value_t v = hsa_signal_load_scacquire(ctx.dispatch_signal);
+        if (wr_idx - hsa_queue_load_read_index_scacquire(queue) < queue->size) {
+            break;
+        }
+        hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_NE, v,
+                                  GGML_HSA_WAIT_TIMEOUT, HSA_WAIT_STATE_BLOCKED);
+    }
+
+    // Account for this dispatch on the completion signal (in-flight hint only).
     hsa_signal_add_screlease(ctx.dispatch_signal, 1);
 
     write_aql_to_queue(pkt, queue, wr_idx);
@@ -392,13 +439,16 @@ ggml_status ggml_hsa_gpu_dispatch_generic(ggml_backend_hsa_context & ctx,
     header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE;
     header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE;
 
-    const std::uint32_t mask = queue->size - 1;
     atomic_set_packet_header(
         header, pkt.setup,
         &(static_cast<hsa_kernel_dispatch_packet_t *>(queue->base_address))[wr_idx & mask]);
 
-    // Ring the doorbell with the packet index to launch the kernel.
+    // Publish the slot now that the packet is fully valid, then ring the doorbell to launch it.
+    hsa_queue_store_write_index_screlease(queue, wr_idx + 1);
     hsa_signal_store_screlease(queue->doorbell_signal, wr_idx);
+
+    // Bind the kernarg to this ring slot, freeing the slot's previous occupant (see ::dispatch).
+    ctx.kernargs[wr_idx & mask] = std::move(kernarg_owner);
 
     return GGML_STATUS_SUCCESS;
 }

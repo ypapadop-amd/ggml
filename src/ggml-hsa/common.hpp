@@ -325,9 +325,13 @@ struct ggml_backend_hsa_context {
     std::int32_t device{};          ///< Device ID.
     std::string name;               ///< Device name.
     hsa_queue_t * queue{};          ///< HSA queue.
-    hsa_signal_t dispatch_signal{}; ///< Signal for packet completion.
-    std::vector<ggml_hsa_unique_ptr<void>>
-        kernargs; ///< Kernarg allocations since last synchronization.
+    hsa_signal_t dispatch_signal{}; ///< Signal for packet completion (blocking hint only).
+    /// Per-slot kernarg allocations, indexed by @c packet_index & (queue->size - 1). Each entry
+    /// is kept alive until the ring slot it belongs to is next written (i.e. its packet has been
+    /// overwritten in the queue), so no packet still resident in the ring — even one the packet
+    /// processor spuriously re-reads — can ever dereference a freed kernarg. Sized to the queue
+    /// depth on first dispatch. See ggml_hsa_gpu_kernel::dispatch.
+    std::vector<ggml_hsa_unique_ptr<void>> kernargs;
 
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 
@@ -346,6 +350,12 @@ struct ggml_backend_hsa_context {
      */
     void free_kernargs();
 };
+
+/// Safety-net timeout (in the signal wait's implementation-defined units) for the blocking waits on
+/// @c dispatch_signal. Because the packet processor updates the completion signal and the queue read
+/// index independently, a "signal changed" wait can miss a wakeup; a finite timeout makes every such
+/// wait periodically re-poll the read index. Genuine completions still wake waiters early.
+inline constexpr std::uint64_t GGML_HSA_WAIT_TIMEOUT = 1u << 20;
 
 /**
  * @brief Waits for all dispatched kernels to finish.

@@ -798,12 +798,45 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
 void ggml_backend_hsa_context::free_kernargs() { kernargs.clear(); }
 
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
-    if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
-                                             UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
-        val != 0) {
-        GGML_ABORT("%s: unexpected signal value (%ld)\n", __func__, val);
+    auto * queue = ctx.queue;
+    const std::uint64_t wr_idx = hsa_queue_load_write_index_scacquire(queue);
+    const std::uint64_t rd_idx = hsa_queue_load_read_index_scacquire(queue);
+
+    // Fast path for the synchronous / low-in-flight case. The HIP->HSA delegate path waits after
+    // every single kernel launch (tens of thousands of times per model eval), so this wait must be
+    // cheap. Completion-signal drift — the packet processor occasionally decrementing the shared
+    // completion signal more than once for a reused ring slot — only accumulates when many packets
+    // are in flight and ring slots are recycled; with at most one packet outstanding it cannot
+    // occur, so a single efficient blocking wait on "signal == 0" is correct and matches the
+    // original cost. A bounded timeout guards against drift carried over from an earlier burst on
+    // the native many-op path (in which case we fall through to the robust read-index drain below).
+    if (wr_idx - rd_idx <= 1) {
+        if (hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
+                                      GGML_HSA_WAIT_TIMEOUT, HSA_WAIT_STATE_BLOCKED) == 0) {
+            ctx.free_kernargs();
+            return;
+        }
     }
 
+    // Robust path (many packets in flight, or the fast wait timed out): drain via the queue read
+    // index, which the packet processor advances to the write index exactly when every published
+    // packet has retired (a retired kernel dispatch has completed its release fence, so results are
+    // visible). This is independent of the drift-prone completion signal, which is used only as a
+    // blocking hint. A finite timeout is used because the processor updates the signal and the read
+    // index independently: the signal can settle while the read index still lags, so an infinite
+    // "signal changed" wait could miss the wakeup; genuine completions still wake it early.
+    while (hsa_queue_load_read_index_scacquire(queue) < wr_idx) {
+        const hsa_signal_value_t v = hsa_signal_load_scacquire(ctx.dispatch_signal);
+        if (hsa_queue_load_read_index_scacquire(queue) >= wr_idx) {
+            break;
+        }
+        hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_NE, v,
+                                  GGML_HSA_WAIT_TIMEOUT, HSA_WAIT_STATE_BLOCKED);
+    }
+
+    // Queue drained: correct any completion-signal drift so it stays a faithful in-flight counter
+    // (and a well-behaved blocking hint) going forward, then release all kernarg allocations.
+    hsa_signal_store_screlease(ctx.dispatch_signal, 0);
     ctx.free_kernargs();
 }
 
