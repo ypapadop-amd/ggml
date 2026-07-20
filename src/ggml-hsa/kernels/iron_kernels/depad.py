@@ -22,7 +22,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_to_device
+from .utils import arch_num_columns, arch_to_device
 
 # Largest hardware wrap for a shim/mem-tile DMA dimension (10-bit field). A DMA
 # dimension whose element count exceeds this is rejected by the aiecc verifier
@@ -79,7 +79,13 @@ def _choose_chunk(d0: int, itemsize: int) -> int:
     raise ValueError(msg)
 
 
-def depad(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
+def depad(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+    op_params: bytearray,
+    max_workers: int | None = None,
+):
     """Build the de-pad IRON program: MUL_MAT post-amble, narrowing each row from d0pad to d0.
 
     f32 -> bf16 fuses the per-layer cast that would otherwise follow the MUL_MAT
@@ -95,19 +101,33 @@ def depad(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     dims, preventing the aiecc canonicalizer from folding them into one oversized
     (> wrap-limit) dimension. See [[ggml-hsa-dma-strided-limit]].
 
+    The de-pad is a grid of n_chunks x d1 independent chunk copies. It is fanned out across up to
+    ``max_workers`` compute tiles along the larger of the two axes, so dense-GEMM outputs
+    (n_chunks == 1, many rows) split by rows and wide-conv outputs (few rows, large n_chunks) split
+    by chunk-group. Each worker owns an independent in/out ObjectFifo (its own shim-DMA path), so
+    the natural default is one worker per array column.
+
     Parameters:
         arch: Target architecture.
         input_tensors: [src] padded source tensor.
         output_tensor: Dense destination tensor.
         op_params: Unused (kept for the dispatch ABI).
+        max_workers: Max compute tiles to fan the copy grid across. Defaults to the array's column
+            count (one worker per shim-DMA path); the actual count is capped at the split axis size.
 
     Returns:
         The resolved IRON program (MLIR module).
 
     Raises:
-        ValueError: On invalid tensor count, dtype, contiguity, or shape.
+        ValueError: On invalid tensor count, dtype, contiguity, shape, or non-positive max_workers.
     """
     del op_params  # placement is derived from shapes, not op_params
+
+    if max_workers is None:
+        max_workers = arch_num_columns(arch)
+    if max_workers < 1:
+        msg = f"depad max_workers must be >= 1; got {max_workers}."
+        raise ValueError(msg)
 
     if len(input_tensors) != 1:
         msg = "depad requires exactly one input tensor."
@@ -162,45 +182,78 @@ def depad(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     chunk_in_ty = np.ndarray[(chunk,), np.dtype[src.dtype]]
     chunk_out_ty = np.ndarray[(chunk,), np.dtype[output_tensor.dtype]]
 
-    of_in = ObjectFifo(chunk_in_ty, name="in")
-    of_out = ObjectFifo(chunk_out_ty, name="out")
+    # The copy grid is n_chunks (chunk-groups per row) x d1 (rows). Fan it out along the larger
+    # axis: dense-GEMM outputs (n_chunks == 1) split by rows; wide-conv outputs (small d1, large
+    # n_chunks) split by chunk-group. Each worker copies a contiguous band of the chosen axis.
+    del num_objects  # per-worker object counts are computed from the band below
+    split_rows = d1 >= n_chunks
+    n_units = d1 if split_rows else n_chunks
+    n_workers = min(max_workers, n_units)
+    base, rem = divmod(n_units, n_workers)
+    units_per_worker = [base + (1 if w < rem else 0) for w in range(n_workers)]
 
-    def core_fn(of_in, of_out, function):
-        for _ in range_(num_objects):
+    of_ins = [ObjectFifo(chunk_in_ty, name=f"in{w}") for w in range(n_workers)]
+    of_outs = [ObjectFifo(chunk_out_ty, name=f"out{w}") for w in range(n_workers)]
+
+    def core_fn(of_in, of_out, function, n_objs):
+        for _ in range_(n_objs):
             chunk_in = of_in.acquire(1)
             chunk_out = of_out.acquire(1)
             function(chunk_in, chunk_out, chunk, chunk)
             of_in.release(1)
             of_out.release(1)
 
-    worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+    # Per-worker band along the chosen axis: (n_chunks_w chunk-groups) x (rows_w rows), and the
+    # flat source/destination offset to its first element.
+    bands = []
+    unit_off = 0
+    for w in range(n_workers):
+        u = units_per_worker[w]
+        if split_rows:
+            n_chunks_w, rows_w = n_chunks, u
+            src_off, dst_off = unit_off * d0pad, unit_off * d0
+        else:
+            n_chunks_w, rows_w = u, d1
+            src_off, dst_off = unit_off * chunk, unit_off * chunk
+        bands.append((n_chunks_w, rows_w, src_off, dst_off))
+        unit_off += u
+
+    workers = [
+        Worker(
+            core_fn,
+            fn_args=[of_ins[w].cons(), of_outs[w].prod(), function, bands[w][0] * bands[w][1]],
+        )
+        for w in range(n_workers)
+    ]
 
     rt = Runtime()
     # Only the first d1 rows carry results; each padded row is d0pad wide, each dense row d0.
     src_ty = np.ndarray[(d0pad * d1,), np.dtype[src.dtype]]
     dst_ty = np.ndarray[(d0 * d1,), np.dtype[output_tensor.dtype]]
     # Access pattern dims are (chunk, row, element), outermost-first. The element run (size
-    # chunk, stride 1) is the contiguous fifo object; the row dim (size d1, stride d0pad on
+    # chunk, stride 1) is the contiguous fifo object; the row dim (size rows_w, stride d0pad on
     # the source / d0 on the destination) sits between the two contiguous dims so the
     # canonicalizer cannot fold chunk*element into one oversized dimension. The two
-    # wrap-checked hardware dims are the element width (chunk) and the row count (d1), both
+    # wrap-checked hardware dims are the element width (chunk) and the row count (rows_w), both
     # kept within the 10-bit limit.
-    src_tap = TensorAccessPattern(
-        (d1, d0pad),
-        0,
-        [1, n_chunks, d1, chunk],
-        [0, chunk, d0pad, 1],
-    )
-    dst_tap = TensorAccessPattern(
-        (d1, d0),
-        0,
-        [1, n_chunks, d1, chunk],
-        [0, chunk, d0, 1],
-    )
     with rt.sequence(src_ty, dst_ty) as (a_in, b_out):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in, src_tap)
-        rt.drain(of_out.cons(), b_out, dst_tap, wait=True)
+        for worker in workers:
+            rt.start(worker)
+        out_taps = []
+        for w in range(n_workers):
+            n_chunks_w, rows_w, src_off, dst_off = bands[w]
+            src_tap = TensorAccessPattern(
+                (d1, d0pad), src_off, [1, n_chunks_w, rows_w, chunk], [0, chunk, d0pad, 1]
+            )
+            out_taps.append(
+                TensorAccessPattern(
+                    (d1, d0), dst_off, [1, n_chunks_w, rows_w, chunk], [0, chunk, d0, 1]
+                )
+            )
+            rt.fill(of_ins[w].prod(), a_in, src_tap)
+        # Issue all fills first, then all drains; wait only on the last (one fence for the batch).
+        for w in range(n_workers):
+            rt.drain(of_outs[w].cons(), b_out, out_taps[w], wait=(w == n_workers - 1))
 
     return Program(arch_to_device(arch), rt).resolve_program()
 

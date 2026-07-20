@@ -43,3 +43,11 @@ set(BENCH_CONVERT_PAD_TARGET bench-convert-pad-hsa)
 add_executable(${BENCH_CONVERT_PAD_TARGET} ${BENCH_CONVERT_PAD_TARGET}.cpp)
 target_link_libraries(${BENCH_CONVERT_PAD_TARGET} PRIVATE benchmark::benchmark_main ggml)
 target_compile_features(${BENCH_CONVERT_PAD_TARGET} PRIVATE cxx_std_17)
+
+#
+# bench-depad-hsa
+
+set(BENCH_DEPAD_TARGET bench-depad-hsa)
+add_executable(${BENCH_DEPAD_TARGET} ${BENCH_DEPAD_TARGET}.cpp)
+target_link_libraries(${BENCH_DEPAD_TARGET} PRIVATE benchmark::benchmark_main ggml)
+target_compile_features(${BENCH_DEPAD_TARGET} PRIVATE cxx_std_17)
