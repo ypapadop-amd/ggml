@@ -800,42 +800,25 @@ void ggml_backend_hsa_context::free_kernargs() { kernargs.clear(); }
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
     auto * queue = ctx.queue;
     const std::uint64_t wr_idx = hsa_queue_load_write_index_scacquire(queue);
-    const std::uint64_t rd_idx = hsa_queue_load_read_index_scacquire(queue);
 
-    // Fast path for the synchronous / low-in-flight case. The HIP->HSA delegate path waits after
-    // every single kernel launch (tens of thousands of times per model eval), so this wait must be
-    // cheap. Completion-signal drift — the packet processor occasionally decrementing the shared
-    // completion signal more than once for a reused ring slot — only accumulates when many packets
-    // are in flight and ring slots are recycled; with at most one packet outstanding it cannot
-    // occur, so a single efficient blocking wait on "signal == 0" is correct and matches the
-    // original cost. A bounded timeout guards against drift carried over from an earlier burst on
-    // the native many-op path (in which case we fall through to the robust read-index drain below).
-    if (wr_idx - rd_idx <= 1) {
-        if (hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
-                                      GGML_HSA_WAIT_TIMEOUT, HSA_WAIT_STATE_BLOCKED) == 0) {
-            ctx.free_kernargs();
-            return;
-        }
-    }
-
-    // Robust path (many packets in flight, or the fast wait timed out): drain via the queue read
-    // index, which the packet processor advances to the write index exactly when every published
-    // packet has retired (a retired kernel dispatch has completed its release fence, so results are
-    // visible). This is independent of the drift-prone completion signal, which is used only as a
-    // blocking hint. A finite timeout is used because the processor updates the signal and the read
-    // index independently: the signal can settle while the read index still lags, so an infinite
-    // "signal changed" wait could miss the wakeup; genuine completions still wake it early.
+    // Wait until the packet processor has retired every published packet. The queue READ INDEX is
+    // the drift-immune source of truth: it advances to the write index exactly when all packets have
+    // retired (a retired kernel dispatch has completed its release fence, so results are visible).
+    // The completion signal is used only as an efficient WAKE HINT — a blocking "signal == 0" wait
+    // wakes the instant the in-flight counter zeroes, which is prompt in the common no-drift case
+    // (few packets, no ring-slot reuse) and restores the original fast cost for BOTH the synchronous
+    // delegate path (1 packet in flight) and the native many-op path (a whole graph enqueued async
+    // before this wait). A bounded timeout only bounds the re-check interval for the drift case: the
+    // packet processor can double-decrement the shared signal for a reused ring slot under rapid
+    // many-op dispatch, so the signal may never reach 0 — the read-index loop condition still exits
+    // correctly (it cannot hang), and the reset below repairs the drift for the next wait.
     while (hsa_queue_load_read_index_scacquire(queue) < wr_idx) {
-        const hsa_signal_value_t v = hsa_signal_load_scacquire(ctx.dispatch_signal);
-        if (hsa_queue_load_read_index_scacquire(queue) >= wr_idx) {
-            break;
-        }
-        hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_NE, v,
+        hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
                                   GGML_HSA_WAIT_TIMEOUT, HSA_WAIT_STATE_BLOCKED);
     }
 
-    // Queue drained: correct any completion-signal drift so it stays a faithful in-flight counter
-    // (and a well-behaved blocking hint) going forward, then release all kernarg allocations.
+    // Queue drained: reset any completion-signal drift so it stays a faithful in-flight counter (and
+    // a well-behaved blocking hint) going forward, then release all kernarg allocations.
     hsa_signal_store_screlease(ctx.dispatch_signal, 0);
     ctx.free_kernargs();
 }
