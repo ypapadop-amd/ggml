@@ -38,11 +38,11 @@ def _matches_triton_matmul_profile(input_tensors: list, output_tensor) -> bool:
     if len(input_tensors) != 2:
         return False
     tensors = [*input_tensors, output_tensor]
-    if not all(getattr(t, "contiguous", True) for t in tensors):
+    if any(not t.contiguous for t in tensors):
         return False
-    if any(np.dtype(t.dtype) != np.dtype(bfloat16) for t in input_tensors):
+    if any(t.dtype != np.dtype(bfloat16) for t in input_tensors):
         return False
-    if np.dtype(output_tensor.dtype) != np.dtype(np.float32):
+    if output_tensor.dtype != np.dtype(np.float32):
         return False
     d = _TRITON_MATMUL_DIM
     for t in tensors:

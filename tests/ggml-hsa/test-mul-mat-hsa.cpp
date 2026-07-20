@@ -296,21 +296,6 @@ void gemm(int M, int N, int K,
 }
 
 #ifdef GGML_USE_HSA
-// Build an MUL_MAT node with an explicit F32 output (bf16 inputs, f32 accumulate).
-static struct ggml_tensor * ggml_mul_mat_bf16_f32(
-        struct ggml_context * ctx,
-        struct ggml_tensor  * a,
-        struct ggml_tensor  * b) {
-    GGML_ASSERT(ggml_can_mul_mat(a, b));
-    GGML_ASSERT(!ggml_is_transposed(a));
-    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
-    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
-    result->op     = GGML_OP_MUL_MAT;
-    result->src[0] = a;
-    result->src[1] = b;
-    return result;
-}
-
 // Deterministic pseudo-random float in [-1, 1) from a linear index.
 static float pseudo_rand(int i) {
     const uint32_t x = static_cast<uint32_t>(i) * 2654435761u + 1013904223u;
@@ -368,7 +353,7 @@ static bool run_bf16_matmul_test(int64_t M, int64_t N, int64_t K) {
     ggml_init_params gparams { gbuf.size(), gbuf.data(), true };
     ggml_context * gctx = ggml_init(gparams);
     ggml_cgraph * gf = ggml_new_graph(gctx);
-    ggml_tensor * c = ggml_mul_mat_bf16_f32(gctx, a, b);
+    ggml_tensor * c = ggml_mul_mat(gctx, a, b);
     ggml_set_name(c, "c");
     ggml_build_forward_expand(gf, c);
 
