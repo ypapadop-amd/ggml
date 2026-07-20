@@ -4,7 +4,10 @@
 #
 # Runs the mnist-eval binary over the 10000 MNIST test images and prints the
 # key summary lines (accuracy, loss, timing) with the noisy per-image ASCII
-# image dump stripped out.
+# image dump stripped out. Also writes a JSON + markdown result file per
+# sub-run, named after the hardware architecture actually running it (e.g.
+# results-cpu-znver4.json, results-gpu-gfx1150.json, results-npu-aie2p.json),
+# so results from different machines/architectures don't overwrite each other.
 #
 # Usage:
 #   ./repro-mnist.sh [npu|cpu|gpu|both]     # default: both (npu+cpu)
@@ -17,6 +20,7 @@
 #   WARMUP=1    discard the first run from the timing summary (useful on the
 #               NPU where the first run may JIT-compile kernels)
 #   REGEN=1     regenerate model + download data before running
+#   OUTDIR      where result JSON + markdown files are written (default: script dir)
 #
 # Targets / primary backend device:
 #   npu -> HSA0    cpu -> CPU    gpu -> ROCm0 (HIP)
@@ -44,10 +48,21 @@ MODEL="${MODEL:-mnist-fc-f32.gguf}"
 RUNS="${RUNS:-1}"
 WARMUP="${WARMUP:-0}"
 TARGET="${1:-both}"
+OUTDIR="${OUTDIR:-${SCRIPT_DIR}}"
 
 EVAL_BIN="${REPO_ROOT}/${BUILD_DIR}/bin/mnist-eval"
 IMAGES="${SCRIPT_DIR}/data/MNIST/raw/t10k-images-idx3-ubyte"
 LABELS="${SCRIPT_DIR}/data/MNIST/raw/t10k-labels-idx1-ubyte"
+
+# Detect the hardware architecture actually running each target, so result
+# files are named after it instead of just the generic target.
+arch_for() {
+    case "$1" in
+        cpu) gcc -march=native -Q --help=target 2>/dev/null | awk '$1=="-march="{print $2}' ;;
+        gpu) rocm_agent_enumerator 2>/dev/null | awk 'NR==1' ;;
+        npu) rocminfo 2>/dev/null | grep -oE 'Name:\s+aie2p?' | awk 'NR==1{print $2}' ;;
+    esac || true
+}
 
 cd "${SCRIPT_DIR}"
 
@@ -78,13 +93,14 @@ run_once() {
 }
 
 run_eval() {
-    local label="$1" dev="$2" hipvis="$3"
+    local target="$1" label="$2" dev="$3" hipvis="$4"
+    local arch; arch="$(arch_for "${target}")"; arch="${arch:-unknown}"
     echo
     echo "======================================================================"
-    echo ">>> ${label} (primary backend: ${dev}) — ${RUNS} run(s)"
+    echo ">>> ${label} (primary backend: ${dev}, arch: ${arch}) — ${RUNS} run(s)"
     echo "======================================================================"
 
-    local times=() acc="" loss="" out us
+    local times=() runs_json=() acc="" loss="" out us
     for ((i = 1; i <= RUNS; i++)); do
         out="$(run_once "${dev}" "${hipvis}")"
         us="$(sed -n 's/.*, \([0-9.]*\) us\/image/\1/p' <<<"${out}")"
@@ -95,6 +111,7 @@ run_eval() {
         else
             printf '  %s us/image, test_acc=%s%%, test_loss=%s\n' "${us}" "${acc}" "${loss}"
         fi
+        runs_json+=("{\"run\":${i},\"us_per_image\":${us:-null},\"test_acc\":${acc:-null},\"test_loss\":${loss:-null}}")
         # Optionally drop the first (warmup) run from the timing summary.
         if [[ ${WARMUP} -eq 1 && ${i} -eq 1 && ${RUNS} -gt 1 ]]; then
             continue
@@ -102,27 +119,67 @@ run_eval() {
         times+=("${us}")
     done
 
+    local min max mean
     if [[ ${RUNS} -gt 1 ]]; then
-        printf '%s\n' "${times[@]}" | awk -v w="${WARMUP}" '
+        read -r min mean max < <(printf '%s\n' "${times[@]}" | awk '
             NR==1 { min=max=sum=$1; next }
             { sum+=$1; if ($1<min) min=$1; if ($1>max) max=$1 }
-            END {
-                printf "  ------------------------------------------------------------\n"
-                printf "  us/image over %d run(s)%s: min=%.2f  mean=%.2f  max=%.2f\n",
-                       NR, (w==1 ? " (warmup dropped)" : ""), min, sum/NR, max
-            }'
+            END { printf "%.6f %.6f %.6f\n", min, sum/NR, max }')
+        printf '  ------------------------------------------------------------\n'
+        printf '  us/image over %d run(s)%s: min=%.2f  mean=%.2f  max=%.2f\n' \
+            "${#times[@]}" "$([[ ${WARMUP} -eq 1 ]] && echo ' (warmup dropped)')" "${min}" "${mean}" "${max}"
         printf '  final test_acc=%s%%, test_loss=%s\n' "${acc}" "${loss}"
+    else
+        min="${times[0]}"; mean="${times[0]}"; max="${times[0]}"
     fi
+
+    # Write a JSON + markdown result file per sub-run, named after the
+    # detected architecture (not just the generic cpu/gpu/npu target), so
+    # results from different machines/architectures don't overwrite each other.
+    local stem="${OUTDIR}/results-${target}-${arch}"
+    local runs_arr; runs_arr="[$(IFS=,; echo "${runs_json[*]}")]"
+    jq -n \
+        --arg target "${target}" --arg arch "${arch}" --arg label "${label}" --arg device "${dev}" \
+        --argjson runs "${runs_arr}" --argjson warmup "$([[ ${WARMUP} -eq 1 ]] && echo true || echo false)" \
+        --arg min "${min}" --arg mean "${mean}" --arg max "${max}" \
+        --arg final_acc "${acc}" --arg final_loss "${loss}" \
+        '{target: $target, arch: $arch, label: $label, device: $device, warmup_dropped: $warmup,
+          runs: $runs,
+          summary: {
+            min_us_per_image: ($min | tonumber),
+            mean_us_per_image: ($mean | tonumber),
+            max_us_per_image: ($max | tonumber),
+            final_test_acc: (if $final_acc == "" then null else ($final_acc | tonumber) end),
+            final_test_loss: (if $final_loss == "" then null else ($final_loss | tonumber) end)
+          }}' \
+        > "${stem}.json"
+
+    {
+        echo "# mnist-eval — ${label} (${arch})"
+        echo
+        echo "\`mnist-eval\` on the 10000-image MNIST test set (FC 784->500->10), primary backend \`${dev}\`."
+        echo
+        echo "| | |"
+        echo "|---|---|"
+        echo "| Architecture | ${arch} |"
+        echo "| Runs | ${RUNS}$([[ ${WARMUP} -eq 1 && ${RUNS} -gt 1 ]] && echo ' (first run/warmup dropped from timing)') |"
+        printf '| us/image (min / mean / max) | %.2f / %.2f / %.2f |\n' "${min}" "${mean}" "${max}"
+        echo "| test_acc | ${acc}% |"
+        echo "| test_loss | ${loss} |"
+    } > "${stem}.md"
+
+    echo "  wrote ${stem}.json"
+    echo "  wrote ${stem}.md"
 }
 
-# run_eval <label> <primary-device> <HIP_VISIBLE_DEVICES value>
+# run_eval <target> <label> <primary-device> <HIP_VISIBLE_DEVICES value>
 #   -1  = hide the iGPU from ROCm (cpu/npu); 0 = expose ROCm0 (gpu)
 case "${TARGET}" in
-    npu)  run_eval "NPU"          "HSA0"  "-1" ;;
-    cpu)  run_eval "CPU"          "CPU"   "-1" ;;
-    gpu)  run_eval "GPU (HIP)"    "ROCm0" "0"  ;;
-    both) run_eval "NPU"          "HSA0"  "-1"
-          run_eval "CPU"          "CPU"   "-1" ;;
+    npu)  run_eval "npu" "NPU"       "HSA0"  "-1" ;;
+    cpu)  run_eval "cpu" "CPU"       "CPU"   "-1" ;;
+    gpu)  run_eval "gpu" "GPU (HIP)" "ROCm0" "0"  ;;
+    both) run_eval "npu" "NPU"       "HSA0"  "-1"
+          run_eval "cpu" "CPU"       "CPU"   "-1" ;;
     *)    echo "Usage: $0 [npu|cpu|gpu|both]" >&2; exit 1 ;;
 esac
 

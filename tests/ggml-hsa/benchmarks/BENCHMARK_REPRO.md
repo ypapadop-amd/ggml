@@ -2,7 +2,7 @@
 
 Google Benchmark microbenchmark for `GGML_OP_MUL_MAT` (`C = A * Bᵀ`, with
 A: `[K, M]`, B: `[K, N]`, C: `[M, N]`) across the CPU, GPU (HIP) and NPU (HSA)
-backends, for `F32` and `BF16` inputs at `M=N=K ∈ {256, 512, 1024, 2048}`.
+backends, for `F32` and `BF16` inputs at `M=N=K ∈ {512, 1024, 2048, 4096}`.
 
 ## Important: never compile HIP and HSA together
 
