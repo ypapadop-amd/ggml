@@ -1,5 +1,17 @@
 # Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
+# The parent tests/ directory does add_definitions(-UNDEBUG) to keep asserts on
+# in the test suite. For a performance benchmark we want a genuine optimized
+# build (NDEBUG defined, asserts and Google Benchmark's internal CHECKs compiled
+# out). That -UNDEBUG is inherited from the parent scope's COMPILE_OPTIONS and
+# is emitted at the end of the compile flags, so it cannot be removed from a
+# child directory. Re-assert -DNDEBUG here via add_compile_options so it is
+# appended after the inherited -UNDEBUG: the compiler applies -D/-U left to
+# right, so NDEBUG ends up defined. This runs before add_executable and
+# FetchContent below, so both the benchmark and the Google Benchmark library
+# inherit it.
+add_compile_options(-DNDEBUG)
+
 include(FetchContent)
 
 FetchContent_Declare(googlebenchmark
