@@ -245,6 +245,14 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     std::uint16_t header = HSA_PACKET_TYPE_KERNEL_DISPATCH << HSA_PACKET_HEADER_TYPE;
     header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE;
     header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE;
+    // Enforce in-queue ordering: this kernel must not begin until every previously
+    // enqueued packet has completed. The native graph-compute loop submits a whole
+    // graph of data-dependent kernels back-to-back without a host-side wait between
+    // them (it only waits on a layout/dtype conversion), so without the barrier bit a
+    // consumer kernel can launch before its producer has finished writing, corrupting
+    // any multi-op chain (e.g. the MNIST forward pass). Single-op backend tests never
+    // expose this because they synchronize right after the one dispatch.
+    header |= 1 << HSA_PACKET_HEADER_BARRIER;
 
     const std::uint32_t mask = queue->size - 1;
     atomic_set_packet_header(
