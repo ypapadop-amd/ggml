@@ -144,6 +144,37 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     return max_tile_size(arch, dtype, num_elements)
 
 
+# Minimum valid elements a worker must process for its share of the copy/convert to outweigh the
+# fixed per-worker cost (an extra shim-DMA fill+drain pair and its completion fence). Below this,
+# fanning out costs more than the single-core compute it saves; small ops (e.g. the MNIST FC
+# transform operands, <= ~400k elements) stay single-worker and match the original fast path.
+_MIN_ELEMS_PER_WORKER = 256 * 1024
+
+
+def fan_out_worker_count(
+    arch: str, total_elems: int, n_units: int, max_workers: int | None = None
+) -> int:
+    """Number of data-parallel workers to fan a transform across, scaled to the work size.
+
+    Capped by (a) the caller's max_workers (defaults to the array column count), (b) the number of
+    independent units to split (n_units), and (c) the work: at least _MIN_ELEMS_PER_WORKER valid
+    elements per worker, so tiny ops stay single-worker and avoid per-worker DMA/fence overhead.
+
+    Args:
+        arch: Target architecture.
+        total_elems: Total valid elements the transform processes.
+        n_units: Number of independent units available to split across workers.
+        max_workers: Hard cap on workers; defaults to the array's column count.
+
+    Returns:
+        The worker count (>= 1).
+    """
+    if max_workers is None:
+        max_workers = arch_num_columns(arch)
+    by_work = max(1, total_elems // _MIN_ELEMS_PER_WORKER)
+    return max(1, min(max_workers, n_units, by_work))
+
+
 def arch_num_columns(arch: str) -> int:
     """Number of array columns for an architecture (aie2p -> 8, aie2 -> 4).
 

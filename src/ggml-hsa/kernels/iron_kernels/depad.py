@@ -22,7 +22,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_num_columns, arch_to_device
+from .utils import arch_to_device, fan_out_worker_count
 
 # Largest hardware wrap for a shim/mem-tile DMA dimension (10-bit field). A DMA
 # dimension whose element count exceeds this is rejected by the aiecc verifier
@@ -101,19 +101,20 @@ def depad(
     dims, preventing the aiecc canonicalizer from folding them into one oversized
     (> wrap-limit) dimension. See [[ggml-hsa-dma-strided-limit]].
 
-    The de-pad is a grid of n_chunks x d1 independent chunk copies. It is fanned out across up to
-    ``max_workers`` compute tiles along the larger of the two axes, so dense-GEMM outputs
-    (n_chunks == 1, many rows) split by rows and wide-conv outputs (few rows, large n_chunks) split
-    by chunk-group. Each worker owns an independent in/out ObjectFifo (its own shim-DMA path), so
-    the natural default is one worker per array column.
+    The de-pad is a grid of n_chunks x d1 independent chunk copies, fanned out across compute tiles
+    along the larger of the two axes, so dense-GEMM outputs (n_chunks == 1, many rows) split by rows
+    and wide-conv outputs (few rows, large n_chunks) split by chunk-group. Each worker owns an
+    independent in/out ObjectFifo (its own shim-DMA path). The worker count scales with the work
+    (see ``fan_out_worker_count``) and is capped at the array column count, so small ops (e.g. the
+    MNIST FC logits) stay single-worker and avoid per-worker DMA/fence overhead.
 
     Parameters:
         arch: Target architecture.
         input_tensors: [src] padded source tensor.
         output_tensor: Dense destination tensor.
         op_params: Unused (kept for the dispatch ABI).
-        max_workers: Max compute tiles to fan the copy grid across. Defaults to the array's column
-            count (one worker per shim-DMA path); the actual count is capped at the split axis size.
+        max_workers: Hard cap on compute tiles to fan the copy grid across. Defaults to the array's
+            column count; the actual count also scales with the work and is capped at the split axis.
 
     Returns:
         The resolved IRON program (MLIR module).
@@ -123,9 +124,7 @@ def depad(
     """
     del op_params  # placement is derived from shapes, not op_params
 
-    if max_workers is None:
-        max_workers = arch_num_columns(arch)
-    if max_workers < 1:
+    if max_workers is not None and max_workers < 1:
         msg = f"depad max_workers must be >= 1; got {max_workers}."
         raise ValueError(msg)
 
@@ -184,11 +183,12 @@ def depad(
 
     # The copy grid is n_chunks (chunk-groups per row) x d1 (rows). Fan it out along the larger
     # axis: dense-GEMM outputs (n_chunks == 1) split by rows; wide-conv outputs (small d1, large
-    # n_chunks) split by chunk-group. Each worker copies a contiguous band of the chosen axis.
+    # n_chunks) split by chunk-group. Each worker copies a contiguous band of the chosen axis. The
+    # worker count scales with the work so tiny ops (e.g. the MNIST FC logits) stay single-worker.
     del num_objects  # per-worker object counts are computed from the band below
     split_rows = d1 >= n_chunks
     n_units = d1 if split_rows else n_chunks
-    n_workers = min(max_workers, n_units)
+    n_workers = fan_out_worker_count(arch, d0 * d1, n_units, max_workers)
     base, rem = divmod(n_units, n_workers)
     units_per_worker = [base + (1 if w < rem else 0) for w in range(n_workers)]
 
@@ -251,9 +251,11 @@ def depad(
                 )
             )
             rt.fill(of_ins[w].prod(), a_in, src_tap)
-        # Issue all fills first, then all drains; wait only on the last (one fence for the batch).
+        # Issue all fills first, then all drains. Wait on every drain: the workers finish out of
+        # order (uneven bands), so waiting only on the last-issued drain can signal completion while
+        # a slower worker is still writing, and an on-queue consumer would read partial data.
         for w in range(n_workers):
-            rt.drain(of_outs[w].cons(), b_out, out_taps[w], wait=(w == n_workers - 1))
+            rt.drain(of_outs[w].cons(), b_out, out_taps[w], wait=True)
 
     return Program(arch_to_device(arch), rt).resolve_program()
 

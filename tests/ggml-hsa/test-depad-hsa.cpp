@@ -119,6 +119,59 @@ bool run_case_bf16(ggml_backend_t backend, int64_t d0, int64_t d1, int64_t d0pad
     return ok;
 }
 
+// f32 padded source -> bf16 dense destination (the fused per-layer cast path used by the real
+// MUL_MAT post-amble). The reference casts the gathered f32 sub-block to bf16 (round-to-nearest).
+bool run_case_f32_to_bf16(ggml_backend_t backend, int64_t d0, int64_t d1, int64_t d0pad,
+                          int64_t d1pad) {
+    ggml_init_params params{
+        /*.mem_size   =*/ggml_tensor_overhead() * 2 + 1024,
+        /*.mem_buffer =*/nullptr,
+        /*.no_alloc   =*/true,
+    };
+    ggml_context * ctx = ggml_init(params);
+
+    ggml_tensor * src = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d0pad, d1pad);
+    ggml_tensor * dst = ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, d0, d1);
+    ggml_set_name(src, "src");
+    ggml_set_name(dst, "dst");
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+
+    std::vector<float> src_host(d0pad * d1pad);
+    for (int64_t i = 0; i < d0pad * d1pad; ++i) {
+        src_host[i] = static_cast<float>(i) * 0.25f + 1.0f;
+    }
+    ggml_backend_tensor_set(src, src_host.data(), 0, ggml_nbytes(src));
+
+    ggml_status status = ggml_hsa_test_dispatch_transform(backend, "HSA_DEPAD", src, dst);
+    if (status != GGML_STATUS_SUCCESS) {
+        printf("  dispatch failed (status=%d)\n", (int)status);
+        ggml_backend_buffer_free(buffer);
+        ggml_free(ctx);
+        return false;
+    }
+
+    std::vector<uint16_t> dst_host(d0 * d1);
+    ggml_backend_tensor_get(dst, dst_host.data(), 0, ggml_nbytes(dst));
+
+    bool ok = true;
+    for (int64_t i1 = 0; i1 < d1 && ok; ++i1) {
+        for (int64_t i0 = 0; i0 < d0 && ok; ++i0) {
+            uint16_t got = dst_host[i1 * d0 + i0];
+            uint16_t want = ggml_fp32_to_bf16(src_host[i1 * d0pad + i0]).bits;
+            if (got != want) {
+                printf("  mismatch at [%lld,%lld]: got 0x%04x want 0x%04x\n", (long long)i0,
+                       (long long)i1, got, want);
+                ok = false;
+            }
+        }
+    }
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -155,6 +208,12 @@ int main() {
     for (const auto & c : cases) {
         bool ok = run_case_bf16(backend, c.d0, c.d1, c.d0pad, c.d1pad);
         printf("HSA_DEPAD bf16 %-16s: %s\n", c.name, ok ? "PASSED" : "FAILED");
+        all_ok = all_ok && ok;
+    }
+
+    for (const auto & c : cases) {
+        bool ok = run_case_f32_to_bf16(backend, c.d0, c.d1, c.d0pad, c.d1pad);
+        printf("HSA_DEPAD f32->bf16 %-16s: %s\n", c.name, ok ? "PASSED" : "FAILED");
         all_ok = all_ok && ok;
     }
 

@@ -22,7 +22,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_num_columns, arch_to_device
+from .utils import arch_to_device, fan_out_worker_count
 
 
 def convert_pad(
@@ -38,18 +38,21 @@ def convert_pad(
     (compute kernel zero-fills the tail); trailing rows [d1, d1pad) are left as
     the pre-zeroed destination buffer contents.
 
-    The d1 independent rows are fanned out across up to ``max_workers`` compute tiles: the convert
-    is compute-bound per core (full RNE f32 -> bf16 emulation), so distributing rows scales
-    throughput until the shim-DMA bandwidth saturates. Each worker owns an independent in/out
-    ObjectFifo (its own shim-DMA path), so the natural default is one worker per array column.
+    The d1 independent rows are fanned out across compute tiles: the convert is compute-bound per
+    core (full RNE f32 -> bf16 emulation), so distributing rows scales throughput until the
+    shim-DMA bandwidth saturates. Each worker owns an independent in/out ObjectFifo (its own
+    shim-DMA path). The worker count scales with the work (see ``fan_out_worker_count``) and is
+    capped at the array column count, so small ops (e.g. the MNIST FC operands) stay single-worker
+    and avoid per-worker DMA/fence overhead, while large ops fan out.
 
     Args:
         arch: Target architecture.
         input_tensors: [src] input tensor.
         output_tensor: padded bf16 output tensor.
         op_params: unused (kept for the dispatch ABI).
-        max_workers: Max compute tiles to fan the row loop across. Defaults to the array's column
-            count (one worker per shim-DMA path); the actual count is further capped at d1.
+        max_workers: Hard cap on compute tiles to fan the row loop across. Defaults to the array's
+            column count (one worker per shim-DMA path); the actual count also scales with the work
+            and is capped at d1.
 
     Returns:
         The resolved IRON program (MLIR module).
@@ -59,9 +62,7 @@ def convert_pad(
     """
     del op_params  # placement is derived from shapes, not op_params
 
-    if max_workers is None:
-        max_workers = arch_num_columns(arch)
-    if max_workers < 1:
+    if max_workers is not None and max_workers < 1:
         msg = f"convert_pad max_workers must be >= 1; got {max_workers}."
         raise ValueError(msg)
 
@@ -101,10 +102,10 @@ def convert_pad(
     row_in_ty = np.ndarray[(d0,), np.dtype[src.dtype]]
     row_out_ty = np.ndarray[(d0pad,), np.dtype[output_tensor.dtype]]
 
-    # Fan the d1 independent rows across up to max_workers compute tiles. Each worker gets a
-    # contiguous band of rows; the first (d1 % n_workers) workers take one extra row so the bands
-    # cover d1 exactly.
-    n_workers = min(max_workers, d1)
+    # Fan the d1 independent rows across compute tiles, scaled to the work (tiny ops stay
+    # single-worker). Each worker gets a contiguous band of rows; the first (d1 % n_workers)
+    # workers take one extra row so the bands cover d1 exactly.
+    n_workers = fan_out_worker_count(arch, d0 * d1, d1, max_workers)
     base, rem = divmod(d1, n_workers)
     rows_per_worker = [base + (1 if w < rem else 0) for w in range(n_workers)]
 
@@ -136,9 +137,10 @@ def convert_pad(
     with rt.sequence(src_ty, dst_ty) as (a_in, b_out):
         for worker in workers:
             rt.start(worker)
-        # Issue every worker's fill and drain up front so their DMAs run concurrently; wait only on
-        # the last drain (a single wait=True suffices to fence the whole batch). Waiting on each
-        # drain in turn would serialize the workers through the host sequence.
+        # Issue every worker's fill up front so their DMAs run concurrently, then wait on every
+        # drain: the workers finish out of order (uneven row bands), so waiting only on the
+        # last-issued drain can signal completion while a slower worker is still writing, and an
+        # on-queue consumer (the MUL_MAT) would then read partial data.
         in_off = 0
         out_off = 0
         out_taps = []
@@ -158,7 +160,7 @@ def convert_pad(
             in_off += in_len
             out_off += out_len
         for w in range(n_workers):
-            rt.drain(of_outs[w].cons(), b_out, tap=out_taps[w], wait=(w == n_workers - 1))
+            rt.drain(of_outs[w].cons(), b_out, tap=out_taps[w], wait=True)
 
     return Program(arch_to_device(arch), rt).resolve_program()
 
