@@ -5,12 +5,16 @@ set(TRITON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
     ${CMAKE_CURRENT_SOURCE_DIR}/vecadd_aie2.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/vecadd_aie2p.mlir
+    ${CMAKE_CURRENT_SOURCE_DIR}/vecadd_aie2_f32.mlir
+    ${CMAKE_CURRENT_SOURCE_DIR}/vecadd_aie2p_f32.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/vecadd.py
     ${CMAKE_CURRENT_SOURCE_DIR}/matmul_aie2.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/matmul_aie2p.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/matmul.py
     ${CMAKE_CURRENT_SOURCE_DIR}/relu_aie2.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/relu_aie2p.mlir
+    ${CMAKE_CURRENT_SOURCE_DIR}/relu_aie2_f32.mlir
+    ${CMAKE_CURRENT_SOURCE_DIR}/relu_aie2p_f32.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/relu.py
     ${CMAKE_CURRENT_SOURCE_DIR}/utils.py
     )

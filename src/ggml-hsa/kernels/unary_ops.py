@@ -107,6 +107,14 @@ def _make_triton_relu_kernel_spec(
         )
         return relu[grid](X=x, Y=y, n_elements=n_elements, BLOCK_SIZE_N=block_size)
 
+    # The bf16 transform script (relu_{arch}.mlir) pads with a bf16 zero, which
+    # aircc rejects for f32 tensors. Select an f32-padding variant for f32 inputs.
+    import numpy as np
+
+    script_stem = f"relu_{arch}"
+    if np.dtype(output_tensor.dtype) == np.float32:
+        script_stem += "_f32"
+
     return KernelSpec(
         backend=Backend.TRITON,
         op_name="GGML_UNARY_OP_RELU",
@@ -116,7 +124,7 @@ def _make_triton_relu_kernel_spec(
         function=_compile,
         config={
             "transform_script": str(
-                Path(__file__).parent / "triton_kernels" / f"relu_{arch}.mlir"
+                Path(__file__).parent / "triton_kernels" / f"{script_stem}.mlir"
             ),
         },
     )

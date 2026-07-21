@@ -129,6 +129,14 @@ def _make_triton_add_kernel_spec(
             A=a, B=b, C=c, n_elements=n_elements, BLOCK_SIZE_N=block_size
         )
 
+    # The bf16 transform script (vecadd_{arch}.mlir) pads with a bf16 zero, which
+    # aircc rejects for f32 tensors. Select an f32-padding variant for f32 inputs.
+    import numpy as np
+
+    script_stem = f"vecadd_{arch}"
+    if np.dtype(output_tensor.dtype) == np.float32:
+        script_stem += "_f32"
+
     return KernelSpec(
         backend=Backend.TRITON,
         op_name="GGML_OP_ADD",
@@ -138,7 +146,7 @@ def _make_triton_add_kernel_spec(
         function=_compile,
         config={
             "transform_script": str(
-                Path(__file__).parent / "triton_kernels" / f"vecadd_{arch}.mlir"
+                Path(__file__).parent / "triton_kernels" / f"{script_stem}.mlir"
             ),
         },
     )

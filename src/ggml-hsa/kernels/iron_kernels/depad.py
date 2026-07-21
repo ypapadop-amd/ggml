@@ -176,7 +176,9 @@ def depad(
 
     # The compute kernel copies/converts a full C-element chunk with no in-kernel padding
     # (the DMA already stripped it), so d0 == d0pad == chunk from the kernel's point of view.
-    function = _create_external_function(src=src, output_tensor=output_tensor, chunk=chunk)
+    function = _create_external_function(
+        src=src, output_tensor=output_tensor, chunk=chunk
+    )
 
     chunk_in_ty = np.ndarray[(chunk,), np.dtype[src.dtype]]
     chunk_out_ty = np.ndarray[(chunk,), np.dtype[output_tensor.dtype]]
