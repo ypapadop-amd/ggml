@@ -54,3 +54,13 @@ ggml_status ggml_hsa_compute_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * t
  * @note This operation may change the layout of @c t->src[0] but it does not change the datatype.
  */
 ggml_status ggml_hsa_compute_cont(ggml_backend_hsa_context & ctx, ggml_tensor * t);
+
+/**
+ * @brief Gather rows of @c t->src[0] selected by the int32 index tensor @c t->src[1] into @p t
+ * (GGML_OP_GET_ROWS), converting the datatype if needed.
+ *
+ * For each of the @c nr = ggml_nelements(t->src[1]) output rows, reads the int32 row index and
+ * copies the @c ne00 elements of the selected @c t->src[0] row into the corresponding @p t row,
+ * matching @c ggml_compute_forward_get_rows.
+ */
+ggml_status ggml_hsa_compute_get_rows(ggml_backend_hsa_context & ctx, ggml_tensor * t);

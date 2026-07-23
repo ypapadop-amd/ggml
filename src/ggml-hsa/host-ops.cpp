@@ -185,6 +185,81 @@ struct ggml_hsa_copy_tensor_to_cont_tensor_f {
 };
 
 /**
+ * @brief Gathers rows of @p src (src0) selected by an index tensor into @p dst (GGML_OP_GET_ROWS).
+ *
+ * Implements ggml_compute_forward_get_rows: for each of the nr = nelements(indices) output rows,
+ * reads the int32 row index i01 and copies the nc = ne00 elements of src0 row (i01, i11, i12) into
+ * dst row (i10, i11, i12), converting the datatype if needed. The index tensor is held as a member
+ * so the (src0, dst) operator() signature matches @ref ggml_hsa_assign.
+ */
+struct ggml_hsa_get_rows_f {
+    const ggml_tensor * indices;
+
+    template <ggml_type SrcT, ggml_type DstT = SrcT>
+    ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
+        using src_traits = ggml_hsa_type_traits<SrcT>;
+        using dst_traits = ggml_hsa_type_traits<DstT>;
+
+        using src_type = typename src_traits::type;
+        using dst_type = typename dst_traits::type;
+
+        const std::int64_t nc   = src->ne[0];
+        const std::int64_t ne10 = indices->ne[0];
+        const std::int64_t ne11 = indices->ne[1];
+        const std::int64_t ne12 = indices->ne[2];
+        const std::int64_t nr   = ne10 * ne11 * ne12;
+
+        assert(dst->ne[0] == nc);
+
+        for (std::int64_t i = 0; i < nr; ++i) {
+            const std::int64_t i12 = i / (ne11 * ne10);
+            const std::int64_t i11 = (i - i12 * ne11 * ne10) / ne10;
+            const std::int64_t i10 = i - i12 * ne11 * ne10 - i11 * ne10;
+
+            const std::int64_t i01 = *std::launder(reinterpret_cast<const std::int32_t *>(
+                static_cast<const std::byte *>(indices->data) +
+                (i10 * indices->nb[0] + i11 * indices->nb[1] + i12 * indices->nb[2])));
+
+            if (i01 < 0 || i01 >= src->ne[1]) {
+                GGML_HSA_LOG_ERROR("%s: get_rows index %lld out of range [0, %lld)", __func__,
+                                   static_cast<long long>(i01), static_cast<long long>(src->ne[1]));
+                return GGML_STATUS_FAILED;
+            }
+
+            const auto * src_row = static_cast<const std::byte *>(src->data) +
+                                   (i01 * src->nb[1] + i11 * src->nb[2] + i12 * src->nb[3]);
+            auto * dst_row = static_cast<std::byte *>(dst->data) +
+                             (i10 * dst->nb[1] + i11 * dst->nb[2] + i12 * dst->nb[3]);
+
+            for (std::int64_t i00 = 0; i00 < nc; ++i00) {
+                auto src_ptr = std::launder(
+                    reinterpret_cast<const src_type *>(src_row + i00 * src->nb[0]));
+                auto dst_ptr =
+                    std::launder(reinterpret_cast<dst_type *>(dst_row + i00 * dst->nb[0]));
+
+                if constexpr (SrcT == DstT) {
+                    // no conversion needed
+                    *dst_ptr = *src_ptr;
+                } else if constexpr (src_traits::is_fundamental && dst_traits::is_fundamental) {
+                    // trivial conversion based on fundamental types
+                    *dst_ptr = static_cast<dst_type>(*src_ptr);
+                } else if constexpr (src_traits::is_fundamental) {
+                    // conversion using promotion of source type to fp32
+                    *dst_ptr = dst_traits::from_fp32(static_cast<float>(*src_ptr));
+                } else if constexpr (dst_traits::is_fundamental) {
+                    // conversion using promotion of destination type to fp32
+                    *dst_ptr = static_cast<dst_type>(src_traits::to_fp32(*src_ptr));
+                } else {
+                    // conversion using promotion of source and destination types to fp32
+                    *dst_ptr = dst_traits::from_fp32(src_traits::to_fp32(*src_ptr));
+                }
+            }
+        }
+        return GGML_STATUS_SUCCESS;
+    }
+};
+
+/**
  * @brief Assigns @p src to @p dst using @p f as the copy operation.
  */
 template <typename F>
@@ -318,4 +393,19 @@ ggml_status ggml_hsa_compute_cont(ggml_backend_hsa_context & ctx, ggml_tensor * 
     ggml_hsa_wait_dispatches(ctx);
 
     return ggml_hsa_assign(ggml_hsa_copy_tensor_to_cont_tensor_f{}, src, dst);
+}
+
+ggml_status ggml_hsa_compute_get_rows(ggml_backend_hsa_context & ctx, ggml_tensor * t) {
+    assert(ggml_hsa_nsrcs(*t) == 2);
+
+    auto * src0 = t->src[0];  // data table
+    auto * src1 = t->src[1];  // int32 row indices
+    auto * dst  = t;
+
+    assert(src1->type == GGML_TYPE_I32);
+
+    // Indices may be produced by a preceding device op, so drain before reading them on the host.
+    ggml_hsa_wait_dispatches(ctx);
+
+    return ggml_hsa_assign(ggml_hsa_get_rows_f{src1}, src0, dst);
 }
