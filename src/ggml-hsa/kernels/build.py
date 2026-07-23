@@ -92,6 +92,7 @@ _OP_KERNEL_MAP: dict[str, Kernel] = {
     "IM2COL": Kernel("ggml_op_im2col", "im2col.py"),
     "SCALE": Kernel("ggml_op_scale", "scale.py"),
     "DIAG_MASK_INF": Kernel("ggml_op_diag_mask_inf", "diag_mask_inf.py"),
+    "NORM": Kernel("ggml_op_norm", "norm.py"),
     "SOFT_MAX": Kernel("ggml_op_soft_max", "soft_max.py"),
     "CLAMP": Kernel("ggml_op_clamp", "clamp.py"),
     "ARGMAX": Kernel("ggml_op_argmax", "argmax.py"),
