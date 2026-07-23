@@ -16,6 +16,7 @@
 
 #include <aie_api/aie.hpp>
 #include <cstdint>
+#include <cstring>
 
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
@@ -66,7 +67,7 @@ void ggml_hsa_convert(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restri
 
         for (int32_t i = vend; i < Nv; ++i) {
             const uint16_t hi = ::convert_f32_to_bf16_scalar(in[i]);
-            __builtin_memcpy(&out[i], &hi, sizeof(bf16));
+            std::memcpy(&out[i], &hi, sizeof(bf16));
         }
     }
 #else

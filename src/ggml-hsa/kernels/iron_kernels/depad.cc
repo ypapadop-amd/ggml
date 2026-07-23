@@ -2,6 +2,7 @@
 
 #include <aie_api/aie.hpp>
 #include <cstdint>
+#include <cstring>
 
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
@@ -59,7 +60,7 @@ depad_impl(const IN * __restrict in, OUT * __restrict out, int32_t d0, int32_t d
     for (int32_t i = vend; i < d0v; ++i) {
         if constexpr (kConvertF32ToBf16) {
             const uint16_t hi = convert_f32_to_bf16_scalar(in[i]);
-            __builtin_memcpy(&out[i], &hi, sizeof(bf16));
+            std::memcpy(&out[i], &hi, sizeof(bf16));
         } else {
             static_assert(std::is_same_v<IN, OUT>,
                           "Plain-copy depad requires matching IN/OUT types");

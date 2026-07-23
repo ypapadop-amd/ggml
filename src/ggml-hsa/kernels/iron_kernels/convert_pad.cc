@@ -2,6 +2,7 @@
 
 #include <aie_api/aie.hpp>
 #include <cstdint>
+#include <cstring>
 
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
@@ -80,7 +81,7 @@ void ggml_hsa_convert_pad(const INPUT_DTYPE * __restrict in,
 
     for (int32_t i = vend; i < d0v; ++i) {
         const uint16_t hi = convert_f32_to_bf16_scalar(in[i]);
-        __builtin_memcpy(&out[i], &hi, sizeof(bf16));
+        std::memcpy(&out[i], &hi, sizeof(bf16));
     }
 #endif
 
