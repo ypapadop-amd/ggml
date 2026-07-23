@@ -65,6 +65,34 @@ def align_to_arch(
     raise ValueError(msg)
 
 
+def row_dimensions(tensor) -> tuple[int, int]:
+    """Return (row_length, num_rows) for a GGML-ordered tensor.
+
+    Row-structured ops treat dim 0 (ne00) as the row: row_length = ne00 and
+    num_rows = product of the remaining dimensions (ne01 * ne02 * ne03). Rows are
+    laid out slice-major (ne01 consecutive rows per ne02/ne03 slice), matching the
+    contiguous element order the runtime streams.
+
+    Args:
+        tensor: GGML-ordered tensor to inspect.
+
+    Returns:
+        The (row_length, num_rows) pair.
+
+    Raises:
+        ValueError: If the tensor rank is unsupported.
+    """
+    shape = tensor.shape
+    if not 1 <= len(shape) <= 4:
+        msg = f"Unsupported tensor rank: {len(shape)}"
+        raise ValueError(msg)
+    row_length = shape[0]
+    num_rows = 1
+    for dim in shape[1:]:
+        num_rows *= dim
+    return row_length, num_rows
+
+
 def arch_aligned_num_elements(arch: str, tensor) -> int:
     """Tensor element count aligned to the architecture for its dtype.
 
