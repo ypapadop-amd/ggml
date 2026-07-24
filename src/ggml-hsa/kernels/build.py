@@ -216,6 +216,8 @@ def ggml_compile_op(
     Raises:
         NotImplementedError: If the operation or its selected backend is not
             implemented.
+        ValueError: If the dispatch function rejects the given inputs (e.g.
+            wrong tensor count).
         RuntimeError: If compilation fails with every available backend.
     """
     logger = _setup_logger(__name__, verbose)
