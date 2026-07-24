@@ -51,3 +51,22 @@ set(BENCH_DEPAD_TARGET bench-depad-hsa)
 add_executable(${BENCH_DEPAD_TARGET} ${BENCH_DEPAD_TARGET}.cpp)
 target_link_libraries(${BENCH_DEPAD_TARGET} PRIVATE benchmark::benchmark_main ggml)
 target_compile_features(${BENCH_DEPAD_TARGET} PRIVATE cxx_std_17)
+
+#
+# Per-operator benchmarks (MNIST / GPT-2 shapes), one target per op.
+
+foreach(BENCH_TARGET
+        bench-norm-hsa
+        bench-soft-max-hsa
+        bench-diag-mask-inf-hsa
+        bench-gelu-hsa
+        bench-scale-hsa
+        bench-add-hsa
+        bench-mul-hsa
+        bench-get-rows-hsa
+        bench-conv-2d-hsa
+        bench-pool-2d-hsa)
+    add_executable(${BENCH_TARGET} ${BENCH_TARGET}.cpp)
+    target_link_libraries(${BENCH_TARGET} PRIVATE benchmark::benchmark_main ggml)
+    target_compile_features(${BENCH_TARGET} PRIVATE cxx_std_17)
+endforeach()
