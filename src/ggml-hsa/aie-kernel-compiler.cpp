@@ -42,12 +42,24 @@ static const std::filesystem::path ggml_hsa_library_dir = [] {
 /// @brief Path to AIE kernels.
 static const fs::path kernel_path = ggml_hsa_library_dir / "kernels";
 
-/// @brief Python interpreter initialization guard.
-static py::scoped_interpreter python_interpreter_guard = [] {
-    py::scoped_interpreter guard;
+/// @brief Embedded Python interpreter initialization.
+///
+/// The interpreter is initialized once (when this library is loaded) and is
+/// intentionally *never* finalized. Using a @c py::scoped_interpreter here would
+/// finalize the interpreter from a static destructor at process exit, which runs
+/// Python GC over the nanobind-bound MLIR objects created by the JIT path (from
+/// @c mlir_aie) after their shared libraries have begun tearing down. That
+/// ordering segfaults in @c PyMlirContext::~PyMlirContext during
+/// @c Py_FinalizeEx, and it is intermittent because it only occurs when the JIT
+/// actually ran (a cold kernel-cache miss); warm runs load compiled kernels from
+/// disk and never create those objects. Leaking the interpreter is the standard
+/// workaround for embedding CPython alongside C-extension modules that do not
+/// support finalization; the OS reclaims everything at exit.
+static const bool python_interpreter_initialized = [] {
+    py::initialize_interpreter();
     auto sys = py::module_::import("sys");
     sys.attr("path").attr("append")(kernel_path.string());
-    return guard;
+    return true;
 }();
 
 /**
