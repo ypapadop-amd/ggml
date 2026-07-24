@@ -5,10 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON design for argmax: index of the max value along dim 0, per row.
-
-Each worker iteration processes one row and emits a single I32 index.
-"""
+"""IRON design for argmax: index of the max value along dim 0, per row."""
 
 from pathlib import Path
 
@@ -30,7 +27,7 @@ from .utils import arch_to_device
 def argmax_op(arch: str, input_tensors: list, output_tensor):
     """Build the argmax IRON program.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: One F32 tensor [ne0, ne1, ne2, ne3]; ne0 is the row length
             and ne1 * ne2 * ne3 the number of rows.
@@ -41,7 +38,6 @@ def argmax_op(arch: str, input_tensors: list, output_tensor):
 
     Raises:
         ValueError: On invalid tensor count, contiguity, output size, or dtype.
-
     """
     if len(input_tensors) != 1:
         msg = "Operation requires exactly one input tensor."
@@ -76,10 +72,8 @@ def argmax_op(arch: str, input_tensors: list, output_tensor):
         row_length=row_length,
     )
 
-    # AIE-array data movement with object fifos
-    # Input: one row at a time (F32)
+    # One row streamed in, one index streamed out per worker iteration.
     input_tile_ty = np.ndarray[(row_length,), np.dtype[input_tensor.dtype]]
-    # Output: one index per row (I32)
     output_tile_ty = np.ndarray[(1,), np.dtype[output_tensor.dtype]]
 
     of_in = ObjectFifo(input_tile_ty, name="in")
@@ -120,7 +114,7 @@ def _create_external_function(
 ) -> ExternalFunction:
     """Create the ExternalFunction wrapping argmax.cc.
 
-    Parameters:
+    Args:
         op_name: Operation name (drives function name and compile flags).
         input_tensor: Input tensor.
         output_tensor: Output tensor.
@@ -128,7 +122,6 @@ def _create_external_function(
 
     Returns:
         The configured ExternalFunction.
-
     """
     current_dir = Path(__file__).resolve().parent
     return ExternalFunction(

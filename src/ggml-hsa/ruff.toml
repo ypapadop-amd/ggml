@@ -62,6 +62,7 @@ ignore = [
     "PLR0912", # too many branches in function
     "PLR0913", # too many arguments in function
     "PLR0915", # too many statements in function
+    "PLR0917", # too many positional arguments
     "PLR2004", # magic values
     "T201",    # print
     "S101",    # allow assert
