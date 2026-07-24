@@ -5,16 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON design for GGML_OP_POOL_2D (max/avg pooling).
-
-Channel-planes are independent, so one input plane [IW, IH] -> output plane
-[OW, OH] is processed per worker iteration across all C * N planes. Input is
-float32 or bfloat16; output is float32.
-
-Out-of-bounds taps are skipped. For MAX pooling this is equivalent to
--FLT_MAX padding; for AVG pooling the divisor is the full k0*k1 window area
-(not the count of valid taps), matching the GGML CPU reference.
-"""
+"""IRON design for GGML_OP_POOL_2D (max/avg pooling)."""
 
 import struct
 from pathlib import Path
@@ -41,7 +32,7 @@ _GGML_OP_POOL_AVG = 1
 def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """Build the pooling IRON program.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of one input tensor, shape [IW, IH, C, N].
         output_tensor: Output tensor, shape [OW, OH, C, N].
@@ -53,7 +44,6 @@ def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     Raises:
         ValueError: On invalid tensor count, dtype, contiguity, op_params, or
             pooling op.
-
     """
     if len(input_tensors) != 1:
         msg = "Operation requires exactly one input tensor."
@@ -161,7 +151,7 @@ def _create_external_function(
 ) -> ExternalFunction:
     """Create the ExternalFunction for the pooling core function.
 
-    Parameters:
+    Args:
         op_name: Operation name (drives function name and compile flags).
         input_tensor: Input tensor.
         output_tensor: Output tensor.
@@ -170,7 +160,6 @@ def _create_external_function(
 
     Returns:
         The configured ExternalFunction.
-
     """
     current_dir = Path(__file__).resolve().parent
     return ExternalFunction(

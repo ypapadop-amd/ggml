@@ -1,10 +1,5 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-/**
- * @file pool_2d.cc
- * @brief 2D pooling operation for AIE kernels.
- */
-
 #include <limits>
 #include <type_traits>
 
@@ -22,9 +17,10 @@ extern "C" {
  * @brief Reduces each k1 x k0 window of one input channel-plane to an output element.
  *
  * Mirrors ggml_compute_forward_pool_2d for a single channel-plane. Padding is
- * handled by skipping out-of-bounds taps; AVG divides by the full k0 * k1 window
- * area (matching the GGML CPU reference), not the count of valid taps. Taps are
- * accumulated in float.
+ * handled by skipping out-of-bounds taps rather than gathering a padded
+ * buffer: for MAX this is equivalent to -inf padding, and for AVG the divisor
+ * is still the full k0*k1 window area (not the count of in-bounds taps),
+ * matching the GGML CPU reference bit-for-bit.
  *
  * @param[in]  in   Input channel-plane of iw * ih elements (row-major, width fastest).
  * @param[out] out  Output channel-plane of ow * oh elements.

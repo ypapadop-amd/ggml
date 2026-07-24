@@ -33,13 +33,12 @@ from .utils import (
 def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
     """Whether t0 can be repeated to fill t1 (GGML broadcast: t1[i] % t0[i] == 0).
 
-    Parameters:
+    Args:
         t0_shape: Shape of the tensor to be repeated.
         t1_shape: Target shape to fill.
 
     Returns:
         True if t0 can be broadcast to t1.
-
     """
     return all(t1_shape[i] % t0_shape[i] == 0 for i in range(4))
 
@@ -71,12 +70,17 @@ def _binary_op(
 ):
     """Element-wise output_tensor = op(*input_tensors).
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: Input tensors [src0, src1].
         function_spec: Core function specification.
         output_tensor: Output tensor.
 
+    Returns:
+        The resolved IRON program (MLIR module).
+
+    Raises:
+        ValueError: If num_elements is not divisible by tile_size.
     """
     # Tile size and number of tiles
     num_elements = function_spec.num_elements
@@ -143,12 +147,14 @@ def _create_external_function(
 ) -> CoreFunctionSpec:
     """Create the CoreFunctionSpec for an element-wise binary op.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         op_name: Name of the operation.
         input_tensors: Two input tensors [src0, src1].
         output_tensor: Output tensor.
 
+    Returns:
+        The configured CoreFunctionSpec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
     tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
@@ -184,7 +190,6 @@ class BroadcastFunctionSpec:
         num_elements_src1: Total number of src1 elements.
         src1_ne: src1 shape as (ne0, ne1, ne2, ne3).
         dst_ne: Destination shape as (ne0, ne1, ne2, ne3).
-
     """
 
     external_function: ExternalFunction
@@ -210,12 +215,14 @@ def _create_broadcast_external_function(
     src1 is smaller than src0/dst; the kernel gets the full src1 buffer and
     uses modulo indexing to repeat it.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         op_name: Name of the operation.
         input_tensors: Two input tensors [src0, src1].
         output_tensor: Output tensor.
 
+    Returns:
+        The configured BroadcastFunctionSpec.
     """
     num_elements_out = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
     num_elements_src1 = arch_aligned_num_elements(arch=arch, tensor=input_tensors[1])
@@ -270,12 +277,17 @@ def _binary_op_broadcast(
 ):
     """Broadcast binary op: src1 loaded fully once, src0 streamed in tiles.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: Input tensors [src0, src1].
         function_spec: Broadcast function specification.
         output_tensor: Output tensor.
 
+    Returns:
+        The resolved IRON program (MLIR module).
+
+    Raises:
+        ValueError: If num_elements_out is not divisible by tile_size.
     """
     num_elements_out = function_spec.num_elements_out
     num_elements_src1 = function_spec.num_elements_src1
@@ -357,12 +369,18 @@ def binary_op(
 ):
     """IRON design for binary ops (element-wise, or broadcasting src1 to src0/dst).
 
-    Parameters:
+    Args:
         op_name: Name of the operation.
         arch: Target architecture.
         input_tensors: Two input tensors [src0, src1].
         output_tensor: Output tensor.
 
+    Returns:
+        The resolved IRON program (MLIR module).
+
+    Raises:
+        ValueError: On invalid tensor count, contiguity, shape mismatch, or
+            unsupported broadcast.
     """
     if len(input_tensors) != 2:
         msg = "Operation requires exactly two input tensors."

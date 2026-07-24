@@ -27,8 +27,11 @@ _GGML_NP_DTYPE_MAP = {
 def str_to_dtype(dtype_str: str):
     """Convert a GGML dtype string to its corresponding numpy dtype.
 
-    Parameters:
+    Args:
         dtype_str: GGML dtype string to convert (e.g. "f32", "bf16").
+
+    Returns:
+        The corresponding numpy dtype.
 
     Raises:
         ValueError: If dtype_str is not recognized.
@@ -93,11 +96,14 @@ def ggml_tensor_to_tensordesc(
 ) -> TensorDesc:
     """Create a TensorDesc from ggml_tensor parameters.
 
-    Parameters:
+    Args:
         dtype: Tensor data type.
         ne: Number of elements per dimension (innermost to outermost).
         nb: Stride in bytes per dimension (innermost to outermost).
         contiguous: Whether the tensor is contiguous in memory.
+
+    Returns:
+        The constructed TensorDesc.
 
     """
     return TensorDesc(dtype=dtype, shape=ne, stride=nb, contiguous=contiguous)

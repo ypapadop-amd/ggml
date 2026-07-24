@@ -18,11 +18,10 @@ def _compile_aie_core_kernels(
 ) -> None:
     """Compile external-function C++ sources into object files linked into the final PDI.
 
-    Parameters:
+    Args:
         arch: Target architecture (e.g., "aie2", "aie2p").
         functions: ExternalFunction objects to compile.
         work_dir: Working directory for intermediate files.
-
     """
     for func in functions:
         compile_cxx_core_function(
@@ -48,13 +47,12 @@ def compile_iron_kernel(
     external C++ core functions to object files, then compiles the module into
     PDI and instruction binaries.
 
-    Parameters:
+    Args:
         kernel_spec: The KernelSpec containing the IRON kernel function.
         exported_name: Name for the exported kernel files.
         output_directory: Directory for output PDI and instruction files.
         logger: Logger for status messages.
         verbose: If True, enables verbose compilation output.
-
     """
     work_dir = output_directory / f"{exported_name}-iron-artifacts"
     work_dir.mkdir(parents=True, exist_ok=True)

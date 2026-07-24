@@ -14,9 +14,6 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor * src_tensors[],
                                           std::size_t num_src_tensors,
                                           ggml_tensor & dst_tensor) const {
-    // kernarg buffer layout (uint64_t entries): [src_ptrs..., dst_ptr, src_sizes..., dst_size]
-    constexpr std::size_t kernarg_entries_per_tensor = 2;
-
     const auto num_kernargs = num_src_tensors + 1 /* destination tensor */;
 
     // number of bytes in the packet after completion_signal up to kernarg_address; the AIE dispatch
@@ -55,6 +52,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // Each ring slot owns a fixed kernarg slot of the same index, sized for the worst case, so the
     // slot claimed above always has room. Reusing slot packet_id is safe only once the prior kernel
     // using it has finished reading its kernargs.
+    // kernarg buffer layout (uint64_t entries): [src_ptrs..., dst_ptr, src_sizes..., dst_size]
     // NOTE: under async submission, we need to revisit if reuse must be gated on the completion
     // signal.
     auto * kernargs = static_cast<uint64_t *>(ctx.kernargs.slot(packet_id));
@@ -76,7 +74,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     }
     kernargs[kernarg_idx++] = ggml_nbytes(&dst_tensor);
 
-    assert(kernarg_idx == num_kernargs * kernarg_entries_per_tensor);
+    assert(kernarg_idx == num_kernargs * 2 /*kernarg_entries_per_tensor*/);
 
     pkt.kernarg_address = kernargs;
 

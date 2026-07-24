@@ -5,37 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON design for GGML_OP_CONV_2D (direct 2D convolution).
-
-Implements the direct 2D convolution:
-  src0 (kernel): [KW, KH, IC, OC]
-  src1 (image):  [IW, IH, IC, N]
-  dst:           [OW, OH, OC, N]
-
-The AIE kernel computes one output plane [OW, OH] per invocation for a single
-batch element and output channel. Planes are streamed in (batch, oc) order,
-which reproduces GGML's contiguous dst layout [OW, OH, OC, N] (oc has stride
-OW*OH). Per worker, the outer loop over its batch slice runs as an AIE loop
-(range_); the inner loop over output channels (OC) is a plain Python range so
-it unrolls at build time, working around mlir-aie issue #1547 (nested range_
-miscompilation).
-
-The batch dimension is embarrassingly parallel: the N images are distributed
-across compute tiles (one worker per tile), mirroring the im2col design. A
-single worker cannot sustain the full batch — the device dispatch times out
-("Failed waiting for command") — so the work is fanned out. Each worker owns
-independent weight/image/output fifos fed by per-worker DMA taps; the split-
-then-stream-many-objects access pattern fails aiecc DMA lowering, whereas per-
-worker taps lower cleanly. Within a worker the weights are acquired once
-(depth-1 fifo) and the image once per batch element, reused across all OC
-planes.
-
-Buffer-mapping contract (must match kernarg layout in aie-kernel.cpp):
-  rt.sequence(kernel_ty, image_ty, output_ty)  ->  src0, src1, dst
-Even though weights are never moved tile-by-tile (they are acquired once for
-all OH rows), src0 must still appear as the first sequence argument so the
-kernarg indices stay in order.
-"""
+"""IRON design for GGML_OP_CONV_2D (direct 2D convolution)."""
 
 import struct
 from pathlib import Path
@@ -67,7 +37,7 @@ _MAX_WORKERS = 7
 def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """Build the CONV_2D IRON program.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: [kernel src0 (KW, KH, IC, OC), image src1 (IW, IH, IC, N)].
         output_tensor: Output tensor, shape (OW, OH, OC, N).
@@ -287,7 +257,20 @@ def _create_external_function(
     wts_size: int,
     plane_size: int,
 ) -> ExternalFunction:
-    """Create the ExternalFunction for the conv_2d core function."""
+    """Create the ExternalFunction for the conv_2d core function.
+
+    Args:
+        image_tensor: Image input tensor (src1); also supplies the dtype for
+            the weight buffer (kernel and image always share a dtype here).
+        output_tensor: Output tensor.
+        image_size: Elements in one input image (IC * IH * IW).
+        wts_size: Elements in the full weight tensor (KW * KH * IC * OC).
+        plane_size: Elements in one output plane (OW * OH).
+
+    Returns:
+        The configured ExternalFunction.
+
+    """
     op_name = "GGML_OP_CONV_2D"
     current_dir = Path(__file__).resolve().parent
     return ExternalFunction(

@@ -15,11 +15,11 @@ def ggml_op_scale(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_OP_SCALE.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
-        op_params: Scale factor.
+        op_params: {s, b} as 2 x float32.
 
     Returns:
         KernelSpec for the SCALE operation.

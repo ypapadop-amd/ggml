@@ -4,9 +4,6 @@
 /**
  * @file zero.cc
  * @brief Zero-initialization kernels for AIE2 matrix buffers.
- *
- * Provides scalar and vectorized functions to zero-initialize output matrices
- * before matrix multiplication accumulation.
  */
 
 #ifndef ZERO_CC
@@ -30,7 +27,7 @@
 template <typename T, int32_t M, int32_t N>
 void zero_scalar(T * __restrict c) {
     for (int32_t i = 0; i < M * N; i++) {
-        c[i] = 0;
+        c[i] = static_cast<T>(0);
     }
 }
 

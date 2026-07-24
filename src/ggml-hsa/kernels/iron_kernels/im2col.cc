@@ -1,10 +1,5 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-/**
- * @file im2col.cc
- * @brief 2D im2col (image-to-column) layout transform for AIE kernels.
- */
-
 #include <type_traits>
 
 #include <aie_api/aie.hpp>
@@ -16,12 +11,11 @@ extern "C" {
 /**
  * @brief Gathers one output row of a 2D im2col transform for a single image.
  *
- * Mirrors ggml_compute_forward_im2col_f32 for one batch element and one output
- * row (fixed @p oh). The full input image for that batch element lives in @p in
- * as IC contiguous planes of IH * IW elements. The output row holds OW columns,
- * each packing IC * KH * KW taps channel-major: column layout is
- * [iic * (KH * KW) + ikh * KW + ikw]. Taps that fall outside the padded input
- * are written as zero.
+ * Mirrors ggml_compute_forward_im2col_f32 for one batch element and output row
+ * (fixed oh). Output columns pack IC*KH*KW taps channel-major; taps outside
+ * the padded input are written as zero rather than skipped, so every column
+ * is fully populated. INPUT_DTYPE/OUTPUT_DTYPE may differ: each element is
+ * cast on the way out.
  *
  * @param[in]  in   Input image: IC planes of IH * IW elements (row-major).
  * @param[out] out  Output row: OW * (IC * KH * KW) elements.
@@ -55,6 +49,7 @@ void ggml_op_im2col(const INPUT_DTYPE * __restrict in,
                     int32_t d0,
                     int32_t d1) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "INPUT_DTYPE must be a floating-point type");
+    static_assert(is_floating_point_v<OUTPUT_DTYPE>, "OUTPUT_DTYPE must be a floating-point type");
 
     event0();
 

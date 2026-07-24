@@ -6,6 +6,7 @@
  */
 
 #include "aie_kernel_math.h"
+#include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
 /**
@@ -41,7 +42,8 @@ extern "C" {
  * @param[in]  N   Number of elements to process.
  */
 void ggml_op_sqr(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return v * v; });
+    transform_n(in, N, out,
+                [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(v * v); });
 }
 
 #endif // GGML_OP_SQR
@@ -73,7 +75,8 @@ void ggml_op_log(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict ou
  * @param[in]  N   Number of elements to process.
  */
 void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return aie::sqrt(v); });
+    transform_n(in, N, out,
+                [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(aie::sqrt(v)); });
 }
 
 #endif // GGML_OP_SQRT
@@ -90,8 +93,9 @@ void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
 void ggml_unary_op_abs(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
-    transform_n(in, N, out,
-                [](auto v) -> OUTPUT_DTYPE { return v < static_cast<INPUT_DTYPE>(0) ? -v : v; });
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(v < static_cast<INPUT_DTYPE>(0) ? -v : v);
+    });
 }
 
 #endif // GGML_UNARY_OP_ABS
@@ -132,7 +136,7 @@ void ggml_unary_op_sgn(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_neg(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return -v; });
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(-v); });
 }
 
 #endif // GGML_UNARY_OP_NEG
@@ -149,7 +153,9 @@ void ggml_unary_op_neg(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_step(const INPUT_DTYPE * __restrict in,
                         OUTPUT_DTYPE * __restrict out,
                         int32_t N) {
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return v > 0; });
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(v > static_cast<INPUT_DTYPE>(0));
+    });
 }
 
 #endif // GGML_UNARY_OP_STEP
@@ -185,8 +191,10 @@ void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_hardsigmoid(const INPUT_DTYPE * __restrict in,
                                OUTPUT_DTYPE * __restrict out,
                                int32_t N) {
+    static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
-        return std::min<INPUT_DTYPE>(1, std::max<INPUT_DTYPE>(0, (v + 3) / 6));
+        return static_cast<OUTPUT_DTYPE>(
+            std::min<INPUT_DTYPE>(1, std::max<INPUT_DTYPE>(0, (v + 3) / 6)));
     });
 }
 
@@ -206,8 +214,10 @@ void ggml_unary_op_hardsigmoid(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_hardswish(const INPUT_DTYPE * __restrict in,
                              OUTPUT_DTYPE * __restrict out,
                              int32_t N) {
+    static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
-        return v * std::min<INPUT_DTYPE>(1, std::max<INPUT_DTYPE>(0, (v + 3) / 6));
+        return static_cast<OUTPUT_DTYPE>(
+            v * std::min<INPUT_DTYPE>(1, std::max<INPUT_DTYPE>(0, (v + 3) / 6)));
     });
 }
 
@@ -229,12 +239,13 @@ void ggml_unary_op_floor(const INPUT_DTYPE * __restrict in,
                          OUTPUT_DTYPE * __restrict out,
                          int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
+    static_assert(is_floating_point_v<OUTPUT_DTYPE>, "Output type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         if (v == static_cast<int32>(v)) {
-            return static_cast<int32>(v);
+            return static_cast<OUTPUT_DTYPE>(static_cast<int32>(v));
         }
-        return (v >= static_cast<INPUT_DTYPE>(0)) ? static_cast<int32>(v)
-                                                  : static_cast<int32>(v) - 1;
+        return static_cast<OUTPUT_DTYPE>(
+            (v >= static_cast<INPUT_DTYPE>(0)) ? static_cast<int32>(v) : static_cast<int32>(v) - 1);
     });
 }
 
@@ -256,12 +267,13 @@ void ggml_unary_op_ceil(const INPUT_DTYPE * __restrict in,
                         OUTPUT_DTYPE * __restrict out,
                         int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
+    static_assert(is_floating_point_v<OUTPUT_DTYPE>, "Output type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
         if (v == static_cast<int32>(v)) {
-            return static_cast<int32>(v);
+            return static_cast<OUTPUT_DTYPE>(static_cast<int32>(v));
         }
-        return (v >= static_cast<INPUT_DTYPE>(0)) ? static_cast<int32>(v) + 1
-                                                  : static_cast<int32>(v);
+        return static_cast<OUTPUT_DTYPE>(
+            (v >= static_cast<INPUT_DTYPE>(0)) ? static_cast<int32>(v) + 1 : static_cast<int32>(v));
     });
 }
 
@@ -283,10 +295,12 @@ void ggml_unary_op_round(const INPUT_DTYPE * __restrict in,
                          OUTPUT_DTYPE * __restrict out,
                          int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
+    static_assert(is_floating_point_v<OUTPUT_DTYPE>, "Output type must be a floating point type");
     transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
-        return (v >= static_cast<INPUT_DTYPE>(0))
-                   ? static_cast<int32>(v + static_cast<INPUT_DTYPE>(.5))
-                   : static_cast<int32>(v - static_cast<INPUT_DTYPE>(.5));
+        return static_cast<OUTPUT_DTYPE>(
+            (v >= static_cast<INPUT_DTYPE>(0))
+                ? static_cast<int32>(v + static_cast<INPUT_DTYPE>(.5))
+                : static_cast<int32>(v - static_cast<INPUT_DTYPE>(.5)));
     });
 }
 
@@ -308,7 +322,10 @@ void ggml_unary_op_trunc(const INPUT_DTYPE * __restrict in,
                          OUTPUT_DTYPE * __restrict out,
                          int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return static_cast<int32>(v); });
+    static_assert(is_floating_point_v<OUTPUT_DTYPE>, "Output type must be a floating point type");
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(static_cast<int32>(v));
+    });
 }
 
 #endif // GGML_UNARY_OP_TRUNC

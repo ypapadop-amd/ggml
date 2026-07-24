@@ -45,7 +45,7 @@ inline float compute_alibi_slope(float max_bias, int32_t n_head, int32_t head_id
         }
     } else {
         // slope = m1^(2*(head_idx - n_head_log2) + 1)
-        uint32_t exp = 2 * (head_idx - n_head_log2) + 1;
+        uint32_t exp = 2 * (static_cast<uint32_t>(head_idx) - n_head_log2) + 1;
         slope = m1;
         for (uint32_t j = 1; j < exp; ++j) {
             slope *= m1;
@@ -88,7 +88,8 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
     const float * input = reinterpret_cast<const float *>(in);
     float * output = reinterpret_cast<float *>(out);
 
-    // Step 1: Find max for numerical stability
+    // Pass 1: max of the scaled row. Subtracting this below keeps every scalar_exp() argument
+    // <= 0, so exp() can't overflow no matter how large the (scaled) logits are.
     float global_max = std::numeric_limits<float>::lowest();
     for (int32_t i = 0; i < N; ++i) {
         float val = input[i] * scale;
@@ -97,7 +98,7 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
         }
     }
 
-    // Step 2: Compute exp(x - max) and sum
+    // Pass 2: exp(scale*x - max), storing into out so pass 3 only needs to rescale it in place.
     float sum_total = 0.0f;
     for (int32_t i = 0; i < N; ++i) {
         float val = input[i] * scale - global_max;
@@ -106,7 +107,7 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
         sum_total += exp_val;
     }
 
-    // Step 3: Normalize
+    // Pass 3: normalize (multiply by the reciprocal instead of dividing per element).
     float sum_inv = 1.0f / sum_total;
     for (int32_t i = 0; i < N; ++i) {
         output[i] *= sum_inv;
@@ -159,11 +160,12 @@ void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
     const auto * mask_input = reinterpret_cast<const float *>(mask);
     auto * output = reinterpret_cast<float *>(out);
 
-    // Compute ALiBi slope
+    // tile_idx enumerates rows in head-major order (rows_per_head consecutive rows share a head),
+    // so this recovers which head the current row belongs to without a separate index tensor.
     const auto head_idx = tile_idx / rows_per_head;
     const auto slope = compute_alibi_slope(max_bias, n_head, head_idx);
 
-    // Step 1: Find max for numerical stability
+    // Pass 1: max of the biased row (see ggml_op_soft_max for why this precedes exp()).
     float global_max = std::numeric_limits<float>::lowest();
     for (int32_t i = 0; i < N; ++i) {
         float val = input[i] * scale + mask_input[i] * slope;
@@ -172,7 +174,7 @@ void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
         }
     }
 
-    // Step 2: Compute exp(x - max) and sum
+    // Pass 2: exp(scale*x + slope*mask - max), stored into out for pass 3 to rescale in place.
     float sum_total = 0.0f;
     for (int32_t i = 0; i < N; ++i) {
         float val = input[i] * scale + mask_input[i] * slope - global_max;
@@ -181,7 +183,7 @@ void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
         sum_total += exp_val;
     }
 
-    // Step 3: Normalize
+    // Pass 3: normalize.
     float sum_inv = 1.0f / sum_total;
     for (int32_t i = 0; i < N; ++i) {
         output[i] *= sum_inv;
@@ -202,9 +204,9 @@ void ggml_op_soft_max_with_mask(const INPUT_DTYPE * __restrict in,
  * streaming attention where early tokens act as attention sinks.
  *
  * Algorithm:
- * 1. Get sink value for current head based on tile_idx.
- * 2. Find global maximum including both (scale*input + mask) and sink.
- * 3. Compute exp(scale*x + mask - max) and accumulate sum.
+ * 1. Get sink value and ALiBi slope for current head based on tile_idx.
+ * 2. Find global maximum including both (scale*input + slope*mask) and sink.
+ * 3. Compute exp(scale*x + slope*mask - max) and accumulate sum.
  * 4. Add exp(sink - max) to sum for proper normalization.
  * 5. Normalize output by dividing each exp value by total sum.
  *
