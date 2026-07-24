@@ -72,7 +72,7 @@ inline float scalar_exp(float x) {
 /**
  * @brief Checks if a floating-point value is infinite.
  *
- * @param x The input value.
+ * @param[in] x The input value.
  * @return @c true if x is infinite, @c false otherwise.
  */
 inline bool is_infinite(float x) { return x != 0.0f && x + x == x; }

@@ -17,7 +17,7 @@ def ggml_op_clamp(
 
     Clamps each element to [min_val, max_val].
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
@@ -25,7 +25,6 @@ def ggml_op_clamp(
 
     Returns:
         KernelSpec for the CLAMP operation.
-
     """
     from functools import partial
 

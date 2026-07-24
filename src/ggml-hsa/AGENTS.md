@@ -125,6 +125,7 @@ from functools import partial
 from kernel import Backend, KernelSpec
 from .iron.scale import scale
 
+
 def ggml_op_scale(arch, input_tensors, output_tensor, op_params) -> KernelSpec:
     return KernelSpec(
         backend=Backend.IRON,
@@ -217,12 +218,15 @@ Compilers are resolved in `build.py` by `_get_compiler()`:
 ```python
 from kernel import Backend
 
+
 def _get_compiler(backend: Backend) -> Callable:
     if backend.name == Backend.IRON.name:
         from build_iron import compile_iron_kernel
+
         return compile_iron_kernel
     if backend.name == Backend.TRITON.name:
         from build_triton import compile_triton_kernel
+
         return compile_triton_kernel
     raise NotImplementedError(...)
 ```
@@ -284,7 +288,7 @@ class BroadcastFunctionSpec:
     num_elements_out: int
     num_elements_src1: int
     src1_ne: tuple  # (ne0, ne1, ne2, ne3) - src1 shape
-    dst_ne: tuple   # (ne0, ne1, ne2, ne3) - dst shape
+    dst_ne: tuple  # (ne0, ne1, ne2, ne3) - dst shape
 ```
 
 The C++ kernel computes broadcast indices using 32-bit arithmetic only (AIE cores lack
@@ -318,7 +322,7 @@ handles these as follows:
 
   ```python
   def ggml_op_soft_max(arch, input_tensors, output_tensor, op_params) -> KernelSpec:
-      input_tensor = input_tensors[0]           # Required
+      input_tensor = input_tensors[0]  # Required
       mask_tensor = input_tensors[1] if len(input_tensors) >= 2 else None  # Optional
       sink_tensor = input_tensors[2] if len(input_tensors) >= 3 else None  # Optional
   ```
@@ -330,11 +334,11 @@ Example in `softmax.py`:
 
 ```python
 if input_tensor_count == 1:
-    return create_unary_program(...)     # Just input → output
+    return create_unary_program(...)  # Just input → output
 elif input_tensor_count == 2:
-    return create_binary_program(...)    # input + mask → output
+    return create_binary_program(...)  # input + mask → output
 else:
-    return create_ternary_program(...)   # input + mask + sink → output
+    return create_ternary_program(...)  # input + mask + sink → output
 ```
 
 ## Kernel Development Pattern
@@ -389,7 +393,9 @@ Implements the core computation using the AIE API:
 
    ```python
    """Top-level entry point for GGML_OP_NEW_OP."""
+
    from .kernel import Backend, KernelSpec
+
 
    def ggml_op_new_op(
        arch: str, input_tensors: list, output_tensor, op_params: bytearray
@@ -469,6 +475,7 @@ To add a new backend, follow the pattern used for the Triton backend. This examp
        ...
        if backend.name == Backend.NEW.name:
            from build_new import compile_new_kernel
+
            return compile_new_kernel
    ```
 

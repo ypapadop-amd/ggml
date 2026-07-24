@@ -3,27 +3,18 @@
 /**
  * @file binary_ops.cc
  * @brief Element-wise binary operations for AIE kernels.
- *
- * This file implements binary operations (add, sub, mul, div) with both
- * element-wise and broadcasting variants.
  */
 
+#include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
 /**
- * @brief Applies a binary operation element-wise to two input arrays.
- *
- * @tparam T0       Element type of the first input array.
- * @tparam T1       Element type of the second input array.
- * @tparam TOut     Element type of the output array.
- * @tparam Size     Integer type for the count parameter.
- * @tparam BinaryOp Callable type taking two elements and returning the result.
- *
+ * @brief out[i] = op(in0[i], in1[i]) for count elements.
  * @param[in]  in0   First input array of count elements.
  * @param[in]  in1   Second input array of count elements.
  * @param[in]  count Number of elements to process.
  * @param[out] out   Output array of count elements.
- * @param[in]  op    Binary operation to apply: out[i] = op(in0[i], in1[i]).
+ * @param[in]  op    Binary operation to apply.
  */
 template <typename T0, typename T1, typename TOut, typename Size, typename BinaryOp>
 void transform_binary_n(const T0 * __restrict in0,
@@ -45,11 +36,10 @@ void transform_binary_n(const T0 * __restrict in0,
  * Tiles are processed sequentially; the global element index is computed from
  * tile_idx and tile_size to determine the appropriate src1 index via modulo.
  *
- * @tparam T0       Element type of the first input array.
- * @tparam T1       Element type of the second input array (broadcasted).
- * @tparam TOut     Element type of the output array.
- * @tparam Size     Integer type for size/index parameters.
- * @tparam BinaryOp Callable type taking two elements and returning the result.
+ * Scalar: each element's global index is decomposed into 4D dst coordinates and
+ * reduced modulo the src1 shape. The row-bias case is split into the dedicated,
+ * vectorized ggml_op_add_bias below because a runtime-dimension modulo/divide here
+ * lowers to a __divsi3 call per element, which is too costly for that hot path.
  *
  * @param[in]  in0       First input tile (tile_size elements, contiguous from src0).
  * @param[in]  in1       Second input array (full broadcasted tensor).
@@ -63,7 +53,7 @@ void transform_binary_n(const T0 * __restrict in0,
  * @param[in]  dst_ne0   dst dimension 0 (innermost).
  * @param[in]  dst_ne1   dst dimension 1.
  * @param[in]  dst_ne2   dst dimension 2.
- * @param[in]  op        Binary operation to apply: out[i] = op(in0[i], in1[broadcast_idx]).
+ * @param[in]  op        Binary operation to apply.
  */
 template <typename T0, typename T1, typename TOut, typename Size, typename BinaryOp>
 void transform_binary_broadcast_n(const T0 * __restrict in0,
@@ -132,7 +122,9 @@ void ggml_op_add(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a + b; });
+    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(a + b);
+    });
 }
 
 #endif // GGML_OP_ADD
@@ -151,7 +143,9 @@ void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a - b; });
+    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(a - b);
+    });
 }
 
 #endif // GGML_OP_SUB
@@ -170,7 +164,9 @@ void ggml_op_mul(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a * b; });
+    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(a * b);
+    });
 }
 
 #endif // GGML_OP_MUL
@@ -189,7 +185,9 @@ void ggml_op_div(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE { return a / b; });
+    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(a / b);
+    });
 }
 
 #endif // GGML_OP_DIV

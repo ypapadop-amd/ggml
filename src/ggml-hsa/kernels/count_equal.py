@@ -17,7 +17,7 @@ def ggml_op_count_equal(
 
     Counts elementwise-equal entries between two same-shaped I32 tensors.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of two contiguous I32 tensors.
         output_tensor: I64 scalar [1, 1, 1, 1] holding the count.
