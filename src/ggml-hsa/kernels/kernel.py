@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Any
 
 # Common env var gating backend preference for ops that ship both an IRON and a Triton
-# kernel (currently ADD). When set to "1", Triton specs are tried first and IRON
-# becomes the fallback; otherwise IRON is primary. See order_kernel_specs().
+# kernel. When set to "1", Triton specs are tried first and IRON becomes the fallback;
+# otherwise IRON is primary. See order_kernel_specs().
 PREFER_TRITON_ENV = "GGML_HSA_PREFER_TRITON"
 
 
