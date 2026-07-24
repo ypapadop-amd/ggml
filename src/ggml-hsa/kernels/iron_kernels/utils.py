@@ -89,8 +89,8 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     Returns:
         The chosen tile size.
     """
-    vector_register_width = _arch_params(arch)["vector_reg_bits"]
-    tile_size = int(vector_register_width / dtype.itemsize)
+    vector_register_bits = _arch_params(arch)["vector_reg_bits"]
+    tile_size = int(vector_register_bits / (dtype.itemsize * 8))
 
     while num_elements % tile_size != 0 and tile_size > 1:
         tile_size //= 2
