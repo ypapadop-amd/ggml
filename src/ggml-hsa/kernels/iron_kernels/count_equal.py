@@ -5,11 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON design for count_equal: number of equal elements between two I32 tensors.
-
-The count is a single I64 scalar. IRON ObjectFifos lack I64, so it is transferred
-as two I32 lanes (low and high 32 bits) that bitwise form the I64.
-"""
+"""IRON design for count_equal: number of equal elements between two I32 tensors."""
 
 from pathlib import Path
 
@@ -32,7 +28,7 @@ from .utils import arch_to_device, max_tile_size
 def count_equal_op(arch: str, input_tensors: list, output_tensor):
     """Build the count_equal IRON program.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: Two I32 tensors of identical shape.
         output_tensor: I64 scalar tensor, shape [1, 1, 1, 1].
@@ -42,7 +38,6 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor):
 
     Raises:
         ValueError: On invalid tensor count, shape mismatch, contiguity, or dtype.
-
     """
     if len(input_tensors) != 2:
         msg = "Operation requires exactly two input tensors."
@@ -94,8 +89,8 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor):
 
     total_elements = input_tensor0.numel()
 
-    # Use max_tile_size to find a tile size that evenly divides total_elements.
-    # This avoids padding/alignment issues with DMA transfers.
+    # Largest power-of-two width dividing total_elements, so every tile is full-width
+    # and the kernel tail loop only handles the sub-vector remainder, not a short tile.
     tile_size = max_tile_size(arch, input_tensor0.dtype, total_elements)
     num_tiles = total_elements // tile_size
 
@@ -105,27 +100,20 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor):
         tile_size=tile_size,
     )
 
-    # AIE-array data movement with object fifos
-    # Input: tiles of I32 elements from both tensors
     input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor0.dtype]]
-    # Output: Two I32 values representing the I64 count (low and high parts)
-    # This is needed because IRON doesn't support I64 in ObjectFifos
+    # I64 count as two I32 lanes: IRON ObjectFifos don't support I64.
     output_tile_ty = np.ndarray[(2,), np.dtype[np.int32]]
 
     of_in0 = ObjectFifo(input_tile_ty, name="in0")
     of_in1 = ObjectFifo(input_tile_ty, name="in1")
     of_out = ObjectFifo(output_tile_ty, name="out")
 
-    # Task for the core to perform with an external function
     def ext_core_fn(of_in0, of_in1, of_out, function, num_tiles):
-        # Acquire output buffer once at the start
         elem_out = of_out.acquire(1)
 
-        # Process all tiles
         for tile_idx in range_(num_tiles):
             elem_in0 = of_in0.acquire(1)
             elem_in1 = of_in1.acquire(1)
-            # Convert tile_idx from index type to i32
             tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
             function(elem_in0, elem_in1, elem_out, tile_size, tile_idx_i32)
             of_in0.release(1)
@@ -133,7 +121,6 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor):
 
         of_out.release(1)
 
-    # Create a worker to run the task on a compute tile
     worker = Worker(
         ext_core_fn,
         fn_args=[
@@ -145,10 +132,8 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor):
         ],
     )
 
-    # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
     input_tensor_ty = np.ndarray[(total_elements,), np.dtype[input_tensor0.dtype]]
-    # Output: 2 x I32 = 8 bytes = 1 x I64
     output_tensor_ty = np.ndarray[(2,), np.dtype[np.int32]]
 
     with rt.sequence(input_tensor_ty, input_tensor_ty, output_tensor_ty) as (
@@ -161,7 +146,6 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor):
         rt.fill(of_in1.prod(), a_in1)
         rt.drain(of_out.cons(), b_out, wait=True)
 
-    # Place program components and generate an MLIR module
     return Program(arch_to_device(arch), rt).resolve_program()
 
 
@@ -172,14 +156,13 @@ def _create_external_function(
 ) -> ExternalFunction:
     """Create the ExternalFunction wrapping count_equal.cc.
 
-    Parameters:
+    Args:
         op_name: Operation name (drives function name and compile flags).
         input_tensor: Input tensor.
         tile_size: Number of elements per tile.
 
     Returns:
         The configured ExternalFunction.
-
     """
     current_dir = Path(__file__).resolve().parent
     return ExternalFunction(

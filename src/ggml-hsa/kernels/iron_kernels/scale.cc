@@ -15,7 +15,9 @@ extern "C" {
 /**
  * @brief Applies scale and bias to each element: out[i] = in[i] * scale + bias.
  *
- * Vectorized over 512-bit registers with a scalar tail for the remainder.
+ * Vectorized over 512-bit registers with a scalar tail for the remainder. scale/bias
+ * are runtime args, not compile-time constants, since op_params can vary per dispatch
+ * of the same compiled kernel.
  *
  * @param[in]  in    Input array of N float elements.
  * @param[out] out   Output array of N float elements.
@@ -30,6 +32,9 @@ void ggml_op_scale(
     constexpr int32_t V = 512 / (sizeof(float) * 8);
     const int32_t vend = (N / V) * V;
 
+    // Aligned load/store: scale.py streams whole power-of-two tiles, so in/out are
+    // vector-aligned (unlike row-tiled kernels, e.g. binary_ops ADD bias, whose
+    // per-row stride isn't). MIN_ITERATION_COUNT(1): N (== tile_size) is at least V.
     AIE_PREPARE_FOR_PIPELINING
     AIE_LOOP_MIN_ITERATION_COUNT(1)
     for (int32_t i = 0; i < vend; i += V) {

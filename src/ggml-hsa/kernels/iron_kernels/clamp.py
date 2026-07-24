@@ -5,7 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON kernel implementation for the clamp operation."""
+"""IRON design for clamp: elementwise out = clamp(in, min_val, max_val)."""
 
 import struct
 from pathlib import Path
@@ -36,7 +36,10 @@ def _create_external_function(
 ) -> tuple[ExternalFunction, int, int]:
     """Create the clamp ExternalFunction.
 
-    Parameters:
+    Tile size is the largest power-of-two vector width that evenly divides the
+    arch-aligned element count, so tiles need no remainder/tail iteration.
+
+    Args:
         arch: Target architecture.
         op_name: Name of the operation.
         input_tensor: Input tensor.
@@ -44,7 +47,6 @@ def _create_external_function(
 
     Returns:
         (func, num_elements, tile_size) where num_elements is arch-aligned.
-
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
     tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
@@ -70,14 +72,16 @@ def _create_external_function(
 
 
 def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
-    """IRON design for clamp: output = max(min_val, min(input, max_val)).
+    """Build the clamp IRON program: output = max(min_val, min(input, max_val)).
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
         op_params: min_val and max_val as 2 x float32.
 
+    Returns:
+        The resolved IRON program (MLIR module).
     """
     if len(input_tensors) != 1:
         msg = "Operation requires exactly one input tensor."
@@ -106,15 +110,12 @@ def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     num_tiles = num_elements // tile_size
     assert num_elements % tile_size == 0
 
-    # AIE-array data movement with object fifos
     input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
     output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
     of_in = ObjectFifo(input_tile_ty, name="in")
     of_out = ObjectFifo(output_tile_ty, name="out")
 
-    # Task for the core to perform with an external function
     def ext_core_fn(of_in, of_out, function):
-        # Number of sub-vector "tile" iterations
         for _ in range_(num_tiles):
             elem_in = of_in.acquire(1)
             elem_out = of_out.acquire(1)
@@ -122,10 +123,8 @@ def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
             of_in.release(1)
             of_out.release(1)
 
-    # Create a worker to run the task on a compute tile
     worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
 
-    # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
     input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
@@ -134,5 +133,4 @@ def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         rt.fill(of_in.prod(), a_in)
         rt.drain(of_out.cons(), b_out, wait=True)
 
-    # Place program components (assign them resources on the device) and generate an MLIR module
     return Program(arch_to_device(arch), rt).resolve_program()

@@ -5,12 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON design for GGML_OP_CROSS_ENTROPY_LOSS.
-
-Computes -sum(labels * log_softmax(logits)) / num_rows with numerically stable
-log-softmax (max subtraction). One row is processed per worker iteration and
-per-row losses are accumulated on-tile into a single scalar.
-"""
+"""IRON design for GGML_OP_CROSS_ENTROPY_LOSS."""
 
 from pathlib import Path
 
@@ -33,18 +28,16 @@ from .utils import align_to_arch, arch_to_device
 def get_cross_entropy_loss_dimensions(tensor) -> tuple[int, int]:
     """Return (row_length, num_rows) for a GGML-ordered tensor.
 
-    Loss is computed over dim 0 (ne00), so row_length = ne00 and
-    num_rows = ne01 * ne02 * ne03.
+    Loss is computed over dim 0 (ne00): row_length = ne00, num_rows = ne01*ne02*ne03.
 
-    Parameters:
-        tensor: GGML-ordered tensor of rank 1 to 4.
+    Args:
+        tensor: GGML-ordered tensor to inspect.
 
     Returns:
         The (row_length, num_rows) pair.
 
     Raises:
         ValueError: If the tensor rank is unsupported.
-
     """
     shape = tensor.shape
 
@@ -69,13 +62,19 @@ KERN_VEC_SIZE = 8
 
 
 def cross_entropy_loss(arch: str, input_tensors: list, output_tensor):
-    """Build the cross entropy loss IRON program.
+    """Build the cross entropy loss IRON program: mean loss over all rows.
 
-    Parameters:
-        arch: Target architecture.
-        input_tensors: [logits, labels] of identical shape.
-        output_tensor: Output scalar tensor holding the loss.
+    Args:
+        arch: Target AIE architecture.
+        input_tensors: Input tensors (logits, labels).
+        output_tensor: Output scalar tensor.
 
+    Returns:
+        The resolved IRON program (MLIR module).
+
+    Raises:
+        ValueError: On invalid tensor count, shape mismatch, contiguity, or a row
+            length that is not already tile-aligned.
     """
     if len(input_tensors) != 2:
         msg = f"Cross entropy loss requires 2 input tensors: {len(input_tensors)}"
@@ -100,11 +99,13 @@ def cross_entropy_loss(arch: str, input_tensors: list, output_tensor):
 
     row_length, num_rows = get_cross_entropy_loss_dimensions(logits_tensor)
 
-    # Align tile size to architecture requirements
+    # Round row_length up to a KERN_VEC_SIZE-aligned tile size.
     tile_size = align_to_arch(arch, row_length, logits_tensor.dtype, KERN_VEC_SIZE)
 
-    # For cross entropy loss, we process one row at a time
-    # Each tile contains one row of data
+    # This kernel processes exactly one row per tile (no intra-row tiling), so a tile
+    # size larger than the row itself would mean the ObjectFifo's fixed-size DMA
+    # transfer reads past the row boundary; reject rows whose length does not already
+    # satisfy the alignment rather than silently padding.
     if tile_size != row_length:
         msg = (
             f"Tile size ({tile_size}) must equal row length ({row_length}) "
@@ -112,7 +113,6 @@ def cross_entropy_loss(arch: str, input_tensors: list, output_tensor):
         )
         raise ValueError(msg)
 
-    # Create external function
     function = _create_external_function(
         logits_tensor=logits_tensor,
         labels_tensor=labels_tensor,
@@ -120,7 +120,6 @@ def cross_entropy_loss(arch: str, input_tensors: list, output_tensor):
         tile_size=tile_size,
     )
 
-    # Create the program with on-tile reduction
     return create_reduction_program(
         arch=arch,
         function=function,
@@ -141,22 +140,19 @@ def create_reduction_program(
     tile_size: int,
     num_rows: int,
 ):
-    """Build the IRON program that reduces per-row losses on-tile.
+    """Build the IRON program that sums per-row losses and averages by num_rows.
 
-    The output FIFO element is acquired once. For each row the accumulated value
-    is saved, the kernel overwrites the buffer with the row's loss, and the sum
-    is stored back. After all rows the total is divided by num_rows and released,
-    so the DMA drains exactly one float.
-
-    Parameters:
-        arch: Target architecture.
-        function: The per-row loss external function.
+    Args:
+        arch: Target AIE architecture.
+        function: External kernel function to invoke per row.
         logits_tensor: Logits tensor.
         labels_tensor: Labels tensor.
-        output_tensor: Output tensor.
-        tile_size: Number of elements per tile (row length).
-        num_rows: Number of rows to process.
+        output_tensor: Output scalar tensor.
+        tile_size: Row/tile size.
+        num_rows: Number of rows to reduce over.
 
+    Returns:
+        The resolved IRON program (MLIR module).
     """
     num_tiles = num_rows
 
@@ -170,12 +166,10 @@ def create_reduction_program(
     of_out = ObjectFifo(output_tile_ty, name="out")
 
     def ext_core_fn(of_logits, of_labels, of_out, function):
-        # Acquire the output buffer ONCE — we will accumulate into it
-        # across all rows and release it only after the final result
-        # is computed. This produces exactly 1 scalar for the DMA to drain.
+        # Acquired once and released only at the end so the DMA drains exactly 1 scalar,
+        # regardless of num_rows.
         elem_out = of_out.acquire(1)
 
-        # Create constants for memref indexing and arithmetic
         c0_index = arith_dialect.ConstantOp(
             IndexType.get(), IntegerAttr.get(IndexType.get(), 0)
         ).result
@@ -186,37 +180,29 @@ def create_reduction_program(
             F32Type.get(), FloatAttr.get(F32Type.get(), float(num_rows))
         ).result
 
-        # Initialize accumulated loss to zero
         memref_dialect.StoreOp(zero_f32, elem_out, [c0_index])
 
         for _ in range_(num_tiles):
             elem_logits = of_logits.acquire(1)
             elem_labels = of_labels.acquire(1)
 
-            # Load accumulated loss BEFORE the kernel overwrites the buffer
+            # Must read the running total before calling function(), which overwrites
+            # elem_out with this row's loss.
             prev_loss = memref_dialect.LoadOp(elem_out, [c0_index]).result
 
-            # Kernel computes this row's loss -> writes to elem_out[0]
-            #   loss_out[0] = -sum(labels * log_softmax(logits))
             function(elem_logits, elem_labels, elem_out, tile_size)
 
-            # Load per-row loss that the kernel just wrote
             row_loss = memref_dialect.LoadOp(elem_out, [c0_index]).result
-
-            # Accumulate: new_total = prev_loss + row_loss
             new_total = arith_dialect.AddFOp(prev_loss, row_loss).result
             memref_dialect.StoreOp(new_total, elem_out, [c0_index])
 
             of_logits.release(1)
             of_labels.release(1)
 
-        # Divide accumulated loss by num_rows to get the average,
-        # matching the CPU reference: dp[0] = -sum_all_rows / num_rows
         total_loss = memref_dialect.LoadOp(elem_out, [c0_index]).result
         avg_loss = arith_dialect.DivFOp(total_loss, nr_f32).result
         memref_dialect.StoreOp(avg_loss, elem_out, [c0_index])
 
-        # Release the single output element — DMA drains this 1 float
         of_out.release(1)
 
     worker = Worker(
@@ -255,15 +241,14 @@ def _create_external_function(
 ):
     """Create the ExternalFunction wrapping cross_entropy_loss.cc.
 
-    Parameters:
+    Args:
         logits_tensor: Logits tensor.
         labels_tensor: Labels tensor.
         output_tensor: Output tensor.
-        tile_size: Number of elements per tile (equals row length).
+        tile_size: Row/tile size.
 
     Returns:
         The configured ExternalFunction.
-
     """
     arg_types = [
         np.ndarray[(tile_size,), np.dtype[logits_tensor.dtype]],  # logits

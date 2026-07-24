@@ -4,10 +4,6 @@
 /**
  * @file mm.cc
  * @brief Matrix multiplication kernels for AIE2P architecture.
- *
- * This file provides scalar and vectorized matrix multiplication kernels
- * optimized for AIE2P. The vectorized kernels use the aie::mmul class with
- * 2x2 expansion and AIE2P-specific mmul shapes for optimal performance.
  */
 
 #define NOCPP
@@ -130,6 +126,8 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
 
     event0();
 
+    // Hardcoded minimum of 4 iterations regardless of rowA (unlike aie2/mm.cc, which picks the
+    // hint via `if constexpr` to match the actual trip count).
     for (uint32_t z = 0; z < rowA; z += 2)
         chess_prepare_for_pipelining chess_loop_range(4, ) {
 
@@ -558,6 +556,8 @@ extern "C" {
 #define DIM_N 64
 #endif
 
+// gemm.py passes one -D<in>_<out>_ONLY define per JIT compile so only that dtype pair's
+// matmul/zero functions get generated; without one (e.g. standalone build) all combos expand.
 #ifdef i8_i8_ONLY
 #define combos(X) X(int8, i8, int8, i8, 8, 8, 8)
 #endif

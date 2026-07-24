@@ -15,7 +15,7 @@ def ggml_op_im2col(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_OP_IM2COL.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: [kernel src0, image src1].
         output_tensor: Output tensor.

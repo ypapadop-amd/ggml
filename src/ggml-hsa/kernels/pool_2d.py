@@ -15,7 +15,7 @@ def ggml_op_pool_2d(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_OP_POOL_2D.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.

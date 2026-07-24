@@ -26,7 +26,6 @@ class TempEnvSet(ContextDecorator):
         env_var: Name of the environment variable to set.
         value: Value to set; if None, the variable is left untouched.
         old_value: Original value of the variable, restored on exit.
-
     """
 
     env_var: str
@@ -36,7 +35,7 @@ class TempEnvSet(ContextDecorator):
     def __init__(self, env_var: str, value: str | None) -> None:
         """Initialize the context manager.
 
-        Parameters:
+        Args:
             env_var: Name of the environment variable to set.
             value: Value to set; if None, the variable is left untouched.
         """
@@ -54,11 +53,10 @@ class TempEnvSet(ContextDecorator):
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Restore the original environment variable after exiting the context.
 
-        Parameters:
+        Args:
             exc_type: Exception type raised in the context, if any.
             exc_val: Exception instance raised in the context, if any.
             exc_tb: Traceback of the exception raised, if any.
-
         """
         if self.value is None:
             return
@@ -74,12 +72,11 @@ def _get_triton_target(kernel_spec: KernelSpec) -> str:
     Maps NPU architecture names to their Triton equivalents and passes GPU
     architectures through unchanged (e.g. "npu1", "npu2", "gfx942").
 
-    Parameters:
+    Args:
         kernel_spec: The KernelSpec whose architecture to map.
 
     Raises:
         ValueError: If the architecture is not a known NPU or GPU target.
-
     """
     if kernel_spec.arch in NPU_ARCH_MAP:
         return NPU_ARCH_MAP[kernel_spec.arch]
@@ -102,7 +99,7 @@ def compile_triton_kernel(
     binary from the resulting xclbin; GPU targets run the HIP pipeline and copy
     the hsaco object from the Triton cache.
 
-    Parameters:
+    Args:
         kernel_spec: The KernelSpec containing the Triton kernel function.
         exported_name: Name for the exported kernel files.
         output_directory: Directory where output files are written.

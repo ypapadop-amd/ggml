@@ -17,7 +17,7 @@ def ggml_op_argmax(
 
     Argmax over ne0 for input [ne0, ne1, ne2, ne3], producing I32 output [ne1, ne2, ne3].
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: I32 output tensor.
@@ -25,7 +25,6 @@ def ggml_op_argmax(
 
     Returns:
         KernelSpec for the ARGMAX operation.
-
     """
     from functools import partial
 

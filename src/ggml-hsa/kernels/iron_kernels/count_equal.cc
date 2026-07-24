@@ -25,11 +25,9 @@ extern "C" {
  *
  * @param[in]     in0       First input tile of tile_size elements.
  * @param[in]     in1       Second input tile of tile_size elements.
- * @param[in,out] out       Output buffer (2 x int32 = 1 x int64) used as
- *                          running accumulator across tiles.
+ * @param[in,out] out       Running count accumulator (2 x int32 = 1 x int64).
  * @param[in]     tile_size Number of elements in this tile.
- * @param[in]     tile_idx  Current tile index (0-based). Tile 0 initializes
- *                          the accumulator.
+ * @param[in]     tile_idx  Current tile index (0-based); tile 0 initializes the accumulator.
  */
 void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
                          const INPUT_DTYPE * __restrict in1,
@@ -38,7 +36,8 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
                          int32_t tile_idx) {
     event0();
 
-    // Initialize accumulator on first tile
+    // Reset the running total on the first tile; later tiles fold their local count
+    // into whatever is already there.
     if (tile_idx == 0) {
         out[0] = 0;
         out[1] = 0;
@@ -51,7 +50,6 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
 
     int32_t local_count = 0;
 
-    // Vectorized loop
     const INPUT_DTYPE * __restrict p0 = in0;
     const INPUT_DTYPE * __restrict p1 = in1;
 
@@ -61,11 +59,10 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
         p0 += VEC_SIZE;
         p1 += VEC_SIZE;
 
-        // Compare vectors - returns mask where elements are equal
         auto mask = aie::eq(v0, v1);
 
 #if __AIE_ARCH__ == 20
-        // aie2: count set bits in mask (number of equal elements)
+        // aie2: no mask.count(), so sum set bits by testing each lane individually.
         for (int32_t j = 0; j < VEC_SIZE; ++j) {
             if (mask.test(j)) {
                 local_count++;
@@ -77,18 +74,20 @@ void ggml_op_count_equal(const INPUT_DTYPE * __restrict in0,
 #endif
     }
 
-    // Scalar tail
+    // Remainder below one full vector width, handled scalar.
     for (int32_t i = tail_start; i < tile_size; i++) {
         if (in0[i] == in1[i]) {
             local_count++;
         }
     }
 
-    // Accumulate into output buffer
+    // Read-modify-write the accumulator via memcpy rather than reinterpreting the
+    // pointer: out is int32_t[2] (IRON ABI constraint) but logically int64_t, and
+    // memcpy avoids the strict-aliasing violation a direct int64_t* cast would be.
     int64_t out64 = 0;
-    std::memcpy(&out64, out, sizeof(int64_t)); // Read current count (as int64_t)
-    out64 += local_count;                      // Add local count
-    std::memcpy(out, &out64, sizeof(int64_t)); // Write back
+    std::memcpy(&out64, out, sizeof(int64_t));
+    out64 += local_count;
+    std::memcpy(out, &out64, sizeof(int64_t));
 
     event1();
 }

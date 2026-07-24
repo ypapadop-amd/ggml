@@ -15,7 +15,7 @@ def ggml_op_conv_2d(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_OP_CONV_2D.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: [kernel src0 (KW, KH, IC, OC), image src1 (IW, IH, IC, N)].
         output_tensor: Output tensor, shape (OW, OH, OC, N).

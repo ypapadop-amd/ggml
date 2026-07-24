@@ -15,11 +15,11 @@ def ggml_op_soft_max(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_OP_SOFT_MAX.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: [input, mask (optional), sink (optional)].
         output_tensor: Output tensor.
-        op_params: scale, max_bias.
+        op_params: {scale, max_bias} as 2 x float32.
 
     Returns:
         KernelSpec for the SOFT_MAX operation.

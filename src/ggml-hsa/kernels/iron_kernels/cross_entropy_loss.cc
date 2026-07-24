@@ -32,7 +32,8 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
                                 int32_t N) {
     event0();
 
-    // Pass 1: Find max logit for numerical stability
+    // Pass 1: max(logits), so pass 2's exp() argument (logits - max) stays <= 0 and can't
+    // overflow, no matter how large the logits are.
     auto global_max = std::numeric_limits<float>::lowest();
     for (int32_t i = 0; i < N; i++) {
         if (logits[i] > global_max) {
@@ -40,19 +41,18 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
         }
     }
 
-    // Pass 2: Compute sum_exp = sum(exp(logits - max))
+    // Pass 2: sum(exp(logits - max)), the log-softmax denominator (unnormalized).
     float sum_exp = 0.0f;
     for (int32_t i = 0; i < N; i++) {
         float x = logits[i] - global_max;
         sum_exp += scalar_exp(x);
     }
 
-    // Compute log(sum_exp) using range-reduced scalar log
+    // log(sum_exp) computed once and reused for every element in pass 3, instead of computing
+    // softmax probabilities per element (which would need an extra division and a second log).
     const auto log_sum_exp = scalar_log(sum_exp);
 
-    // Pass 3: Compute cross entropy loss in log-space
-    // log_softmax(x_i) = (x_i - max) - log(sum_exp)
-    // loss = -sum( labels * log_softmax )
+    // Pass 3: log_softmax(x_i) = (x_i - max) - log_sum_exp; loss = -sum(labels * log_softmax).
     float total_loss = 0.0f;
     for (int32_t i = 0; i < N; i++) {
         float log_softmax = (logits[i] - global_max) - log_sum_exp;

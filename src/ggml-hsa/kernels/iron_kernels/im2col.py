@@ -5,21 +5,7 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc. or its affiliates
 
-"""IRON design for GGML_OP_IM2COL (2D image-to-column layout transform).
-
-im2col gathers sliding kernel windows into columns so a convolution can run as a
-matmul. The batch of N images is split across compute tiles (one worker per
-tile). Each worker loads one input image [IW, IH, IC] into L1 at a time, then
-emits its OH output rows [OW, IC*KH*KW] one per iteration. Output columns pack
-taps channel-major (IC*KH*KW), applying zero-fill padding and dilation.
-Out-of-bounds taps are zero.
-
-The convolution kernel (src0) is only used for its KW/KH shape; it carries no
-data, so it is not moved onto the AIE array. The image (src1) is float32; the
-output is float32 or bfloat16 (ggml_conv_2d requests the kernel's dtype).
-
-Scope: 2D mode only (is_2D == 1).
-"""
+"""IRON design for GGML_OP_IM2COL (2D image-to-column layout transform)."""
 
 import struct
 from pathlib import Path
@@ -47,7 +33,7 @@ _MAX_WORKERS = 8
 def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """Build the im2col IRON program.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         input_tensors: [kernel src0 (KW, KH, IC, OC), image src1 (IW, IH, IC, N)].
         output_tensor: Output tensor, shape (IC*KH*KW, OW, OH, N).
@@ -59,7 +45,6 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     Raises:
         ValueError: On invalid tensor count, dtype, contiguity, op_params, or
             unsupported mode.
-
     """
     if len(input_tensors) != 2:
         msg = "Operation requires exactly two input tensors (kernel and image)."
@@ -239,7 +224,7 @@ def _create_external_function(
 ) -> ExternalFunction:
     """Create the ExternalFunction for the im2col core function.
 
-    Parameters:
+    Args:
         image_tensor: Image input tensor (src1).
         output_tensor: Output tensor.
         image_size: Elements in one input image (IC * IH * IW).
@@ -247,7 +232,6 @@ def _create_external_function(
 
     Returns:
         The configured ExternalFunction.
-
     """
     op_name = "GGML_OP_IM2COL"
     current_dir = Path(__file__).resolve().parent
