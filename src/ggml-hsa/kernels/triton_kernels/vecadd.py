@@ -15,15 +15,17 @@ def vecadd(
     n_elements: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
 ):
-    """Compute C = A + B over n_elements, BLOCK_SIZE_N elements per block.
+    """Compute C = A + B, BLOCK_SIZE_N elements per block.
 
-    Parameters:
+    n_elements is unused: callers must size the grid so that BLOCK_SIZE_N evenly
+    covers the vectors, since no bounds mask is applied against it here.
+
+    Args:
         A: Pointer to the first input vector.
         B: Pointer to the second input vector.
         C: Pointer to the output vector.
-        n_elements: Total number of elements in each vector.
+        n_elements: Unused.
         BLOCK_SIZE_N: Number of elements processed per block.
-
     """
     pid = tl.program_id(0)  # block row id
     block_start = pid * BLOCK_SIZE_N

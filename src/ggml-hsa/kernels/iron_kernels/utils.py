@@ -5,13 +5,44 @@
 import numpy as np
 from aie.iron.device import NPU1, NPU2
 
+# Per-architecture on-tile resources. Add a new NPU generation by adding one entry.
+_ARCH_PARAMS = {
+    "aie2": {
+        "core_data_mem_bytes": 64 * 1024,
+        "vector_reg_bits": 512,
+    },  # NPU1/Phoenix (AIE-ML)
+    "aie2p": {
+        "core_data_mem_bytes": 64 * 1024,
+        "vector_reg_bits": 512,
+    },  # NPU2/Strix (XDNA2)
+}
+
+
+def _arch_params(arch: str) -> dict:
+    """Return the on-tile resource parameters for an architecture.
+
+    Args:
+        arch: Target architecture.
+
+    Returns:
+        The parameter dict for the architecture.
+
+    Raises:
+        ValueError: If the architecture is unknown.
+    """
+    params = _ARCH_PARAMS.get(arch)
+    if params is None:
+        msg = f"Unsupported architecture: {arch}"
+        raise ValueError(msg)
+    return params
+
 
 def align_to_arch(
     arch: str, size: int, dtype: np.dtype, alignment_bytes: int = 4
 ) -> int:
     """Align an element count so its byte size is a multiple of alignment_bytes.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         size: Element count to align.
         dtype: Element data type.
@@ -19,7 +50,6 @@ def align_to_arch(
 
     Returns:
         The aligned element count.
-
     """
     if arch in ["aie2", "aie2p"]:
         dtype_size = dtype.itemsize
@@ -38,13 +68,12 @@ def align_to_arch(
 def arch_aligned_num_elements(arch: str, tensor) -> int:
     """Tensor element count aligned to the architecture for its dtype.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         tensor: Tensor whose element count is aligned.
 
     Returns:
         The arch-aligned element count.
-
     """
     return align_to_arch(arch, tensor.numel(), tensor.dtype)
 
@@ -52,21 +81,15 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """Largest power-of-two tile within a 512-bit vector dividing num_elements.
 
-    Parameters:
+    Args:
         arch: Target architecture.
         dtype: Element data type.
         num_elements: Total number of elements to tile.
 
     Returns:
         The chosen tile size.
-
     """
-    vector_register_width = 0
-    if arch in {"aie2", "aie2p"}:
-        vector_register_width = 512  # bits
-    else:
-        msg = f"Unsupported architecture: {arch}"
-        raise ValueError(msg)
+    vector_register_width = _arch_params(arch)["vector_reg_bits"]
     tile_size = int(vector_register_width / dtype.itemsize)
 
     while num_elements % tile_size != 0 and tile_size > 1:
@@ -83,12 +106,11 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
 def arch_to_device(device):
     """Map "aie2" -> NPU1, "aie2p" -> NPU2; pass through existing device objects.
 
-    Parameters:
+    Args:
         device: Architecture string or an existing device object.
 
     Returns:
         The corresponding device object.
-
     """
     if isinstance(device, str):
         if device == "aie2":

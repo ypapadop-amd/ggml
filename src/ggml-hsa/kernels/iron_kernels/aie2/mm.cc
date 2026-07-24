@@ -4,11 +4,6 @@
 /**
  * @file mm.cc
  * @brief Matrix multiplication kernels for AIE2 architecture.
- *
- * This file provides scalar and vectorized matrix multiplication kernels
- * optimized for AIE2. The vectorized kernels use the aie::mmul class with
- * various expansion factors (2x2, 4x2, 4x4) to maximize accumulator usage
- * and achieve high SIMD efficiency.
  */
 
 #define NOCPP
@@ -249,6 +244,10 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
             }
     };
 
+    // AIE_LOOP_MIN_ITERATION_COUNT must not overstate the real trip count (rowA / 2, since z
+    // steps by 2), or the compiler may pipeline/schedule assuming iterations that never execute.
+    // Since rowA is a compile-time template parameter, pick the largest truthful hint (4, 2, or
+    // 1) via `if constexpr` rather than hardcoding one value for all tile shapes.
     constexpr uint32_t outer_iters = rowA / 2;
     if constexpr (outer_iters >= 4) {
         AIE_PREPARE_FOR_PIPELINING
@@ -473,6 +472,8 @@ static inline void matmul_vectorized_4x2_mmul(const T_in * __restrict pA,
             }
     };
 
+    // Truthful AIE_LOOP_MIN_ITERATION_COUNT hint for the real trip count (rowA / 4, since z
+    // steps by 4); see matmul_vectorized_2x2_mmul above for the rationale.
     constexpr uint32_t outer_iters = rowA / 4;
     if constexpr (outer_iters >= 4) {
         AIE_PREPARE_FOR_PIPELINING
@@ -809,6 +810,8 @@ static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
             }
     };
 
+    // Truthful AIE_LOOP_MIN_ITERATION_COUNT hint for the real trip count (rowA / 4, since z
+    // steps by 4); see matmul_vectorized_2x2_mmul above for the rationale.
     constexpr uint32_t outer_iters = rowA / 4;
     if constexpr (outer_iters >= 4) {
         AIE_PREPARE_FOR_PIPELINING
@@ -830,6 +833,8 @@ static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
     event1();
 }
 
+// B/C layout is fixed at compile time via these defines; column-major tiles are transposed on
+// load/store so the same mmul core code works for both layouts.
 #ifdef B_COL_MAJ
 constexpr bool is_b_row_maj = false;
 #else
@@ -1074,6 +1079,8 @@ extern "C" {
 #define DIM_N 64
 #endif
 
+// gemm.py passes one -D<in>_<out>_ONLY define per JIT compile so only that dtype pair's
+// matmul/zero functions get generated; without one (e.g. standalone build) all combos expand.
 #ifdef i8_i8_ONLY
 #define combos(X) X(int8, i8, int8, i8, 4, 8, 8)
 #endif

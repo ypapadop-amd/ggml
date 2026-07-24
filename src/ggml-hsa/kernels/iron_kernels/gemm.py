@@ -5,13 +5,7 @@
 #
 # (c) Copyright 2025-2026 AMD Inc.
 
-"""IRON design for matrix multiplication (GEMM).
-
-A is tiled into (m, k) blocks broadcast across columns and distributed across
-rows; B into (k, n) blocks broadcast across rows and distributed across columns.
-Each core accumulates C tiles over the K dimension. r, s, t are the microkernel
-MAC dimensions (see microkernel_mac_dim_map).
-"""
+"""IRON design for matrix multiplication (GEMM): C = A @ B."""
 
 import argparse
 from pathlib import Path
@@ -24,6 +18,9 @@ from aie.helpers.taplib import TensorAccessPattern, TensorAccessSequence
 from aie.iron import ExternalFunction, dtype_to_str, str_to_dtype
 from aie.iron.controlflow import range_
 
+# Per-device, per-dtype (r, s, t) microkernel MAC-instruction dimensions (M, K, N of the native
+# mmul shape used by mm.cc); must match the r/s/t used by the matmul_vectorized_* wrappers in
+# aie2/mm.cc ("npu") and aie2p/mm.cc ("npu2").
 microkernel_mac_dim_map = {
     "npu": {
         "bf16": (4, 8, 4),
@@ -111,17 +108,19 @@ def main():
 def ceildiv(a, b):
     """Return the ceiling of integer division a/b.
 
-    Parameters:
+    Args:
         a: Dividend.
         b: Divisor.
 
     Returns:
         The smallest integer >= a / b.
-
     """
     return (a + b - 1) // b
 
 
+# A is tiled into (m, k) blocks broadcast across columns and distributed across rows; B into
+# (k, n) blocks broadcast across rows and distributed across columns. Each core accumulates C
+# tiles over the K dimension.
 def my_matmul(
     dev,
     M,
@@ -143,35 +142,31 @@ def my_matmul(
     object_file,
     generate_taps=False,
 ):
-    """Generate MLIR for tiled GEMM across an AIE array.
+    """Generate MLIR for tiled GEMM across an AIE array (C = A @ B).
 
-    Builds tile declarations, object FIFOs, compute cores, and runtime DMA
-    sequences for C = A @ B.
-
-    Parameters:
-        dev: Device type ("npu" or "npu2").
-        M: Rows of A and C.
-        K: Inner dimension (columns of A, rows of B).
-        N: Columns of B and C.
-        m: Per-core tile size in the M dimension.
-        k: Per-core tile size in the K dimension.
-        n: Per-core tile size in the N dimension.
-        n_aie_cols: Number of AIE columns to use (1, 2, 4, or 8).
-        dtype_in_str: Input dtype ("bf16", "i8", or "i16").
-        dtype_out_str: Output dtype ("bf16", "i8", "i16", "f32", or "i32").
-        b_col_maj: B is in column-major layout.
-        c_col_maj: C is in column-major layout.
-        use_scalar: Use scalar kernels (for debugging small sizes).
-        emulate_bf16_mmul_with_bfp16: Use bfp16 emulation for bf16.
-        trace_size: Trace buffer size (0 disables tracing).
-        zero_fn: Name of the zero-init function.
-        matmul_fn: Name of the multiply-accumulate function.
-        object_file: Compiled object file containing the kernels.
-        generate_taps: Return TensorAccessSequence objects for visualization.
+    Args:
+        dev: Target device ("npu" or "npu2").
+        M: Number of rows in A / C.
+        K: Number of columns in A / rows in B.
+        N: Number of columns in B / C.
+        m: Per-core M tile size.
+        k: Per-core K tile size.
+        n: Per-core N tile size.
+        n_aie_cols: Number of AIE columns to use.
+        dtype_in_str: Input dtype name (e.g. "bf16", "i8", "i16").
+        dtype_out_str: Output dtype name (e.g. "bf16", "i8", "i16", "f32", "i32").
+        b_col_maj: Whether B is stored column-major.
+        c_col_maj: Whether C is stored column-major.
+        use_scalar: Whether to use the scalar (non-vectorized) kernel.
+        emulate_bf16_mmul_with_bfp16: Whether npu2 bf16 mmul is emulated via bfp16.
+        trace_size: Trace buffer size (0 to disable tracing).
+        zero_fn: Name of the external zero-init kernel function.
+        matmul_fn: Name of the external matmul kernel function.
+        object_file: Path to the compiled kernel object file to link.
+        generate_taps: Whether to also return TensorAccessSequences for A/B/C.
 
     Returns:
         A tuple of (A, B, C) TensorAccessSequences if generate_taps, else None.
-
     """
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
@@ -684,9 +679,9 @@ def create_mat_mul_external_functions(
 ):
     """Create the zero-init and matmul ExternalFunctions for GEMM.
 
-    Parameters:
+    Args:
         arch: Target architecture ("aie2" or "aie2p").
-        input_tensors: Two input tensors [A, B].
+        input_tensors: List of input tensors [A, B].
         output_tensor: Output tensor C.
 
     Returns:
@@ -694,7 +689,6 @@ def create_mat_mul_external_functions(
 
     Raises:
         ValueError: If the architecture is unsupported.
-
     """
     use_scalar = False
     scalar_suffix = "_scalar" if use_scalar else ""
@@ -760,14 +754,17 @@ def create_mat_mul_external_functions(
 def gemm(arch: str, input_tensors: list, output_tensor):
     """Build the GEMM IRON program (C = A @ B).
 
-    Parameters:
+    Args:
         arch: Target architecture ("aie2" or "aie2p").
-        input_tensors: Two input tensors [A, B].
+        input_tensors: List of two input tensors [A, B].
         output_tensor: Output tensor C.
 
     Returns:
-        The MLIR module.
+        The MLIR module for the GEMM design.
 
+    Raises:
+        ValueError: On invalid tensor count, contiguity, shape mismatch, or
+            unsupported architecture.
     """
     if len(input_tensors) != 2:
         msg = "Requires two input tensors"

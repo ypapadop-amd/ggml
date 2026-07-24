@@ -30,7 +30,7 @@ from tensor_desc import TensorDesc
 def _get_compiler(backend: Backend) -> Callable:
     """Return the compiler function for the given backend.
 
-    Parameters:
+    Args:
         backend: The backend whose compiler function to return.
 
     Raises:
@@ -41,7 +41,6 @@ def _get_compiler(backend: Backend) -> Callable:
         (without the Triton/torch dependencies) can still compile IRON kernels.
         Lookup is by ``backend.name`` because Backend enums from dynamically
         imported modules have different identity than those defined here.
-
     """
     if backend.name == Backend.IRON.name:
         from build_iron import compile_iron_kernel
@@ -104,12 +103,11 @@ _OP_KERNEL_MAP: dict[str, Kernel] = {
 def _get_kernel(op_name: str) -> Kernel:
     """Return the Kernel for the given operation.
 
-    Parameters:
+    Args:
         op_name: Operation name to look up.
 
     Raises:
         NotImplementedError: If the Kernel is not found.
-
     """
     try:
         return _OP_KERNEL_MAP[op_name]
@@ -121,13 +119,12 @@ def _get_kernel(op_name: str) -> Kernel:
 def _import_from_path(module_name: str, path: str | Path):
     """Dynamically import a module from a file path, wiring up the package structure for relative imports.
 
-    Parameters:
+    Args:
         module_name: Name to assign the imported module.
         path: File path of the module to import.
 
     Raises:
         ImportError: If the module cannot be found or loaded.
-
     """
     path = Path(path).resolve()
     parent_dir = path.parent
@@ -173,10 +170,9 @@ def _import_from_path(module_name: str, path: str | Path):
 def _setup_logger(name: str, verbose: bool) -> logging.Logger:
     """Configure and return a logger for kernel compilation.
 
-    Parameters:
+    Args:
         name: Logger name, typically __name__ of the calling module.
         verbose: If True, enables DEBUG-level output to stderr.
-
     """
     logger = logging.getLogger(name)
     for handler in logger.handlers.copy():
@@ -207,7 +203,7 @@ def ggml_compile_op(
     calls it to obtain a KernelSpec (backend + function), then invokes the
     matching backend compiler.
 
-    Parameters:
+    Args:
         op_name: Operation name (e.g., "ADD", "MUL_MAT").
         arch: Target architecture (e.g., "aie2", "aie2p").
         input_tensors: Input tensor descriptions.
@@ -218,9 +214,9 @@ def ggml_compile_op(
         verbose: If True, enables verbose logging output.
 
     Raises:
-        ValueError: If the operation is not supported.
-        NotImplementedError: If the selected backend is not implemented.
-
+        NotImplementedError: If the operation or its selected backend is not
+            implemented.
+        RuntimeError: If compilation fails with every available backend.
     """
     logger = _setup_logger(__name__, verbose)
 
@@ -300,12 +296,11 @@ def ggml_compile_op(
 def _to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
     """Convert a string of the form "(x,y,z,w)" to a 4-tuple of integers.
 
-    Parameters:
+    Args:
         string: String of the form "(x,y,z,w)" to convert.
 
     Raises:
         ValueError: If the string does not represent exactly 4 integers.
-
     """
     string = string.replace("(", "").replace(")", "").strip(",")
     ints = map(int, string.split(","))
@@ -319,9 +314,8 @@ def _to_tuple_of_ints(string: str) -> tuple[int, int, int, int]:
 def _to_tensordesc(string: str) -> TensorDesc:
     """Create a TensorDesc from a string of the form "(shape)/dtype", e.g. "(1024,1,1,1)/f32".
 
-    Parameters:
+    Args:
         string: String of the form "(shape)/dtype" to convert.
-
     """
     shape_str, dtype = string.split("/")
     shape = _to_tuple_of_ints(shape_str)
