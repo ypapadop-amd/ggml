@@ -116,6 +116,5 @@ def order_kernel_specs(specs: list[KernelSpec]) -> list[KernelSpec]:
     if os.environ.get(PREFER_TRITON_ENV, "0") != "1":
         return specs
 
-    triton_specs = [s for s in specs if s.backend == Backend.TRITON]
-    other_specs = [s for s in specs if s.backend != Backend.TRITON]
-    return triton_specs + other_specs
+    # Stable sort keeps within-group order; False (Triton) sorts before True.
+    return sorted(specs, key=lambda s: s.backend != Backend.TRITON)
