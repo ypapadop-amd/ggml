@@ -81,11 +81,11 @@ static py::tuple ggml_hsa_tensor_nb_as_pytuple(const ggml_tensor & tensor) {
     return nb;
 }
 
-ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                        const ggml_tensor & tensor,
-                                        std::optional<std::string> op_name,
-                                        const std::string & kernel_name,
-                                        const std::filesystem::path & output_path) {
+ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                    const ggml_tensor & tensor,
+                                    std::optional<std::string> op_name,
+                                    const std::string & kernel_name,
+                                    const std::filesystem::path & output_path) {
     using namespace py::literals;
 
     if (!python_interpreter_initialized) {
