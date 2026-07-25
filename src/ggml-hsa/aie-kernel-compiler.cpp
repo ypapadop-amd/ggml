@@ -43,11 +43,20 @@ static const std::filesystem::path ggml_hsa_library_dir = [] {
 static const fs::path kernel_path = ggml_hsa_library_dir / "kernels";
 
 /// @brief Python interpreter initialization guard.
-static py::scoped_interpreter python_interpreter_guard = [] {
-    py::scoped_interpreter guard;
-    auto sys = py::module_::import("sys");
-    sys.attr("path").attr("append")(kernel_path.string());
-    return guard;
+///
+/// The interpreter is intentionally never finalized. The JIT compile path imports native
+/// C-extension modules (numpy, aie.iron, torch/triton) that cannot be safely unloaded by
+/// Py_Finalize() (see pybind11 embedding docs).
+static const bool python_interpreter_initialized = [] {
+    try {
+        py::initialize_interpreter();
+        auto sys = py::module_::import("sys");
+        sys.attr("path").attr("append")(kernel_path.string());
+        return true;
+    } catch (const py::error_already_set & ex) {
+        GGML_HSA_LOG_ERROR("Failed to initialize Python interpreter: %s\n", ex.what());
+        return false;
+    }
 }();
 
 /**
@@ -78,6 +87,10 @@ ggml_status ggml_hsa_compile_aie_kernel(const ggml_hsa_device_info::device_info 
                                         const std::string & kernel_name,
                                         const std::filesystem::path & output_path) {
     using namespace py::literals;
+
+    if (!python_interpreter_initialized) {
+        return GGML_STATUS_FAILED;
+    }
 
     const std::string op_name_to_use =
         op_name.has_value() ? std::move(op_name.value()) : ggml_op_desc(&tensor);
