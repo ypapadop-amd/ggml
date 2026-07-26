@@ -37,10 +37,10 @@ src/ggml-hsa/
 ├── host-ops.cpp/hpp             # Host-side operation implementations
 ├── kernel-discovery.cpp/hpp     # Runtime kernel discovery and loading
 ├── aie-kernel.cpp/hpp           # AIE kernel abstraction layer
-├── aie-kernel-compiler.cpp/hpp  # JIT compilation interface
+├── kernel-compiler.cpp/hpp      # JIT compilation interface
 ├── type-traits.hpp              # GGML type to C++ type mapping
 ├── kernels/                     # AIE kernel implementations (two-layer architecture)
-│   ├── __init__.py              # Package exports (ggml_compile_op, Kernel, TensorDesc, ggml_tensor_to_tensordesc)
+│   ├── __init__.py              # Package exports (ggml_compile_op, CompilerConfig, Kernel, TensorDesc, ggml_tensor_to_tensordesc)
 │   ├── build.py                 # Kernel compilation orchestrator
 │   ├── build_iron.py            # IRON backend compiler
 │   ├── build_triton.py          # Triton backend compiler
@@ -164,13 +164,15 @@ or a `list[KernelSpec]` for multi-backend fallback (see "Multi-Backend Fallback"
 
 ### Compilation Pipeline
 
-The compilation flow in `ggml_compile_op`:
+`ggml_compile_op(op_name, arch, input_tensors, output_tensor, op_params, exported_name, config)`
+takes a `CompilerConfig` (output directory, backend order, verbosity). The flow:
 
 1. Look up `Kernel` from `_OP_KERNEL_MAP`
 2. Dynamically import the dispatch module
 3. Call dispatch function to get `KernelSpec` or `list[KernelSpec]`
-4. Iterate through specs, look up compiler via `_get_compiler(backend)`
-5. Invoke the backend-specific compiler; on success, stop; on failure, try next spec
+4. Normalize/order the specs via `_make_kernel_specs` using `config.compilers` (see "Multi-Backend Fallback")
+5. Iterate through specs, look up compiler via `_get_compiler(backend)`
+6. Invoke the backend-specific compiler; on success, stop; on failure, try next spec
 
 ```text
 ggml_compile_op("SCALE", ...)
@@ -196,6 +198,11 @@ ggml_compile_op("ADD", ...)
 
 This allows operations to prefer one backend but gracefully fall back to another.
 For example, `ggml_op_add` returns IRON as first priority and Triton as fallback.
+
+The `GGML_HSA_JIT_COMPILER_ORDER` environment variable (comma-separated backend names,
+e.g. `iron,triton`, case-insensitive) reorders the candidate specs and drops any whose
+backend is not listed. When unset or empty, the dispatch function's order is used
+unchanged. This replaces the former `GGML_HSA_PREFER_TRITON` boolean.
 
 ### Backend Compilers
 

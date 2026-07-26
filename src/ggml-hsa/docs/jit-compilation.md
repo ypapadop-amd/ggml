@@ -53,14 +53,15 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
  │    └─ JIT compile (GGML_HSA_JIT_COMPILE)
  │         │
  │         ▼
- │    ggml_hsa_compile_aie_kernel()           ─── aie-kernel-compiler.cpp
- │      C++ → Python bridge (pybind11)
+ │    ggml_hsa_compile_kernel()               ─── kernel-compiler.cpp
+ │      C++ → Python bridge (pybind11); builds a CompilerConfig
  │         │
  │         ▼
- │    build.ggml_compile_op()                 ─── kernels/build.py
+ │    build.ggml_compile_op(config)           ─── kernels/build.py
  │      • _get_kernel(op_name) → look up in _OP_KERNEL_MAP
  │      • import dispatch module (e.g. mul_mat.py)
  │      • dispatch_fn() → KernelSpec or list[KernelSpec]
+ │      • _make_kernel_specs() → order/filter by config.compilers
  │      • iterate specs: _get_compiler(backend) → try each backend
  │      • first successful compilation wins; all fail → log error
  │         │
@@ -247,6 +248,7 @@ Payload memory is allocated from the `kernarg_memory` pool and tracked in
 | `GGML_HSA_KERNEL_CACHE_DIR` | Override disk cache location |
 | `GGML_HSA_KERNEL_CACHE_CLEAR` | Set `1` to clear cache on startup |
 | `GGML_HSA_JIT_VERBOSE` | Verbose Python compiler output |
+| `GGML_HSA_JIT_COMPILER_ORDER` | Comma-separated backend order (e.g. `iron,triton`, case-insensitive); reorders candidate specs and drops backends not listed. Unset/empty keeps the dispatch order. |
 | `GGML_HSA_ENABLE_LOG` | Verbose C++ logging (defaults ON in debug builds) |
 | `GGML_HSA_JIT_COMPILE` | CMake option (default ON): enable JIT compilation |
 
@@ -255,7 +257,10 @@ Payload memory is allocated from the `kernarg_memory` pool and tracked in
 ## Error Handling
 
 - **Python compilation failure:** `py::error_already_set` is caught in
-  `ggml_hsa_compile_aie_kernel()`, which returns `GGML_STATUS_FAILED`.
+  `ggml_hsa_compile_kernel()`, which logs at error level and returns
+  `GGML_STATUS_FAILED`. An invalid backend name in `GGML_HSA_JIT_COMPILER_ORDER`
+  raises `ValueError` from `_make_kernel_specs()` and surfaces the same way; an
+  order that drops every candidate for an op logs a warning before failing.
 - **File load failure:** `ggml_hsa_load_pdi()` / `ggml_hsa_load_insts()`
   return `GGML_STATUS_ALLOC_FAILED` or `GGML_STATUS_FAILED`.
 - **Kernel not found and JIT disabled:** returns `GGML_STATUS_FAILED`,
