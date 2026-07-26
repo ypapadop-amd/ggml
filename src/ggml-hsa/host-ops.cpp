@@ -52,11 +52,8 @@ struct ggml_hsa_copy_same_shape_tensors_f {
     ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
         assert(ggml_are_same_shape(src, dst));
 
-        using src_traits = ggml_hsa_type_traits<SrcT>;
-        using dst_traits = ggml_hsa_type_traits<DstT>;
-
-        using src_type = typename src_traits::type;
-        using dst_type = typename dst_traits::type;
+        using src_type = typename ggml_hsa_type_traits<SrcT>::type;
+        using dst_type = typename ggml_hsa_type_traits<DstT>::type;
 
         for (std::int64_t i03 = 0; i03 < src->ne[3]; ++i03) {
             for (std::int64_t i02 = 0; i02 < src->ne[2]; ++i02) {
@@ -91,11 +88,8 @@ struct ggml_hsa_copy_same_shape_tensors_f {
 struct ggml_hsa_copy_subblock_f {
     template <ggml_type SrcT, ggml_type DstT = SrcT>
     ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
-        using src_traits = ggml_hsa_type_traits<SrcT>;
-        using dst_traits = ggml_hsa_type_traits<DstT>;
-
-        using src_type = typename src_traits::type;
-        using dst_type = typename dst_traits::type;
+        using src_type = typename ggml_hsa_type_traits<SrcT>::type;
+        using dst_type = typename ggml_hsa_type_traits<DstT>::type;
 
         const std::int64_t ne0 = std::min(src->ne[0], dst->ne[0]);
         const std::int64_t ne1 = std::min(src->ne[1], dst->ne[1]);
@@ -133,11 +127,8 @@ struct ggml_hsa_copy_tensor_to_cont_tensor_f {
     ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
         assert((ggml_nelements(src) == ggml_nelements(dst)) && ggml_is_contiguous(dst));
 
-        using src_traits = ggml_hsa_type_traits<SrcT>;
-        using dst_traits = ggml_hsa_type_traits<DstT>;
-
-        using src_type = typename src_traits::type;
-        using dst_type = typename dst_traits::type;
+        using src_type = typename ggml_hsa_type_traits<SrcT>::type;
+        using dst_type = typename ggml_hsa_type_traits<DstT>::type;
 
         auto dst_ptr = std::launder(static_cast<dst_type *>(dst->data));
 
@@ -173,11 +164,8 @@ struct ggml_hsa_get_rows_f {
 
     template <ggml_type SrcT, ggml_type DstT = SrcT>
     ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
-        using src_traits = ggml_hsa_type_traits<SrcT>;
-        using dst_traits = ggml_hsa_type_traits<DstT>;
-
-        using src_type = typename src_traits::type;
-        using dst_type = typename dst_traits::type;
+        using src_type = typename ggml_hsa_type_traits<SrcT>::type;
+        using dst_type = typename ggml_hsa_type_traits<DstT>::type;
 
         const std::int64_t nc    = src->ne[0];
         const std::int64_t ne10  = indices->ne[0];

@@ -14,9 +14,6 @@ template <BackendType Backend>
 void bench_gelu(benchmark::State & state) {
     ggml_backend_t backend = make_backend(Backend, state);
     if (backend == nullptr) {
-        if (!state.error_occurred()) {
-            state.SkipWithError("Backend creation failed.");
-        }
         return;
     }
 
@@ -52,7 +49,8 @@ void bench_gelu(benchmark::State & state) {
     ggml_cgraph * gf = ggml_new_graph_custom(ctx, tensor_count, /*grads*/ false);
     ggml_build_forward_expand(gf, tensor_result);
 
-    const std::vector<float> A = make_data(ggml_nelements(tensor_a));
+    // Negative start so the input spans zero, exercising both sides of GELU.
+    const std::vector<float> A = make_data(ggml_nelements(tensor_a), -50.0f);
     ggml_backend_tensor_set(tensor_a, A.data(), 0, ggml_nbytes(tensor_a));
 
     // warm up (also triggers any one-time JIT compile so it's not measured)

@@ -9,31 +9,12 @@
 // variable (unset/0 = IRON, 1 = Triton). Run this binary twice with the HSA
 // filter, flipping that variable, to compare the two paths (see repro-relu.sh).
 
-#include <benchmark/benchmark.h>
-
-#include "ggml-alloc.h"
-#include "ggml-backend.h"
-#include "ggml-cpu.h"
-#include "ggml.h"
-
-#ifdef GGML_USE_CUDA
-#include "ggml-cuda.h"
-#endif
-
-#ifdef GGML_USE_HSA
-#include "ggml-hsa.h"
-#endif
+#include "bench-hsa-common.hpp"
 
 #include <cstdint>
 #include <vector>
 
 namespace {
-
-enum class BackendType {
-    CPU,
-    GPU,
-    HSA,
-};
 
 template <typename T>
 struct type_to_ggml_type;
@@ -65,33 +46,8 @@ std::vector<T> make_data(std::size_t n) {
 template <BackendType Backend, typename T>
 void bench_relu(benchmark::State & state) {
     // initialize backend
-    ggml_backend_t backend = {};
-    switch (Backend) {
-        case BackendType::CPU:
-            backend = ggml_backend_cpu_init();
-            break;
-        case BackendType::GPU:
-#ifdef GGML_USE_CUDA
-            backend = ggml_backend_cuda_init(0);
-#else
-            state.SkipWithError("CUDA backend not available.");
-            return;
-#endif
-            break;
-        case BackendType::HSA:
-#ifdef GGML_USE_HSA
-            backend = ggml_backend_hsa_init(0);
-#else
-            state.SkipWithError("HSA backend not available.");
-            return;
-#endif
-            break;
-        default:
-            state.SkipWithError("Invalid backend type.");
-            return;
-    }
+    ggml_backend_t backend = make_backend(Backend, state);
     if (backend == nullptr) {
-        state.SkipWithError("Backend creation failed.");
         return;
     }
 

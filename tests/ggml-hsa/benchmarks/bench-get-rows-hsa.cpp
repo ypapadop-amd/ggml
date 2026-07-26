@@ -16,9 +16,6 @@ template <BackendType Backend>
 void bench_get_rows(benchmark::State & state) {
     ggml_backend_t backend = make_backend(Backend, state);
     if (backend == nullptr) {
-        if (!state.error_occurred()) {
-            state.SkipWithError("Backend creation failed.");
-        }
         return;
     }
 
