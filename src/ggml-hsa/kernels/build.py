@@ -34,12 +34,50 @@ class CompilerConfig:
 
     Attributes:
         output_directory: Destination for compilation artifacts.
+        compilers: Ordered backend names (case-insensitive, e.g. ("iron",
+            "triton")) to try in order. A candidate KernelSpec whose backend is
+            not listed is dropped. Empty (the default) keeps the dispatch
+            function's order unchanged.
         verbose: If True, enables verbose logging output.
 
     """
 
     output_directory: str | Path
+    compilers: tuple[str, ...] = ()
     verbose: bool = False
+
+
+def _make_kernel_specs(dispatch_result, compilers: tuple[str, ...]) -> list:
+    """Normalize a dispatch result into an ordered list of KernelSpecs.
+
+    The build system compiles the returned specs in order and uses the first that
+    succeeds, falling back to the next. Specs are grouped by the position of their
+    backend name in ``compilers`` (case-insensitive); a spec whose backend is not
+    listed is dropped. An empty ``compilers`` keeps the dispatch function's order
+    unchanged (no reordering, no dropping).
+
+    Args:
+        dispatch_result: A single KernelSpec or a list of KernelSpecs, as returned
+            by a dispatch function.
+        compilers: Ordered backend names to try (e.g. ("iron", "triton")).
+
+    Raises:
+        ValueError: If ``compilers`` contains a name that is not a known backend.
+
+    Returns:
+        The listed specs in ``compilers`` order; original order is preserved
+        within a backend group. The specs unchanged if ``compilers`` is empty.
+    """
+    specs = dispatch_result if isinstance(dispatch_result, list) else [dispatch_result]
+    if not compilers:
+        return specs
+    known = {b.name.lower() for b in Backend}
+    if unknown := [name for name in compilers if name.lower() not in known]:
+        msg = f"Unknown backend(s) {unknown} in compiler order; known backends are {sorted(known)}."
+        raise ValueError(msg)
+    order = {name.lower(): i for i, name in enumerate(compilers)}
+    listed = [s for s in specs if s.backend.name.lower() in order]
+    return sorted(listed, key=lambda s: order[s.backend.name.lower()])
 
 
 def _get_compiler(backend: Backend) -> Callable:
@@ -248,14 +286,14 @@ def ggml_compile_op(
     output_dir = Path(config.output_directory)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Dispatch to get KernelSpec or list[KernelSpec]
-    result = dispatch_fn(
+    # Dispatch to get KernelSpec or list[KernelSpec], then normalize and order
+    dispatch_result = dispatch_fn(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
     )
-    kernel_specs = result if isinstance(result, list) else [result]
+    kernel_specs = _make_kernel_specs(dispatch_result, config.compilers)
 
     for kernel_spec in kernel_specs:
         logger.info(

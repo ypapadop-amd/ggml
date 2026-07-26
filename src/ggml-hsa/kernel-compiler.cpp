@@ -9,6 +9,7 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -23,14 +24,40 @@
 namespace fs = std::filesystem;
 namespace py = pybind11;
 
+namespace {
+
 /// @brief If @c true, JIT compilation will print verbose output.
-static const bool verbose_compilation = [] {
+const bool verbose_compilation = [] {
     const char * env = std::getenv("GGML_HSA_JIT_VERBOSE");
     return env != nullptr && ggml_hsa_string_to_bool(env);
 }();
 
+/// @brief Ordered backend names to try during JIT compilation.
+///
+/// Set via @c GGML_HSA_JIT_COMPILER_ORDER as a comma-separated list (e.g. "iron,triton").
+/// Matching is case-insensitive; a kernel whose backend is not listed is dropped. When unset
+/// (or empty), the dispatch function's order is used unchanged.
+const std::vector<std::string> compiler_order = [] {
+    const char * env = std::getenv("GGML_HSA_JIT_COMPILER_ORDER");
+    const std::string list = (env != nullptr) ? env : "";
+
+    std::vector<std::string> compilers;
+    std::stringstream ss(list);
+    std::string name;
+    while (std::getline(ss, name, ',')) {
+        // trim surrounding whitespace
+        const auto begin = name.find_first_not_of(" \t");
+        if (begin == std::string::npos) {
+            continue;
+        }
+        const auto end = name.find_last_not_of(" \t");
+        compilers.push_back(name.substr(begin, end - begin + 1));
+    }
+    return compilers;
+}();
+
 /// @brief Path to the shared library directory.
-static const std::filesystem::path ggml_hsa_library_dir = [] {
+const std::filesystem::path ggml_hsa_library_dir = [] {
     // retrieve the shared library path
     Dl_info info;
     if (dladdr(static_cast<const void *>(&ggml_hsa_library_dir), &info) == 0) {
@@ -40,29 +67,52 @@ static const std::filesystem::path ggml_hsa_library_dir = [] {
 }();
 
 /// @brief Path to AIE kernels.
-static const fs::path kernel_path = ggml_hsa_library_dir / "kernels";
+const fs::path kernel_path = ggml_hsa_library_dir / "kernels";
 
-/// @brief Python interpreter initialization guard.
+/// @brief Owns the embedded Python interpreter and the module handles used for JIT compilation.
 ///
-/// The interpreter is intentionally never finalized. The JIT compile path imports native
-/// C-extension modules (numpy, aie.iron, torch/triton) that cannot be safely unloaded by
-/// Py_Finalize() (see pybind11 embedding docs).
-static const bool python_interpreter_initialized = [] {
-    try {
+/// The interpreter is initialized once and its handles resolved once, avoiding a repeated module
+/// import and attribute lookup on every compile. The interpreter is intentionally never finalized
+/// and the instance is leaked to process teardown (see @ref python_compiler_instance): the JIT
+/// compile path imports native C-extension modules (numpy, aie.iron, torch/triton) that cannot be
+/// safely unloaded by Py_Finalize(), and the cached handles must likewise not be released during
+/// static destruction (see pybind11 embedding docs).
+struct python_compiler {
+    py::object create_tensor_desc; ///< tensor_desc.ggml_tensor_to_tensordesc
+    py::object compiler_config;    ///< build.CompilerConfig
+    py::object compile_op;         ///< build.ggml_compile_op
+
+    python_compiler() {
         py::initialize_interpreter();
         auto sys = py::module_::import("sys");
         sys.attr("path").attr("append")(kernel_path.string());
-        return true;
+
+        auto tensor_desc_mod = py::module_::import("tensor_desc");
+        create_tensor_desc = tensor_desc_mod.attr("ggml_tensor_to_tensordesc");
+
+        auto build_mod = py::module_::import("build");
+        compiler_config = build_mod.attr("CompilerConfig");
+        compile_op = build_mod.attr("ggml_compile_op");
+    }
+};
+
+/// @brief The JIT compiler instance, or @c nullptr if interpreter initialization failed.
+///
+/// Intentionally leaked (never deleted) so the interpreter and cached handles survive to process
+/// teardown without running Python teardown during static destruction.
+python_compiler * const python_compiler_instance = []() -> python_compiler * {
+    try {
+        return new python_compiler{};
     } catch (const py::error_already_set & ex) {
         GGML_HSA_LOG_ERROR("Failed to initialize Python interpreter: %s\n", ex.what());
-        return false;
+        return nullptr;
     }
 }();
 
 /**
  * @brief Creates a @p py::tuple from the tensor shape.
  */
-static py::tuple ggml_hsa_tensor_ne_as_pytuple(const ggml_tensor & tensor) {
+py::tuple ggml_hsa_tensor_ne_as_pytuple(const ggml_tensor & tensor) {
     auto ne = py::tuple(GGML_MAX_DIMS);
     for (auto i = 0; i < GGML_MAX_DIMS; ++i) {
         ne[i] = py::int_(tensor.ne[i]);
@@ -73,13 +123,15 @@ static py::tuple ggml_hsa_tensor_ne_as_pytuple(const ggml_tensor & tensor) {
 /**
  * @brief Creates a @p py::tuple from the tensor strides.
  */
-static py::tuple ggml_hsa_tensor_nb_as_pytuple(const ggml_tensor & tensor) {
+py::tuple ggml_hsa_tensor_nb_as_pytuple(const ggml_tensor & tensor) {
     auto nb = py::tuple(GGML_MAX_DIMS);
     for (auto i = 0; i < GGML_MAX_DIMS; ++i) {
         nb[i] = py::int_(tensor.nb[i]);
     }
     return nb;
 }
+
+} // namespace
 
 ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & dev_info,
                                     const ggml_tensor & tensor,
@@ -88,7 +140,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                     const std::filesystem::path & output_path) {
     using namespace py::literals;
 
-    if (!python_interpreter_initialized) {
+    if (python_compiler_instance == nullptr) {
         return GGML_STATUS_FAILED;
     }
 
@@ -99,8 +151,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
 
     try {
         // convert a GGML tensor to input and output TensorDesc objects
-        auto tensor_desc_mod = py::module_::import("tensor_desc");
-        auto create_tensor_desc = tensor_desc_mod.attr("ggml_tensor_to_tensordesc");
+        const auto & create_tensor_desc = python_compiler_instance->create_tensor_desc;
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto input_tensors = py::list(src_tensor_count);
         for (auto i = 0; i < src_tensor_count; ++i) {
@@ -126,16 +177,14 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                        sizeof(tensor.op_params));
 
         // compile the kernel
-        auto build_mod = py::module_::import("build");
-        auto config_mod = build_mod.attr("CompilerConfig");
-        auto config = config_mod("output_directory"_a = output_directory.string(),
-                                 "verbose"_a = verbose_compilation);
-        auto compile_kernel = build_mod.attr("ggml_compile_op");
-        compile_kernel("op_name"_a = op_name_to_use, "arch"_a = dev_info.name,
-                       "input_tensors"_a = std::move(input_tensors),
-                       "output_tensor"_a = std::move(output_tensor),
-                       "op_params"_a = std::move(op_params), "exported_name"_a = kernel_name,
-                       "config"_a = std::move(config));
+        auto config = python_compiler_instance->compiler_config(
+            "output_directory"_a = output_directory.string(),
+            "compilers"_a = py::cast(compiler_order), "verbose"_a = verbose_compilation);
+        python_compiler_instance->compile_op(
+            "op_name"_a = op_name_to_use, "arch"_a = dev_info.name,
+            "input_tensors"_a = std::move(input_tensors),
+            "output_tensor"_a = std::move(output_tensor), "op_params"_a = std::move(op_params),
+            "exported_name"_a = kernel_name, "config"_a = std::move(config));
     } catch (const py::error_already_set & ex) {
         GGML_HSA_LOG_INFO("%s: failed to compile kernel %s for tensor \"%s\" (%s): %s", __func__,
                           kernel_name.c_str(), tensor.name, op_name_to_use.c_str(), ex.what());
