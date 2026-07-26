@@ -21,10 +21,77 @@ import logging
 import sys
 import types
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from kernel import Backend, Kernel
 from tensor_desc import TensorDesc
+
+
+@dataclass(frozen=True)
+class CompilerConfig:
+    """Compiler configuration.
+
+    Attributes:
+        output_directory: Destination for compilation artifacts.
+        compilers: Ordered backend names (case-insensitive, e.g. ("iron",
+            "triton")) to try in order. A candidate KernelSpec whose backend is
+            not listed is dropped. Empty (the default) keeps the dispatch
+            function's order unchanged.
+        verbose: If True, enables verbose logging output.
+
+    """
+
+    output_directory: str | Path
+    compilers: tuple[str, ...] = ()
+    verbose: bool = False
+
+
+def _make_kernel_specs(
+    dispatch_result, compilers: tuple[str, ...], logger: logging.Logger
+) -> list:
+    """Normalize a dispatch result into an ordered list of KernelSpecs.
+
+    The build system compiles the returned specs in order and uses the first that
+    succeeds, falling back to the next. Specs are grouped by the position of their
+    backend name in ``compilers`` (case-insensitive); a spec whose backend is not
+    listed is dropped. An empty ``compilers`` keeps the dispatch function's order
+    unchanged (no reordering, no dropping).
+
+    Args:
+        dispatch_result: A single KernelSpec or a list of KernelSpecs, as returned
+            by a dispatch function.
+        compilers: Ordered backend names to try (e.g. ("iron", "triton")).
+        logger: Logger used to warn when the compiler order drops every candidate.
+
+    Raises:
+        ValueError: If ``compilers`` contains a name that is not a known backend.
+
+    Returns:
+        The listed specs in ``compilers`` order; original order is preserved
+        within a backend group. The specs unchanged if ``compilers`` is empty.
+    """
+    specs = dispatch_result if isinstance(dispatch_result, list) else [dispatch_result]
+    if not compilers:
+        return specs
+    known = {b.name.lower() for b in Backend}
+    if unknown := [name for name in compilers if name.lower() not in known]:
+        msg = f"Unknown backend(s) {unknown} in compiler order; known backends are {sorted(known)}."
+        raise ValueError(msg)
+    order = {name.lower(): i for i, name in enumerate(compilers)}
+    listed = sorted(
+        (s for s in specs if s.backend.name.lower() in order),
+        key=lambda s: order[s.backend.name.lower()],
+    )
+    if not listed:
+        available = sorted({s.backend.name.lower() for s in specs})
+        logger.warning(
+            "Compiler order %s dropped all candidates; this op only provides backend(s) %s. "
+            "Add one of them to GGML_HSA_JIT_COMPILER_ORDER or unset it to use the default order.",
+            list(compilers),
+            available,
+        )
+    return listed
 
 
 def _get_compiler(backend: Backend) -> Callable:
@@ -194,8 +261,7 @@ def ggml_compile_op(
     output_tensor: TensorDesc,
     op_params: bytearray,
     exported_name: str,
-    output_directory: str | Path,
-    verbose: bool = False,
+    config: CompilerConfig,
 ) -> None:
     """Compile a GGML operation kernel to PDI and instruction files.
 
@@ -210,8 +276,7 @@ def ggml_compile_op(
         output_tensor: Output tensor description.
         op_params: Operation-specific parameters.
         exported_name: Name to export the compiled kernel as.
-        output_directory: Destination for the PDI and instruction files.
-        verbose: If True, enables verbose logging output.
+        config: Compiler configuration.
 
     Raises:
         NotImplementedError: If the operation or its selected backend is not
@@ -220,6 +285,7 @@ def ggml_compile_op(
             wrong tensor count).
         RuntimeError: If compilation fails with every available backend.
     """
+    verbose = config.verbose
     logger = _setup_logger(__name__, verbose)
 
     # Get kernel mapping for the operation
@@ -231,17 +297,17 @@ def ggml_compile_op(
     dispatch_fn = getattr(module, kernel.name)
 
     # Create output and work directories
-    output_dir = Path(output_directory)
+    output_dir = Path(config.output_directory)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Dispatch to get KernelSpec or list[KernelSpec]
-    result = dispatch_fn(
+    # Dispatch to get KernelSpec or list[KernelSpec], then normalize and order
+    dispatch_result = dispatch_fn(
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
         op_params=op_params,
     )
-    kernel_specs = result if isinstance(result, list) else [result]
+    kernel_specs = _make_kernel_specs(dispatch_result, config.compilers, logger)
 
     for kernel_spec in kernel_specs:
         logger.info(
@@ -384,8 +450,10 @@ def main() -> None:
         output_tensor=args.output_tensor,
         op_params=bytearray(),
         exported_name=args.exported_name,
-        output_directory=args.output_directory,
-        verbose=args.verbose,
+        config=CompilerConfig(
+            output_directory=args.output_directory,
+            verbose=args.verbose,
+        ),
     )
 
 
