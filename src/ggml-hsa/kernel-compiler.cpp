@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -74,10 +75,16 @@ const fs::path kernel_path = ggml_hsa_library_dir / "kernels";
 /// compile path imports native C-extension modules (numpy, aie.iron, torch/triton) that cannot be
 /// safely unloaded by Py_Finalize(), and the cached handles must likewise not be released during
 /// static destruction (see pybind11 embedding docs).
+///
+/// @c initialize_interpreter() leaves the calling thread holding the GIL. The constructor releases
+/// it once setup is done and keeps the release alive for the process lifetime, so the GIL is not
+/// held by whichever thread happened to initialize first. Each call to @ref ggml_hsa_compile_kernel
+/// re-acquires the GIL, making compilation safe to invoke from any thread.
 struct python_compiler {
-    py::object create_tensor_desc; ///< tensor_desc.ggml_tensor_to_tensordesc
-    py::object compiler_config;    ///< build.CompilerConfig
-    py::object compile_op;         ///< build.ggml_compile_op
+    py::object create_tensor_desc;                     ///< tensor_desc.ggml_tensor_to_tensordesc
+    py::object compiler_config;                        ///< build.CompilerConfig
+    py::object compile_op;                             ///< build.ggml_compile_op
+    std::optional<py::gil_scoped_release> gil_release; ///< holds the GIL released for the process
 
     python_compiler() {
         py::initialize_interpreter();
@@ -90,6 +97,9 @@ struct python_compiler {
         auto build_mod = py::module_::import("build");
         compiler_config = build_mod.attr("CompilerConfig");
         compile_op = build_mod.attr("ggml_compile_op");
+
+        // release the GIL acquired by initialize_interpreter(); reacquired per compile call
+        gil_release.emplace();
     }
 };
 
@@ -154,6 +164,9 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
     const auto output_directory = output_path / dev_info.name;
 
     try {
+        // acquire the GIL for the duration of this call
+        py::gil_scoped_acquire gil;
+
         // convert a GGML tensor to input and output TensorDesc objects
         const auto & create_tensor_desc = compiler->create_tensor_desc;
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
