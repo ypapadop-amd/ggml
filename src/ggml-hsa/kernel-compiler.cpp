@@ -127,13 +127,15 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
 
         // compile the kernel
         auto build_mod = py::module_::import("build");
+        auto config_mod = build_mod.attr("CompilerConfig");
+        auto config = config_mod("output_directory"_a = output_directory.string(),
+                                 "verbose"_a = verbose_compilation);
         auto compile_kernel = build_mod.attr("ggml_compile_op");
         compile_kernel("op_name"_a = op_name_to_use, "arch"_a = dev_info.name,
                        "input_tensors"_a = std::move(input_tensors),
                        "output_tensor"_a = std::move(output_tensor),
                        "op_params"_a = std::move(op_params), "exported_name"_a = kernel_name,
-                       "output_directory"_a = output_directory.string(),
-                       "verbose"_a = verbose_compilation);
+                       "config"_a = std::move(config));
     } catch (const py::error_already_set & ex) {
         GGML_HSA_LOG_INFO("%s: failed to compile kernel %s for tensor \"%s\" (%s): %s", __func__,
                           kernel_name.c_str(), tensor.name, op_name_to_use.c_str(), ex.what());

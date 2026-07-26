@@ -21,10 +21,25 @@ import logging
 import sys
 import types
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from kernel import Backend, Kernel
 from tensor_desc import TensorDesc
+
+
+@dataclass(frozen=True)
+class CompilerConfig:
+    """Compiler configuration.
+
+    Attributes:
+        output_directory: Destination for compilation artifacts.
+        verbose: If True, enables verbose logging output.
+
+    """
+
+    output_directory: str | Path
+    verbose: bool = False
 
 
 def _get_compiler(backend: Backend) -> Callable:
@@ -194,8 +209,7 @@ def ggml_compile_op(
     output_tensor: TensorDesc,
     op_params: bytearray,
     exported_name: str,
-    output_directory: str | Path,
-    verbose: bool = False,
+    config: CompilerConfig,
 ) -> None:
     """Compile a GGML operation kernel to PDI and instruction files.
 
@@ -210,8 +224,7 @@ def ggml_compile_op(
         output_tensor: Output tensor description.
         op_params: Operation-specific parameters.
         exported_name: Name to export the compiled kernel as.
-        output_directory: Destination for the PDI and instruction files.
-        verbose: If True, enables verbose logging output.
+        config: Compiler configuration.
 
     Raises:
         NotImplementedError: If the operation or its selected backend is not
@@ -220,6 +233,7 @@ def ggml_compile_op(
             wrong tensor count).
         RuntimeError: If compilation fails with every available backend.
     """
+    verbose = config.verbose
     logger = _setup_logger(__name__, verbose)
 
     # Get kernel mapping for the operation
@@ -231,7 +245,7 @@ def ggml_compile_op(
     dispatch_fn = getattr(module, kernel.name)
 
     # Create output and work directories
-    output_dir = Path(output_directory)
+    output_dir = Path(config.output_directory)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Dispatch to get KernelSpec or list[KernelSpec]
@@ -384,8 +398,10 @@ def main() -> None:
         output_tensor=args.output_tensor,
         op_params=bytearray(),
         exported_name=args.exported_name,
-        output_directory=args.output_directory,
-        verbose=args.verbose,
+        config=CompilerConfig(
+            output_directory=args.output_directory,
+            verbose=args.verbose,
+        ),
     )
 
 
