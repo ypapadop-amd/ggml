@@ -9,7 +9,7 @@
 
 from pathlib import Path
 
-from .kernel import Backend, KernelSpec, order_kernel_specs
+from .kernel import Backend, KernelSpec
 
 
 def _validate_binary_inputs(input_tensors: list) -> None:
@@ -161,14 +161,12 @@ def ggml_op_add(
     """
     _validate_binary_inputs(input_tensors)
 
-    return order_kernel_specs(
-        [
-            _make_iron_binary_kernel_spec(
-                arch, input_tensors, output_tensor, "GGML_OP_ADD"
-            ),
-            _make_triton_add_kernel_spec(arch, input_tensors, output_tensor),
-        ]
-    )
+    return [
+        _make_iron_binary_kernel_spec(
+            arch, input_tensors, output_tensor, "GGML_OP_ADD"
+        ),
+        _make_triton_add_kernel_spec(arch, input_tensors, output_tensor),
+    ]
 
 
 def ggml_op_sub(
