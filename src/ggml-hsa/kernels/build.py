@@ -47,7 +47,9 @@ class CompilerConfig:
     verbose: bool = False
 
 
-def _make_kernel_specs(dispatch_result, compilers: tuple[str, ...]) -> list:
+def _make_kernel_specs(
+    dispatch_result, compilers: tuple[str, ...], logger: logging.Logger
+) -> list:
     """Normalize a dispatch result into an ordered list of KernelSpecs.
 
     The build system compiles the returned specs in order and uses the first that
@@ -60,6 +62,7 @@ def _make_kernel_specs(dispatch_result, compilers: tuple[str, ...]) -> list:
         dispatch_result: A single KernelSpec or a list of KernelSpecs, as returned
             by a dispatch function.
         compilers: Ordered backend names to try (e.g. ("iron", "triton")).
+        logger: Logger used to warn when the compiler order drops every candidate.
 
     Raises:
         ValueError: If ``compilers`` contains a name that is not a known backend.
@@ -76,8 +79,19 @@ def _make_kernel_specs(dispatch_result, compilers: tuple[str, ...]) -> list:
         msg = f"Unknown backend(s) {unknown} in compiler order; known backends are {sorted(known)}."
         raise ValueError(msg)
     order = {name.lower(): i for i, name in enumerate(compilers)}
-    listed = [s for s in specs if s.backend.name.lower() in order]
-    return sorted(listed, key=lambda s: order[s.backend.name.lower()])
+    listed = sorted(
+        (s for s in specs if s.backend.name.lower() in order),
+        key=lambda s: order[s.backend.name.lower()],
+    )
+    if not listed:
+        available = sorted({s.backend.name.lower() for s in specs})
+        logger.warning(
+            "Compiler order %s dropped all candidates; this op only provides backend(s) %s. "
+            "Add one of them to GGML_HSA_JIT_COMPILER_ORDER or unset it to use the default order.",
+            list(compilers),
+            available,
+        )
+    return listed
 
 
 def _get_compiler(backend: Backend) -> Callable:
@@ -293,7 +307,7 @@ def ggml_compile_op(
         output_tensor=output_tensor,
         op_params=op_params,
     )
-    kernel_specs = _make_kernel_specs(dispatch_result, config.compilers)
+    kernel_specs = _make_kernel_specs(dispatch_result, config.compilers, logger)
 
     for kernel_spec in kernel_specs:
         logger.info(

@@ -2,11 +2,8 @@
 
 #include "ggml-hsa/kernel-compiler.hpp"
 
-#include <algorithm>
-#include <array>
 #include <cstdlib>
 #include <filesystem>
-#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -96,18 +93,24 @@ struct python_compiler {
     }
 };
 
-/// @brief The JIT compiler instance, or @c nullptr if interpreter initialization failed.
+/// @brief Returns the JIT compiler instance, or @c nullptr if interpreter initialization failed.
 ///
-/// Intentionally leaked (never deleted) so the interpreter and cached handles survive to process
-/// teardown without running Python teardown during static destruction.
-python_compiler * const python_compiler_instance = []() -> python_compiler * {
-    try {
-        return new python_compiler{};
-    } catch (const py::error_already_set & ex) {
-        GGML_HSA_LOG_ERROR("Failed to initialize Python interpreter: %s\n", ex.what());
-        return nullptr;
-    }
-}();
+/// The interpreter and its module handles are created on first use rather than at library load, so
+/// a process that never JIT-compiles a kernel (e.g. all kernels already cached) never pays the
+/// native-module import cost (numpy, aie.iron, torch/triton). The instance is intentionally leaked
+/// (never deleted) so it survives to process teardown without running Python teardown during static
+/// destruction.
+python_compiler * get_python_compiler() {
+    static python_compiler * const instance = []() -> python_compiler * {
+        try {
+            return new python_compiler{};
+        } catch (const std::exception & ex) {
+            GGML_HSA_LOG_ERROR("Failed to initialize Python interpreter: %s\n", ex.what());
+            return nullptr;
+        }
+    }();
+    return instance;
+}
 
 /**
  * @brief Creates a @p py::tuple from the tensor shape.
@@ -140,7 +143,8 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                     const std::filesystem::path & output_path) {
     using namespace py::literals;
 
-    if (python_compiler_instance == nullptr) {
+    auto * const compiler = get_python_compiler();
+    if (compiler == nullptr) {
         return GGML_STATUS_FAILED;
     }
 
@@ -151,7 +155,7 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
 
     try {
         // convert a GGML tensor to input and output TensorDesc objects
-        const auto & create_tensor_desc = python_compiler_instance->create_tensor_desc;
+        const auto & create_tensor_desc = compiler->create_tensor_desc;
         const auto src_tensor_count = ggml_hsa_nsrcs(tensor);
         auto input_tensors = py::list(src_tensor_count);
         for (auto i = 0; i < src_tensor_count; ++i) {
@@ -177,17 +181,17 @@ ggml_status ggml_hsa_compile_kernel(const ggml_hsa_device_info::device_info & de
                                        sizeof(tensor.op_params));
 
         // compile the kernel
-        auto config = python_compiler_instance->compiler_config(
-            "output_directory"_a = output_directory.string(),
-            "compilers"_a = py::cast(compiler_order), "verbose"_a = verbose_compilation);
-        python_compiler_instance->compile_op(
-            "op_name"_a = op_name_to_use, "arch"_a = dev_info.name,
-            "input_tensors"_a = std::move(input_tensors),
-            "output_tensor"_a = std::move(output_tensor), "op_params"_a = std::move(op_params),
-            "exported_name"_a = kernel_name, "config"_a = std::move(config));
+        auto config = compiler->compiler_config("output_directory"_a = output_directory.string(),
+                                                "compilers"_a = py::tuple(py::cast(compiler_order)),
+                                                "verbose"_a = verbose_compilation);
+        compiler->compile_op("op_name"_a = op_name_to_use, "arch"_a = dev_info.name,
+                             "input_tensors"_a = std::move(input_tensors),
+                             "output_tensor"_a = std::move(output_tensor),
+                             "op_params"_a = std::move(op_params), "exported_name"_a = kernel_name,
+                             "config"_a = std::move(config));
     } catch (const py::error_already_set & ex) {
-        GGML_HSA_LOG_INFO("%s: failed to compile kernel %s for tensor \"%s\" (%s): %s", __func__,
-                          kernel_name.c_str(), tensor.name, op_name_to_use.c_str(), ex.what());
+        GGML_HSA_LOG_ERROR("%s: failed to compile kernel %s for tensor \"%s\" (%s): %s", __func__,
+                           kernel_name.c_str(), tensor.name, op_name_to_use.c_str(), ex.what());
         return GGML_STATUS_FAILED;
     }
 
