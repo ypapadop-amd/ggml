@@ -15,6 +15,7 @@
 #include <dlfcn.h>
 
 #include <pybind11/embed.h>
+#include <pybind11/stl.h>
 
 #include "ggml-hsa/common.hpp"
 #include "ggml-impl.h"
