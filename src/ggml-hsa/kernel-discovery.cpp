@@ -12,7 +12,7 @@
 #include "ggml-hsa/aie-kernel.hpp"
 #include "ggml-impl.h"
 #ifdef GGML_HSA_JIT_COMPILE
-#include "ggml-hsa/aie-kernel-compiler.hpp"
+#include "ggml-hsa/kernel-compiler.hpp"
 #endif
 
 namespace fs = std::filesystem;

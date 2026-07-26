@@ -1,6 +1,6 @@
 // Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "ggml-hsa/aie-kernel-compiler.hpp"
+#include "ggml-hsa/kernel-compiler.hpp"
 
 #include <algorithm>
 #include <array>
