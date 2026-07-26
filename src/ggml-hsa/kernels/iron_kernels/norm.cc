@@ -44,11 +44,12 @@ void ggml_op_norm(const float * __restrict in, float * __restrict out, int32_t N
     }
     const float mean = sum / static_cast<float>(N);
 
-    // Store the mean-centered values in out, accumulating the variance as we go.
+    // Accumulate the variance from the centered values (read-only over in); NORM is
+    // memory-bound, so we avoid materializing the centered row into out and reading it
+    // back — pass 2 below writes the final normalized value straight from in.
     float variance = 0.0f;
     for (int32_t i = 0; i < N; ++i) {
         const float v = in[i] - mean;
-        out[i] = v;
         variance += v * v;
     }
     variance /= static_cast<float>(N);
@@ -58,7 +59,7 @@ void ggml_op_norm(const float * __restrict in, float * __restrict out, int32_t N
     // (the aie::invsqrt intrinsic does not).
     const float scale = scalar_exp(-0.5f * scalar_log(variance + eps));
     for (int32_t i = 0; i < N; ++i) {
-        out[i] *= scale;
+        out[i] = (in[i] - mean) * scale;
     }
 
     event1();

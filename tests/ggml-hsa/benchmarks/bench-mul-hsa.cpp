@@ -5,64 +5,9 @@
 // (n_embd) broadcast over the token dimension. MUL is memory-bound, so the
 // reported metric is memory bandwidth.
 
-#include <benchmark/benchmark.h>
-
-#include "ggml-alloc.h"
-#include "ggml-backend.h"
-#include "ggml-cpu.h"
-#include "ggml.h"
-
-#ifdef GGML_USE_CUDA
-#include "ggml-cuda.h"
-#endif
-
-#ifdef GGML_USE_HSA
-#include "ggml-hsa.h"
-#endif
+#include "bench-hsa-common.hpp"
 
 #include <cstdint>
-#include <vector>
-
-namespace {
-
-enum class BackendType {
-    CPU,
-    GPU,
-    HSA,
-};
-
-std::vector<float> make_data(std::size_t n) {
-    std::vector<float> v(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        v[i] = static_cast<float>(i % 101) * 0.05f + 0.5f;
-    }
-    return v;
-}
-
-ggml_backend_t make_backend(BackendType type, benchmark::State & state) {
-    switch (type) {
-        case BackendType::CPU:
-            return ggml_backend_cpu_init();
-        case BackendType::GPU:
-#ifdef GGML_USE_CUDA
-            return ggml_backend_cuda_init(0);
-#else
-            state.SkipWithError("CUDA backend not available.");
-            return nullptr;
-#endif
-        case BackendType::HSA:
-#ifdef GGML_USE_HSA
-            return ggml_backend_hsa_init(0);
-#else
-            state.SkipWithError("HSA backend not available.");
-            return nullptr;
-#endif
-    }
-    state.SkipWithError("Invalid backend type.");
-    return nullptr;
-}
-
-} // namespace
 
 // Benchmarks out = a * w, with a [ne0, ne1, ne2, ne3] (state.range(0..3)) and w a
 // single [ne0] row broadcast over the other dims (LayerNorm affine scale).

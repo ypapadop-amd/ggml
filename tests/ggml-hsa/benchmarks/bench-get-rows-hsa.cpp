@@ -6,56 +6,9 @@
 // GPT-2 token-embedding (wte [n_embd, n_vocab]) and position-embedding
 // (wpe [n_embd, n_ctx]) lookups: gather n_tokens rows.
 
-#include <benchmark/benchmark.h>
-
-#include "ggml-alloc.h"
-#include "ggml-backend.h"
-#include "ggml-cpu.h"
-#include "ggml.h"
-
-#ifdef GGML_USE_CUDA
-#include "ggml-cuda.h"
-#endif
-
-#ifdef GGML_USE_HSA
-#include "ggml-hsa.h"
-#endif
+#include "bench-hsa-common.hpp"
 
 #include <cstdint>
-#include <vector>
-
-namespace {
-
-enum class BackendType {
-    CPU,
-    GPU,
-    HSA,
-};
-
-ggml_backend_t make_backend(BackendType type, benchmark::State & state) {
-    switch (type) {
-        case BackendType::CPU:
-            return ggml_backend_cpu_init();
-        case BackendType::GPU:
-#ifdef GGML_USE_CUDA
-            return ggml_backend_cuda_init(0);
-#else
-            state.SkipWithError("CUDA backend not available.");
-            return nullptr;
-#endif
-        case BackendType::HSA:
-#ifdef GGML_USE_HSA
-            return ggml_backend_hsa_init(0);
-#else
-            state.SkipWithError("HSA backend not available.");
-            return nullptr;
-#endif
-    }
-    state.SkipWithError("Invalid backend type.");
-    return nullptr;
-}
-
-} // namespace
 
 // Benchmarks dst = get_rows(table, idx). table is [nc, nrows] f32 (state.range(0/1)),
 // idx is [n_idx] i32 (state.range(2)); dst is [nc, n_idx] f32.

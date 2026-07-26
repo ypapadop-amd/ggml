@@ -5,65 +5,10 @@
 // GPT-2 attention-score scaling by 1/sqrt(d_head): [n_kv, n_q, n_head] with
 // n_head = 12 and n_kv == n_q == n_tokens.
 
-#include <benchmark/benchmark.h>
-
-#include "ggml-alloc.h"
-#include "ggml-backend.h"
-#include "ggml-cpu.h"
-#include "ggml.h"
-
-#ifdef GGML_USE_CUDA
-#include "ggml-cuda.h"
-#endif
-
-#ifdef GGML_USE_HSA
-#include "ggml-hsa.h"
-#endif
+#include "bench-hsa-common.hpp"
 
 #include <cmath>
 #include <cstdint>
-#include <vector>
-
-namespace {
-
-enum class BackendType {
-    CPU,
-    GPU,
-    HSA,
-};
-
-std::vector<float> make_data(std::size_t n) {
-    std::vector<float> v(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        v[i] = static_cast<float>(i % 101) * 0.1f - 5.0f;
-    }
-    return v;
-}
-
-ggml_backend_t make_backend(BackendType type, benchmark::State & state) {
-    switch (type) {
-        case BackendType::CPU:
-            return ggml_backend_cpu_init();
-        case BackendType::GPU:
-#ifdef GGML_USE_CUDA
-            return ggml_backend_cuda_init(0);
-#else
-            state.SkipWithError("CUDA backend not available.");
-            return nullptr;
-#endif
-        case BackendType::HSA:
-#ifdef GGML_USE_HSA
-            return ggml_backend_hsa_init(0);
-#else
-            state.SkipWithError("HSA backend not available.");
-            return nullptr;
-#endif
-    }
-    state.SkipWithError("Invalid backend type.");
-    return nullptr;
-}
-
-} // namespace
 
 // Benchmarks out = a * s, with a and out both [ne0, ne1, ne2, ne3] in ggml's
 // ne[0]-fastest layout (state.range(0..3)). s is the GPT-2 1/sqrt(d_head) factor.
