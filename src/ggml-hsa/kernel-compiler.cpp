@@ -89,15 +89,19 @@ struct python_compiler {
 
     python_compiler() {
         py::initialize_interpreter();
-        auto sys = py::module_::import("sys");
-        sys.attr("path").attr("append")(kernel_path.string());
+        {
+            // resolve the module handles in an inner scope so the temporary py::module_ objects
+            // are destroyed while the GIL is still held
+            auto sys = py::module_::import("sys");
+            sys.attr("path").attr("append")(kernel_path.string());
 
-        auto tensor_desc_mod = py::module_::import("tensor_desc");
-        create_tensor_desc = tensor_desc_mod.attr("ggml_tensor_to_tensordesc");
+            auto tensor_desc_mod = py::module_::import("tensor_desc");
+            create_tensor_desc = tensor_desc_mod.attr("ggml_tensor_to_tensordesc");
 
-        auto build_mod = py::module_::import("build");
-        compiler_config = build_mod.attr("CompilerConfig");
-        compile_op = build_mod.attr("ggml_compile_op");
+            auto build_mod = py::module_::import("build");
+            compiler_config = build_mod.attr("CompilerConfig");
+            compile_op = build_mod.attr("ggml_compile_op");
+        }
 
         // release the GIL acquired by initialize_interpreter(); reacquired per compile call
         gil_release.emplace();
