@@ -31,7 +31,7 @@ bool run_case(ggml_backend_t backend, int64_t d0, int64_t d1, int64_t d0pad, int
 
     ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, d0, d1);
     ggml_set_name(src, "src");
-    ggml_tensor * dst = ggml_hsa_convert_pad(ctx.get(), src, GGML_TYPE_BF16, d0pad, d1pad, 1, 1);
+    ggml_tensor * dst = ggml_hsa_convert_pad(ctx.get(), src, GGML_TYPE_BF16, d0pad, d1pad);
     ggml_set_name(dst, "dst");
 
     if (!ggml_backend_supports_op(backend, dst)) {

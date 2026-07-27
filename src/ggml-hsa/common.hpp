@@ -65,14 +65,11 @@ extern bool g_ggml_hsa_verbose;
  * @brief HSA-backend-only operators, not part of the upstream @c ggml_op enum.
  *
  * These are internal helper operators used to pre-/post-process tensors around device kernels
- * (dtype conversion, zero-padding). They are not graph ops: no @c ggml_tensor ever carries one in
- * its @c op field. They exist so the transform kernels can be identified by a strongly typed value
- * instead of a bare string.
- *
- * Values start at @c GGML_OP_COUNT + 1 so they never collide with a real @c ggml_op and can share
- * the same integer space (an "op index" that is either a @c ggml_op or a @c ggml_hsa_op). The
- * enumerator names map to the kernel-source keys in @c kernels/build.py (see @ref
- * ggml_hsa_op_name).
+ * (dtype conversion, zero-padding). Their values start at @c GGML_OP_COUNT + 1 so they never
+ * collide with a real @c ggml_op and can be stored in a @c ggml_tensor::op field (see
+ * @ref ggml_hsa_convert_pad and friends): the backend recognizes the extended range via
+ * @ref ggml_hsa_is_hsa_op wherever it consumes @c tensor.op. The enumerator names map to the
+ * kernel-source keys in @c kernels/build.py (see @ref ggml_hsa_op_name).
  */
 enum ggml_hsa_op {
     GGML_HSA_OP_CONVERT_PAD = GGML_OP_COUNT + 1, ///< dtype-convert and zero-pad a source
@@ -80,6 +77,15 @@ enum ggml_hsa_op {
     GGML_HSA_OP_CONVERT,                         ///< element-wise dtype cast
     GGML_HSA_OP_COUNT,
 };
+
+/**
+ * @brief Returns whether @p op is an HSA-only operator, i.e. in the extended range
+ *        (@c GGML_OP_COUNT, @c GGML_HSA_OP_COUNT).
+ */
+constexpr bool ggml_hsa_is_hsa_op(ggml_op op) {
+    const int v = static_cast<int>(op);
+    return (v > GGML_OP_COUNT) && (v < GGML_HSA_OP_COUNT);
+}
 
 /**
  * @brief Returns the kernel-source key for @p op (e.g. @c "HSA_CONVERT_PAD").

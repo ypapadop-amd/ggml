@@ -43,7 +43,7 @@ void bench_depad(benchmark::State & state) {
                                /*.no_alloc   =*/true};
     ggml_context * ctx = ggml_init(params);
     ggml_tensor *  src = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d0pad, d1pad);
-    ggml_tensor *  dst = ggml_hsa_depad(ctx, src, DstType, d0, d1, 1, 1);
+    ggml_tensor *  dst = ggml_hsa_depad(ctx, src, DstType, d0, d1);
 
     ggml_cgraph * gf = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf, dst);

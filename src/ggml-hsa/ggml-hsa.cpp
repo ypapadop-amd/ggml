@@ -139,14 +139,12 @@ static std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor,
                                                std::string op_name = "") {
     // Accept both the upstream ggml ops [GGML_OP_NONE, GGML_OP_COUNT) and the HSA-only ops
     // (GGML_OP_COUNT, GGML_HSA_OP_COUNT); the latter always supply an explicit op_name.
-    const int op = static_cast<int>(tensor.op);
-    const bool is_ggml_op = (op >= GGML_OP_NONE) && (op < GGML_OP_COUNT);
-    const bool is_hsa_op = (op > GGML_OP_COUNT) && (op < GGML_HSA_OP_COUNT);
-    if (!is_ggml_op && !is_hsa_op) {
+    const bool is_ggml_op = (tensor.op >= GGML_OP_NONE) && (tensor.op < GGML_OP_COUNT);
+    if (!is_ggml_op && !ggml_hsa_is_hsa_op(tensor.op)) {
         throw std::runtime_error{std::string("Tensor \"")
                                      .append(ggml_get_name(&tensor))
                                      .append("\" operation index out of bounds: ")
-                                     .append(std::to_string(op))
+                                     .append(std::to_string(static_cast<int>(tensor.op)))
                                      .append(" not in [0, GGML_OP_COUNT) or (GGML_OP_COUNT, "
                                              "GGML_HSA_OP_COUNT)")};
     }
@@ -825,24 +823,18 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
 
     // HSA-only operators (single-input transforms: convert/pad, de-pad, dtype cast). The kernel maps
     // the sole parent source into this node's shape/dtype; no generic layout/flatten handling.
-    switch (static_cast<int>(node.tensor.op)) {
-        case GGML_HSA_OP_CONVERT_PAD:
-        case GGML_HSA_OP_DEPAD:
-        case GGML_HSA_OP_CONVERT:
-            kernel = ggml_hsa_build_transform_kernel(
-                dev_info, static_cast<ggml_hsa_op>(node.tensor.op), *parent_tensor.src[0],
-                parent_tensor);
-            if (kernel == nullptr) {
-                throw std::runtime_error{
-                    std::string{"Could not build HSA transform kernel for \""}
-                        .append(ggml_get_name(&parent_tensor))
-                        .append("\" (")
-                        .append(ggml_hsa_op_name(static_cast<ggml_hsa_op>(node.tensor.op)))
-                        .append(")")};
-            }
-            return;
-        default:
-            break;
+    if (ggml_hsa_is_hsa_op(node.tensor.op)) {
+        const auto hsa_op = static_cast<ggml_hsa_op>(node.tensor.op);
+        kernel = ggml_hsa_build_transform_kernel(dev_info, hsa_op, *parent_tensor.src[0],
+                                                 parent_tensor);
+        if (kernel == nullptr) {
+            throw std::runtime_error{std::string{"Could not build HSA transform kernel for \""}
+                                         .append(ggml_get_name(&parent_tensor))
+                                         .append("\" (")
+                                         .append(ggml_hsa_op_name(hsa_op))
+                                         .append(")")};
+        }
+        return;
     }
 
     switch (node.tensor.op) {
@@ -1876,10 +1868,8 @@ ggml_tensor * ggml_hsa_convert_pad(ggml_context * ctx,
                                    ggml_tensor * a,
                                    ggml_type type,
                                    int64_t ne0,
-                                   int64_t ne1,
-                                   int64_t ne2,
-                                   int64_t ne3) {
-    const int64_t ne[GGML_MAX_DIMS] = {ne0, ne1, ne2, ne3};
+                                   int64_t ne1) {
+    const int64_t ne[GGML_MAX_DIMS] = {ne0, ne1, 1, 1};
     return ggml_hsa_new_transform(ctx, a, GGML_HSA_OP_CONVERT_PAD, type, ne);
 }
 
@@ -1887,10 +1877,8 @@ ggml_tensor * ggml_hsa_depad(ggml_context * ctx,
                              ggml_tensor * a,
                              ggml_type type,
                              int64_t ne0,
-                             int64_t ne1,
-                             int64_t ne2,
-                             int64_t ne3) {
-    const int64_t ne[GGML_MAX_DIMS] = {ne0, ne1, ne2, ne3};
+                             int64_t ne1) {
+    const int64_t ne[GGML_MAX_DIMS] = {ne0, ne1, 1, 1};
     return ggml_hsa_new_transform(ctx, a, GGML_HSA_OP_DEPAD, type, ne);
 }
 

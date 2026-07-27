@@ -41,16 +41,16 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
 // ggml_build_forward_expand + ggml_backend_graph_compute like any other op. They are only supported
 // by the HSA backend.
 
-// dtype-convert `a` to `type` and zero-pad it into the given (larger or equal) shape.
+// dtype-convert `a` to `type` and zero-pad it into the given (larger or equal) 2D shape.
 GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert_pad(
-    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type,
-    int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3);
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type, int64_t ne0,
+    int64_t ne1);
 
 // strip the zero-padding from `a`, gathering the top-left sub-block into the given (smaller or
-// equal) shape and converting it to `type`.
+// equal) 2D shape and converting it to `type`.
 GGML_BACKEND_API struct ggml_tensor * ggml_hsa_depad(
-    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type,
-    int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3);
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type, int64_t ne0,
+    int64_t ne1);
 
 // element-wise dtype cast of `a` to `type` (same shape).
 GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert(

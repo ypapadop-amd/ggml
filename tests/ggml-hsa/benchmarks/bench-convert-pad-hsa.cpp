@@ -41,7 +41,7 @@ void bench_convert_pad(benchmark::State & state) {
                                /*.no_alloc   =*/true};
     ggml_context * ctx = ggml_init(params);
     ggml_tensor *  src = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d0, d1);
-    ggml_tensor *  dst = ggml_hsa_convert_pad(ctx, src, GGML_TYPE_BF16, d0pad, d1pad, 1, 1);
+    ggml_tensor *  dst = ggml_hsa_convert_pad(ctx, src, GGML_TYPE_BF16, d0pad, d1pad);
 
     ggml_cgraph * gf = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf, dst);

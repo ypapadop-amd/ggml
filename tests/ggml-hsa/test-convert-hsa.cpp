@@ -14,33 +14,13 @@
 #include "ggml-backend.h"
 #include "ggml-hsa.h"
 #include "ggml.h"
+#include "hsa-test-common.hpp"
 
 namespace {
 
-// Writes the float value @p v into @p bytes at element @p idx, encoded as @p type (f32 or bf16).
-void store_val(ggml_type type, void * bytes, int64_t idx, float v) {
-    if (type == GGML_TYPE_F32) {
-        static_cast<float *>(bytes)[idx] = v;
-    } else {
-        static_cast<uint16_t *>(bytes)[idx] = ggml_fp32_to_bf16(v).bits;
-    }
-}
-
-// Reads element @p idx from @p bytes (encoded as @p type) as a float.
-float load_val(ggml_type type, const void * bytes, int64_t idx) {
-    if (type == GGML_TYPE_F32) {
-        return static_cast<const float *>(bytes)[idx];
-    }
-    return ggml_bf16_to_fp32(ggml_bf16_t{static_cast<const uint16_t *>(bytes)[idx]});
-}
-
-// Rounds @p v through @p type, returning the value the destination would hold.
-float cast_val(ggml_type type, float v) {
-    if (type == GGML_TYPE_F32) {
-        return v;
-    }
-    return ggml_bf16_to_fp32(ggml_fp32_to_bf16(v));
-}
+using hsa_test::cast_val;
+using hsa_test::load_val;
+using hsa_test::store_val;
 
 bool run_case(ggml_backend_t backend, ggml_type src_type, ggml_type dst_type, int64_t d0,
               int64_t d1) {
@@ -74,11 +54,9 @@ bool run_case(ggml_backend_t backend, ggml_type src_type, ggml_type dst_type, in
 
     // varied, deterministic input pattern
     const int64_t n = d0 * d1;
-    std::vector<float> src_vals(n);
     std::vector<uint8_t> src_bytes(ggml_nbytes(src));
     for (int64_t i = 0; i < n; ++i) {
-        src_vals[i] = static_cast<float>(i % 97) * 0.5f - 13.0f;
-        store_val(src_type, src_bytes.data(), i, src_vals[i]);
+        store_val(src_type, src_bytes.data(), i, static_cast<float>(i % 97) * 0.5f - 13.0f);
     }
     ggml_backend_tensor_set(src, src_bytes.data(), 0, ggml_nbytes(src));
 
