@@ -9,7 +9,7 @@
 
 from pathlib import Path
 
-from .kernel import Backend, KernelSpec, order_kernel_specs
+from .kernel import Backend, KernelSpec
 
 
 def _make_iron_unary_kernel_spec(
@@ -357,8 +357,8 @@ def ggml_unary_op_relu(
     """Return KernelSpecs for GGML_UNARY_OP_RELU (IRON primary, Triton fallback).
 
     IRON is tried first; the Triton spec is the fallback, reached only if IRON
-    compilation fails. Setting ``GGML_HSA_PREFER_TRITON=1`` flips the order so
-    Triton is tried first (used to benchmark or exercise the Triton path).
+    compilation fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the
+    order so Triton is tried first (used to benchmark or exercise the Triton path).
 
     Args:
         arch: Target architecture.
@@ -369,17 +369,16 @@ def ggml_unary_op_relu(
 
     Returns:
         List of KernelSpecs for the RELU operation: IRON first, then Triton as a
-        fallback (or the reverse when ``GGML_HSA_PREFER_TRITON`` is set).
+        fallback (reordered by CompilerConfig.compilers /
+        ``GGML_HSA_JIT_COMPILER_ORDER``).
 
     """
-    return order_kernel_specs(
-        [
-            _make_iron_unary_kernel_spec(
-                arch, input_tensors, output_tensor, "GGML_UNARY_OP_RELU"
-            ),
-            _make_triton_relu_kernel_spec(arch, input_tensors, output_tensor),
-        ]
-    )
+    return [
+        _make_iron_unary_kernel_spec(
+            arch, input_tensors, output_tensor, "GGML_UNARY_OP_RELU"
+        ),
+        _make_triton_relu_kernel_spec(arch, input_tensors, output_tensor),
+    ]
 
 
 def ggml_unary_op_sigmoid(

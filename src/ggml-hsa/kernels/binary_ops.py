@@ -158,8 +158,8 @@ def ggml_op_add(
     """Return KernelSpecs for GGML_OP_ADD (IRON primary, Triton fallback).
 
     IRON is tried first; the Triton spec is the fallback, reached only if IRON
-    compilation fails. Setting ``GGML_HSA_PREFER_TRITON=1`` flips the order so
-    Triton is tried first.
+    compilation fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the
+    order so Triton is tried first (see CompilerConfig.compilers).
 
     Args:
         arch: Target architecture.
