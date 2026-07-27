@@ -20,8 +20,10 @@
 
 namespace {
 
-bool run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz, int n_past,
-              const char * name) {
+enum class case_result { pass, fail, skip };
+
+case_result run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz, int n_past,
+                     const char * name) {
     const int64_t n = nc * nr * nz;
 
     const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
@@ -38,8 +40,11 @@ bool run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz, int n_
     ggml_set_name(dst, "dst");
 
     if (!ggml_backend_supports_op(backend, dst)) {
-        printf("  %-18s: op not supported\n", name);
-        return false;
+        // DIAG_MASK_INF is currently routed to the CPU fallback (see supports_op in ggml-hsa.cpp:
+        // it faults the HSA queue inside integrated multi-op graphs such as GPT-2 attention, even
+        // though the kernel is correct in isolation). Treat as a skip, not a failure.
+        printf("  %-18s: op not supported (skipped)\n", name);
+        return case_result::skip;
     }
 
     ggml_cgraph * gf = ggml_new_graph(ctx.get());
@@ -49,7 +54,7 @@ bool run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz, int n_
         ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
     if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
         printf("  %-18s: graph allocation failed\n", name);
-        return false;
+        return case_result::fail;
     }
 
     // Varied, deterministic input pattern.
@@ -61,7 +66,7 @@ bool run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz, int n_
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
         printf("  %-18s: graph compute failed\n", name);
-        return false;
+        return case_result::fail;
     }
 
     std::vector<float> dst_host(n);
@@ -84,7 +89,7 @@ bool run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz, int n_
             }
         }
     }
-    return ok;
+    return ok ? case_result::pass : case_result::fail;
 }
 
 } // namespace
@@ -111,14 +116,29 @@ int main() {
         {64, 32, 3, 12, "3d npast12"},
     };
 
-    bool all_ok = true;
+    bool any_fail = false;
+    int passed = 0;
+    int skipped = 0;
     for (const auto & c : cases) {
-        bool ok = run_case(backend, c.nc, c.nr, c.nz, c.n_past, c.name);
-        printf("DIAG_MASK_INF %-18s: %s\n", c.name, ok ? "PASSED" : "FAILED");
-        all_ok = all_ok && ok;
+        const case_result r = run_case(backend, c.nc, c.nr, c.nz, c.n_past, c.name);
+        const char * label = r == case_result::pass ? "PASSED"
+                             : r == case_result::skip ? "SKIPPED"
+                                                      : "FAILED";
+        printf("DIAG_MASK_INF %-18s: %s\n", c.name, label);
+        any_fail = any_fail || (r == case_result::fail);
+        passed += (r == case_result::pass);
+        skipped += (r == case_result::skip);
     }
 
     ggml_backend_free(backend);
-    printf("%s\n", all_ok ? "ALL PASSED" : "FAILURES");
-    return all_ok ? 0 : 1;
+    if (any_fail) {
+        printf("FAILURES\n");
+        return 1;
+    }
+    if (skipped > 0 && passed == 0) {
+        printf("ALL SKIPPED (DIAG_MASK_INF routed to CPU)\n");
+    } else {
+        printf("ALL PASSED\n");
+    }
+    return 0;
 }

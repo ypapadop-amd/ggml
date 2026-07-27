@@ -1723,6 +1723,13 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             continue;
         }
 
+        // A node whose result is a view (e.g. a KV-cache write CPY) is left without an extra by
+        // init_tensor; it carries no compiled kernel or internal sources to fix up, so skip it here
+        // (the dispatch loop below routes such copies through the host path).
+        if (node->extra == nullptr) {
+            continue;
+        }
+
         auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
         for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
             if (tensor_extra.sources[src_idx].tensor.data == nullptr) {
@@ -1739,22 +1746,25 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             continue;
         }
 
-        auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-
+        // Host-path ops require neither a compiled kernel nor an extra (they read node->src
+        // directly), so handle them before dereferencing node->extra: a CPY/DUP whose result is a
+        // view (e.g. a KV-cache write when the cache lives on this device) has no extra at all.
         switch (node->op) {
             // implemented as host kernels, so no dispatch required
             case GGML_OP_DUP:
-            case GGML_OP_CPY:
-                // A pure dtype-conversion copy dispatches on-device (no queue drain); other
-                // copies fall back to the host path.
-                if (tensor_extra.kernel != nullptr) {
-                    status = tensor_extra.kernel->dispatch(ctx, node->src, 1, *node);
+            case GGML_OP_CPY: {
+                auto * cpy_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+                // A pure dtype-conversion copy dispatches on-device (no queue drain); other copies
+                // (including view destinations without an extra) fall back to the host path.
+                if (cpy_extra != nullptr && cpy_extra->kernel != nullptr) {
+                    status = cpy_extra->kernel->dispatch(ctx, node->src, 1, *node);
                 } else if (node->op == GGML_OP_DUP) {
                     status = ggml_hsa_compute_dup(ctx, node);
                 } else {
                     status = ggml_hsa_compute_cpy(ctx, node);
                 }
                 continue;
+            }
             case GGML_OP_CONT:
                 status = ggml_hsa_compute_cont(ctx, node);
                 continue;
@@ -1765,12 +1775,22 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 break;
         }
 
+        auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+
         if (status = ggml_hsa_dispatch_preprocess(ctx, tensor_extra, node);
             status != GGML_STATUS_SUCCESS) {
             break;
         }
 
         ggml_tensor & internal_node = tensor_extra.node.tensor;
+        // supports_op only schedules a compute op here once its kernel builds, so this should never
+        // fire; fail gracefully instead of dereferencing a null kernel if the invariant is broken.
+        if (tensor_extra.kernel == nullptr) {
+            GGML_HSA_LOG_ERROR("%s: null kernel for tensor \"%s\" (%s)", __func__, node->name,
+                               ggml_op_desc(node));
+            status = GGML_STATUS_FAILED;
+            break;
+        }
         if (status = tensor_extra.kernel->dispatch(ctx, internal_node.src,
                                                    tensor_extra.sources.count, internal_node);
             status != GGML_STATUS_SUCCESS) {
@@ -2205,6 +2225,21 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
                     (op->src[0]->type == GGML_TYPE_F16) ||
                     (op->src[0]->type == GGML_TYPE_BF16)) &&
                    (op->type == GGML_TYPE_F32);
+        // GPT-2 attention block (KQ -> SCALE -> DIAG_MASK_INF -> SOFT_MAX -> KQV, over the 3D KQ
+        // tensor [n_kv, N, n_head]). Each of these IRON kernels is correct in isolation -- the
+        // standalone device tests pass, including on GPT-2-shaped inputs -- but when they run back
+        // to back inside the full attention graph they fault the hardware AIE queue after a number
+        // of tokens, which ROCr turns into an abort() at the next doorbell ring (unrecoverable, not
+        // a status we can catch). The softmax kernel is additionally known-broken numerically (see
+        // memory: aie2p reduction/ping-pong codegen bug). Until the queue fault is root-caused,
+        // route all three to the CPU fallback so the whole attention block stays on the CPU (no
+        // cross-device copies) and graphs containing them run to completion. The heavy MUL_MATs
+        // already fall back to the CPU (the GEMM kernel requires tile-aligned shapes), so the NPU
+        // still runs the FFN/layernorm/residual ops (NORM/ADD/MUL/GELU).
+        case GGML_OP_SCALE:
+        case GGML_OP_DIAG_MASK_INF:
+        case GGML_OP_SOFT_MAX:
+            return false;
         default:
             break;
     }
