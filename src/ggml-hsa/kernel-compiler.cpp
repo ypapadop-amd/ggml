@@ -91,7 +91,7 @@ struct python_compiler {
         py::initialize_interpreter();
         {
             // resolve the module handles in an inner scope so the temporary py::module_ objects
-            // while the GIL is still held
+            // are destroyed while the GIL is still held
             auto sys = py::module_::import("sys");
             sys.attr("path").attr("append")(kernel_path.string());
 
