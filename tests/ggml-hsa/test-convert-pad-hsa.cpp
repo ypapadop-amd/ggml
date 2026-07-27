@@ -1,11 +1,16 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-// Standalone test for the internal HSA_CONVERT_PAD kernel: f32 [d0, d1] -> bf16 [d0pad, d1pad],
+// Standalone test for the HSA-only ggml_hsa_convert_pad op: f32 [d0, d1] -> bf16 [d0pad, d1pad],
 // converting the valid sub-block (round-to-nearest-even, matching the host reference) and leaving
-// the padded regions zero. Exercises the real build+dispatch path via the internal test hook.
+// the padded regions zero. Builds a real single-node op graph and computes it on the device.
+//
+// The convert/pad kernel writes only the valid sub-block; the padded regions are expected to be
+// pre-zeroed (in production the internal buffer is memset to zero at allocation), so the test zeroes
+// the destination before computing.
 
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <vector>
 
 #include "ggml-alloc.h"
@@ -16,19 +21,33 @@
 namespace {
 
 bool run_case(ggml_backend_t backend, int64_t d0, int64_t d1, int64_t d0pad, int64_t d1pad) {
+    const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
     ggml_init_params params{
-        /*.mem_size   =*/ggml_tensor_overhead() * 2 + 1024,
+        /*.mem_size   =*/ctx_size,
         /*.mem_buffer =*/nullptr,
         /*.no_alloc   =*/true,
     };
-    ggml_context * ctx = ggml_init(params);
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx{ggml_init(params), ggml_free};
 
-    ggml_tensor * src = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d0, d1);
-    ggml_tensor * dst = ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, d0pad, d1pad);
+    ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, d0, d1);
     ggml_set_name(src, "src");
+    ggml_tensor * dst = ggml_hsa_convert_pad(ctx.get(), src, GGML_TYPE_BF16, d0pad, d1pad, 1, 1);
     ggml_set_name(dst, "dst");
 
-    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    if (!ggml_backend_supports_op(backend, dst)) {
+        printf("  op not supported\n");
+        return false;
+    }
+
+    ggml_cgraph * gf = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(gf, dst);
+
+    std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)> galloc{
+        ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
+    if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
+        printf("  graph allocation failed\n");
+        return false;
+    }
 
     // fill source with a varied pattern; pre-zero the (padded) destination
     std::vector<float> src_host(d0 * d1);
@@ -40,11 +59,8 @@ bool run_case(ggml_backend_t backend, int64_t d0, int64_t d1, int64_t d0pad, int
     std::vector<uint16_t> dst_zero(d0pad * d1pad, 0);
     ggml_backend_tensor_set(dst, dst_zero.data(), 0, ggml_nbytes(dst));
 
-    ggml_status status = ggml_hsa_test_dispatch_transform(backend, "HSA_CONVERT_PAD", src, dst);
-    if (status != GGML_STATUS_SUCCESS) {
-        printf("  dispatch failed (status=%d)\n", (int)status);
-        ggml_backend_buffer_free(buffer);
-        ggml_free(ctx);
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        printf("  graph compute failed\n");
         return false;
     }
 
@@ -64,8 +80,6 @@ bool run_case(ggml_backend_t backend, int64_t d0, int64_t d1, int64_t d0pad, int
         }
     }
 
-    ggml_backend_buffer_free(buffer);
-    ggml_free(ctx);
     return ok;
 }
 

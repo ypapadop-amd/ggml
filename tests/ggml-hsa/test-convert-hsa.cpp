@@ -1,10 +1,9 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-// Standalone test for the HSA-only ggml_hsa_depad op: gathers the top-left [d0, d1] sub-block out of
-// a padded [d0pad, d1pad] source, converting to the destination dtype. Builds a real single-node op
-// graph and computes it on the device. Covers f32->f32, bf16->bf16, and the fused f32->bf16 cast
-// (the real MUL_MAT de-pad post-amble). The padded source regions carry a nonzero pattern that the
-// gather must ignore.
+// Standalone test for the HSA-only ggml_hsa_convert op: an element-wise dtype cast with no shape
+// change (the on-device GGML_OP_CPY cast). Builds a real single-node op graph and computes it on the
+// device. Covers f32->bf16 (round-to-nearest-even, bit-identical to the host reference), bf16->f32
+// (exact widening), and the same-dtype plain copy.
 
 #include <cstdint>
 #include <cstdio>
@@ -44,7 +43,7 @@ float cast_val(ggml_type type, float v) {
 }
 
 bool run_case(ggml_backend_t backend, ggml_type src_type, ggml_type dst_type, int64_t d0,
-              int64_t d1, int64_t d0pad, int64_t d1pad) {
+              int64_t d1) {
     const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
     ggml_init_params params{
         /*.mem_size   =*/ctx_size,
@@ -53,9 +52,9 @@ bool run_case(ggml_backend_t backend, ggml_type src_type, ggml_type dst_type, in
     };
     std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx{ggml_init(params), ggml_free};
 
-    ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), src_type, d0pad, d1pad);
+    ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), src_type, d0, d1);
     ggml_set_name(src, "src");
-    ggml_tensor * dst = ggml_hsa_depad(ctx.get(), src, dst_type, d0, d1, 1, 1);
+    ggml_tensor * dst = ggml_hsa_convert(ctx.get(), src, dst_type);
     ggml_set_name(dst, "dst");
 
     if (!ggml_backend_supports_op(backend, dst)) {
@@ -73,12 +72,12 @@ bool run_case(ggml_backend_t backend, ggml_type src_type, ggml_type dst_type, in
         return false;
     }
 
-    // fill the padded source with a varied pattern (including nonzero pad regions, which must be
-    // ignored by the gather)
-    std::vector<float> src_vals(d0pad * d1pad);
+    // varied, deterministic input pattern
+    const int64_t n = d0 * d1;
+    std::vector<float> src_vals(n);
     std::vector<uint8_t> src_bytes(ggml_nbytes(src));
-    for (int64_t i = 0; i < d0pad * d1pad; ++i) {
-        src_vals[i] = static_cast<float>(i) * 0.25f + 1.0f;
+    for (int64_t i = 0; i < n; ++i) {
+        src_vals[i] = static_cast<float>(i % 97) * 0.5f - 13.0f;
         store_val(src_type, src_bytes.data(), i, src_vals[i]);
     }
     ggml_backend_tensor_set(src, src_bytes.data(), 0, ggml_nbytes(src));
@@ -92,17 +91,13 @@ bool run_case(ggml_backend_t backend, ggml_type src_type, ggml_type dst_type, in
     ggml_backend_tensor_get(dst, dst_bytes.data(), 0, ggml_nbytes(dst));
 
     bool ok = true;
-    for (int64_t i1 = 0; i1 < d1 && ok; ++i1) {
-        for (int64_t i0 = 0; i0 < d0 && ok; ++i0) {
-            // reference: gather the sub-block value (as stored in src_type), then cast to dst_type
-            const float src_v = load_val(src_type, src_bytes.data(), i1 * d0pad + i0);
-            const float want = cast_val(dst_type, src_v);
-            const float got = load_val(dst_type, dst_bytes.data(), i1 * d0 + i0);
-            if (got != want) {
-                printf("  mismatch at [%lld,%lld]: got %g want %g\n", (long long)i0, (long long)i1,
-                       got, want);
-                ok = false;
-            }
+    for (int64_t i = 0; i < n && ok; ++i) {
+        // reference: read the source value (as stored in src_type), then cast to dst_type
+        const float want = cast_val(dst_type, load_val(src_type, src_bytes.data(), i));
+        const float got = load_val(dst_type, dst_bytes.data(), i);
+        if (got != want) {
+            printf("  mismatch at %lld: got %g want %g\n", (long long)i, got, want);
+            ok = false;
         }
     }
 
@@ -119,36 +114,32 @@ int main() {
     }
 
     struct {
-        int64_t d0, d1, d0pad, d1pad;
+        int64_t d0, d1;
         const char * name;
     } cases[] = {
-        {128, 128, 128, 128, "exact (no pad)"},
-        {40, 128, 64, 128, "d0 pad"},
-        {128, 10, 128, 128, "d1 pad"},
-        {40, 10, 64, 128, "d0+d1 pad"},
-        // exact MNIST MUL_MAT output shapes: parent C [M,N] <- padded [Mpad,Npad]
-        {500, 500, 512, 512, "mnist C c1"},
-        {10, 500, 128, 512, "mnist C c2"},
-        // large sizes that exceed a single strided-DMA descriptor's wrap limits
-        // (regression guard for the linear-transfer + in-kernel narrowing design)
-        {500, 4, 512, 128, "large d0"},
-        {8, 500, 128, 512, "large d1"},
+        {32, 1, "single row"},
+        {64, 8, "wide"},
+        {128, 4, "wider"},
+        {48, 16, "many rows"},
+        {768, 4, "gpt2 n_embd"},
+        {500, 500, "square"},
+        {1, 64, "single col"},
     };
 
     struct {
         ggml_type src_type, dst_type;
         const char * label;
     } variants[] = {
-        {GGML_TYPE_F32, GGML_TYPE_F32, "HSA_DEPAD"},
-        {GGML_TYPE_BF16, GGML_TYPE_BF16, "HSA_DEPAD bf16"},
-        {GGML_TYPE_F32, GGML_TYPE_BF16, "HSA_DEPAD f32->bf16"},
+        {GGML_TYPE_F32, GGML_TYPE_BF16, "HSA_CONVERT f32->bf16"},
+        {GGML_TYPE_BF16, GGML_TYPE_F32, "HSA_CONVERT bf16->f32"},
+        {GGML_TYPE_F32, GGML_TYPE_F32, "HSA_CONVERT f32->f32"},
     };
 
     bool all_ok = true;
     for (const auto & v : variants) {
         for (const auto & c : cases) {
-            bool ok = run_case(backend, v.src_type, v.dst_type, c.d0, c.d1, c.d0pad, c.d1pad);
-            printf("%s %-16s: %s\n", v.label, c.name, ok ? "PASSED" : "FAILED");
+            bool ok = run_case(backend, v.src_type, v.dst_type, c.d0, c.d1);
+            printf("%s %-14s: %s\n", v.label, c.name, ok ? "PASSED" : "FAILED");
             all_ok = all_ok && ok;
         }
     }

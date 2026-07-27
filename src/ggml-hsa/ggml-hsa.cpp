@@ -65,6 +65,20 @@ bool ggml_hsa_string_to_bool(std::string_view s) {
            s == "YES" || s == "on" || s == "On" || s == "ON";
 }
 
+const char * ggml_hsa_op_name(ggml_hsa_op op) {
+    switch (op) {
+        case GGML_HSA_OP_CONVERT_PAD:
+            return "HSA_CONVERT_PAD";
+        case GGML_HSA_OP_DEPAD:
+            return "HSA_DEPAD";
+        case GGML_HSA_OP_CONVERT:
+            return "HSA_CONVERT";
+        case GGML_HSA_OP_COUNT:
+            break;
+    }
+    GGML_ABORT("invalid ggml_hsa_op: %d", static_cast<int>(op));
+}
+
 const char * ggml_hsa_get_status_string(hsa_status_t status) {
     const char * msg = nullptr;
     if (hsa_status_string(status, &msg) != HSA_STATUS_SUCCESS) {
@@ -123,12 +137,18 @@ constexpr bool ggml_hsa_is_unary_op(ggml_op op) {
  */
 static std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor,
                                                std::string op_name = "") {
-    if ((tensor.op < GGML_OP_NONE) || (tensor.op >= GGML_OP_COUNT)) {
+    // Accept both the upstream ggml ops [GGML_OP_NONE, GGML_OP_COUNT) and the HSA-only ops
+    // (GGML_OP_COUNT, GGML_HSA_OP_COUNT); the latter always supply an explicit op_name.
+    const int op = static_cast<int>(tensor.op);
+    const bool is_ggml_op = (op >= GGML_OP_NONE) && (op < GGML_OP_COUNT);
+    const bool is_hsa_op = (op > GGML_OP_COUNT) && (op < GGML_HSA_OP_COUNT);
+    if (!is_ggml_op && !is_hsa_op) {
         throw std::runtime_error{std::string("Tensor \"")
                                      .append(ggml_get_name(&tensor))
                                      .append("\" operation index out of bounds: ")
-                                     .append(std::to_string(tensor.op))
-                                     .append(" not in [0, GGML_OP_COUNT)")};
+                                     .append(std::to_string(op))
+                                     .append(" not in [0, GGML_OP_COUNT) or (GGML_OP_COUNT, "
+                                             "GGML_HSA_OP_COUNT)")};
     }
 
     // no operation name supplied - use the tensor operation name
@@ -520,21 +540,23 @@ ggml_hsa_get_cached_kernel(const std::string & kernel_name,
  *
  * Used for the MUL_MAT convert/pad pre-amble and de-pad post-amble, which are not GGML ops. A
  * carrier tensor is synthesized from @p out (shape/dtype/strides of the transform's destination)
- * with its single source set to @p in, then compiled under @p op_name (e.g. "HSA_CONVERT_PAD" or
- * "HSA_DEPAD"). The (in, out) shapes/dtypes flow into the kernel name so each distinct
+ * with its single source set to @p in, then compiled under @p op (e.g. @ref GGML_HSA_OP_CONVERT_PAD
+ * or @ref GGML_HSA_OP_DEPAD). The (in, out) shapes/dtypes flow into the kernel name so each distinct
  * padded/unpadded combination caches its own PDI.
  *
  * @param[in] dev_info device information
- * @param[in] op_name internal operation name selecting the kernel source
+ * @param[in] op HSA-only operator selecting the kernel source
  * @param[in] in transform input tensor (metadata only; data pointer not required here)
  * @param[in] out transform output tensor (metadata only)
  * @return the compiled/cached kernel, or nullptr on failure (caller falls back to the host path)
  */
 static std::shared_ptr<ggml_hsa_kernel>
 ggml_hsa_build_transform_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                const std::string & op_name,
+                                ggml_hsa_op op,
                                 const ggml_tensor & in,
                                 const ggml_tensor & out) {
+    const std::string op_name = ggml_hsa_op_name(op);
+
     // carrier tensor: destination metadata, single source = transform input
     ggml_tensor carrier = out;
     ggml_tensor source = in;
@@ -801,6 +823,28 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         return;
     }
 
+    // HSA-only operators (single-input transforms: convert/pad, de-pad, dtype cast). The kernel maps
+    // the sole parent source into this node's shape/dtype; no generic layout/flatten handling.
+    switch (static_cast<int>(node.tensor.op)) {
+        case GGML_HSA_OP_CONVERT_PAD:
+        case GGML_HSA_OP_DEPAD:
+        case GGML_HSA_OP_CONVERT:
+            kernel = ggml_hsa_build_transform_kernel(
+                dev_info, static_cast<ggml_hsa_op>(node.tensor.op), *parent_tensor.src[0],
+                parent_tensor);
+            if (kernel == nullptr) {
+                throw std::runtime_error{
+                    std::string{"Could not build HSA transform kernel for \""}
+                        .append(ggml_get_name(&parent_tensor))
+                        .append("\" (")
+                        .append(ggml_hsa_op_name(static_cast<ggml_hsa_op>(node.tensor.op)))
+                        .append(")")};
+            }
+            return;
+        default:
+            break;
+    }
+
     switch (node.tensor.op) {
         case GGML_OP_DUP:
         case GGML_OP_CPY:
@@ -808,7 +852,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             // cast), so it batches on the queue instead of the host copy path that drains it. Any
             // other copy (strided, reshape) stays on the host.
             if (ggml_hsa_is_convert_copy(node.tensor)) {
-                kernel = ggml_hsa_build_transform_kernel(dev_info, "HSA_CONVERT",
+                kernel = ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_CONVERT,
                                                          *parent_tensor.src[0], parent_tensor);
             }
             return;
@@ -917,11 +961,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             if (sources[src_idx].buffer_size == 0) {
                 continue;
             }
-            sources[src_idx].preprocess_kernel = ggml_hsa_build_transform_kernel(
-                dev_info, "HSA_CONVERT_PAD", *parent_tensor.src[src_idx], sources[src_idx].tensor);
+            sources[src_idx].preprocess_kernel =
+                ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_CONVERT_PAD,
+                                                *parent_tensor.src[src_idx], sources[src_idx].tensor);
         }
-        node.postprocess_kernel =
-            ggml_hsa_build_transform_kernel(dev_info, "HSA_DEPAD", node.tensor, parent_tensor);
+        node.postprocess_kernel = ggml_hsa_build_transform_kernel(
+            dev_info, GGML_HSA_OP_DEPAD, node.tensor, parent_tensor);
     }
 
     // Decide how each group (sources, output) synchronizes its parent<->internal transformations
@@ -1811,28 +1856,46 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     return status;
 }
 
-// test support (see ggml-hsa.h)
+// HSA-only graph operators (see ggml-hsa.h)
 
-ggml_status ggml_hsa_test_dispatch_transform(ggml_backend_t backend,
-                                             const char * op_name,
-                                             const ggml_tensor * src,
-                                             ggml_tensor * dst) {
-    auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
-    const auto & dev_info = ggml_hsa_get_device_info(ctx.device);
+/**
+ * @brief Builds a single-node result carrying an HSA-only transform op with @p a as its sole source.
+ */
+static ggml_tensor * ggml_hsa_new_transform(ggml_context * ctx,
+                                            ggml_tensor * a,
+                                            ggml_hsa_op op,
+                                            ggml_type type,
+                                            const int64_t ne[GGML_MAX_DIMS]) {
+    ggml_tensor * result = ggml_new_tensor(ctx, type, GGML_MAX_DIMS, ne);
+    result->op = static_cast<ggml_op>(op);
+    result->src[0] = a;
+    return result;
+}
 
-    auto kernel = ggml_hsa_build_transform_kernel(dev_info, op_name, *src, *dst);
-    if (kernel == nullptr) {
-        GGML_HSA_LOG_ERROR("%s: failed to build transform kernel %s", __func__, op_name);
-        return GGML_STATUS_FAILED;
-    }
+ggml_tensor * ggml_hsa_convert_pad(ggml_context * ctx,
+                                   ggml_tensor * a,
+                                   ggml_type type,
+                                   int64_t ne0,
+                                   int64_t ne1,
+                                   int64_t ne2,
+                                   int64_t ne3) {
+    const int64_t ne[GGML_MAX_DIMS] = {ne0, ne1, ne2, ne3};
+    return ggml_hsa_new_transform(ctx, a, GGML_HSA_OP_CONVERT_PAD, type, ne);
+}
 
-    ggml_tensor * dispatch_src = const_cast<ggml_tensor *>(src);
-    if (auto status = kernel->dispatch(ctx, &dispatch_src, 1, *dst);
-        status != GGML_STATUS_SUCCESS) {
-        return status;
-    }
-    ggml_hsa_wait_dispatches(ctx);
-    return GGML_STATUS_SUCCESS;
+ggml_tensor * ggml_hsa_depad(ggml_context * ctx,
+                             ggml_tensor * a,
+                             ggml_type type,
+                             int64_t ne0,
+                             int64_t ne1,
+                             int64_t ne2,
+                             int64_t ne3) {
+    const int64_t ne[GGML_MAX_DIMS] = {ne0, ne1, ne2, ne3};
+    return ggml_hsa_new_transform(ctx, a, GGML_HSA_OP_DEPAD, type, ne);
+}
+
+ggml_tensor * ggml_hsa_convert(ggml_context * ctx, ggml_tensor * a, ggml_type type) {
+    return ggml_hsa_new_transform(ctx, a, GGML_HSA_OP_CONVERT, type, a->ne);
 }
 
 // event

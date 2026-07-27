@@ -33,15 +33,28 @@ GGML_BACKEND_API void ggml_backend_hsa_unregister_host_buffer(void * buffer);
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
 
-// Builds and dispatches an internal single-input transform kernel on the HSA backend, then waits
-// for completion. Compiles (or fetches from cache) the kernel named op_name for the (src, dst)
-// shape/dtype pair, dispatches it with src as the sole source and dst as the destination. src and
-// dst must already be allocated on backend (device-resident data pointers). This is the same
-// builder used by graph_compute, so the test path matches production. Intended for tests that drive
-// individual internal kernels (e.g. the MUL_MAT convert/pad pre-amble "HSA_CONVERT_PAD" and de-pad
-// post-amble "HSA_DEPAD") which are not reachable through ggml_backend_graph_compute.
-GGML_BACKEND_API enum ggml_status ggml_hsa_test_dispatch_transform(
-    ggml_backend_t backend, const char * op_name, const struct ggml_tensor * src, struct ggml_tensor * dst);
+// HSA-only graph operators.
+//
+// These build a single-node result whose op is one of the HSA-only operators (see enum ggml_hsa_op
+// in the backend). They are the internal MUL_MAT convert/pad pre-amble and de-pad post-amble, plus
+// the element-wise dtype cast, exposed as ordinary ggml ops so they can be driven through
+// ggml_build_forward_expand + ggml_backend_graph_compute like any other op. They are only supported
+// by the HSA backend.
+
+// dtype-convert `a` to `type` and zero-pad it into the given (larger or equal) shape.
+GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert_pad(
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type,
+    int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3);
+
+// strip the zero-padding from `a`, gathering the top-left sub-block into the given (smaller or
+// equal) shape and converting it to `type`.
+GGML_BACKEND_API struct ggml_tensor * ggml_hsa_depad(
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type,
+    int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3);
+
+// element-wise dtype cast of `a` to `type` (same shape).
+GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert(
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type);
 
 #ifdef  __cplusplus
 }

@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-// Benchmark for the internal HSA_DEPAD kernel (the MUL_MAT de-pad post-amble): narrows each row
+// Benchmark for the HSA-only ggml_hsa_depad op (the MUL_MAT de-pad post-amble): narrows each row
 // from a padded f32 [d0pad, d1pad] temporary to a dense [d0, d1] destination, either plain
 // (f32 -> f32) or fusing the per-layer cast (f32 -> bf16). Times the on-device dispatch (kernel
-// build is cached; each call submits + waits, matching the per-op production path).
+// build is cached; each graph_compute submits + waits, matching the per-op production path).
 
 #include <benchmark/benchmark.h>
 
@@ -18,7 +18,7 @@
 #include <cstdint>
 #include <vector>
 
-// Benchmarks the de-pad post-amble via the internal test dispatch hook, with the padded f32 source
+// Benchmarks the de-pad post-amble as a single-node op graph, with the padded f32 source
 // [d0pad, d1pad] and dense destination [d0, d1] taken from state.range(0..3). DstType selects the
 // plain (f32) or fused-cast (bf16) destination.
 template <ggml_type DstType>
@@ -38,16 +38,20 @@ void bench_depad(benchmark::State & state) {
     const std::int64_t d0pad = state.range(2);
     const std::int64_t d1pad = state.range(3);
 
-    ggml_init_params params = {/*.mem_size   =*/ggml_tensor_overhead() * 2 + 1024,
+    ggml_init_params params = {/*.mem_size   =*/ggml_tensor_overhead() * 2 + ggml_graph_overhead(),
                                /*.mem_buffer =*/nullptr,
                                /*.no_alloc   =*/true};
     ggml_context * ctx = ggml_init(params);
     ggml_tensor *  src = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d0pad, d1pad);
-    ggml_tensor *  dst = ggml_new_tensor_2d(ctx, DstType, d0, d1);
+    ggml_tensor *  dst = ggml_hsa_depad(ctx, src, DstType, d0, d1, 1, 1);
 
-    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
-    if (buf == nullptr) {
-        state.SkipWithError("Tensor buffer allocation failed.");
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf, dst);
+
+    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (galloc == nullptr || !ggml_gallocr_alloc_graph(galloc, gf)) {
+        state.SkipWithError("Graph allocation failed.");
+        ggml_gallocr_free(galloc);
         ggml_free(ctx);
         ggml_backend_free(backend);
         return;
@@ -60,17 +64,16 @@ void bench_depad(benchmark::State & state) {
     ggml_backend_tensor_set(src, src_host.data(), 0, ggml_nbytes(src));
 
     // warm up (also triggers the one-time JIT compile so it is not measured)
-    if (ggml_hsa_test_dispatch_transform(backend, "HSA_DEPAD", src, dst) != GGML_STATUS_SUCCESS) {
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
         state.SkipWithError("Warm-up dispatch error.");
-        ggml_backend_buffer_free(buf);
+        ggml_gallocr_free(galloc);
         ggml_free(ctx);
         ggml_backend_free(backend);
         return;
     }
 
     for (auto _ : state) {
-        if (ggml_hsa_test_dispatch_transform(backend, "HSA_DEPAD", src, dst) !=
-            GGML_STATUS_SUCCESS) {
+        if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
             state.SkipWithError("Dispatch error.");
             break;
         }
@@ -80,7 +83,7 @@ void bench_depad(benchmark::State & state) {
     state.counters["elem/s"] = benchmark::Counter(
         static_cast<double>(d0 * d1), benchmark::Counter::kIsIterationInvariantRate);
 
-    ggml_backend_buffer_free(buf);
+    ggml_gallocr_free(galloc);
     ggml_free(ctx);
     ggml_backend_free(backend);
 #endif
