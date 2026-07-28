@@ -24,6 +24,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 
 from .utils import (
+    CoreFunctionSpec,
     arch_aligned_num_elements,
     arch_to_device,
     max_tile_size,
@@ -41,25 +42,6 @@ def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
         True if t0 can be broadcast to t1.
     """
     return all(t1_shape[i] % t0_shape[i] == 0 for i in range(4))
-
-
-@dataclass(frozen=True)
-class CoreFunctionSpec:
-    """Core function plus total element count for an element-wise binary op.
-
-    Attributes:
-        external_function: External function implementing the operation.
-        num_elements: Total number of elements to process.
-
-    """
-
-    external_function: ExternalFunction
-    num_elements: int
-
-    @property
-    def tile_size(self) -> int:
-        """Tile size used by the external function."""
-        return self.external_function.tile_size(0)
 
 
 def _binary_op(

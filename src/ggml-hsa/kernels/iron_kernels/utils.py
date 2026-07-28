@@ -2,7 +2,10 @@
 
 """Utility functions for IRON kernel implementations."""
 
+from dataclasses import dataclass
+
 import numpy as np
+from aie.iron import ExternalFunction
 from aie.iron.device import NPU1, NPU2
 
 # Per-architecture on-tile resources. Add a new NPU generation by adding one entry.
@@ -201,6 +204,49 @@ def fan_out_worker_count(
         max_workers = arch_num_columns(arch)
     by_work = max(1, total_elems // _MIN_ELEMS_PER_WORKER)
     return max(1, min(max_workers, n_units, by_work))
+
+
+def partition_units(num_workers: int, n_units: int) -> tuple[list[int], list[int]]:
+    """Split n_units contiguous units as evenly as possible across num_workers.
+
+    The first (n_units % num_workers) workers get one extra unit so the slices
+    cover all n_units exactly.
+
+    Args:
+        num_workers: Number of workers to split across.
+        n_units: Total number of independent units to distribute.
+
+    Returns:
+        The (counts, starts) pair: counts[w] is the number of units assigned to
+        worker w, and starts[w] is the index of its first unit.
+    """
+    base, rem = divmod(n_units, num_workers)
+    counts = [base + (1 if w < rem else 0) for w in range(num_workers)]
+    starts = []
+    acc = 0
+    for count in counts:
+        starts.append(acc)
+        acc += count
+    return counts, starts
+
+
+@dataclass(frozen=True)
+class CoreFunctionSpec:
+    """Core function plus total element count for an element-wise op.
+
+    Attributes:
+        external_function: External function implementing the operation.
+        num_elements: Total number of elements to process.
+
+    """
+
+    external_function: ExternalFunction
+    num_elements: int
+
+    @property
+    def tile_size(self) -> int:
+        """Tile size used by the external function."""
+        return self.external_function.tile_size(0)
 
 
 def arch_num_columns(arch: str) -> int:
