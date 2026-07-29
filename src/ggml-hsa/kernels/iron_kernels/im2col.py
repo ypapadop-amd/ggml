@@ -23,7 +23,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_to_device
+from .utils import arch_to_device, partition_units
 
 # Cap on data-parallel workers (compute tiles). Beyond this the per-worker shim/
 # mem-tile DMA channels exhaust the array's routing budget on NPU1 (aie2).
@@ -134,9 +134,7 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     # lower cleanly. Workers are capped at _MAX_WORKERS to stay within the shim/
     # mem-tile DMA channel budget (16 workers exhausts it on NPU1).
     num_workers = min(_MAX_WORKERS, n)
-    base, rem = divmod(n, num_workers)
-    # First `rem` workers get one extra image so the slices cover all N.
-    images_per_worker = [base + (1 if w < rem else 0) for w in range(num_workers)]
+    images_per_worker, image_starts = partition_units(num_workers, n)
     out_per_image = row_size * oh
 
     image_tile_ty = np.ndarray[(image_size,), np.dtype[image_tensor.dtype]]
@@ -174,11 +172,6 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     # Per-worker DMA taps select each worker's contiguous slice of the batch from
     # the whole tensors: the input viewed as [N, image_size], the output as
     # [N, out_per_image]. worker w reads images [start, start+count).
-    image_starts = []
-    acc = 0
-    for count in images_per_worker:
-        image_starts.append(acc)
-        acc += count
 
     # The runtime sequence binds one buffer per ggml tensor, positionally:
     # src0 (kernel), src1 (image), then dst. The kernel carries no data (only its

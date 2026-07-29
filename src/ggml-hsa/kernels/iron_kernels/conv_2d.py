@@ -22,7 +22,7 @@ from aie.iron import (
 )
 from aie.iron.controlflow import range_
 
-from .utils import arch_to_device
+from .utils import arch_to_device, partition_units
 
 # Number of int32 op_params: {s0, s1, p0, p1, d0, d1}
 _CONV2D_PARAMS_SIZE = 6 * 4
@@ -142,14 +142,7 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     # Distribute the N images across compute tiles. Each worker owns independent
     # weight/image/output fifos and processes a contiguous slice of the batch.
     num_workers = min(_MAX_WORKERS, n)
-    base, rem = divmod(n, num_workers)
-    # First `rem` workers get one extra image so the slices cover all N.
-    images_per_worker = [base + (1 if w < rem else 0) for w in range(num_workers)]
-    image_starts = []
-    acc = 0
-    for count in images_per_worker:
-        image_starts.append(acc)
-        acc += count
+    images_per_worker, image_starts = partition_units(num_workers, n)
 
     # One output plane per (image, oc); planes per image = oc.
     out_per_image = plane_size * oc

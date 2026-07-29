@@ -314,6 +314,8 @@ def ggml_unary_op_gelu(
 ) -> KernelSpec:
     """Return the KernelSpec for GGML_UNARY_OP_GELU.
 
+    Uses the tanh approximation of GELU, matching GGML's GGML_UNARY_OP_GELU.
+
     Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
@@ -321,11 +323,13 @@ def ggml_unary_op_gelu(
         op_params: Operation parameters (unused for elementwise ops but required
             by the dispatch interface).
 
-    Raises:
-        NotImplementedError: GELU is not yet implemented.
+    Returns:
+        KernelSpec for the GELU operation.
 
     """
-    raise NotImplementedError
+    return _make_iron_unary_kernel_spec(
+        arch, input_tensors, output_tensor, "GGML_UNARY_OP_GELU"
+    )
 
 
 def ggml_unary_op_gelu_quick(

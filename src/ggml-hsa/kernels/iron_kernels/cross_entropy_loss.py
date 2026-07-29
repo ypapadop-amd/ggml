@@ -22,40 +22,7 @@ from aie.iron import (
 )
 from aie.iron.controlflow import range_
 
-from .utils import align_to_arch, arch_to_device
-
-
-def get_cross_entropy_loss_dimensions(tensor) -> tuple[int, int]:
-    """Return (row_length, num_rows) for a GGML-ordered tensor.
-
-    Loss is computed over dim 0 (ne00): row_length = ne00, num_rows = ne01*ne02*ne03.
-
-    Args:
-        tensor: GGML-ordered tensor to inspect.
-
-    Returns:
-        The (row_length, num_rows) pair.
-
-    Raises:
-        ValueError: If the tensor rank is unsupported.
-    """
-    shape = tensor.shape
-
-    if len(shape) == 1:
-        # shape = (ne00,)
-        return shape[0], 1
-    if len(shape) == 2:
-        # shape = (ne00, ne01)
-        return shape[0], shape[1]
-    if len(shape) == 3:
-        # shape = (ne00, ne01, ne02)
-        return shape[0], shape[1] * shape[2]
-    if len(shape) == 4:
-        # shape = (ne00, ne01, ne02, ne03)
-        return shape[0], shape[1] * shape[2] * shape[3]
-    msg = f"Unsupported tensor rank: {len(shape)}"
-    raise ValueError(msg)
-
+from .utils import align_to_arch, arch_to_device, row_dimensions
 
 # Vector size for AIE kernel vector operations
 KERN_VEC_SIZE = 8
@@ -97,7 +64,7 @@ def cross_entropy_loss(arch: str, input_tensors: list, output_tensor):
         msg = "Logits and labels tensors must have the same shape."
         raise ValueError(msg)
 
-    row_length, num_rows = get_cross_entropy_loss_dimensions(logits_tensor)
+    row_length, num_rows = row_dimensions(logits_tensor)
 
     # Round row_length up to a KERN_VEC_SIZE-aligned tile size.
     tile_size = align_to_arch(arch, row_length, logits_tensor.dtype, KERN_VEC_SIZE)
