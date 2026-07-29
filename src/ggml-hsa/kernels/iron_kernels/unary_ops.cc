@@ -177,6 +177,46 @@ void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
 
 #endif // GGML_UNARY_OP_RELU
 
+#ifdef GGML_UNARY_OP_GELU
+
+/**
+ * @brief Applies the GELU activation (tanh approximation): out[i] = gelu(in[i]).
+ *
+ * Matches GGML's GGML_UNARY_OP_GELU:
+ *   gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
+ *
+ * tanh is evaluated via scalar_exp using the numerically stable identity
+ * tanh(y) = sign(y) * (1 - e^-2|y|) / (1 + e^-2|y|), so large-magnitude arguments
+ * saturate to +/-1 instead of overflowing.
+ *
+ * @param[in]  in  Input array of N float elements.
+ * @param[out] out Output array of N float elements.
+ * @param[in]  N   Number of elements to process.
+ */
+void ggml_unary_op_gelu(const INPUT_DTYPE * __restrict in,
+                        OUTPUT_DTYPE * __restrict out,
+                        int32_t N) {
+    static_assert(std::is_same_v<INPUT_DTYPE, float>, "GELU requires float32 input");
+    static_assert(std::is_same_v<OUTPUT_DTYPE, float>, "GELU requires float32 output");
+
+    constexpr float kSqrt2OverPi = 0.7978845608028654f; // sqrt(2/pi)
+    constexpr float kCoefA = 0.044715f;
+
+    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
+        const float x = static_cast<float>(v);
+        const float y = kSqrt2OverPi * (x + kCoefA * x * x * x);
+
+        const float ay = (y < 0.0f) ? -y : y;
+        const float e = scalar_exp(-2.0f * ay);
+        const float tanh_abs = (1.0f - e) / (1.0f + e);
+        const float tanh_y = (y < 0.0f) ? -tanh_abs : tanh_abs;
+
+        return static_cast<OUTPUT_DTYPE>(0.5f * x * (1.0f + tanh_y));
+    });
+}
+
+#endif // GGML_UNARY_OP_GELU
+
 #ifdef GGML_UNARY_OP_HARDSIGMOID
 
 /**
