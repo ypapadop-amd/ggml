@@ -172,7 +172,27 @@ void ggml_unary_op_step(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
                         OUTPUT_DTYPE * __restrict out,
                         int32_t N) {
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return std::max<INPUT_DTYPE>(v, 0); });
+    static_assert(std::is_same_v<INPUT_DTYPE, OUTPUT_DTYPE>,
+                  "ReLU requires matching input and output types");
+    event0();
+
+    constexpr int32_t V = 512 / (sizeof(INPUT_DTYPE) * 8);
+    const int32_t vend = (N / V) * V;
+    const aie::vector<INPUT_DTYPE, V> zero = aie::broadcast<INPUT_DTYPE, V>(0);
+
+    // No AIE_LOOP_MIN_ITERATION_COUNT: max_tile_size may pick a tile < V when
+    // num_elements is not a multiple of V, giving vend == 0 (see binary_ops ADD).
+    AIE_PREPARE_FOR_PIPELINING
+    for (int32_t i = 0; i < vend; i += V) {
+        aie::vector<INPUT_DTYPE, V> v = aie::load_v<V>(in + i);
+        aie::store_v(out + i, aie::max(v, zero));
+    }
+
+    for (int32_t i = vend; i < N; ++i) {
+        out[i] = std::max<INPUT_DTYPE>(in[i], 0);
+    }
+
+    event1();
 }
 
 #endif // GGML_UNARY_OP_RELU
@@ -189,15 +209,19 @@ void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
  * tanh(y) = sign(y) * (1 - e^-2|y|) / (1 + e^-2|y|), so large-magnitude arguments
  * saturate to +/-1 instead of overflowing.
  *
- * @param[in]  in  Input array of N float elements.
- * @param[out] out Output array of N float elements.
+ * Accepts any floating-point element type: the polynomial and scalar_exp are evaluated in
+ * fp32 regardless of the operand type, so a bf16 operand (what the backend substitutes for
+ * f16, see @c substitute_fp16_bf16) is promoted on load and rounded once on store.
+ *
+ * @param[in]  in  Input array of N floating-point elements.
+ * @param[out] out Output array of N elements.
  * @param[in]  N   Number of elements to process.
  */
 void ggml_unary_op_gelu(const INPUT_DTYPE * __restrict in,
                         OUTPUT_DTYPE * __restrict out,
                         int32_t N) {
-    static_assert(std::is_same_v<INPUT_DTYPE, float>, "GELU requires float32 input");
-    static_assert(std::is_same_v<OUTPUT_DTYPE, float>, "GELU requires float32 output");
+    static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
+    static_assert(is_floating_point_v<OUTPUT_DTYPE>, "Output type must be a floating point type");
 
     constexpr float kSqrt2OverPi = 0.7978845608028654f; // sqrt(2/pi)
     constexpr float kCoefA = 0.044715f;
