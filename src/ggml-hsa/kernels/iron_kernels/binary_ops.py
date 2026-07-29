@@ -251,6 +251,118 @@ def _create_broadcast_external_function(
     )
 
 
+def _create_bias_external_function(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+) -> CoreFunctionSpec:
+    """Create the CoreFunctionSpec for the row-tiled ADD bias kernel.
+
+    src1 is a single row (ne0 elements) reused across all dst rows. The tile
+    is exactly one dst row, so tile_size == ne0.
+
+    Args:
+        arch: Target architecture.
+        input_tensors: Two input tensors [src0, src1].
+        output_tensor: Output tensor.
+
+    Returns:
+        The configured CoreFunctionSpec.
+
+    Raises:
+        ValueError: If the output element count is not divisible by ne0.
+    """
+    num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
+    ne0 = output_tensor.shape[0]
+    tile_size = ne0
+
+    if num_elements % tile_size != 0:
+        msg = f"Output elements ({num_elements}) not divisible by row length ({tile_size})."
+        raise ValueError(msg)
+
+    current_dir = Path(__file__).resolve().parent
+    func = ExternalFunction(
+        name="ggml_op_add_bias",
+        object_file_name="ggml_op_add_bias_core_function.o",
+        source_file=str(current_dir / "binary_ops.cc"),
+        arg_types=[
+            np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
+            np.ndarray[(tile_size,), np.dtype[input_tensors[1].dtype]],
+            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
+            np.int32,
+        ],
+        compile_flags=[
+            "-DGGML_OP_ADD_BIAS=1",
+            f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
+            f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
+            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        ],
+    )
+    return CoreFunctionSpec(external_function=func, num_elements=num_elements)
+
+
+def _binary_op_bias(
+    arch: str,
+    input_tensors: list,
+    function_spec: CoreFunctionSpec,
+    output_tensor,
+):
+    """Row-tiled ADD bias: out[row] = src0[row] + src1 (one bias row reused).
+
+    Args:
+        arch: Target architecture.
+        input_tensors: Input tensors [src0, src1]; src1 is one ne0-element row.
+        function_spec: Core function specification (tile_size == ne0).
+        output_tensor: Output tensor.
+
+    Returns:
+        The resolved IRON program (MLIR module).
+    """
+    num_elements = function_spec.num_elements
+    tile_size = function_spec.tile_size  # == ne0
+    num_tiles = num_elements // tile_size
+    num_elements_src1 = arch_aligned_num_elements(arch=arch, tensor=input_tensors[1])
+
+    src0_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]]
+    src1_row_ty = np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]]
+    out_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+
+    of_src0 = ObjectFifo(src0_tile_ty, name="src0")
+    of_src1 = ObjectFifo(src1_row_ty, depth=1, name="src1")  # loaded once, reused
+    of_out = ObjectFifo(out_tile_ty, name="out")
+
+    function = function_spec.external_function
+
+    def ext_core_fn(of_src0, of_src1, of_out, function):
+        src1_buf = of_src1.acquire(1)  # one bias row, reused across all tiles
+        for _ in range_(num_tiles):
+            src0_tile = of_src0.acquire(1)
+            out_tile = of_out.acquire(1)
+            function(src0_tile, src1_buf, out_tile, tile_size)
+            of_src0.release(1)
+            of_out.release(1)
+        of_src1.release(1)
+
+    worker = Worker(
+        ext_core_fn,
+        fn_args=[of_src0.cons(), of_src1.cons(), of_out.prod(), function],
+    )
+
+    # Buffers in src order then dst (kernarg layout contract).
+    src0_ty = np.ndarray[(num_elements,), np.dtype[input_tensors[0].dtype]]
+    src1_ty = np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]]
+    out_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
+
+    rt = Runtime()
+    with rt.sequence(src0_ty, src1_ty, out_ty) as (a, b, c):
+        rt.start(worker)
+        rt.fill(of_src0.prod(), a)
+        rt.fill(of_src1.prod(), b)
+        rt.drain(of_out.cons(), c, wait=True)
+
+    return Program(arch_to_device(arch), rt).resolve_program()
+
+
 def _binary_op_broadcast(
     arch: str,
     input_tensors: list,
@@ -386,6 +498,33 @@ def binary_op(
 
     # Check if broadcasting is needed
     needs_broadcast = src1_shape != dst_shape
+
+    # ADD-only fast path: src1 is a single bias row broadcast over dst rows.
+    # The kernel adds vectors directly (aie::add, no per-element cast), so it is
+    # gated on all three dtypes matching; a mismatched-dtype bias falls through to
+    # the scalar broadcast path, which casts per element.
+    src1_is_bias_row = (
+        src1_shape[0] == dst_shape[0]
+        and src1_shape[1] == 1
+        and src1_shape[2] == 1
+        and src1_shape[3] == 1
+    )
+    same_dtype = (
+        input_tensors[0].dtype == input_tensors[1].dtype
+        and input_tensors[0].dtype == output_tensor.dtype
+    )
+    if op_name == "GGML_OP_ADD" and needs_broadcast and src1_is_bias_row and same_dtype:
+        function_spec = _create_bias_external_function(
+            arch=arch,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+        )
+        return _binary_op_bias(
+            arch=arch,
+            input_tensors=input_tensors,
+            function_spec=function_spec,
+            output_tensor=output_tensor,
+        )
 
     if needs_broadcast:
         # Validate broadcasting is supported per GGML semantics

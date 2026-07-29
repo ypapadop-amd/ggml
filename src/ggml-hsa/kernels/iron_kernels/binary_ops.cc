@@ -352,4 +352,55 @@ void ggml_op_div_broadcast(const INPUT0_DTYPE * __restrict in0,
 
 #endif // GGML_OP_DIV_BROADCAST
 
+#ifdef GGML_OP_ADD_BIAS
+
+/**
+ * @brief out[i] = src0[i] + src1[i] for one dst row; src1 is a single bias row
+ * (N == ne0) reused across all dst rows.
+ *
+ * Dedicated fast path instead of transform_binary_broadcast_n: that generic path's
+ * per-element modulo against src1's runtime dimensions lowers to a __divsi3 call per
+ * element, which dominates when the bias row is reused across many dst rows.
+ * Row-tiling (src1 index == src0 index) removes the divide and vectorizes directly.
+ *
+ * @param[in]  src0 First input row of N elements.
+ * @param[in]  src1 Bias row of N elements.
+ * @param[out] out  Output row of N elements.
+ * @param[in]  N    Elements per row (== ne0).
+ */
+void ggml_op_add_bias(const INPUT0_DTYPE * __restrict src0,
+                      const INPUT1_DTYPE * __restrict src1,
+                      OUTPUT_DTYPE * __restrict out,
+                      int32_t N) {
+    static_assert(std::is_same_v<INPUT0_DTYPE, INPUT1_DTYPE> &&
+                      std::is_same_v<INPUT0_DTYPE, OUTPUT_DTYPE>,
+                  "ggml_op_add_bias requires matching input and output types");
+
+    event0();
+
+    constexpr int32_t V = 512 / (sizeof(OUTPUT_DTYPE) * 8);
+    const int32_t vend = (N / V) * V; // division by constexpr V → inline shift, once
+
+    // Unaligned loads/stores: the IRON design streams rows through double-buffered
+    // fifos whose per-row object stride (N elements) need not be vector-aligned, so
+    // aligned load_v/store_v would corrupt alternate (ping-pong) rows.
+    // No AIE_LOOP_MIN_ITERATION_COUNT: when N < V (e.g. a 10-wide bias row) vend is 0,
+    // and promising >=1 iteration makes the pipelined prologue run the body on too few
+    // elements. AIE_PREPARE_FOR_PIPELINING alone suffices for the N >> V rows.
+    AIE_PREPARE_FOR_PIPELINING
+    for (int32_t i = 0; i < vend; i += V) {
+        aie::vector<INPUT0_DTYPE, V> a = aie::load_unaligned_v<V>(src0 + i);
+        aie::vector<INPUT1_DTYPE, V> b = aie::load_unaligned_v<V>(src1 + i);
+        aie::store_unaligned_v(out + i, aie::add(a, b));
+    }
+
+    for (int32_t i = vend; i < N; ++i) {
+        out[i] = static_cast<OUTPUT_DTYPE>(src0[i] + src1[i]);
+    }
+
+    event1();
+}
+
+#endif // GGML_OP_ADD_BIAS
+
 } // extern "C"
