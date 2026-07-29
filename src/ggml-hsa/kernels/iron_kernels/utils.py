@@ -134,6 +134,51 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     return tile_size
 
 
+def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
+    """Largest tile that divides num_elements and fits half the core data memory.
+
+    Where max_tile_size caps the tile at one vector register, this streams the
+    largest tile the core's L1 can hold, so far fewer (and larger) tiles are moved
+    per dispatch and the per-acquire/release overhead is amortized.
+
+    The tile must divide num_elements exactly: an ObjectFifo's DMA transfer size is
+    fixed at construction, so every acquire moves a full tile regardless of any
+    runtime element count. A tile that did not divide num_elements would make the
+    total streamed (num_tiles * tile) exceed the tensor and deadlock the DMA. Prefer
+    the largest multiple-of-V divisor within the L1 budget; if none exists (V does not
+    divide num_elements), fall back to max_tile_size, which halves V down to a divisor.
+
+    Args:
+        arch: Target architecture.
+        dtype: Element data type.
+        num_elements: Total number of elements to tile.
+
+    Returns:
+        The chosen tile size in elements; always divides num_elements.
+    """
+    params = _arch_params(arch)
+    v = params["vector_reg_bits"] // (8 * dtype.itemsize)
+    budget = (
+        params["core_data_mem_bytes"] // 2
+    )  # half DM: leave room for stack + locals
+    # in + out fifos, each double-buffered (depth 2) => 4 buffers of tile*itemsize bytes.
+    max_by_mem = (budget // (4 * dtype.itemsize) // v) * v
+    cap = min(max_by_mem, num_elements)
+
+    # Largest multiple of V that is <= cap and divides num_elements exactly.
+    best = 0
+    tile = v
+    while tile <= cap:
+        if num_elements % tile == 0:
+            best = tile
+        tile += v
+    if best:
+        return best
+
+    # V does not divide num_elements: fall back to a power-of-two divisor.
+    return max_tile_size(arch, dtype, num_elements)
+
+
 def partition_units(num_workers: int, n_units: int) -> tuple[list[int], list[int]]:
     """Split n_units contiguous units as evenly as possible across num_workers.
 

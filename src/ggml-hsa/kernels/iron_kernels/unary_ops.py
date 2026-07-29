@@ -25,6 +25,7 @@ from .utils import (
     arch_aligned_num_elements,
     arch_to_device,
     max_tile_size,
+    tiled_tile_size,
 )
 
 
@@ -135,6 +136,51 @@ def _create_external_function(
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
 
 
+def _create_tiled_external_function(
+    arch: str,
+    op_name: str,
+    input_tensor,
+    output_tensor,
+) -> CoreFunctionSpec:
+    """Create a CoreFunctionSpec for a unary op with an L1-budgeted tile size.
+
+    Uses tiled_tile_size (a large tile that divides num_elements) instead of
+    max_tile_size, so far fewer, larger tiles are streamed per dispatch. Unlike
+    _create_external_function this does NOT pass -DGGML_TILE_SIZE: the tile size
+    differs per tensor shape, so N stays a runtime kernel argument and one compiled
+    kernel serves every shape (respecting the 32-unique-functions-per-queue limit).
+
+    Args:
+        arch: Target architecture.
+        op_name: Name of the unary operation.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
+
+    Returns:
+        The core function spec.
+    """
+    num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
+    tile_size = tiled_tile_size(arch, input_tensor.dtype, num_elements)
+
+    current_dir = Path(__file__).resolve().parent
+    func = ExternalFunction(
+        name=op_name.lower(),
+        object_file_name=f"{op_name.lower()}_core_function.o",
+        source_file=str(current_dir / "unary_ops.cc"),
+        arg_types=[
+            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
+            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
+            np.int32,
+        ],
+        compile_flags=[
+            f"-D{op_name}=1",
+            f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
+            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        ],
+    )
+    return CoreFunctionSpec(external_function=func, num_elements=num_elements)
+
+
 def unary_op(
     op_name: str,
     arch: str,
@@ -171,12 +217,25 @@ def unary_op(
         msg = f"Unsupported shape ({output_tensor.shape})."
         raise ValueError(msg)
 
-    function_spec = _create_external_function(
-        arch=arch,
-        op_name=op_name,
-        input_tensor=input_tensors[0],
-        output_tensor=output_tensor,
-    )
+    # RELU streams large, L1-budgeted tiles (via _create_tiled_external_function) to
+    # amortize the per-call acquire/release overhead that dominates its device time.
+    # The tile divides num_elements exactly, so the existing _unary_op loop (which
+    # requires divisibility) drives it unchanged. Other unary ops keep the max_tile_size
+    # path with its compile-time GGML_TILE_SIZE fold.
+    if op_name == "GGML_UNARY_OP_RELU":
+        function_spec = _create_tiled_external_function(
+            arch=arch,
+            op_name=op_name,
+            input_tensor=input_tensors[0],
+            output_tensor=output_tensor,
+        )
+    else:
+        function_spec = _create_external_function(
+            arch=arch,
+            op_name=op_name,
+            input_tensor=input_tensors[0],
+            output_tensor=output_tensor,
+        )
 
     return _unary_op(
         arch=arch,
