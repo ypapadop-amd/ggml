@@ -367,9 +367,10 @@ static hsa_status_t ggml_hsa_find_memory_pool(hsa_amd_memory_pool_t pool, void *
  * @return @c HSA_STATUS_INFO_BREAK if a matching pool was found (with @p mem_info populated),
  *         @c HSA_STATUS_SUCCESS if iteration finished without finding a match, or an error status.
  */
-static hsa_status_t ggml_hsa_find_pool(hsa_agent_t agent, hsa_amd_memory_pool_global_flag_t flags,
-                                        bool allocatable,
-                                        ggml_hsa_device_info::memory_pool_info & mem_info) {
+static hsa_status_t ggml_hsa_find_pool(hsa_agent_t agent,
+                                       hsa_amd_memory_pool_global_flag_t flags,
+                                       bool allocatable,
+                                       ggml_hsa_device_info::memory_pool_info & mem_info) {
     ggml_hsa_find_memory_pool_data_t mem_pool_data = {};
     mem_pool_data.expected_flags = flags;
     mem_pool_data.expected_allocatable = allocatable;
@@ -428,7 +429,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     if (type == HSA_DEVICE_TYPE_AIE) {
         // XDNA dev heap is coarse-grained with alloc_rec_granule == 0
         auto status = ggml_hsa_find_pool(agent, HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
-                                          /*allocatable=*/false, dev_info.dev_memory);
+                                         /*allocatable=*/false, dev_info.dev_memory);
         if (status == HSA_STATUS_SUCCESS) {
             // iteration finished with no errors, but no pool found
             return static_cast<hsa_status_t>(HSA_STATUS_ERROR_NOT_SUPPORTED);
@@ -442,7 +443,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     // find data pool
     {
         auto status = ggml_hsa_find_pool(agent, HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
-                                          /*allocatable=*/true, dev_info.data_memory);
+                                         /*allocatable=*/true, dev_info.data_memory);
         if (status == HSA_STATUS_SUCCESS) {
             // iteration finished with no errors, but no pool found
             return static_cast<hsa_status_t>(HSA_STATUS_ERROR_NOT_SUPPORTED);
@@ -456,7 +457,7 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     // find kernarg pool
     {
         auto status = ggml_hsa_find_pool(agent, HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_KERNARG_INIT,
-                                          /*allocatable=*/true, dev_info.kernarg_memory);
+                                         /*allocatable=*/true, dev_info.kernarg_memory);
         if (status == HSA_STATUS_SUCCESS) {
             // iteration finished with no errors, but no pool found; use data pool
             dev_info.kernarg_memory = dev_info.data_memory;
