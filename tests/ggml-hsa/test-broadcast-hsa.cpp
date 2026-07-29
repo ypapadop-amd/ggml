@@ -21,7 +21,7 @@
 
 namespace {
 
-enum class op_kind { add, mul };
+enum class op_kind { add, sub, mul, div };
 
 // src0 [nc, nr, nz] op src1 [nc] (broadcast over all rows/slices) -> dst [nc, nr, nz].
 bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int64_t nz,
@@ -40,8 +40,13 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int6
     ggml_tensor * src1 = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, nc);  // broadcast operand
     ggml_set_name(src0, "src0");
     ggml_set_name(src1, "src1");
-    ggml_tensor * dst = (kind == op_kind::add) ? ggml_add(ctx.get(), src0, src1)
-                                               : ggml_mul(ctx.get(), src0, src1);
+    ggml_tensor * dst = nullptr;
+    switch (kind) {
+        case op_kind::add: dst = ggml_add(ctx.get(), src0, src1); break;
+        case op_kind::sub: dst = ggml_sub(ctx.get(), src0, src1); break;
+        case op_kind::mul: dst = ggml_mul(ctx.get(), src0, src1); break;
+        case op_kind::div: dst = ggml_div(ctx.get(), src0, src1); break;
+    }
     ggml_set_name(dst, "dst");
 
     if (!ggml_backend_supports_op(backend, dst)) {
@@ -83,8 +88,13 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int6
     for (int64_t r = 0; r < nr * nz && ok; ++r) {
         for (int64_t i = 0; i < nc && ok; ++i) {
             const int64_t idx = r * nc + i;
-            const float want =
-                (kind == op_kind::add) ? a_host[idx] + b_host[i] : a_host[idx] * b_host[i];
+            float want = 0.0f;
+            switch (kind) {
+                case op_kind::add: want = a_host[idx] + b_host[i]; break;
+                case op_kind::sub: want = a_host[idx] - b_host[i]; break;
+                case op_kind::mul: want = a_host[idx] * b_host[i]; break;
+                case op_kind::div: want = a_host[idx] / b_host[i]; break;
+            }
             const float got = dst_host[idx];
             if (std::fabs(got - want) > tol) {
                 printf("  %-22s: mismatch at row %lld col %lld got %g want %g\n", name,
@@ -116,6 +126,16 @@ int main() {
         {op_kind::mul, 768, 4, 1, "mul bcast gpt2"},
         {op_kind::add, 64, 4, 3, "add bias 3d"},
         {op_kind::mul, 64, 4, 3, "mul bcast 3d"},
+        {op_kind::sub, 32, 8, 1, "sub bcast 2d"},
+        {op_kind::sub, 768, 4, 1, "sub bcast gpt2"},
+        {op_kind::sub, 64, 4, 3, "sub bcast 3d"},
+        {op_kind::div, 32, 8, 1, "div bcast 2d"},
+        {op_kind::div, 768, 4, 1, "div bcast gpt2"},
+        {op_kind::div, 64, 4, 3, "div bcast 3d"},
+        // Row narrower than the 16-element f32 vector: exercises the scalar tail with
+        // vend == 0, the case that rules out AIE_LOOP_MIN_ITERATION_COUNT.
+        {op_kind::add, 10, 64, 1, "add bias narrow row"},
+        {op_kind::mul, 10, 64, 1, "mul bcast narrow row"},
     };
 
     bool all_ok = true;
