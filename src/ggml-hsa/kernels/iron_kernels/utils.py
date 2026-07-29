@@ -2,7 +2,10 @@
 
 """Utility functions for IRON kernel implementations."""
 
+from dataclasses import dataclass
+
 import numpy as np
+from aie.iron import ExternalFunction
 from aie.iron.device import NPU1, NPU2
 
 # Per-architecture on-tile resources. Add a new NPU generation by adding one entry.
@@ -65,6 +68,34 @@ def align_to_arch(
     raise ValueError(msg)
 
 
+def row_dimensions(tensor) -> tuple[int, int]:
+    """Return (row_length, num_rows) for a GGML-ordered tensor.
+
+    Row-structured ops treat dim 0 (ne00) as the row: row_length = ne00 and
+    num_rows = product of the remaining dimensions (ne01 * ne02 * ne03). Rows are
+    laid out slice-major (ne01 consecutive rows per ne02/ne03 slice), matching the
+    contiguous element order the runtime streams.
+
+    Args:
+        tensor: GGML-ordered tensor to inspect.
+
+    Returns:
+        The (row_length, num_rows) pair.
+
+    Raises:
+        ValueError: If the tensor rank is unsupported.
+    """
+    shape = tensor.shape
+    if not 1 <= len(shape) <= 4:
+        msg = f"Unsupported tensor rank: {len(shape)}"
+        raise ValueError(msg)
+    row_length = shape[0]
+    num_rows = 1
+    for dim in shape[1:]:
+        num_rows *= dim
+    return row_length, num_rows
+
+
 def arch_aligned_num_elements(arch: str, tensor) -> int:
     """Tensor element count aligned to the architecture for its dtype.
 
@@ -101,6 +132,49 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     )
 
     return tile_size
+
+
+def partition_units(num_workers: int, n_units: int) -> tuple[list[int], list[int]]:
+    """Split n_units contiguous units as evenly as possible across num_workers.
+
+    The first (n_units % num_workers) workers get one extra unit so the slices
+    cover all n_units exactly.
+
+    Args:
+        num_workers: Number of workers to split across.
+        n_units: Total number of independent units to distribute.
+
+    Returns:
+        The (counts, starts) pair: counts[w] is the number of units assigned to
+        worker w, and starts[w] is the index of its first unit.
+    """
+    base, rem = divmod(n_units, num_workers)
+    counts = [base + (1 if w < rem else 0) for w in range(num_workers)]
+    starts = []
+    acc = 0
+    for count in counts:
+        starts.append(acc)
+        acc += count
+    return counts, starts
+
+
+@dataclass(frozen=True)
+class CoreFunctionSpec:
+    """Core function plus total element count for an element-wise op.
+
+    Attributes:
+        external_function: External function implementing the operation.
+        num_elements: Total number of elements to process.
+
+    """
+
+    external_function: ExternalFunction
+    num_elements: int
+
+    @property
+    def tile_size(self) -> int:
+        """Tile size used by the external function."""
+        return self.external_function.tile_size(0)
 
 
 def arch_to_device(device):

@@ -7,7 +7,6 @@
 
 """IRON kernel implementation for unary element-wise operations."""
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -21,25 +20,12 @@ from aie.iron import (
 )
 from aie.iron.controlflow import range_
 
-from .utils import arch_aligned_num_elements, arch_to_device, max_tile_size
-
-
-@dataclass(frozen=True)
-class CoreFunctionSpec:
-    """Core function plus total element count for a unary op.
-
-    Attributes:
-        external_function: External function implementing the operation.
-        num_elements: Total number of elements to process.
-    """
-
-    external_function: ExternalFunction
-    num_elements: int
-
-    @property
-    def tile_size(self) -> int:
-        """Tile size used by the external function."""
-        return self.external_function.tile_size(0)
+from .utils import (
+    CoreFunctionSpec,
+    arch_aligned_num_elements,
+    arch_to_device,
+    max_tile_size,
+)
 
 
 def _unary_op(

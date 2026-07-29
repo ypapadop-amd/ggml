@@ -344,6 +344,27 @@ static hsa_status_t ggml_hsa_find_memory_pool(hsa_amd_memory_pool_t pool, void *
 }
 
 /**
+ * @brief Find a memory pool with the required flags and populate @p mem_info on success.
+ *
+ * @return @c HSA_STATUS_INFO_BREAK if a matching pool was found (with @p mem_info populated),
+ *         @c HSA_STATUS_SUCCESS if iteration finished without finding a match, or an error status.
+ */
+static hsa_status_t ggml_hsa_find_pool(hsa_agent_t agent,
+                                       hsa_amd_memory_pool_global_flag_t flags,
+                                       bool allocatable,
+                                       ggml_hsa_device_info::memory_pool_info & mem_info) {
+    ggml_hsa_find_memory_pool_data_t mem_pool_data = {};
+    mem_pool_data.expected_flags = flags;
+    mem_pool_data.expected_allocatable = allocatable;
+    auto status =
+        hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_memory_pool, &mem_pool_data);
+    if (status == HSA_STATUS_INFO_BREAK) {
+        mem_info = mem_pool_data.mem_info;
+    }
+    return status;
+}
+
+/**
  * @brief Discovers HSA agents.
  */
 static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
@@ -389,62 +410,42 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     // find dev memory pool (only for AIE agents)
     if (type == HSA_DEVICE_TYPE_AIE) {
         // XDNA dev heap is coarse-grained with alloc_rec_granule == 0
-        ggml_hsa_find_memory_pool_data_t mem_pool_data = {};
-        mem_pool_data.expected_flags = HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED;
-        mem_pool_data.expected_allocatable = false;
-        auto status =
-            hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_memory_pool, &mem_pool_data);
-        switch (status) {
-            case HSA_STATUS_INFO_BREAK:
-                dev_info.dev_memory = mem_pool_data.mem_info;
-                break;
-            case HSA_STATUS_SUCCESS:
-                // iteration finished with no errors, but no pool found
-                return static_cast<hsa_status_t>(HSA_STATUS_ERROR_NOT_SUPPORTED);
-            default:
-                // iteration aborted with errors
-                return status;
+        auto status = ggml_hsa_find_pool(agent, HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
+                                         /*allocatable=*/false, dev_info.dev_memory);
+        if (status == HSA_STATUS_SUCCESS) {
+            // iteration finished with no errors, but no pool found
+            return static_cast<hsa_status_t>(HSA_STATUS_ERROR_NOT_SUPPORTED);
+        }
+        if (status != HSA_STATUS_INFO_BREAK) {
+            // iteration aborted with errors
+            return status;
         }
     }
 
     // find data pool
     {
-        ggml_hsa_find_memory_pool_data_t mem_pool_data = {};
-        mem_pool_data.expected_flags = HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED;
-        mem_pool_data.expected_allocatable = true;
-        auto status =
-            hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_memory_pool, &mem_pool_data);
-        switch (status) {
-            case HSA_STATUS_INFO_BREAK:
-                dev_info.data_memory = mem_pool_data.mem_info;
-                break;
-            case HSA_STATUS_SUCCESS:
-                // iteration finished with no errors, but no pool found
-                return static_cast<hsa_status_t>(HSA_STATUS_ERROR_NOT_SUPPORTED);
-            default:
-                // iteration aborted with errors
-                return status;
+        auto status = ggml_hsa_find_pool(agent, HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
+                                         /*allocatable=*/true, dev_info.data_memory);
+        if (status == HSA_STATUS_SUCCESS) {
+            // iteration finished with no errors, but no pool found
+            return static_cast<hsa_status_t>(HSA_STATUS_ERROR_NOT_SUPPORTED);
+        }
+        if (status != HSA_STATUS_INFO_BREAK) {
+            // iteration aborted with errors
+            return status;
         }
     }
 
     // find kernarg pool
     {
-        ggml_hsa_find_memory_pool_data_t mem_pool_data = {};
-        mem_pool_data.expected_flags = HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_KERNARG_INIT;
-        mem_pool_data.expected_allocatable = true;
-        auto status =
-            hsa_amd_agent_iterate_memory_pools(agent, ggml_hsa_find_memory_pool, &mem_pool_data);
-        switch (status) {
-            case HSA_STATUS_INFO_BREAK:
-                dev_info.kernarg_memory = mem_pool_data.mem_info;
-                break;
-            case HSA_STATUS_SUCCESS:
-                // iteration finished with no errors, but no pool found; use data pool
-                dev_info.kernarg_memory = dev_info.data_memory;
-                break;
-            default:
-                // iteration aborted with errors
-                return status;
+        auto status = ggml_hsa_find_pool(agent, HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_KERNARG_INIT,
+                                         /*allocatable=*/true, dev_info.kernarg_memory);
+        if (status == HSA_STATUS_SUCCESS) {
+            // iteration finished with no errors, but no pool found; use data pool
+            dev_info.kernarg_memory = dev_info.data_memory;
+        } else if (status != HSA_STATUS_INFO_BREAK) {
+            // iteration aborted with errors
+            return status;
         }
     }
 
