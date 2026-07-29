@@ -125,7 +125,9 @@ void conv_2d_impl(const T_in * __restrict in,
     const int32_t interior = ox_hi - ox_lo;
     const int32_t ox_vec_end = vectorize ? (ox_lo + (interior / V) * V) : ox_lo;
 
-    // Channel reduction must stay outermost (see function doc-comment: Peano miscompile).
+    // Channel reduction stays the outermost loop, accumulating into the output
+    // plane, to avoid a Peano miscompile that dropped the iic>=1 contribution
+    // when the channel loop sat between the spatial loops.
     for (int32_t iic = 0; iic < ic; ++iic) {
         const T_in * __restrict src_plane = in + iic * plane_size;
         // Weight base for this (oc_idx, iic) slice.
