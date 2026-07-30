@@ -68,22 +68,20 @@ def norm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     row_length, num_rows = row_dimensions(input_tensor)
 
     # One row per tile: the C++ core is scalar and handles any row length.
-    tile_size = row_length
-    num_tiles = num_rows
-    num_elements = tile_size * num_rows
+    num_elements = row_length * num_rows
 
-    function = _create_external_function(input_tensor, output_tensor, tile_size)
+    function = _create_external_function(input_tensor, output_tensor, row_length)
 
-    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
-    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+    input_tile_ty = np.ndarray[(row_length,), np.dtype[input_tensor.dtype]]
+    output_tile_ty = np.ndarray[(row_length,), np.dtype[output_tensor.dtype]]
     of_in = ObjectFifo(input_tile_ty, name="in")
     of_out = ObjectFifo(output_tile_ty, name="out")
 
     def ext_core_fn(of_in, of_out, function):
-        for _ in range_(num_tiles):
+        for _ in range_(num_rows):
             elem_in = of_in.acquire(1)
             elem_out = of_out.acquire(1)
-            function(elem_in, elem_out, tile_size, eps_bits)
+            function(elem_in, elem_out, row_length, eps_bits)
             of_in.release(1)
             of_out.release(1)
 
@@ -100,13 +98,13 @@ def norm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     return Program(arch_to_device(arch), rt).resolve_program()
 
 
-def _create_external_function(input_tensor, output_tensor, tile_size: int):
+def _create_external_function(input_tensor, output_tensor, row_length: int):
     """Create the norm ExternalFunction.
 
     Args:
         input_tensor: Input tensor.
         output_tensor: Output tensor.
-        tile_size: Elements per row tile.
+        row_length: Elements per row tile.
 
     Returns:
         The ExternalFunction wrapping norm.cc.
@@ -117,8 +115,8 @@ def _create_external_function(input_tensor, output_tensor, tile_size: int):
         object_file_name=f"{_OP_NAME.lower()}_core_function.o",
         source_file=str(current_dir / "norm.cc"),
         arg_types=[
-            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
-            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
+            np.ndarray[(row_length,), np.dtype[input_tensor.dtype]],
+            np.ndarray[(row_length,), np.dtype[output_tensor.dtype]],
             np.int32,  # N (row length)
             np.int32,  # eps (raw float32 bits, reinterpreted in the kernel)
         ],

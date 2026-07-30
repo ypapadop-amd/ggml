@@ -158,22 +158,16 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """
     params = _arch_params(arch)
     v = params["vector_reg_bits"] // (8 * dtype.itemsize)
-    budget = (
-        params["core_data_mem_bytes"] // 2
-    )  # half DM: leave room for stack + locals
+    # Half the data memory, leaving room for stack + locals.
+    budget = params["core_data_mem_bytes"] // 2
     # in + out fifos, each double-buffered (depth 2) => 4 buffers of tile*itemsize bytes.
     max_by_mem = (budget // (4 * dtype.itemsize) // v) * v
     cap = min(max_by_mem, num_elements)
 
     # Largest multiple of V that is <= cap and divides num_elements exactly.
-    best = 0
-    tile = v
-    while tile <= cap:
+    for tile in range(cap - cap % v, 0, -v):
         if num_elements % tile == 0:
-            best = tile
-        tile += v
-    if best:
-        return best
+            return tile
 
     # V does not divide num_elements: fall back to a power-of-two divisor.
     return max_tile_size(arch, dtype, num_elements)

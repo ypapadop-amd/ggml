@@ -21,15 +21,6 @@ namespace {
 
 enum class op_kind { sqr, abs, neg };
 
-const char * op_name(op_kind kind) {
-    switch (kind) {
-        case op_kind::sqr: return "sqr";
-        case op_kind::abs: return "abs";
-        case op_kind::neg: return "neg";
-    }
-    return "?";
-}
-
 float reference(op_kind kind, float x) {
     switch (kind) {
         case op_kind::sqr: return x * x;

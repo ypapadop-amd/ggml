@@ -40,9 +40,9 @@ case_result run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz,
     ggml_set_name(dst, "dst");
 
     if (!ggml_backend_supports_op(backend, dst)) {
-        // DIAG_MASK_INF is currently routed to the CPU fallback (see supports_op in ggml-hsa.cpp:
-        // it faults the HSA queue inside integrated multi-op graphs such as GPT-2 attention, even
-        // though the kernel is correct in isolation). Treat as a skip, not a failure.
+        // Support is decided by whether the JIT can build the kernel, so an unsupported op
+        // here means the shape/dtype combination did not compile rather than that the test
+        // failed. Treat as a skip so a partially-supported backend still reports usefully.
         printf("  %-18s: op not supported (skipped)\n", name);
         return case_result::skip;
     }

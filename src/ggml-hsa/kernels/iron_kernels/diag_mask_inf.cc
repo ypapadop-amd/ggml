@@ -9,10 +9,7 @@
 
 #include <limits>
 
-#include <aie_api/aie.hpp>
-
 #include "aie_kernel_utils.h"
-#include "ggml-aie.hpp"
 
 extern "C" {
 

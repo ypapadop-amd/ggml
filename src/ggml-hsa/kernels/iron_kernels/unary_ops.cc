@@ -57,9 +57,11 @@ void transform_vector_n(const TIn * __restrict in,
                         ScalarOp scalar_op) {
     event0();
 
+    int32_t vend = 0;
+
     if constexpr (std::is_same_v<TIn, TOut>) {
         constexpr int32_t V = 512 / (sizeof(TOut) * 8);
-        const int32_t vend = (N / V) * V;
+        vend = (N / V) * V;
 
         // Unaligned loads/stores and no AIE_LOOP_MIN_ITERATION_COUNT, for the same reasons
         // as the binary row kernels: the tile stride is not guaranteed vector-aligned, and
@@ -69,14 +71,11 @@ void transform_vector_n(const TIn * __restrict in,
             aie::vector<TIn, V> v = aie::load_unaligned_v<V>(in + i);
             aie::store_unaligned_v(out + i, vec_op(v));
         }
+    }
 
-        for (int32_t i = vend; i < N; ++i) {
-            out[i] = scalar_op(in[i]);
-        }
-    } else {
-        for (int32_t i = 0; i < N; ++i) {
-            out[i] = scalar_op(in[i]);
-        }
+    // Tail of the vector loop, or the whole range when there is no vector path.
+    for (int32_t i = vend; i < N; ++i) {
+        out[i] = scalar_op(in[i]);
     }
 
     event1();

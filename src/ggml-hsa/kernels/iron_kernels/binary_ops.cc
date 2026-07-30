@@ -136,6 +136,10 @@ void transform_binary_row_n(const T0 * __restrict src0,
                             int32_t N,
                             VecOp vec_op,
                             ScalarOp scalar_op) {
+    static_assert(std::is_same_v<T0, T1> && std::is_same_v<T0, TOut>,
+                  "the vector body operates on the operands directly, with no per-element "
+                  "cast, so all three types must match");
+
     event0();
 
     constexpr int32_t V = 512 / (sizeof(TOut) * 8);
@@ -408,9 +412,8 @@ void ggml_op_div_broadcast(const INPUT0_DTYPE * __restrict in0,
 #endif // GGML_OP_DIV_BROADCAST
 
 // Row-broadcast fast paths: src1 is a single row (ne0 elements) reused across every dst
-// row. All four require matching input/output types, because the vector bodies operate on
-// the operands directly with no per-element cast; the Python dispatch gates on that and
-// falls back to the generic broadcast kernels otherwise.
+// row. The Python dispatch gates all four on matching input/output types (see
+// transform_binary_row_n) and falls back to the generic broadcast kernels otherwise.
 
 #ifdef GGML_OP_ADD_ROW
 
@@ -426,10 +429,6 @@ void ggml_op_add_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    static_assert(std::is_same_v<INPUT0_DTYPE, INPUT1_DTYPE> &&
-                      std::is_same_v<INPUT0_DTYPE, OUTPUT_DTYPE>,
-                  "ggml_op_add_row requires matching input and output types");
-
     transform_binary_row_n(
         src0, src1, out, N, [](auto a, auto b) { return aie::add(a, b); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); });
@@ -451,10 +450,6 @@ void ggml_op_sub_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    static_assert(std::is_same_v<INPUT0_DTYPE, INPUT1_DTYPE> &&
-                      std::is_same_v<INPUT0_DTYPE, OUTPUT_DTYPE>,
-                  "ggml_op_sub_row requires matching input and output types");
-
     transform_binary_row_n(
         src0, src1, out, N, [](auto a, auto b) { return aie::sub(a, b); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); });
@@ -479,10 +474,6 @@ void ggml_op_mul_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    static_assert(std::is_same_v<INPUT0_DTYPE, INPUT1_DTYPE> &&
-                      std::is_same_v<INPUT0_DTYPE, OUTPUT_DTYPE>,
-                  "ggml_op_mul_row requires matching input and output types");
-
     transform_binary_row_n(
         src0, src1, out, N,
         [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
