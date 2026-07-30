@@ -30,6 +30,53 @@ void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryO
     event1();
 }
 
+/**
+ * @brief Applies a unary operation to N elements, vectorized when the operand types match.
+ *
+ * Vector counterpart of @c transform_n for the ops that have a direct aie:: equivalent.
+ * The vector path is gated on TIn == TOut because it operates on the loaded vector without
+ * a per-element cast; a widening or narrowing op keeps the scalar path unchanged.
+ *
+ * @tparam TIn      Input element type.
+ * @tparam TOut     Output element type.
+ * @tparam VecOp    Callable applied to a vector of TIn.
+ * @tparam ScalarOp Callable applied to one element, for the tail and the scalar path.
+ *
+ * @param[in]  in        Input array of N elements.
+ * @param[out] out       Output array of N elements.
+ * @param[in]  N         Number of elements to process.
+ * @param[in]  vec_op    Vector operation to apply.
+ * @param[in]  scalar_op Scalar operation to apply.
+ */
+template <typename TIn, typename TOut, typename VecOp, typename ScalarOp>
+void transform_vector_n(
+    const TIn * __restrict in, TOut * __restrict out, int32_t N, VecOp vec_op, ScalarOp scalar_op) {
+    event0();
+
+    int32_t vend = 0;
+
+    if constexpr (std::is_same_v<TIn, TOut>) {
+        constexpr int32_t V = 512 / (sizeof(TOut) * 8);
+        vend = (N / V) * V;
+
+        // Unaligned loads/stores and no AIE_LOOP_MIN_ITERATION_COUNT, for the same reasons
+        // as the binary row kernels: the tile stride is not guaranteed vector-aligned, and
+        // a tensor narrower than V would make vend 0.
+        AIE_PREPARE_FOR_PIPELINING
+        for (int32_t i = 0; i < vend; i += V) {
+            aie::vector<TIn, V> v = aie::load_unaligned_v<V>(in + i);
+            aie::store_unaligned_v(out + i, vec_op(v));
+        }
+    }
+
+    // Tail of the vector loop, or the whole range when there is no vector path.
+    for (int32_t i = vend; i < N; ++i) {
+        out[i] = scalar_op(in[i]);
+    }
+
+    event1();
+}
+
 extern "C" {
 
 #ifdef GGML_OP_SQR
@@ -42,8 +89,9 @@ extern "C" {
  * @param[in]  N   Number of elements to process.
  */
 void ggml_op_sqr(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
-    transform_n(in, N, out,
-                [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(v * v); });
+    transform_vector_n(
+        in, out, N, [](auto v) { return aie::mul(v, v).template to_vector<OUTPUT_DTYPE>(); },
+        [](auto v) { return static_cast<OUTPUT_DTYPE>(v * v); });
 }
 
 #endif // GGML_OP_SQR
@@ -93,9 +141,11 @@ void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
 void ggml_unary_op_abs(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
-        return static_cast<OUTPUT_DTYPE>(v < static_cast<INPUT_DTYPE>(0) ? -v : v);
-    });
+    // max(v, -v) rather than aie::abs: aie::abs does not compute a floating-point
+    // magnitude here (it returned 0.875 for -5.0f on aie2).
+    transform_vector_n(
+        in, out, N, [](auto v) { return aie::max(v, aie::neg(v)); },
+        [](auto v) { return static_cast<OUTPUT_DTYPE>(v < static_cast<INPUT_DTYPE>(0) ? -v : v); });
 }
 
 #endif // GGML_UNARY_OP_ABS
@@ -136,7 +186,9 @@ void ggml_unary_op_sgn(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_neg(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(-v); });
+    transform_vector_n(
+        in, out, N, [](auto v) { return aie::neg(v); },
+        [](auto v) { return static_cast<OUTPUT_DTYPE>(-v); });
 }
 
 #endif // GGML_UNARY_OP_NEG

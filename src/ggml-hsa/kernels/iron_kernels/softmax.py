@@ -24,39 +24,7 @@ from aie.iron import (
 )
 from aie.iron.controlflow import range_
 
-from .utils import arch_to_device
-
-
-def get_softmax_dimensions(tensor) -> tuple[int, int]:
-    """Return (row_length, num_rows) for a GGML-ordered tensor.
-
-    Softmax is over dim 0 (ne00): row_length = ne00, num_rows = ne01*ne02*ne03.
-
-    Args:
-        tensor: GGML-ordered tensor to inspect.
-
-    Returns:
-        The (row_length, num_rows) pair.
-
-    Raises:
-        ValueError: If the tensor rank is unsupported.
-    """
-    shape = tensor.shape
-
-    if len(shape) == 1:
-        # shape = (ne00,)
-        return shape[0], 1
-    if len(shape) == 2:
-        # shape = (ne00, ne01)
-        return shape[0], shape[1]
-    if len(shape) == 3:
-        # shape = (ne00, ne01, ne02)
-        return shape[0], shape[1] * shape[2]
-    if len(shape) == 4:
-        # shape = (ne00, ne01, ne02, ne03)
-        return shape[0], shape[1] * shape[2] * shape[3]
-    msg = f"Unsupported tensor rank: {len(shape)}"
-    raise ValueError(msg)
+from .utils import arch_to_device, row_dimensions
 
 
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -436,7 +404,7 @@ def _create_external_function(
           mask+sink: (..., tile_size_mask, num_rows_mask, num_elements_mask, num_sinks,
             rows_per_head)
     """
-    row_length_in, num_rows_in = get_softmax_dimensions(input_tensor)
+    row_length_in, num_rows_in = row_dimensions(input_tensor)
 
     # Use actual row length - no padding. The host data is contiguous with
     # row_length elements per row, so tile_size must match.
@@ -453,7 +421,7 @@ def _create_external_function(
     result_extra = []
 
     if mask_tensor:
-        row_length_mask, num_rows_mask = get_softmax_dimensions(mask_tensor)
+        row_length_mask, num_rows_mask = row_dimensions(mask_tensor)
         # Use actual row length - no padding (same reason as input tensor)
         tile_size_mask = row_length_mask
         num_elements_mask = tile_size_mask * num_rows_mask

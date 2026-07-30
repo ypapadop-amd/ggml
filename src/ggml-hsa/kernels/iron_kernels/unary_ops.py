@@ -25,6 +25,7 @@ from .utils import (
     arch_aligned_num_elements,
     arch_to_device,
     max_tile_size,
+    tiled_tile_size,
 )
 
 
@@ -96,11 +97,24 @@ def _unary_op(
     return Program(arch_to_device(arch), rt).resolve_program()
 
 
+# Unary ops with a vectorized body in unary_ops.cc. Keep in sync with the kernels there
+# that use transform_vector_n, plus RELU, which open-codes an aligned vector loop.
+_VECTORIZED_OPS = frozenset(
+    {
+        "GGML_OP_SQR",
+        "GGML_UNARY_OP_ABS",
+        "GGML_UNARY_OP_NEG",
+        "GGML_UNARY_OP_RELU",
+    }
+)
+
+
 def _create_external_function(
     arch: str,
     op_name: str,
     input_tensor,
     output_tensor,
+    tile_size_fn=max_tile_size,
 ) -> CoreFunctionSpec:
     """Create the CoreFunctionSpec for a unary op.
 
@@ -109,12 +123,14 @@ def _create_external_function(
         op_name: Name of the unary operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
+        tile_size_fn: Selects the streamed tile size. Defaults to max_tile_size (one
+            vector register); pass tiled_tile_size for the large, L1-budgeted tile.
 
     Returns:
         The core function spec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
-    tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
+    tile_size = tile_size_fn(arch, input_tensor.dtype, num_elements)
 
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
@@ -171,11 +187,17 @@ def unary_op(
         msg = f"Unsupported shape ({output_tensor.shape})."
         raise ValueError(msg)
 
+    # The vectorized kernels are dominated by object-fifo round trips rather than by
+    # compute, so they stream the large L1-budgeted tile instead of the one-vector-register
+    # tile. The tile divides num_elements exactly, so the _unary_op loop (which requires
+    # divisibility) drives it unchanged. The still-scalar ops keep max_tile_size, where the
+    # per-element work dominates and a bigger tile buys little.
     function_spec = _create_external_function(
         arch=arch,
         op_name=op_name,
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
+        tile_size_fn=tiled_tile_size if op_name in _VECTORIZED_OPS else max_tile_size,
     )
 
     return _unary_op(
