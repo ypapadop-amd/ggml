@@ -20,8 +20,7 @@ from aie.iron import (
 )
 from aie.iron.controlflow import range_
 
-from .softmax import get_softmax_dimensions
-from .utils import arch_to_device
+from .utils import arch_to_device, row_dimensions
 
 
 def argmax_op(arch: str, input_tensors: list, output_tensor):
@@ -52,7 +51,7 @@ def argmax_op(arch: str, input_tensors: list, output_tensor):
         msg = "Output tensor must be contiguous in memory."
         raise ValueError(msg)
 
-    row_length, num_rows = get_softmax_dimensions(input_tensor)
+    row_length, num_rows = row_dimensions(input_tensor)
 
     if output_tensor.numel() != num_rows:
         msg = (
