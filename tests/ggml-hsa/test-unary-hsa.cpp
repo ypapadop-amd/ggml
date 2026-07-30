@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 //
-// Device tests for the element-wise unary ops. Inputs deliberately straddle zero and
-// include exact zeros, so the sign-dependent ops (ABS, NEG, SGN, STEP) are checked on
-// both branches, and one shape is narrower than the 16-element f32 vector so the scalar
-// tail runs with vend == 0.
+// Device tests for the element-wise unary ops: the vectorized SQR, ABS and NEG, plus the
+// still-scalar SGN and STEP. Inputs deliberately straddle zero and include exact zeros, so
+// the sign-dependent ops are checked on all their branches, and one shape is narrower than
+// the 16-element f32 vector so the scalar tail runs with vend == 0.
 
 #include <cmath>
 #include <cstddef>
@@ -19,13 +19,15 @@
 
 namespace {
 
-enum class op_kind { sqr, abs, neg };
+enum class op_kind { sqr, abs, neg, sgn, step };
 
 float reference(op_kind kind, float x) {
     switch (kind) {
         case op_kind::sqr: return x * x;
         case op_kind::abs: return std::fabs(x);
         case op_kind::neg: return -x;
+        case op_kind::sgn: return (x > 0.0f) ? 1.0f : ((x < 0.0f) ? -1.0f : 0.0f);
+        case op_kind::step: return (x > 0.0f) ? 1.0f : 0.0f;
     }
     return 0.0f;
 }
@@ -50,6 +52,8 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1,
         case op_kind::sqr: dst = ggml_sqr(ctx.get(), src); break;
         case op_kind::abs: dst = ggml_abs(ctx.get(), src); break;
         case op_kind::neg: dst = ggml_neg(ctx.get(), src); break;
+        case op_kind::sgn: dst = ggml_sgn(ctx.get(), src); break;
+        case op_kind::step: dst = ggml_step(ctx.get(), src); break;
     }
     ggml_set_name(dst, "dst");
 
@@ -113,13 +117,19 @@ int main() {
         {op_kind::sqr, 256, 4, "sqr 2d"},
         {op_kind::abs, 256, 4, "abs 2d"},
         {op_kind::neg, 256, 4, "neg 2d"},
+        {op_kind::sgn, 256, 4, "sgn 2d"},
+        {op_kind::step, 256, 4, "step 2d"},
         {op_kind::sqr, 3072, 1, "sqr gpt2 mlp"},
         {op_kind::abs, 3072, 1, "abs gpt2 mlp"},
         {op_kind::neg, 3072, 1, "neg gpt2 mlp"},
+        {op_kind::sgn, 3072, 1, "sgn gpt2 mlp"},
+        {op_kind::step, 3072, 1, "step gpt2 mlp"},
         // Narrower than the 16-element f32 vector: exercises the scalar tail (vend == 0).
         {op_kind::sqr, 10, 8, "sqr narrow"},
         {op_kind::abs, 10, 8, "abs narrow"},
         {op_kind::neg, 10, 8, "neg narrow"},
+        {op_kind::sgn, 10, 8, "sgn narrow"},
+        {op_kind::step, 10, 8, "step narrow"},
     };
 
     bool all_ok = true;

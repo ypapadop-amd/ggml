@@ -288,6 +288,13 @@ def _create_row_external_function(
         msg = f"Output elements ({num_elements}) not divisible by row length ({tile_size})."
         raise ValueError(msg)
 
+    # src1 is streamed whole through a depth-1 fifo, so its object type is the arch-aligned
+    # element count, not ne0. The two differ when the aligned count rounds up (a 16-bit dtype
+    # with an odd ne0 pads to ne0 + 1), and the declared arg type has to match the object the
+    # kernel is handed or the IRON signatures disagree with the DMA size. The kernel still
+    # reads only the first N == ne0 elements, N being a separate runtime argument.
+    num_elements_src1 = arch_aligned_num_elements(arch=arch, tensor=input_tensors[1])
+
     row_op_name = f"{op_name}_ROW"
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
@@ -296,7 +303,7 @@ def _create_row_external_function(
         source_file=str(current_dir / "binary_ops.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
-            np.ndarray[(tile_size,), np.dtype[input_tensors[1].dtype]],
+            np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]],
             np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
             np.int32,
         ],
