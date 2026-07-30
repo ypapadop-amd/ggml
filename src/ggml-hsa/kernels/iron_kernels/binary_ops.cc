@@ -106,6 +106,65 @@ void transform_binary_broadcast_n(const T0 * __restrict in0,
     event1();
 }
 
+/**
+ * @brief Applies a binary operation between one dst row and a single src1 row that is
+ * reused across every dst row.
+ *
+ * Row-tiled counterpart of @c transform_binary_broadcast_n for the case where src1 is a
+ * single row (src1_ne0 == dst_ne0, all higher dims 1). Because the tile is exactly one
+ * dst row, the src1 index equals the src0 index, so none of that function's coordinate
+ * decomposition or broadcast modulo is needed: seven runtime divisions per element (each
+ * a __divsi3 call) collapse to none, and the body vectorizes.
+ *
+ * @tparam T0        Element type of the first input.
+ * @tparam T1        Element type of the second input.
+ * @tparam TOut      Element type of the output.
+ * @tparam VecOp     Callable applied to a pair of vectors.
+ * @tparam ScalarOp  Callable applied to a pair of elements, for the tail.
+ *
+ * @param[in]  src0      First input row of N elements.
+ * @param[in]  src1      Reused row of N elements.
+ * @param[out] out       Output row of N elements.
+ * @param[in]  N         Elements per row (== ne0).
+ * @param[in]  vec_op    Vector operation to apply.
+ * @param[in]  scalar_op Scalar operation to apply to the tail.
+ */
+template <typename T0, typename T1, typename TOut, typename VecOp, typename ScalarOp>
+void transform_binary_row_n(const T0 * __restrict src0,
+                            const T1 * __restrict src1,
+                            TOut * __restrict out,
+                            int32_t N,
+                            VecOp vec_op,
+                            ScalarOp scalar_op) {
+    static_assert(std::is_same_v<T0, T1> && std::is_same_v<T0, TOut>,
+                  "the vector body operates on the operands directly, with no per-element "
+                  "cast, so all three types must match");
+
+    event0();
+
+    constexpr int32_t V = 512 / (sizeof(TOut) * 8);
+    const int32_t vend = (N / V) * V; // division by constexpr V → inline shift, once
+
+    // Unaligned loads/stores: the IRON design streams rows through double-buffered
+    // fifos whose per-row object stride (N elements) need not be vector-aligned, so
+    // aligned load_v/store_v would corrupt alternate (ping-pong) rows.
+    // No AIE_LOOP_MIN_ITERATION_COUNT: when N < V (e.g. a 10-wide row) vend is 0,
+    // and promising >=1 iteration makes the pipelined prologue run the body on too few
+    // elements. AIE_PREPARE_FOR_PIPELINING alone suffices for the N >> V rows.
+    AIE_PREPARE_FOR_PIPELINING
+    for (int32_t i = 0; i < vend; i += V) {
+        aie::vector<T0, V> a = aie::load_unaligned_v<V>(src0 + i);
+        aie::vector<T1, V> b = aie::load_unaligned_v<V>(src1 + i);
+        aie::store_unaligned_v(out + i, vec_op(a, b));
+    }
+
+    for (int32_t i = vend; i < N; ++i) {
+        out[i] = scalar_op(src0[i], src1[i]);
+    }
+
+    event1();
+}
+
 extern "C" {
 
 #ifdef GGML_OP_ADD
@@ -351,5 +410,104 @@ void ggml_op_div_broadcast(const INPUT0_DTYPE * __restrict in0,
 }
 
 #endif // GGML_OP_DIV_BROADCAST
+
+// Row-broadcast fast paths: src1 is a single row (ne0 elements) reused across every dst
+// row. The Python dispatch gates all four on matching input/output types (see
+// transform_binary_row_n) and falls back to the generic broadcast kernels otherwise.
+
+#ifdef GGML_OP_ADD_ROW
+
+/**
+ * @brief out[i] = src0[i] + src1[i] for one dst row; src1 is reused across all dst rows.
+ *
+ * @param[in]  src0 First input row of N elements.
+ * @param[in]  src1 Reused row of N elements.
+ * @param[out] out  Output row of N elements.
+ * @param[in]  N    Elements per row (== ne0).
+ */
+void ggml_op_add_row(const INPUT0_DTYPE * __restrict src0,
+                     const INPUT1_DTYPE * __restrict src1,
+                     OUTPUT_DTYPE * __restrict out,
+                     int32_t N) {
+    transform_binary_row_n(
+        src0, src1, out, N, [](auto a, auto b) { return aie::add(a, b); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); });
+}
+
+#endif // GGML_OP_ADD_ROW
+
+#ifdef GGML_OP_SUB_ROW
+
+/**
+ * @brief out[i] = src0[i] - src1[i] for one dst row; src1 is reused across all dst rows.
+ *
+ * @param[in]  src0 First input row of N elements.
+ * @param[in]  src1 Reused row of N elements.
+ * @param[out] out  Output row of N elements.
+ * @param[in]  N    Elements per row (== ne0).
+ */
+void ggml_op_sub_row(const INPUT0_DTYPE * __restrict src0,
+                     const INPUT1_DTYPE * __restrict src1,
+                     OUTPUT_DTYPE * __restrict out,
+                     int32_t N) {
+    transform_binary_row_n(
+        src0, src1, out, N, [](auto a, auto b) { return aie::sub(a, b); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); });
+}
+
+#endif // GGML_OP_SUB_ROW
+
+#ifdef GGML_OP_MUL_ROW
+
+/**
+ * @brief out[i] = src0[i] * src1[i] for one dst row; src1 is reused across all dst rows.
+ *
+ * aie::mul yields an accumulator, so the vector result is narrowed back to the operand
+ * type before the store (same shape as the SCALE kernel).
+ *
+ * @param[in]  src0 First input row of N elements.
+ * @param[in]  src1 Reused row of N elements.
+ * @param[out] out  Output row of N elements.
+ * @param[in]  N    Elements per row (== ne0).
+ */
+void ggml_op_mul_row(const INPUT0_DTYPE * __restrict src0,
+                     const INPUT1_DTYPE * __restrict src1,
+                     OUTPUT_DTYPE * __restrict out,
+                     int32_t N) {
+    transform_binary_row_n(
+        src0, src1, out, N,
+        [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); });
+}
+
+#endif // GGML_OP_MUL_ROW
+
+#ifdef GGML_OP_DIV_ROW
+
+/**
+ * @brief out[i] = src0[i] / src1[i] for one dst row; src1 is reused across all dst rows.
+ *
+ * Scalar body, unlike the other three: there is no float vector divide instruction, and
+ * aie::div is a multiply by aie::inv (an approximate reciprocal), so a vectorized body
+ * would not match the CPU reference the device tests compare against element for element.
+ * Row-tiling still removes the seven per-element broadcast divisions, leaving only the one
+ * division the operation requires. If a looser tolerance is ever acceptable here, the
+ * aie::div path is the obvious next step.
+ *
+ * @param[in]  src0 Dividend row of N elements.
+ * @param[in]  src1 Reused divisor row of N elements.
+ * @param[out] out  Output row of N elements.
+ * @param[in]  N    Elements per row (== ne0).
+ */
+void ggml_op_div_row(const INPUT0_DTYPE * __restrict src0,
+                     const INPUT1_DTYPE * __restrict src1,
+                     OUTPUT_DTYPE * __restrict out,
+                     int32_t N) {
+    transform_binary_n(src0, src1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(a / b);
+    });
+}
+
+#endif // GGML_OP_DIV_ROW
 
 } // extern "C"
