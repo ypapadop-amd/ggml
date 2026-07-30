@@ -31,7 +31,9 @@ extern "C" {
  *                      Passed as int32 to avoid the peano-compat IR pass mangling
  *                      hex float immediates.
  */
-void ggml_op_norm(const float * __restrict in, float * __restrict out, int32_t N,
+void ggml_op_norm(const float * __restrict in,
+                  float * __restrict out,
+                  int32_t N,
                   int32_t eps_bits) {
     event0();
 

@@ -30,7 +30,6 @@ void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryO
     event1();
 }
 
-
 /**
  * @brief Applies a unary operation to N elements, vectorized when the operand types match.
  *
@@ -50,11 +49,8 @@ void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryO
  * @param[in]  scalar_op Scalar operation to apply.
  */
 template <typename TIn, typename TOut, typename VecOp, typename ScalarOp>
-void transform_vector_n(const TIn * __restrict in,
-                        TOut * __restrict out,
-                        int32_t N,
-                        VecOp vec_op,
-                        ScalarOp scalar_op) {
+void transform_vector_n(
+    const TIn * __restrict in, TOut * __restrict out, int32_t N, VecOp vec_op, ScalarOp scalar_op) {
     event0();
 
     int32_t vend = 0;
@@ -94,8 +90,7 @@ extern "C" {
  */
 void ggml_op_sqr(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     transform_vector_n(
-        in, out, N,
-        [](auto v) { return aie::mul(v, v).template to_vector<OUTPUT_DTYPE>(); },
+        in, out, N, [](auto v) { return aie::mul(v, v).template to_vector<OUTPUT_DTYPE>(); },
         [](auto v) { return static_cast<OUTPUT_DTYPE>(v * v); });
 }
 
