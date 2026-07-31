@@ -18,7 +18,7 @@ from aie.iron import (
 )
 from aie.iron.controlflow import range_
 
-from .utils import fill_drain_program, row_dimensions
+from .utils import core_function_object, fill_drain_program, row_dimensions
 
 
 def argmax_op(arch: str, input_tensors: list, output_tensor):
@@ -124,7 +124,7 @@ def _create_external_function(
     current_dir = Path(__file__).resolve().parent
     return ExternalFunction(
         name=f"{op_name.lower()}",
-        object_file_name=f"{op_name.lower()}_core_function.o",
+        **core_function_object(f"{op_name.lower()}_core_function"),
         source_file=str(current_dir / "argmax.cc"),
         arg_types=[
             np.ndarray[(row_length,), np.dtype[input_tensor.dtype]],

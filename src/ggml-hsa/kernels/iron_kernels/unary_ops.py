@@ -21,6 +21,7 @@ from aie.iron.controlflow import range_
 from .utils import (
     CoreFunctionSpec,
     arch_aligned_num_elements,
+    core_function_object,
     fill_drain_program,
     max_tile_size,
     tiled_tile_size,
@@ -146,7 +147,7 @@ def _create_external_function(
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
         name=op_name.lower(),
-        object_file_name=f"{op_name.lower()}_core_function.o",
+        **core_function_object(f"{op_name.lower()}_core_function"),
         source_file=str(current_dir / "unary_ops.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
