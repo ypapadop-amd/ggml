@@ -14,15 +14,13 @@ import numpy as np
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
-    Program,
-    Runtime,
     Worker,
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_to_device
+from .utils import fill_drain_program
 
 # GGML pooling op selector (matches enum ggml_op_pool in include/ggml.h).
 _GGML_OP_POOL_MAX = 0
@@ -129,17 +127,19 @@ def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
 
     # Runtime operations to move data to/from the AIE-array.
-    rt = Runtime()
     input_tensor_ty = np.ndarray[(in_plane * num_planes,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[
         (out_plane * num_planes,), np.dtype[output_tensor.dtype]
     ]
-    with rt.sequence(input_tensor_ty, output_tensor_ty) as (a_in, b_out):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.drain(of_out.cons(), b_out, wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [input_tensor_ty],
+        output_tensor_ty,
+        [of_in.prod()],
+        of_out.cons(),
+    )
 
 
 def _create_external_function(

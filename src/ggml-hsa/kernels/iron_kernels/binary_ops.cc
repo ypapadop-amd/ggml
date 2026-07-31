@@ -5,6 +5,7 @@
  * @brief Element-wise binary operations for AIE kernels.
  */
 
+#include "aie_kernel_math.h"
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 

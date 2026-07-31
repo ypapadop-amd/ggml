@@ -13,8 +13,6 @@ import numpy as np
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
-    Program,
-    Runtime,
     Worker,
     dtype_to_str,
 )
@@ -23,7 +21,7 @@ from aie.iron.controlflow import range_
 from .utils import (
     CoreFunctionSpec,
     arch_aligned_num_elements,
-    arch_to_device,
+    fill_drain_program,
     max_tile_size,
     tiled_tile_size,
 )
@@ -87,14 +85,16 @@ def _unary_op(
     # Runtime operations to move data to/from the AIE-array
     input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
-    rt = Runtime()
-    with rt.sequence(input_tensor_ty, output_tensor_ty) as t:
-        rt.start(worker)
-        rt.fill(of_in.prod(), t[0])
-        rt.drain(of_out.cons(), t[-1], wait=True)
 
     # Place program components (assign them resources on the device) and generate MLIR
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [input_tensor_ty],
+        output_tensor_ty,
+        [of_in.prod()],
+        of_out.cons(),
+    )
 
 
 # Unary ops with a vectorized body in unary_ops.cc. Keep in sync with the kernels there

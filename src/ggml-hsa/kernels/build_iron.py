@@ -3,35 +3,11 @@
 """IRON backend compiler for GGML HSA kernels."""
 
 import logging
-from collections.abc import Iterable
 from pathlib import Path
 
 from aie.iron import ExternalFunction
-from aie.utils.compile import compile_cxx_core_function, compile_mlir_module
+from aie.utils.compile import compile_external_kernel, compile_mlir_module
 from kernel import KernelSpec
-
-
-def _compile_aie_core_kernels(
-    arch: str,
-    functions: Iterable,
-    work_dir: Path,
-) -> None:
-    """Compile external-function C++ sources into object files linked into the final PDI.
-
-    Args:
-        arch: Target architecture (e.g., "aie2", "aie2p").
-        functions: ExternalFunction objects to compile.
-        work_dir: Working directory for intermediate files.
-    """
-    for func in functions:
-        compile_cxx_core_function(
-            source_path=func._source_file,
-            target_arch=arch,
-            output_path=func.object_file_name,
-            include_dirs=func._include_dirs,
-            compile_args=func._compile_flags,
-            cwd=str(work_dir),
-        )
 
 
 def compile_iron_kernel(
@@ -66,12 +42,11 @@ def compile_iron_kernel(
     # (this populates ExternalFunction._instances)
     mlir_module = kernel_spec.function()
 
-    # Compile any external C++ core functions
-    _compile_aie_core_kernels(
-        arch=kernel_spec.arch,
-        functions=ExternalFunction._instances,
-        work_dir=work_dir,
-    )
+    # Compile any external C++ core functions. The objects land in work_dir,
+    # which is also compile_mlir_module's work_dir, so the relative link_with
+    # paths in the MLIR resolve.
+    for func in ExternalFunction._instances:
+        compile_external_kernel(func, str(work_dir), kernel_spec.arch)
 
     # Clear external functions after compilation
     ExternalFunction._instances.clear()
