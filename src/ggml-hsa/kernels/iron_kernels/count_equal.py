@@ -15,14 +15,12 @@ from aie.ir import IntegerType
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
-    Program,
-    Runtime,
     Worker,
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
 
-from .utils import arch_to_device, max_tile_size
+from .utils import fill_drain_program, max_tile_size
 
 
 def count_equal_op(arch: str, input_tensors: list, output_tensor):
@@ -132,21 +130,17 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor):
         ],
     )
 
-    rt = Runtime()
     input_tensor_ty = np.ndarray[(total_elements,), np.dtype[input_tensor0.dtype]]
     output_tensor_ty = np.ndarray[(2,), np.dtype[np.int32]]
 
-    with rt.sequence(input_tensor_ty, input_tensor_ty, output_tensor_ty) as (
-        a_in0,
-        a_in1,
-        b_out,
-    ):
-        rt.start(worker)
-        rt.fill(of_in0.prod(), a_in0)
-        rt.fill(of_in1.prod(), a_in1)
-        rt.drain(of_out.cons(), b_out, wait=True)
-
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [input_tensor_ty, input_tensor_ty],
+        output_tensor_ty,
+        [of_in0.prod(), of_in1.prod()],
+        of_out.cons(),
+    )
 
 
 def _create_external_function(

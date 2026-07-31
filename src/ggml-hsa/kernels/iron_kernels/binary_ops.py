@@ -16,8 +16,6 @@ from aie.ir import IntegerType
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
-    Program,
-    Runtime,
     Worker,
     dtype_to_str,
 )
@@ -26,7 +24,7 @@ from aie.iron.controlflow import range_
 from .utils import (
     CoreFunctionSpec,
     arch_aligned_num_elements,
-    arch_to_device,
+    fill_drain_program,
     max_tile_size,
 )
 
@@ -111,14 +109,16 @@ def _binary_op(
         for input_tensor in input_tensors
     ]
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
-    rt = Runtime()
-    with rt.sequence(*input_tensor_tys, output_tensor_ty) as t:
-        rt.start(worker)
-        [rt.fill(of_in.prod(), t[i]) for i, of_in in enumerate(of_ins)]
-        rt.drain(of_out.cons(), t[-1], wait=True)
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        input_tensor_tys,
+        output_tensor_ty,
+        [of_in.prod() for of_in in of_ins],
+        of_out.cons(),
+    )
 
 
 def _create_external_function(
@@ -369,14 +369,14 @@ def _binary_op_row(
     src1_ty = np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]]
     out_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
 
-    rt = Runtime()
-    with rt.sequence(src0_ty, src1_ty, out_ty) as (a, b, c):
-        rt.start(worker)
-        rt.fill(of_src0.prod(), a)
-        rt.fill(of_src1.prod(), b)
-        rt.drain(of_out.cons(), c, wait=True)
-
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [src0_ty, src1_ty],
+        out_ty,
+        [of_src0.prod(), of_src1.prod()],
+        of_out.cons(),
+    )
 
 
 def _binary_op_broadcast(
@@ -461,14 +461,14 @@ def _binary_op_broadcast(
     src1_ty = np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]]
     out_ty = np.ndarray[(num_elements_out,), np.dtype[output_tensor.dtype]]
 
-    rt = Runtime()
-    with rt.sequence(src0_ty, src1_ty, out_ty) as (a, b, c):
-        rt.start(worker)
-        rt.fill(of_src0.prod(), a)
-        rt.fill(of_src1.prod(), b)
-        rt.drain(of_out.cons(), c, wait=True)
-
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [src0_ty, src1_ty],
+        out_ty,
+        [of_src0.prod(), of_src1.prod()],
+        of_out.cons(),
+    )
 
 
 def binary_op(

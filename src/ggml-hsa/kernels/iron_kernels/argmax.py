@@ -13,14 +13,12 @@ import numpy as np
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
-    Program,
-    Runtime,
     Worker,
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
 
-from .utils import arch_to_device, row_dimensions
+from .utils import fill_drain_program, row_dimensions
 
 
 def argmax_op(arch: str, input_tensors: list, output_tensor):
@@ -91,18 +89,19 @@ def argmax_op(arch: str, input_tensors: list, output_tensor):
     worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
 
     # Runtime operations to move data to/from the AIE-array
-    rt = Runtime()
     num_elements_in = row_length * num_rows
     input_tensor_ty = np.ndarray[(num_elements_in,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_rows,), np.dtype[output_tensor.dtype]]
 
-    with rt.sequence(input_tensor_ty, output_tensor_ty) as (a_in, b_out):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.drain(of_out.cons(), b_out, wait=True)
-
     # Place program components and generate an MLIR module
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [input_tensor_ty],
+        output_tensor_ty,
+        [of_in.prod()],
+        of_out.cons(),
+    )
 
 
 def _create_external_function(

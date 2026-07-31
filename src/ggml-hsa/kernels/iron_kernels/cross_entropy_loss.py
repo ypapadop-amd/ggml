@@ -16,13 +16,11 @@ from aie.ir import F32Type, FloatAttr, IndexType, IntegerAttr
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
-    Program,
-    Runtime,
     Worker,
 )
 from aie.iron.controlflow import range_
 
-from .utils import align_to_arch, arch_to_device, row_dimensions
+from .utils import align_to_arch, fill_drain_program, row_dimensions
 
 # Vector size for AIE kernel vector operations
 KERN_VEC_SIZE = 8
@@ -177,7 +175,6 @@ def create_reduction_program(
         fn_args=[of_logits.cons(), of_labels.cons(), of_out.prod(), function],
     )
 
-    rt = Runtime()
     logits_tensor_ty = np.ndarray[
         (tile_size * num_rows,), np.dtype[logits_tensor.dtype]
     ]
@@ -187,17 +184,14 @@ def create_reduction_program(
 
     output_scalar_ty = np.ndarray[(1,), np.dtype[output_tensor.dtype]]
 
-    with rt.sequence(logits_tensor_ty, labels_tensor_ty, output_scalar_ty) as (
-        a_logits,
-        a_labels,
-        b_out,
-    ):
-        rt.start(worker)
-        rt.fill(of_logits.prod(), a_logits)
-        rt.fill(of_labels.prod(), a_labels)
-        rt.drain(of_out.cons(), b_out, wait=True)
-
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [logits_tensor_ty, labels_tensor_ty],
+        output_scalar_ty,
+        [of_logits.prod(), of_labels.prod()],
+        of_out.cons(),
+    )
 
 
 def _create_external_function(

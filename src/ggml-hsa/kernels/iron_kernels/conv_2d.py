@@ -11,7 +11,6 @@ import struct
 from pathlib import Path
 
 import numpy as np
-from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
@@ -22,7 +21,7 @@ from aie.iron import (
 )
 from aie.iron.controlflow import range_
 
-from .utils import arch_to_device, partition_units
+from .utils import arch_to_device, batch_slice_tap, partition_units
 
 # Number of int32 op_params: {s0, s1, p0, p1, d0, d1}
 _CONV2D_PARAMS_SIZE = 6 * 4
@@ -206,41 +205,37 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     # Buffer-mapping contract: declare buffers in src0, src1, dst order.
     # src0 is the kernel weights; src1 is the input image.
-    rt = Runtime()
     kernel_numel = kernel_tensor.numel()
     kernel_tensor_ty = np.ndarray[(kernel_numel,), np.dtype[kernel_tensor.dtype]]
     image_tensor_ty = np.ndarray[(image_size * n,), np.dtype[image_tensor.dtype]]
     output_tensor_ty = np.ndarray[(out_per_image * n,), np.dtype[output_tensor.dtype]]
 
-    with rt.sequence(kernel_tensor_ty, image_tensor_ty, output_tensor_ty) as (
-        a_kernel,
-        a_in,
-        b_out,
-    ):
-        rt.start(*workers)
+    def sequence(a_kernel, a_in, b_out, wts_prod, in_prods, out_conses):
         # Broadcast the full weight tensor to every worker through one channel.
-        rt.fill(of_wts.prod(), a_kernel)
+        wts_prod.fill(a_kernel)
         # Each worker reads its contiguous slice of the batch.
         for w in range(num_workers):
             count = images_per_worker[w]
-            in_tap = TensorAccessPattern(
-                (n, image_size),
-                image_starts[w] * image_size,
-                [1, count, 1, image_size],
-                [0, image_size, 0, 1],
-            )
-            rt.fill(of_ins[w].prod(), a_in, in_tap)
+            in_tap = batch_slice_tap(n, image_size, image_starts[w], count)
+            in_prods[w].fill(a_in, in_tap)
         for w in range(num_workers):
             count = images_per_worker[w]
-            out_tap = TensorAccessPattern(
-                (n, out_per_image),
-                image_starts[w] * out_per_image,
-                [1, count, 1, out_per_image],
-                [0, out_per_image, 0, 1],
-            )
-            rt.drain(of_outs[w].cons(), b_out, out_tap, wait=True)
+            out_tap = batch_slice_tap(n, out_per_image, image_starts[w], count)
+            out_conses[w].drain(b_out, out_tap, wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program()
+    rt = Runtime(
+        sequence,
+        [
+            kernel_tensor_ty,
+            image_tensor_ty,
+            output_tensor_ty,
+            of_wts.prod(),
+            [of_in.prod() for of_in in of_ins],
+            [of_out.cons() for of_out in of_outs],
+        ],
+    )
+
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
 def _create_external_function(

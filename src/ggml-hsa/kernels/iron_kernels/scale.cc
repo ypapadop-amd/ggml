@@ -7,6 +7,7 @@
 
 #include <aie_api/aie.hpp>
 
+#include "aie_kernel_math.h"
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 

@@ -298,8 +298,11 @@ def ggml_compile_op(
     module = _import_from_path(kernel.name, kernel_source_file)
     dispatch_fn = getattr(module, kernel.name)
 
-    # Create output and work directories
-    output_dir = Path(config.output_directory)
+    # Create output and work directories. Absolute: the backends pass paths under
+    # this directory to compilers that also run with a directory under it as their
+    # subprocess cwd, so a relative path would be resolved twice and the artifacts
+    # would nest under themselves.
+    output_dir = Path(config.output_directory).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Dispatch to get KernelSpec or list[KernelSpec], then normalize and order

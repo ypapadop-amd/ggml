@@ -11,7 +11,6 @@ import struct
 from pathlib import Path
 
 import numpy as np
-from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
@@ -23,7 +22,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_to_device, partition_units
+from .utils import arch_to_device, batch_slice_tap, partition_units
 
 # Cap on data-parallel workers (compute tiles). Beyond this the per-worker shim/
 # mem-tile DMA channels exhaust the array's routing budget on NPU1 (aie2).
@@ -176,37 +175,33 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     # The runtime sequence binds one buffer per ggml tensor, positionally:
     # src0 (kernel), src1 (image), then dst. The kernel carries no data (only its
     # shape is used) so it is declared but never moved onto the array.
-    rt = Runtime()
     kernel_numel = kernel_tensor.numel()
     kernel_tensor_ty = np.ndarray[(kernel_numel,), np.dtype[kernel_tensor.dtype]]
     image_tensor_ty = np.ndarray[(image_size * n,), np.dtype[image_tensor.dtype]]
     output_tensor_ty = np.ndarray[(out_per_image * n,), np.dtype[output_tensor.dtype]]
-    with rt.sequence(kernel_tensor_ty, image_tensor_ty, output_tensor_ty) as (
-        _a_kernel,
-        a_in,
-        b_out,
-    ):
-        rt.start(*workers)
-        for w in range(num_workers):
-            count = images_per_worker[w]
-            in_tap = TensorAccessPattern(
-                (n, image_size),
-                image_starts[w] * image_size,
-                [1, count, 1, image_size],
-                [0, image_size, 0, 1],
-            )
-            rt.fill(of_ins[w].prod(), a_in, in_tap)
-        for w in range(num_workers):
-            count = images_per_worker[w]
-            out_tap = TensorAccessPattern(
-                (n, out_per_image),
-                image_starts[w] * out_per_image,
-                [1, count, 1, out_per_image],
-                [0, out_per_image, 0, 1],
-            )
-            rt.drain(of_outs[w].cons(), b_out, out_tap, wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program()
+    def sequence(_a_kernel, a_in, b_out, in_prods, out_conses):
+        for w in range(num_workers):
+            count = images_per_worker[w]
+            in_tap = batch_slice_tap(n, image_size, image_starts[w], count)
+            in_prods[w].fill(a_in, in_tap)
+        for w in range(num_workers):
+            count = images_per_worker[w]
+            out_tap = batch_slice_tap(n, out_per_image, image_starts[w], count)
+            out_conses[w].drain(b_out, out_tap, wait=True)
+
+    rt = Runtime(
+        sequence,
+        [
+            kernel_tensor_ty,
+            image_tensor_ty,
+            output_tensor_ty,
+            [of_in.prod() for of_in in of_ins],
+            [of_out.cons() for of_out in of_outs],
+        ],
+    )
+
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
 def _create_external_function(
