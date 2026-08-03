@@ -47,8 +47,16 @@
 // "ld.lld: undefined symbol: _Z16mul_elem_16_conf...". Drop this block once a
 // fixed mlir-aie release restores the aie2 fp32 path.
 //
+// Peano *declares* these three with no body, and the preprocessor cannot tell a
+// bodiless declaration from a defined one, so there is nothing to key an automatic
+// guard off. When a fixed release gives them bodies, this block turns into
+// "redefinition of mul_elem_16_conf" in every kernel that includes this header.
+// Build with -DGGML_AIE_NO_FP32_CONF_SHIM=1 to disable it without editing (which is
+// how to check whether an mlir-aie upgrade has landed the fix), then delete the
+// block once the upgrade is permanent.
+//
 // aie2 only: aie2p/aie2ps define these intrinsics natively.
-#if __AIE_ARCH__ == 20
+#if __AIE_ARCH__ == 20 && !defined(GGML_AIE_NO_FP32_CONF_SHIM)
 
 /// a * b, with the product negated when sub_mul is set.
 inline __attribute__((always_inline)) v16accfloat mul_elem_16_conf(v16float a,

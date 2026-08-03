@@ -196,10 +196,10 @@ def create_reduction_program(
     return fill_drain_program(
         arch,
         [worker],
-        [logits_tensor_ty, labels_tensor_ty],
-        output_scalar_ty,
-        [of_logits.prod(), of_labels.prod()],
-        of_out.cons(),
+        input_tys=[logits_tensor_ty, labels_tensor_ty],
+        output_ty=output_scalar_ty,
+        in_prods=[of_logits.prod(), of_labels.prod()],
+        out_cons=of_out.cons(),
     )
 
 

@@ -284,7 +284,7 @@ def arch_to_device(device):
     return device
 
 
-def fill_drain_program(arch, workers, input_tys, output_ty, in_prods, out_cons):
+def fill_drain_program(arch, workers, *, input_tys, output_ty, in_prods, out_cons):
     """Resolve the standard program: fill every input fifo, drain one output.
 
     This is the shape of every element-wise and row-wise kernel here. The runtime
@@ -294,6 +294,10 @@ def fill_drain_program(arch, workers, input_tys, output_ty, in_prods, out_cons):
 
     Kernels whose runtime sequence is not this shape (per-worker DMA taps, weight
     broadcast) build their own Runtime instead; see conv_2d.py and im2col.py.
+
+    The four fifo/buffer arguments are keyword-only: input_tys and in_prods are same-length
+    lists that the length check below cannot tell apart, so transposing them at a call site
+    would pass validation and then fail deep inside Runtime with no reference to the caller.
 
     Args:
         arch: Target architecture, or an existing device object.

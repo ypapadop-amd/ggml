@@ -115,10 +115,10 @@ def _binary_op(
     return fill_drain_program(
         arch,
         [worker],
-        input_tensor_tys,
-        output_tensor_ty,
-        [of_in.prod() for of_in in of_ins],
-        of_out.cons(),
+        input_tys=input_tensor_tys,
+        output_ty=output_tensor_ty,
+        in_prods=[of_in.prod() for of_in in of_ins],
+        out_cons=of_out.cons(),
     )
 
 
@@ -373,10 +373,10 @@ def _binary_op_row(
     return fill_drain_program(
         arch,
         [worker],
-        [src0_ty, src1_ty],
-        out_ty,
-        [of_src0.prod(), of_src1.prod()],
-        of_out.cons(),
+        input_tys=[src0_ty, src1_ty],
+        output_ty=out_ty,
+        in_prods=[of_src0.prod(), of_src1.prod()],
+        out_cons=of_out.cons(),
     )
 
 
@@ -465,10 +465,10 @@ def _binary_op_broadcast(
     return fill_drain_program(
         arch,
         [worker],
-        [src0_ty, src1_ty],
-        out_ty,
-        [of_src0.prod(), of_src1.prod()],
-        of_out.cons(),
+        input_tys=[src0_ty, src1_ty],
+        output_ty=out_ty,
+        in_prods=[of_src0.prod(), of_src1.prod()],
+        out_cons=of_out.cons(),
     )
 
 

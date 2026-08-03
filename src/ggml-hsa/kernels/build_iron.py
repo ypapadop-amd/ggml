@@ -45,7 +45,16 @@ def compile_iron_kernel(
     # Compile any external C++ core functions. The objects land in work_dir,
     # which is also compile_mlir_module's work_dir, so the relative link_with
     # paths in the MLIR resolve.
+    #
+    # compile_external_kernel skips compilation when the object already exists, and it
+    # decides that on existence alone -- it never compares the object against the source.
+    # That cache is wrong here: this function only runs when the enclosing PDI is missing
+    # and the kernel is being rebuilt, so an object left behind by an earlier run (most
+    # easily by one where aiecc failed *after* the object was written) would be linked
+    # into the new PDI in place of the edited source, and the edit would appear to have
+    # no effect. Drop the object first so every build recompiles it.
     for func in ExternalFunction._instances:
+        (work_dir / func.object_file_name).unlink(missing_ok=True)
         compile_external_kernel(func, str(work_dir), kernel_spec.arch)
 
     # Clear external functions after compilation

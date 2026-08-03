@@ -102,15 +102,18 @@ def _unary_op(
     return fill_drain_program(
         arch,
         [worker],
-        [input_tensor_ty],
-        output_tensor_ty,
-        [of_in.prod()],
-        of_out.cons(),
+        input_tys=[input_tensor_ty],
+        output_ty=output_tensor_ty,
+        in_prods=[of_in.prod()],
+        out_cons=of_out.cons(),
     )
 
 
-# Unary ops with a vectorized body in unary_ops.cc. Keep in sync with the kernels there
-# that use transform_vector_n, plus RELU, which open-codes an aligned vector loop.
+# Unary ops with a vectorized body in unary_ops.cc, which stream the large L1-budgeted tile
+# instead of the one-vector-register tile. A kernel vectorized in unary_ops.cc but missing
+# here fails to compile: transform_vector_n static_asserts on GGML_VECTORIZED_TILING, which
+# only membership of this set defines. The reverse (listed here but scalar in the kernel)
+# costs nothing but a larger tile.
 _VECTORIZED_OPS = frozenset(
     {
         "GGML_OP_SQR",
@@ -126,7 +129,7 @@ def _create_external_function(
     op_name: str,
     input_tensor,
     output_tensor,
-    tile_size_fn=max_tile_size,
+    vectorized: bool,
 ) -> CoreFunctionSpec:
     """Create the CoreFunctionSpec for a unary op.
 
@@ -135,14 +138,24 @@ def _create_external_function(
         op_name: Name of the unary operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
-        tile_size_fn: Selects the streamed tile size. Defaults to max_tile_size (one
-            vector register); pass tiled_tile_size for the large, L1-budgeted tile.
+        vectorized: Whether unary_ops.cc has a vectorized body for this op. Selects the
+            large L1-budgeted tile over the one-vector-register tile, and defines
+            GGML_VECTORIZED_TILING so the vectorized kernels compile.
 
     Returns:
         The core function spec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
+    tile_size_fn = tiled_tile_size if vectorized else max_tile_size
     tile_size = tile_size_fn(arch, input_tensor.dtype, num_elements)
+
+    compile_flags = [
+        f"-D{op_name}=1",
+        f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
+        f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+    ]
+    if vectorized:
+        compile_flags.append("-DGGML_VECTORIZED_TILING=1")
 
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
@@ -154,11 +167,7 @@ def _create_external_function(
             np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
             np.int32,
         ],
-        compile_flags=[
-            f"-D{op_name}=1",
-            f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
-            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-        ],
+        compile_flags=compile_flags,
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
 
@@ -209,7 +218,7 @@ def unary_op(
         op_name=op_name,
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
-        tile_size_fn=tiled_tile_size if op_name in _VECTORIZED_OPS else max_tile_size,
+        vectorized=op_name in _VECTORIZED_OPS,
     )
 
     return _unary_op(

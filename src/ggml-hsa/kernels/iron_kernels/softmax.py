@@ -167,10 +167,10 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
     return fill_drain_program(
         arch,
         [worker],
-        [input_tensor_ty],
-        output_tensor_ty,
-        [of_in.prod()],
-        of_out.cons(),
+        input_tys=[input_tensor_ty],
+        output_ty=output_tensor_ty,
+        in_prods=[of_in.prod()],
+        out_cons=of_out.cons(),
     )
 
 
@@ -259,10 +259,10 @@ def create_binary_program(
     return fill_drain_program(
         arch,
         [worker],
-        [input_tensor_ty, mask_tensor_ty],
-        output_tensor_ty,
-        [of_in.prod(), of_mask.prod()],
-        of_out.cons(),
+        input_tys=[input_tensor_ty, mask_tensor_ty],
+        output_ty=output_tensor_ty,
+        in_prods=[of_in.prod(), of_mask.prod()],
+        out_cons=of_out.cons(),
     )
 
 
@@ -377,10 +377,10 @@ def create_ternary_program(
     return fill_drain_program(
         arch,
         [worker],
-        [input_tensor_ty, mask_tensor_ty, sink_tensor_ty],
-        output_tensor_ty,
-        [of_in.prod(), of_mask.prod(), of_sink.prod()],
-        of_out.cons(),
+        input_tys=[input_tensor_ty, mask_tensor_ty, sink_tensor_ty],
+        output_ty=output_tensor_ty,
+        in_prods=[of_in.prod(), of_mask.prod(), of_sink.prod()],
+        out_cons=of_out.cons(),
     )
 
 
