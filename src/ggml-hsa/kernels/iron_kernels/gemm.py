@@ -107,10 +107,14 @@ def select_gemm_tile(
 
     Args:
         dev: Target device ("npu" or "npu2").
-        M, N, K: Full GEMM problem dimensions.
+        M: Full GEMM problem rows.
+        N: Full GEMM problem columns.
+        K: Full GEMM problem reduction depth.
         dtype_in: NumPy input dtype (for element size).
         dtype_out: NumPy output dtype (for element size).
-        r, s, t: Microkernel MAC dims for the input dtype.
+        r: Microkernel MAC row dim for the input dtype.
+        s: Microkernel MAC reduction dim for the input dtype.
+        t: Microkernel MAC column dim for the input dtype.
         n_aie_rows: AIE array rows (4 on both npu and npu2).
         fifo_depth: Object-FIFO depth (double buffering).
         max_tile: Upper bound on any single tile dimension.
