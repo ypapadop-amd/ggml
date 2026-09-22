@@ -1995,7 +1995,8 @@ static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_eve
  * Node removal is not possible here (the scheduler rebuilds the split from the original node
  * range), so the cast node persists but is neutralized to a no-op.
  */
-static void ggml_backend_hsa_graph_optimize(ggml_backend_t /*backend*/, ggml_cgraph * cgraph) {
+static void ggml_backend_hsa_graph_optimize(ggml_backend_t /*backend*/, ggml_cgraph * cgraph,
+                                            ggml_backend_graph_optimize_params * /*params*/) {
     const std::int32_t node_count = ggml_graph_n_nodes(cgraph);
 
     for (std::int32_t i = 0; i < node_count; ++i) {

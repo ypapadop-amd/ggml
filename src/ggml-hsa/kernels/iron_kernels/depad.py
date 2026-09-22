@@ -224,19 +224,17 @@ def depad(
         for w in range(n_workers)
     ]
 
-    rt = Runtime()
     # Only the first d1 rows carry results; each padded row is d0pad wide, each dense row d0.
     src_ty = np.ndarray[(d0pad * d1,), np.dtype[src.dtype]]
     dst_ty = np.ndarray[(d0 * d1,), np.dtype[output_tensor.dtype]]
+
     # Access pattern dims are (chunk, row, element), outermost-first. The element run (size
     # chunk, stride 1) is the contiguous fifo object; the row dim (size rows_w, stride d0pad on
     # the source / d0 on the destination) sits between the two contiguous dims so the
     # canonicalizer cannot fold chunk*element into one oversized dimension. The two
     # wrap-checked hardware dims are the element width (chunk) and the row count (rows_w), both
     # kept within the 10-bit limit.
-    with rt.sequence(src_ty, dst_ty) as (a_in, b_out):
-        for worker in workers:
-            rt.start(worker)
+    def sequence(a_in, b_out, in_prods, out_conses):
         out_taps = []
         for w in range(n_workers):
             n_chunks_w, rows_w, src_off, dst_off = bands[w]
@@ -248,14 +246,24 @@ def depad(
                     (d1, d0), dst_off, [1, n_chunks_w, rows_w, chunk], [0, chunk, d0, 1]
                 )
             )
-            rt.fill(of_ins[w].prod(), a_in, src_tap)
+            in_prods[w].fill(a_in, src_tap)
         # Issue all fills first, then all drains. Wait on every drain: the workers finish out of
         # order (uneven bands), so waiting only on the last-issued drain can signal completion while
         # a slower worker is still writing, and an on-queue consumer would read partial data.
         for w in range(n_workers):
-            rt.drain(of_outs[w].cons(), b_out, out_taps[w], wait=True)
+            out_conses[w].drain(b_out, out_taps[w], wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program()
+    rt = Runtime(
+        sequence,
+        [
+            src_ty,
+            dst_ty,
+            [of_in.prod() for of_in in of_ins],
+            [of_out.cons() for of_out in of_outs],
+        ],
+    )
+
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
 def _create_external_function(src, output_tensor, chunk: int) -> ExternalFunction:

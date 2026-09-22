@@ -17,32 +17,12 @@ from aie.ir import IntegerType
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
-    Program,
-    Runtime,
     Worker,
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
 
-from .utils import arch_to_device, row_dimensions
-
-
-def get_softmax_dimensions(tensor) -> tuple[int, int]:
-    """Return (row_length, num_rows) for a GGML-ordered tensor.
-
-    Softmax is over dim 0 (ne00): row_length = ne00, num_rows = ne01*ne02*ne03.
-    Delegates to the shared :func:`row_dimensions` helper.
-
-    Args:
-        tensor: GGML-ordered tensor to inspect.
-
-    Returns:
-        The (row_length, num_rows) pair.
-
-    Raises:
-        ValueError: If the tensor rank is unsupported.
-    """
-    return row_dimensions(tensor)
+from .utils import fill_drain_program, row_dimensions
 
 
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -170,16 +150,17 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
 
     worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
 
-    rt = Runtime()
     input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
 
-    with rt.sequence(input_tensor_ty, output_tensor_ty) as (a_in, b_out):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.drain(of_out.cons(), b_out, wait=True)
-
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [input_tensor_ty],
+        output_tensor_ty,
+        [of_in.prod()],
+        of_out.cons(),
+    )
 
 
 def create_binary_program(
@@ -258,23 +239,18 @@ def create_binary_program(
         ext_core_fn, fn_args=[of_in.cons(), of_mask.cons(), of_out.prod(), function]
     )
 
-    rt = Runtime()
-
     input_tensor_ty = np.ndarray[(num_elements_in,), np.dtype[input_tensor.dtype]]
     mask_tensor_ty = np.ndarray[(num_elements_mask,), np.dtype[mask_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements_in,), np.dtype[output_tensor.dtype]]
 
-    with rt.sequence(input_tensor_ty, mask_tensor_ty, output_tensor_ty) as (
-        a_in,
-        a_mask,
-        b_out,
-    ):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.fill(of_mask.prod(), a_mask)
-        rt.drain(of_out.cons(), b_out, wait=True)
-
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [input_tensor_ty, mask_tensor_ty],
+        output_tensor_ty,
+        [of_in.prod(), of_mask.prod()],
+        of_out.cons(),
+    )
 
 
 def create_ternary_program(
@@ -379,23 +355,19 @@ def create_ternary_program(
         fn_args=[of_in.cons(), of_mask.cons(), of_sink.cons(), of_out.prod(), function],
     )
 
-    rt = Runtime()
-
     input_tensor_ty = np.ndarray[(num_elements_in,), np.dtype[input_tensor.dtype]]
     mask_tensor_ty = np.ndarray[(num_elements_mask,), np.dtype[mask_tensor.dtype]]
     sink_tensor_ty = np.ndarray[(num_sinks,), np.dtype[sink_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements_in,), np.dtype[output_tensor.dtype]]
 
-    with rt.sequence(
-        input_tensor_ty, mask_tensor_ty, sink_tensor_ty, output_tensor_ty
-    ) as (a_in, a_mask, a_sink, b_out):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.fill(of_mask.prod(), a_mask)
-        rt.fill(of_sink.prod(), a_sink)
-        rt.drain(of_out.cons(), b_out, wait=True)
-
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [input_tensor_ty, mask_tensor_ty, sink_tensor_ty],
+        output_tensor_ty,
+        [of_in.prod(), of_mask.prod(), of_sink.prod()],
+        of_out.cons(),
+    )
 
 
 def _create_external_function(
@@ -422,7 +394,7 @@ def _create_external_function(
           mask+sink: (..., tile_size_mask, num_rows_mask, num_elements_mask, num_sinks,
             rows_per_head)
     """
-    row_length_in, num_rows_in = get_softmax_dimensions(input_tensor)
+    row_length_in, num_rows_in = row_dimensions(input_tensor)
 
     # Use actual row length - no padding. The host data is contiguous with
     # row_length elements per row, so tile_size must match.
@@ -439,7 +411,7 @@ def _create_external_function(
     result_extra = []
 
     if mask_tensor:
-        row_length_mask, num_rows_mask = get_softmax_dimensions(mask_tensor)
+        row_length_mask, num_rows_mask = row_dimensions(mask_tensor)
         # Use actual row length - no padding (same reason as input tensor)
         tile_size_mask = row_length_mask
         num_elements_mask = tile_size_mask * num_rows_mask

@@ -128,15 +128,13 @@ def convert_pad(
         for w in range(n_workers)
     ]
 
-    rt = Runtime()
     # Per-worker fill/drain: worker w reads its band of rows from the contiguous src buffer and
     # writes them to the matching band of the (pre-zeroed) dst buffer. Each band is a contiguous
     # 1-D slice (offset, size) of the flat buffer, so every worker drives its own shim DMA path.
     src_ty = np.ndarray[(d0 * d1,), np.dtype[src.dtype]]
     dst_ty = np.ndarray[(d0pad * d1,), np.dtype[output_tensor.dtype]]
-    with rt.sequence(src_ty, dst_ty) as (a_in, b_out):
-        for worker in workers:
-            rt.start(worker)
+
+    def sequence(a_in, b_out, in_prods, out_conses):
         # Issue every worker's fill up front so their DMAs run concurrently, then wait on every
         # drain: the workers finish out of order (uneven row bands), so waiting only on the
         # last-issued drain can signal completion while a slower worker is still writing, and an
@@ -156,13 +154,23 @@ def convert_pad(
                     (d0pad * d1,), offset=out_off, sizes=[1, 1, 1, out_len], strides=[0, 0, 0, 1]
                 )
             )
-            rt.fill(of_ins[w].prod(), a_in, tap=in_tap)
+            in_prods[w].fill(a_in, in_tap)
             in_off += in_len
             out_off += out_len
         for w in range(n_workers):
-            rt.drain(of_outs[w].cons(), b_out, tap=out_taps[w], wait=True)
+            out_conses[w].drain(b_out, out_taps[w], wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program()
+    rt = Runtime(
+        sequence,
+        [
+            src_ty,
+            dst_ty,
+            [of_in.prod() for of_in in of_ins],
+            [of_out.cons() for of_out in of_outs],
+        ],
+    )
+
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
 def _create_external_function(

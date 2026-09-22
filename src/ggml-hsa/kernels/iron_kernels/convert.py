@@ -19,15 +19,13 @@ import numpy as np
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
-    Program,
-    Runtime,
     Worker,
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_aligned_num_elements, arch_to_device, max_tile_size
+from .utils import arch_aligned_num_elements, fill_drain_program, max_tile_size
 
 
 def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -89,15 +87,12 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
 
-    rt = Runtime()
     src_ty = np.ndarray[(num_elements,), np.dtype[src.dtype]]
     dst_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
-    with rt.sequence(src_ty, dst_ty) as (a_in, b_out):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.drain(of_out.cons(), b_out, wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch, [worker], [src_ty], dst_ty, [of_in.prod()], of_out.cons()
+    )
 
 
 def _create_external_function(src, output_tensor, tile_size: int) -> ExternalFunction:

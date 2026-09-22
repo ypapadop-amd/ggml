@@ -5,7 +5,8 @@
 from dataclasses import dataclass
 
 import numpy as np
-from aie.iron import ExternalFunction
+from aie.helpers.taplib import TensorAccessPattern
+from aie.iron import ExternalFunction, Program, Runtime
 from aie.iron.device import NPU1, NPU2
 
 # Per-architecture on-tile resources. Add a new NPU generation by adding one entry.
@@ -137,6 +138,10 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
 def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """Largest tile that divides num_elements and fits half the core data memory.
 
+    Where max_tile_size caps the tile at one vector register, this streams the
+    largest tile the core's L1 can hold, so far fewer (and larger) tiles are moved
+    per dispatch and the per-acquire/release overhead is amortized.
+
     The tile must divide num_elements exactly: an ObjectFifo's DMA transfer size is
     fixed at construction, so every acquire moves a full tile regardless of any
     runtime element count. A tile that did not divide num_elements would make the
@@ -154,22 +159,16 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """
     params = _arch_params(arch)
     v = params["vector_reg_bits"] // (8 * dtype.itemsize)
-    budget = (
-        params["core_data_mem_bytes"] // 2
-    )  # half DM: leave room for stack + locals
+    # Half the data memory, leaving room for stack + locals.
+    budget = params["core_data_mem_bytes"] // 2
     # in + out fifos, each double-buffered (depth 2) => 4 buffers of tile*itemsize bytes.
     max_by_mem = (budget // (4 * dtype.itemsize) // v) * v
     cap = min(max_by_mem, num_elements)
 
     # Largest multiple of V that is <= cap and divides num_elements exactly.
-    best = 0
-    tile = v
-    while tile <= cap:
+    for tile in range(cap - cap % v, 0, -v):
         if num_elements % tile == 0:
-            best = tile
-        tile += v
-    if best:
-        return best
+            return tile
 
     # V does not divide num_elements: fall back to a power-of-two divisor.
     return max_tile_size(arch, dtype, num_elements)
@@ -282,3 +281,75 @@ def arch_to_device(device):
         msg = f"Unsupported device: {device}"
         raise ValueError(msg)
     return device
+
+
+def fill_drain_program(arch, workers, input_tys, output_ty, in_prods, out_cons):
+    """Resolve the standard program: fill every input fifo, drain one output.
+
+    This is the shape of every element-wise and row-wise kernel here. The runtime
+    sequence declares one host buffer per ggml tensor in src order then dst,
+    matching the kernarg layout the backend passes; each input producer is filled
+    from its buffer and the single output consumer is drained into dst.
+
+    Kernels whose runtime sequence is not this shape (per-worker DMA taps, weight
+    broadcast) build their own Runtime instead; see conv_2d.py and im2col.py.
+
+    Args:
+        arch: Target architecture, or an existing device object.
+        workers: Workers to place on the device.
+        input_tys: Host buffer type per input tensor, in src order.
+        output_ty: Host buffer type for the output tensor.
+        in_prods: Producer handle per input fifo, in the same order as input_tys.
+        out_cons: Consumer handle for the output fifo.
+
+    Returns:
+        The resolved IRON program (MLIR module).
+
+    Raises:
+        ValueError: If input_tys and in_prods differ in length.
+    """
+    num_inputs = len(in_prods)
+    if len(input_tys) != num_inputs:
+        msg = (
+            f"Each input needs one buffer type and one producer: got "
+            f"{len(input_tys)} types for {num_inputs} producers."
+        )
+        raise ValueError(msg)
+
+    # Bound positionally by Runtime: (*input buffers, output buffer, *producers,
+    # consumer), matching the fn_args list below.
+    def sequence(*args):
+        in_bufs = args[:num_inputs]
+        out_buf = args[num_inputs]
+        prods = args[num_inputs + 1 : -1]
+        cons = args[-1]
+        for prod, buf in zip(prods, in_bufs, strict=True):
+            prod.fill(buf)
+        cons.drain(out_buf, wait=True)
+
+    rt = Runtime(sequence, [*input_tys, output_ty, *in_prods, out_cons])
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
+
+
+def batch_slice_tap(num_units, unit_size, start_unit, count):
+    """DMA access pattern selecting a contiguous run of fixed-size units.
+
+    Views a tensor of num_units units as [num_units, unit_size] and selects
+    units [start_unit, start_unit + count), which is how the multi-worker
+    designs hand each worker its slice of the batch.
+
+    Args:
+        num_units: Total number of units in the tensor.
+        unit_size: Elements per unit.
+        start_unit: Index of the first unit in the slice.
+        count: Number of units in the slice.
+
+    Returns:
+        The TensorAccessPattern for the slice.
+    """
+    return TensorAccessPattern(
+        (num_units, unit_size),
+        start_unit * unit_size,
+        [1, count, 1, unit_size],
+        [0, unit_size, 0, 1],
+    )

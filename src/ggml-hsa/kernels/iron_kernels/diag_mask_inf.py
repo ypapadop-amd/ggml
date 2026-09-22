@@ -16,14 +16,12 @@ from aie.ir import IntegerType
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
-    Program,
-    Runtime,
     Worker,
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
 
-from .utils import arch_to_device, row_dimensions
+from .utils import fill_drain_program, row_dimensions
 
 _OP_NAME = "GGML_OP_DIAG_MASK_INF"
 
@@ -68,46 +66,46 @@ def diag_mask_inf(arch: str, input_tensors: list, output_tensor, op_params: byte
     nr = shape[1] if len(shape) >= 2 else 1
 
     # One row per tile: the C++ core is scalar and handles any row length.
-    tile_size = row_length
-    num_tiles = num_rows
-    num_elements = tile_size * num_rows
+    num_elements = row_length * num_rows
 
-    function = _create_external_function(input_tensor, output_tensor, tile_size)
+    function = _create_external_function(input_tensor, output_tensor, row_length)
 
-    input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
-    output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+    input_tile_ty = np.ndarray[(row_length,), np.dtype[input_tensor.dtype]]
+    output_tile_ty = np.ndarray[(row_length,), np.dtype[output_tensor.dtype]]
     of_in = ObjectFifo(input_tile_ty, name="in")
     of_out = ObjectFifo(output_tile_ty, name="out")
 
     def ext_core_fn(of_in, of_out, function):
-        for tile_idx in range_(num_tiles):
+        for tile_idx in range_(num_rows):
             elem_in = of_in.acquire(1)
             elem_out = of_out.acquire(1)
             tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
-            function(elem_in, elem_out, tile_size, nr, n_past, tile_idx_i32)
+            function(elem_in, elem_out, row_length, nr, n_past, tile_idx_i32)
             of_in.release(1)
             of_out.release(1)
 
     worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
 
-    rt = Runtime()
     input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
-    with rt.sequence(input_tensor_ty, output_tensor_ty) as (a_in, b_out):
-        rt.start(worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.drain(of_out.cons(), b_out, wait=True)
 
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [input_tensor_ty],
+        output_tensor_ty,
+        [of_in.prod()],
+        of_out.cons(),
+    )
 
 
-def _create_external_function(input_tensor, output_tensor, tile_size: int):
+def _create_external_function(input_tensor, output_tensor, row_length: int):
     """Create the diag_mask_inf ExternalFunction.
 
     Args:
         input_tensor: Input tensor.
         output_tensor: Output tensor.
-        tile_size: Elements per row tile.
+        row_length: Elements per row tile.
 
     Returns:
         The ExternalFunction wrapping diag_mask_inf.cc.
@@ -118,8 +116,8 @@ def _create_external_function(input_tensor, output_tensor, tile_size: int):
         object_file_name=f"{_OP_NAME.lower()}_core_function.o",
         source_file=str(current_dir / "diag_mask_inf.cc"),
         arg_types=[
-            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
-            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
+            np.ndarray[(row_length,), np.dtype[input_tensor.dtype]],
+            np.ndarray[(row_length,), np.dtype[output_tensor.dtype]],
             np.int32,  # N (row length)
             np.int32,  # nr (rows per z-slice)
             np.int32,  # n_past

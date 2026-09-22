@@ -13,8 +13,6 @@ import numpy as np
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
-    Program,
-    Runtime,
     Worker,
     dtype_to_str,
 )
@@ -23,7 +21,7 @@ from aie.iron.controlflow import range_
 from .utils import (
     CoreFunctionSpec,
     arch_aligned_num_elements,
-    arch_to_device,
+    fill_drain_program,
     max_tile_size,
     tiled_tile_size,
 )
@@ -87,14 +85,28 @@ def _unary_op(
     # Runtime operations to move data to/from the AIE-array
     input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
-    rt = Runtime()
-    with rt.sequence(input_tensor_ty, output_tensor_ty) as t:
-        rt.start(worker)
-        rt.fill(of_in.prod(), t[0])
-        rt.drain(of_out.cons(), t[-1], wait=True)
 
     # Place program components (assign them resources on the device) and generate MLIR
-    return Program(arch_to_device(arch), rt).resolve_program()
+    return fill_drain_program(
+        arch,
+        [worker],
+        [input_tensor_ty],
+        output_tensor_ty,
+        [of_in.prod()],
+        of_out.cons(),
+    )
+
+
+# Unary ops with a vectorized body in unary_ops.cc. Keep in sync with the kernels there
+# that use transform_vector_n, plus RELU, which open-codes an aligned vector loop.
+_VECTORIZED_OPS = frozenset(
+    {
+        "GGML_OP_SQR",
+        "GGML_UNARY_OP_ABS",
+        "GGML_UNARY_OP_NEG",
+        "GGML_UNARY_OP_RELU",
+    }
+)
 
 
 def _create_external_function(
@@ -102,6 +114,7 @@ def _create_external_function(
     op_name: str,
     input_tensor,
     output_tensor,
+    tile_size_fn=max_tile_size,
 ) -> CoreFunctionSpec:
     """Create the CoreFunctionSpec for a unary op.
 
@@ -110,58 +123,14 @@ def _create_external_function(
         op_name: Name of the unary operation.
         input_tensor: Input tensor.
         output_tensor: Output tensor.
+        tile_size_fn: Selects the streamed tile size. Defaults to max_tile_size (one
+            vector register); pass tiled_tile_size for the large, L1-budgeted tile.
 
     Returns:
         The core function spec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
-    tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
-
-    current_dir = Path(__file__).resolve().parent
-    func = ExternalFunction(
-        name=op_name.lower(),
-        object_file_name=f"{op_name.lower()}_core_function.o",
-        source_file=str(current_dir / "unary_ops.cc"),
-        arg_types=[
-            np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]],
-            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
-            np.int32,
-        ],
-        compile_flags=[
-            f"-D{op_name}=1",
-            f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
-            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            f"-DGGML_TILE_SIZE={tile_size}",
-        ],
-    )
-    return CoreFunctionSpec(external_function=func, num_elements=num_elements)
-
-
-def _create_tiled_external_function(
-    arch: str,
-    op_name: str,
-    input_tensor,
-    output_tensor,
-) -> CoreFunctionSpec:
-    """Create a CoreFunctionSpec for a unary op with an L1-budgeted tile size.
-
-    Uses tiled_tile_size (a large tile that divides num_elements) instead of
-    max_tile_size, so far fewer, larger tiles are streamed per dispatch. Unlike
-    _create_external_function this does NOT pass -DGGML_TILE_SIZE: the tile size
-    differs per tensor shape, so N stays a runtime kernel argument and one compiled
-    kernel serves every shape (respecting the 32-unique-functions-per-queue limit).
-
-    Args:
-        arch: Target architecture.
-        op_name: Name of the unary operation.
-        input_tensor: Input tensor.
-        output_tensor: Output tensor.
-
-    Returns:
-        The core function spec.
-    """
-    num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
-    tile_size = tiled_tile_size(arch, input_tensor.dtype, num_elements)
+    tile_size = tile_size_fn(arch, input_tensor.dtype, num_elements)
 
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
@@ -218,25 +187,18 @@ def unary_op(
         msg = f"Unsupported shape ({output_tensor.shape})."
         raise ValueError(msg)
 
-    # RELU streams large, L1-budgeted tiles (via _create_tiled_external_function) to
-    # amortize the per-call acquire/release overhead that dominates its device time.
-    # The tile divides num_elements exactly, so the existing _unary_op loop (which
-    # requires divisibility) drives it unchanged. Other unary ops keep the max_tile_size
-    # path with its compile-time GGML_TILE_SIZE fold.
-    if op_name == "GGML_UNARY_OP_RELU":
-        function_spec = _create_tiled_external_function(
-            arch=arch,
-            op_name=op_name,
-            input_tensor=input_tensors[0],
-            output_tensor=output_tensor,
-        )
-    else:
-        function_spec = _create_external_function(
-            arch=arch,
-            op_name=op_name,
-            input_tensor=input_tensors[0],
-            output_tensor=output_tensor,
-        )
+    # The vectorized kernels are dominated by object-fifo round trips rather than by
+    # compute, so they stream the large L1-budgeted tile instead of the one-vector-register
+    # tile. The tile divides num_elements exactly, so the _unary_op loop (which requires
+    # divisibility) drives it unchanged. The still-scalar ops keep max_tile_size, where the
+    # per-element work dominates and a bigger tile buys little.
+    function_spec = _create_external_function(
+        arch=arch,
+        op_name=op_name,
+        input_tensor=input_tensors[0],
+        output_tensor=output_tensor,
+        tile_size_fn=tiled_tile_size if op_name in _VECTORIZED_OPS else max_tile_size,
+    )
 
     return _unary_op(
         arch=arch,
