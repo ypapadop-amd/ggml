@@ -1445,7 +1445,8 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 if (status = ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
                     status != GGML_STATUS_SUCCESS) {
                     GGML_HSA_LOG_ERROR("%s: failed to copy source %i for tensor \"%s (%s)\"",
-                                       __func__, src_idx, node->name, ggml_hsa_tensor_op_desc(*node));
+                                       __func__, src_idx, node->name,
+                                       ggml_hsa_tensor_op_desc(*node));
                     break;
                 }
             }
