@@ -32,6 +32,17 @@ bool g_ggml_hsa_verbose = [] {
 #endif
 }();
 
+/// @brief Whether to report SCALE / DIAG_MASK_INF / SOFT_MAX as supported despite the in-graph AIE
+/// queue fault that otherwise routes them to the CPU (see ggml_backend_hsa_device_supports_op).
+/// Read once from @c GGML_HSA_ENABLE_FAULTING_OPS at startup. Intended for the standalone device
+/// tests of those kernels, which dispatch one op at a time and so do not trigger the fault.
+bool g_ggml_hsa_enable_faulting_ops = [] {
+    if (const char * enable = std::getenv("GGML_HSA_ENABLE_FAULTING_OPS"); enable != nullptr) {
+        return ggml_hsa_string_to_bool(enable);
+    }
+    return false;
+}();
+
 /// @brief Packets to accumulate before ringing the doorbell, or 0 if unset/invalid (use the
 /// per-queue default). Read once from @c GGML_HSA_DISPATCH_BATCH_SIZE at startup.
 static const std::size_t g_ggml_hsa_dispatch_batch_size = [] {
@@ -581,6 +592,15 @@ ggml_hsa_build_transform_kernel(const ggml_hsa_device_info::device_info & dev_in
     }
     carrier.src[0] = &source;
 
+    // The carrier describes the transform, not whatever produced @p out. @p out is sometimes an
+    // internal source node, i.e. a shallow copy of a producer graph tensor, which would otherwise
+    // drag that producer's op and op_params in: ggml_hsa_create_kernel_name appends an op_params
+    // hash gated on tensor.op, so two identical transforms would land under different cache keys
+    // (and recompile) purely because of what produced their input. Transform tensors built by
+    // ggml_hsa_new_transform carry no op_params, so this is a no-op for those.
+    carrier.op = static_cast<ggml_op>(op);
+    std::fill(std::begin(carrier.op_params), std::end(carrier.op_params), 0);
+
     auto kernel_name = ggml_hsa_create_kernel_name(carrier, op_name);
     auto kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
     if (kernel != nullptr) {
@@ -651,8 +671,9 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
 }
 
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
-    const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) :
-    nsrcs{ggml_hsa_nsrcs(parent_tensor)} {
+    const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) {
+
+    sources.count = ggml_hsa_nsrcs(parent_tensor);
 
     // View tensors are generally not supported, but some operations like GGML_OP_CLAMP
     // are created as views in GGML even though they can be treated as non-in-place.
@@ -663,15 +684,15 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
 
     // initialize internal nodes
     ggml_hsa_shallow_copy(parent_tensor, node.tensor);
-    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
         if (parent_tensor.src[src_idx] == nullptr) {
             throw std::runtime_error{std::string("Source tensor ") + std::to_string(src_idx) +
                                      " is null. Holes are not supported."};
         }
-        ggml_hsa_shallow_copy(*parent_tensor.src[src_idx], src_nodes[src_idx].tensor);
-        node.tensor.src[src_idx] = &src_nodes[src_idx].tensor;
+        ggml_hsa_shallow_copy(*parent_tensor.src[src_idx], sources[src_idx].tensor);
+        node.tensor.src[src_idx] = &sources[src_idx].tensor;
     }
-    assert(ggml_hsa_nsrcs(node.tensor) == nsrcs);
+    assert(ggml_hsa_nsrcs(node.tensor) == sources.count);
 
     // early exit if operation does not require a kernel
     if (ggml_op_is_empty(node.tensor.op)) {
@@ -713,6 +734,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     }
 
     std::array<bool, GGML_MAX_SRC> update_src_buffer_size = {};
+    // Tracks *why* a source needs a temporary buffer. A source whose only difference from its
+    // parent is the element type can be pre-processed on the device by the element-wise
+    // GGML_HSA_OP_CONVERT kernel; one that also needs its layout rewritten cannot, because that
+    // kernel only streams contiguous runs. The flatten step below erases the distinction from the
+    // tensors themselves, so it has to be recorded here.
+    std::array<bool, GGML_MAX_SRC> src_dtype_only = {};
 
     // convert tensor data types if needed
     if (dev_info.substitute_fp16_bf16) {
@@ -723,12 +750,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         }
 
         // inputs require temporary storage as they may be shared among tensors
-        for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-            auto & src_node = src_nodes[src_idx];
+        for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+            auto & src_node = sources[src_idx];
             if (src_node.tensor.type == GGML_TYPE_F16) {
                 update_src_buffer_size[src_idx] = true;
+                src_dtype_only[src_idx] = true;
                 src_node.tensor.type = GGML_TYPE_BF16;
-                src_node.convert_dtype = true;
             }
         }
     }
@@ -738,10 +765,11 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     if (!ggml_hsa_has_trivial_layout(node.tensor)) {
         throw std::runtime_error{"Output tensor does not have trivial layout."};
     }
-    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-        auto & src_node = src_nodes[src_idx];
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+        auto & src_node = sources[src_idx];
         if (!ggml_hsa_has_trivial_layout(src_node.tensor)) {
             update_src_buffer_size[src_idx] = true;
+            src_dtype_only[src_idx] = false;
             ggml_hsa_set_contiguous_strides(src_node.tensor);
         }
     }
@@ -749,20 +777,60 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // flatten tensors to reuse kernels
     if (ggml_hsa_can_flatten(node.tensor)) {
         ggml_hsa_flatten_tensor(node.tensor);
-        for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-            ggml_hsa_flatten_tensor(src_nodes[src_idx].tensor);
+        for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+            ggml_hsa_flatten_tensor(sources[src_idx].tensor);
         }
     }
 
     // update required tensor sizes
-    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
         if (update_src_buffer_size[src_idx]) {
-            auto & src_node = src_nodes[src_idx];
+            auto & src_node = sources[src_idx];
             src_node.tensor.data = nullptr;
             src_node.buffer_size = GGML_PAD(ggml_nbytes(&src_node.tensor), dev_info.alignment);
-            requires_sync = true;
         }
     }
+
+    // Build on-device pre-processing kernels for the sources that only change element type. These
+    // run the parent -> internal conversion on the device queue in place of the host copy in
+    // graph_compute, removing the queue drain that copy would otherwise force. A null kernel (the
+    // dtype pair or element count is not streamable) simply leaves the source on the host path.
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+        if (!src_dtype_only[src_idx] || !ggml_is_contiguous(parent_tensor.src[src_idx])) {
+            continue;
+        }
+        sources[src_idx].preprocess_kernel = ggml_hsa_build_transform_kernel(
+            dev_info, GGML_HSA_OP_CONVERT, *parent_tensor.src[src_idx], sources[src_idx].tensor);
+    }
+
+    // Decide how each group (sources, output) synchronizes its parent<->internal transformations
+    // independently. On-device transformations run on the same in-order queue as the main kernel,
+    // so no host queue drain is needed and the packets batch with surrounding work; the host
+    // fallback must drain (before the dispatch for sources, after it for the output, since the host
+    // may not touch a buffer the device is still using). Device is preferred; the groups do not
+    // have to agree.
+
+    // Sources: a source needs pre-processing when it has a transformed internal buffer. If every
+    // such source has a pre-processing kernel the whole group runs on-device; otherwise a host
+    // transformation on any source drains before all of them.
+    const bool sources_need_sync = std::any_of(
+        sources.begin(), sources.end(), [](const source_node_t & s) { return s.buffer_size != 0; });
+    const bool sources_device_capable =
+        std::all_of(sources.begin(), sources.end(), [](const source_node_t & s) {
+            return s.buffer_size == 0 || s.preprocess_kernel != nullptr;
+        });
+    if (!sources_need_sync) {
+        sources.sync_mode = sync_mode_t::none;
+    } else if (sources_device_capable) {
+        sources.sync_mode = sync_mode_t::device;
+    } else {
+        sources.sync_mode = sync_mode_t::host;
+    }
+
+    // Output: needs post-processing when the result is dtype-converted back into the parent. There
+    // is no on-device kernel for that direction yet (the convert kernel has no f32 -> f16 path), so
+    // it always drains after the dispatch and converts on the host.
+    node.sync_mode = node.convert_dtype ? sync_mode_t::host : sync_mode_t::none;
 
     // create a kernel for the operation
     auto kernel_name = ggml_hsa_create_kernel_name(node.tensor);
@@ -789,8 +857,8 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     }
 
     std::size_t buffer_size = 0;
-    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-        buffer_size += src_nodes[src_idx].buffer_size;
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+        buffer_size += sources[src_idx].buffer_size;
     }
 
     if (buffer_size == 0) {
@@ -811,8 +879,8 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     buffer.reset(static_cast<std::byte *>(ptr));
 
     auto buffer_ptr = buffer.get();
-    for (auto src_idx = 0; src_idx < nsrcs; ++src_idx) {
-        auto & src_node = src_nodes[src_idx];
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+        auto & src_node = sources[src_idx];
         if (src_node.buffer_size > 0) {
             assert(src_node.tensor.data == nullptr);
             src_node.tensor.data = buffer_ptr;
@@ -1384,6 +1452,93 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
     ggml_hsa_wait_dispatches(ctx);
 }
 
+/**
+ * @brief Pre-processes a node's sources into their internal buffers before the main kernel
+ * dispatch.
+ *
+ * The path is selected by @c tensor_extra.sources.sync_mode. On the device path
+ * (@c sync_mode_t::device) each source that needs a transformed buffer is dispatched on-queue via
+ * its `preprocess_kernel` (an element-wise dtype conversion), with no queue drain. On the host path
+ * (@c sync_mode_t::host) the queue is drained first (the host may not touch a buffer the device is
+ * still using), then each source is copied into its internal buffer. No-op when
+ * @c sources.sync_mode is @c none.
+ *
+ * @param[in,out] ctx HSA backend context (queue used for drains and on-device dispatches)
+ * @param[in,out] tensor_extra node metadata holding the internal source nodes and sync mode
+ * @param[in] node parent graph node whose sources are pre-processed
+ * @return @c GGML_STATUS_SUCCESS, or the failing status of the first source that could not be
+ *         prepared
+ */
+static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
+                                                ggml_backend_hsa_tensor_extra & tensor_extra,
+                                                ggml_tensor * node) {
+    using sync_mode_t = ggml_backend_hsa_tensor_extra::sync_mode_t;
+
+    if (tensor_extra.sources.sync_mode == sync_mode_t::none) {
+        return GGML_STATUS_SUCCESS;
+    }
+
+    const bool use_device_transforms = tensor_extra.sources.sync_mode == sync_mode_t::device;
+    ggml_tensor & internal_node = tensor_extra.node.tensor;
+
+    if (!use_device_transforms) {
+        ggml_hsa_wait_dispatches(ctx);
+    }
+    for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
+        if (tensor_extra.sources[src_idx].buffer_size == 0) {
+            continue;
+        }
+        ggml_status status = GGML_STATUS_SUCCESS;
+        if (use_device_transforms) {
+            // on-device source pre-processing: convert the parent source into its internal buffer
+            // on-queue, no drain
+            ggml_tensor * preprocess_src = node->src[src_idx];
+            status = tensor_extra.sources[src_idx].preprocess_kernel->dispatch(
+                ctx, &preprocess_src, 1, *internal_node.src[src_idx]);
+        } else {
+            // change layout and/or convert datatypes
+            status = ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
+        }
+        if (status != GGML_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: failed to prepare source %i for tensor \"%s (%s)\"", __func__,
+                               src_idx, node->name, ggml_hsa_tensor_op_desc(*node));
+            return status;
+        }
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+/**
+ * @brief Post-processes a node's internal output buffer back into the parent tensor after dispatch.
+ *
+ * The path is selected by @c tensor_extra.node.sync_mode. Only @c sync_mode_t::host is currently
+ * reachable: the queue is drained and the result is converted back into the parent on the host.
+ * No-op when @c node.sync_mode is @c none.
+ *
+ * @param[in,out] ctx HSA backend context (queue used for the drain)
+ * @param[in,out] tensor_extra node metadata holding the internal output node and sync mode
+ * @param[in,out] node parent graph node that receives the post-processed result
+ * @return @c GGML_STATUS_SUCCESS, or the failing status of the post-processing step
+ */
+static ggml_status ggml_hsa_dispatch_postprocess(ggml_backend_hsa_context & ctx,
+                                                 ggml_backend_hsa_tensor_extra & tensor_extra,
+                                                 ggml_tensor * node) {
+    using sync_mode_t = ggml_backend_hsa_tensor_extra::sync_mode_t;
+
+    if (tensor_extra.node.sync_mode != sync_mode_t::host) {
+        return GGML_STATUS_SUCCESS;
+    }
+
+    // change layout and/or convert datatypes
+    ggml_hsa_wait_dispatches(ctx);
+    ggml_status status = ggml_hsa_copy_tensor(&tensor_extra.node.tensor, node);
+    if (status != GGML_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__, node->name,
+                           ggml_hsa_tensor_op_desc(*node));
+    }
+    return status;
+}
+
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                                                        ggml_cgraph * cgraph) {
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
@@ -1402,9 +1557,9 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         }
 
         auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-        for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
-            if (tensor_extra.src_nodes[src_idx].tensor.data == nullptr) {
-                tensor_extra.src_nodes[src_idx].tensor.data = node->src[src_idx]->data;
+        for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
+            if (tensor_extra.sources[src_idx].tensor.data == nullptr) {
+                tensor_extra.sources[src_idx].tensor.data = node->src[src_idx]->data;
             }
         }
     }
@@ -1438,44 +1593,23 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
         ggml_tensor & internal_node = tensor_extra.node.tensor;
 
-        if (tensor_extra.requires_sync) {
-            ggml_hsa_wait_dispatches(ctx);
-            for (auto src_idx = 0; src_idx < tensor_extra.nsrcs; ++src_idx) {
-                if (tensor_extra.src_nodes[src_idx].buffer_size == 0) {
-                    continue;
-                }
-                // change layout and/or convert datatypes
-                if (status = ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
-                    status != GGML_STATUS_SUCCESS) {
-                    GGML_HSA_LOG_ERROR("%s: failed to copy source %i for tensor \"%s (%s)\"",
-                                       __func__, src_idx, node->name,
-                                       ggml_hsa_tensor_op_desc(*node));
-                    break;
-                }
-            }
-            // break out of the node loop on failure so the trailing flush still runs
-            if (status != GGML_STATUS_SUCCESS) {
-                break;
-            }
+        // break out of the node loop on failure so the trailing flush still runs
+        if (status = ggml_hsa_dispatch_preprocess(ctx, tensor_extra, node);
+            status != GGML_STATUS_SUCCESS) {
+            break;
         }
 
-        if (status = tensor_extra.kernel->dispatch(ctx, internal_node.src, tensor_extra.nsrcs,
-                                                   internal_node);
+        if (status = tensor_extra.kernel->dispatch(ctx, internal_node.src,
+                                                   tensor_extra.sources.count, internal_node);
             status != GGML_STATUS_SUCCESS) {
             GGML_HSA_LOG_ERROR("%s: failed to dispatch kernel for tensor \"%s\" (%s)", __func__,
                                node->name, ggml_hsa_tensor_op_desc(*node));
             break;
         }
 
-        if (tensor_extra.node.convert_dtype) {
-            // change layout and/or convert datatypes
-            ggml_hsa_wait_dispatches(ctx);
-            if (status = ggml_hsa_copy_tensor(&internal_node, node);
-                status != GGML_STATUS_SUCCESS) {
-                GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__,
-                                   node->name, ggml_hsa_tensor_op_desc(*node));
-                break;
-            }
+        if (status = ggml_hsa_dispatch_postprocess(ctx, tensor_extra, node);
+            status != GGML_STATUS_SUCCESS) {
+            break;
         }
     }
 
@@ -1792,6 +1926,33 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
                    ((op->src[0]->type == GGML_TYPE_F32) || (op->src[0]->type == GGML_TYPE_F16) ||
                     (op->src[0]->type == GGML_TYPE_BF16)) &&
                    (op->type == GGML_TYPE_F32);
+        // GPT-2 attention block (KQ -> SCALE -> DIAG_MASK_INF -> SOFT_MAX -> KQV, over the 3D KQ
+        // tensor [n_kv, N, n_head]). Each of these IRON kernels is correct in isolation -- the
+        // standalone device tests pass, including on GPT-2-shaped inputs -- but when they run back
+        // to back inside the full attention graph they fault the hardware AIE queue after a number
+        // of tokens, which ROCr turns into an abort() at the next doorbell ring (unrecoverable, not
+        // a status we can catch). Until the queue fault is root-caused, route all three to the CPU
+        // fallback so graphs containing them run to completion.
+        //
+        // This alone does not keep the surrounding attention block on the CPU. Declining these
+        // three says nothing about the neighbouring KQ/KQV MUL_MATs, and where those are supported
+        // the scheduler leaves them on this device and their tensors cross the CPU/HSA boundary
+        // around each declined node. It happens that for GPT-2 they are not supported either --
+        // the GEMM kernel requires tile-aligned shapes and its build asserts "A/B must be tileable
+        // into (m * n_aie_rows, k)-sized blocks" -- so that block does end up entirely on the CPU,
+        // but that is a property of the MUL_MAT shapes, not something this switch arranges.
+        //
+        // The kernels themselves are still built and still correct, so their standalone device
+        // tests must keep running: reporting "unsupported" to those would make them skip every
+        // case and pass vacuously, leaving the kernels unguarded against regressions. They set
+        // GGML_HSA_ENABLE_FAULTING_OPS to opt back in. Do not set it for whole-graph workloads.
+        case GGML_OP_SCALE:
+        case GGML_OP_DIAG_MASK_INF:
+        case GGML_OP_SOFT_MAX:
+            if (!g_ggml_hsa_enable_faulting_ops) {
+                return false;
+            }
+            break;
         default:
             break;
     }
