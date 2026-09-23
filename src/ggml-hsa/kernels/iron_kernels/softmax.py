@@ -24,6 +24,13 @@ from aie.iron.controlflow import range_
 
 from .utils import fill_drain_program, row_dimensions
 
+# The scalar softmax core's frame exceeds the AIE core's 1024-byte default stack: aiecc measures
+# 1088 bytes for the plain variant, and the masked ones carry more live state. Without an explicit
+# size the core silently writes past the end of its stack into neighbouring core data memory.
+# Newer mlir-aie turns that into a build error ("stack_size is absent ... but it needs N bytes");
+# older toolchains built it and corrupted memory at run time. See gemm.py for the same pattern.
+_STACK_SIZE_BYTES = 2048
+
 
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """Build the softmax IRON program, dispatching by input count (1=plain, 2=masked, 3=sinks).
@@ -148,7 +155,11 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
             of_in.release(1)
             of_out.release(1)
 
-    worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+    worker = Worker(
+        ext_core_fn,
+        fn_args=[of_in.cons(), of_out.prod(), function],
+        stack_size=_STACK_SIZE_BYTES,
+    )
 
     input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
@@ -236,7 +247,9 @@ def create_binary_program(
             of_out.release(1)
 
     worker = Worker(
-        ext_core_fn, fn_args=[of_in.cons(), of_mask.cons(), of_out.prod(), function]
+        ext_core_fn,
+        fn_args=[of_in.cons(), of_mask.cons(), of_out.prod(), function],
+        stack_size=_STACK_SIZE_BYTES,
     )
 
     input_tensor_ty = np.ndarray[(num_elements_in,), np.dtype[input_tensor.dtype]]
@@ -353,6 +366,7 @@ def create_ternary_program(
     worker = Worker(
         ext_core_fn,
         fn_args=[of_in.cons(), of_mask.cons(), of_sink.cons(), of_out.prod(), function],
+        stack_size=_STACK_SIZE_BYTES,
     )
 
     input_tensor_ty = np.ndarray[(num_elements_in,), np.dtype[input_tensor.dtype]]
