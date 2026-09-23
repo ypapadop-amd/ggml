@@ -32,6 +32,17 @@ bool g_ggml_hsa_verbose = [] {
 #endif
 }();
 
+/// @brief Whether to report SCALE / DIAG_MASK_INF / SOFT_MAX as supported despite the in-graph AIE
+/// queue fault that otherwise routes them to the CPU (see ggml_backend_hsa_device_supports_op).
+/// Read once from @c GGML_HSA_ENABLE_FAULTING_OPS at startup. Intended for the standalone device
+/// tests of those kernels, which dispatch one op at a time and so do not trigger the fault.
+bool g_ggml_hsa_enable_faulting_ops = [] {
+    if (const char * enable = std::getenv("GGML_HSA_ENABLE_FAULTING_OPS"); enable != nullptr) {
+        return ggml_hsa_string_to_bool(enable);
+    }
+    return false;
+}();
+
 /// @brief Packets to accumulate before ringing the doorbell, or 0 if unset/invalid (use the
 /// per-queue default). Read once from @c GGML_HSA_DISPATCH_BATCH_SIZE at startup.
 static const std::size_t g_ggml_hsa_dispatch_batch_size = [] {
@@ -580,6 +591,15 @@ ggml_hsa_build_transform_kernel(const ggml_hsa_device_info::device_info & dev_in
         s = nullptr;
     }
     carrier.src[0] = &source;
+
+    // The carrier describes the transform, not whatever produced @p out. @p out is sometimes an
+    // internal source node, i.e. a shallow copy of a producer graph tensor, which would otherwise
+    // drag that producer's op and op_params in: ggml_hsa_create_kernel_name appends an op_params
+    // hash gated on tensor.op, so two identical transforms would land under different cache keys
+    // (and recompile) purely because of what produced their input. Transform tensors built by
+    // ggml_hsa_new_transform carry no op_params, so this is a no-op for those.
+    carrier.op = static_cast<ggml_op>(op);
+    std::fill(std::begin(carrier.op_params), std::end(carrier.op_params), 0);
 
     auto kernel_name = ggml_hsa_create_kernel_name(carrier, op_name);
     auto kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
@@ -1914,10 +1934,18 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         // a status we can catch). Until the queue fault is root-caused, route all three to the CPU
         // fallback so the whole attention block stays on the CPU (no cross-device copies) and
         // graphs containing them run to completion.
+        //
+        // The kernels themselves are still built and still correct, so their standalone device
+        // tests must keep running: reporting "unsupported" to those would make them skip every
+        // case and pass vacuously, leaving the kernels unguarded against regressions. They set
+        // GGML_HSA_ENABLE_FAULTING_OPS to opt back in. Do not set it for whole-graph workloads.
         case GGML_OP_SCALE:
         case GGML_OP_DIAG_MASK_INF:
         case GGML_OP_SOFT_MAX:
-            return false;
+            if (!g_ggml_hsa_enable_faulting_ops) {
+                return false;
+            }
+            break;
         default:
             break;
     }

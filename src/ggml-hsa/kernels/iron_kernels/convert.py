@@ -8,8 +8,8 @@
 """IRON design for an element-wise dtype conversion (GGML_OP_CPY cast, no shape change).
 
 Both tensors are dense and contiguous with the same number of elements; only the dtype differs
-(f32 -> bf16, bf16 -> f32, or f16 -> bf16). The tensor is flattened to 1D and streamed in tiles, so the
-same design serves any shape. This runs a pure cast on the device queue instead of the host copy
+(f32 -> bf16, bf16 -> f32, or f16 -> bf16). The tensor is flattened to 1D and streamed in tiles,
+so the same design serves any shape. This runs a pure cast on the device queue instead of the host copy
 path (which drains the queue), letting the cast batch with surrounding dispatches.
 """
 
@@ -99,11 +99,13 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     # IRON has no f16 element type (dtype_to_str rejects np.float16), so an f16 tensor is streamed
     # as i16 -- same 2-byte element, same DMA descriptors -- and convert.cc reinterprets the bits.
-    src_iron_dtype = np.int16 if src.dtype == np.float16 else src.dtype
+    # np.dtype, not the bare scalar type: TensorDesc guarantees src.dtype is an np.dtype, and the
+    # two are not interchangeable at every use site below.
+    src_iron_dtype = np.dtype(np.int16) if src.dtype == np.float16 else src.dtype
 
     # Flatten to 1D: a cast is element-wise, so any shape streams as one contiguous run.
     num_elements = src.numel()
-    tile_size = max_tile_size(arch, np.dtype(src_iron_dtype), num_elements)
+    tile_size = max_tile_size(arch, src_iron_dtype, num_elements)
     num_tiles = num_elements // tile_size
 
     function = _create_external_function(

@@ -170,6 +170,14 @@ int main() {
         printf("ERRORS (setup or execution failed; not the known numerical bug)\n");
         return 1;
     }
+    if ((passed == 0) && (mismatched == 0) && (skipped > 0)) {
+        // Nothing actually ran, so say so rather than reporting a green result. There are two
+        // independent reasons a case can skip and the per-case lines above distinguish them: the
+        // op is CPU-routed unless GGML_HSA_ENABLE_FAULTING_OPS is set (ctest sets it), and
+        // separately the SOFT_MAX kernel does not currently build on this toolchain.
+        printf("ALL SKIPPED (no case ran; see the per-case reasons above)\n");
+        return 0;
+    }
     printf("%d passed, %d known-mismatch, %d skipped\n", passed, mismatched, skipped);
     return 0;
 }

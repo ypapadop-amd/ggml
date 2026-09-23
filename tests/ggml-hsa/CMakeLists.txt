@@ -86,7 +86,10 @@ set(TEST_TARGET test-diag-mask-inf-hsa)
 add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml ggml-hsa)
 add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
-set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
+# See the SOFT_MAX block below: DIAG_MASK_INF is reported unsupported by default, so this
+# standalone test opts back in rather than skipping every case.
+set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT
+             "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw" "GGML_HSA_ENABLE_FAULTING_OPS=1")
 
 #
 # test-unary-hsa
@@ -139,7 +142,11 @@ set(TEST_TARGET test-softmax-hsa)
 add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml ggml-hsa)
 add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
-set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
+# SOFT_MAX is reported unsupported by default (it faults the AIE queue when run back to back
+# inside a full attention graph). This test dispatches it alone, which does not, so opt back in --
+# otherwise every case would skip and the suite would pass without testing the kernel.
+set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT
+             "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw" "GGML_HSA_ENABLE_FAULTING_OPS=1")
 #
 # test-preprocess-hsa
 #
