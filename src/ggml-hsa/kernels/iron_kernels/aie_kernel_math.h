@@ -44,19 +44,28 @@
 // Any kernel doing fp32 aie::mul / aie::mac must include this header: the
 // definitions have to be in the translation unit before aie_api's templates are
 // instantiated by kernel code. Omitting it surfaces as
-// "ld.lld: undefined symbol: _Z16mul_elem_16_conf...". Drop this block once a
-// fixed mlir-aie release restores the aie2 fp32 path.
+// "ld.lld: undefined symbol: _Z16mul_elem_16_conf...".
 //
-// Peano *declares* these three with no body, and the preprocessor cannot tell a
-// bodiless declaration from a defined one, so there is nothing to key an automatic
-// guard off. When a fixed release gives them bodies, this block turns into
-// "redefinition of mul_elem_16_conf" in every kernel that includes this header.
-// Build with -DGGML_AIE_NO_FP32_CONF_SHIM=1 to disable it without editing (which is
-// how to check whether an mlir-aie upgrade has landed the fix), then delete the
-// block once the upgrade is permanent.
+// Peano fixed this in clang 22: llvm-aie 22.0.0.2026092301 defines all three in
+// aiev2/aiev2_core.h (as adapters over mul_elem_16_accuracy_safe, i.e. the same
+// default tier this shim targets), where 21.0.0.2026073101 had them only as the
+// bodiless declarations in aiev2_aie_api_compat.h described above. Against a
+// clang-22 toolchain the shim is therefore a "redefinition of mul_elem_16_conf"
+// error in every kernel that includes this header, so key it off the compiler
+// version. There is no feature macro to test instead: both toolchains report the
+// same __AIE_ARCH_MODEL_VERSION__, and the definitions are plain inline functions
+// rather than builtins, so __clang_major__ is the only thing that separates them.
+//
+// The version boundary is the coarse part: the fix landed somewhere inside the
+// clang-21 to clang-22 window, and requirements-iron.txt does not pin llvm-aie, so
+// an early clang-22 nightly could in principle still want the shim and would fail
+// at link with the "undefined symbol" error above. No such nightly was available to
+// test against, so there is deliberately no flag to force the shim back on -- widen
+// the condition here if one turns up. -DGGML_AIE_NO_FP32_CONF_SHIM=1 still forces it
+// off on any toolchain. Delete the whole block once the supported floor is clang 22.
 //
 // aie2 only: aie2p/aie2ps define these intrinsics natively.
-#if __AIE_ARCH__ == 20 && !defined(GGML_AIE_NO_FP32_CONF_SHIM)
+#if __AIE_ARCH__ == 20 && !defined(GGML_AIE_NO_FP32_CONF_SHIM) && __clang_major__ < 22
 
 /// a * b, with the product negated when sub_mul is set.
 inline __attribute__((always_inline)) v16accfloat mul_elem_16_conf(v16float a,
