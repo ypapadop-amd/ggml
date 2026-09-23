@@ -851,7 +851,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             return;
         case GGML_OP_CONT:
         case GGML_OP_GET_ROWS:
-            // implemented as a host kernel; nothing to be done
             return;
         default:
             break;
@@ -2274,8 +2273,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
             // combinations ggml_hsa_assign supports for this op).
             return (op->src[0] != nullptr) && (op->src[1] != nullptr) &&
                    (op->src[1]->type == GGML_TYPE_I32) &&
-                   ((op->src[0]->type == GGML_TYPE_F32) ||
-                    (op->src[0]->type == GGML_TYPE_F16) ||
+                   ((op->src[0]->type == GGML_TYPE_F32) || (op->src[0]->type == GGML_TYPE_F16) ||
                     (op->src[0]->type == GGML_TYPE_BF16)) &&
                    (op->type == GGML_TYPE_F32);
         // GPT-2 attention block (KQ -> SCALE -> DIAG_MASK_INF -> SOFT_MAX -> KQV, over the 3D KQ

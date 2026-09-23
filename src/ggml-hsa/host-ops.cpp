@@ -13,33 +13,35 @@
 #include "ggml-hsa/type-traits.hpp"
 
 /**
- * @brief Converts a single element from @c SrcT to @c DstT via the type traits.
+ * @brief Converts one element from @p SrcT to @p DstT using the type traits of both.
  *
- * Fundamental types convert with a plain cast; non-fundamental types (e.g. f16/bf16) promote
- * through fp32. Shared by every host copy/gather functor so the conversion policy lives in one place.
+ * Types that are not fundamental (fp16, bf16) are promoted through fp32 on whichever side needs
+ * it; a same-type conversion is a plain copy. Shared by every host-op functor below so the
+ * promotion rules live in exactly one place.
  */
 template <ggml_type SrcT, ggml_type DstT>
-inline void ggml_hsa_convert_element(const typename ggml_hsa_type_traits<SrcT>::type * src,
-                                     typename ggml_hsa_type_traits<DstT>::type * dst) {
+constexpr typename ggml_hsa_type_traits<DstT>::type
+ggml_hsa_convert(const typename ggml_hsa_type_traits<SrcT>::type & src) {
     using src_traits = ggml_hsa_type_traits<SrcT>;
     using dst_traits = ggml_hsa_type_traits<DstT>;
+
     using dst_type = typename dst_traits::type;
 
     if constexpr (SrcT == DstT) {
         // no conversion needed
-        *dst = *src;
+        return src;
     } else if constexpr (src_traits::is_fundamental && dst_traits::is_fundamental) {
         // trivial conversion based on fundamental types
-        *dst = static_cast<dst_type>(*src);
+        return static_cast<dst_type>(src);
     } else if constexpr (src_traits::is_fundamental) {
         // conversion using promotion of source type to fp32
-        *dst = dst_traits::from_fp32(static_cast<float>(*src));
+        return dst_traits::from_fp32(static_cast<float>(src));
     } else if constexpr (dst_traits::is_fundamental) {
         // conversion using promotion of destination type to fp32
-        *dst = static_cast<dst_type>(src_traits::to_fp32(*src));
+        return static_cast<dst_type>(src_traits::to_fp32(src));
     } else {
         // conversion using promotion of source and destination types to fp32
-        *dst = dst_traits::from_fp32(src_traits::to_fp32(*src));
+        return dst_traits::from_fp32(src_traits::to_fp32(src));
     }
 }
 
@@ -68,7 +70,7 @@ struct ggml_hsa_copy_same_shape_tensors_f {
                                                          (i00 * dst->nb[0] + i01 * dst->nb[1] +
                                                           i02 * dst->nb[2] + i03 * dst->nb[3])));
 
-                        ggml_hsa_convert_element<SrcT, DstT>(src_ptr, dst_ptr);
+                        *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
                     }
                 }
             }
@@ -109,7 +111,7 @@ struct ggml_hsa_copy_subblock_f {
                                                          (i00 * dst->nb[0] + i01 * dst->nb[1] +
                                                           i02 * dst->nb[2] + i03 * dst->nb[3])));
 
-                        ggml_hsa_convert_element<SrcT, DstT>(src_ptr, dst_ptr);
+                        *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
                     }
                 }
             }
@@ -141,7 +143,7 @@ struct ggml_hsa_copy_tensor_to_cont_tensor_f {
                             static_cast<const std::byte *>(src->data) +
                             (i00 * src->nb[0] + i01 * src->nb[1] + i02 * src->nb[2] +
                              i03 * src->nb[3])));
-                        ggml_hsa_convert_element<SrcT, DstT>(src_ptr, &dst_ptr[id]);
+                        dst_ptr[id] = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
                         ++id;
                     }
                 }
@@ -164,22 +166,24 @@ struct ggml_hsa_get_rows_f {
 
     template <ggml_type SrcT, ggml_type DstT = SrcT>
     ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
-        using src_type = typename ggml_hsa_type_traits<SrcT>::type;
-        using dst_type = typename ggml_hsa_type_traits<DstT>::type;
+        using src_traits = ggml_hsa_type_traits<SrcT>;
+        using dst_traits = ggml_hsa_type_traits<DstT>;
 
-        const std::int64_t nc    = src->ne[0];
-        const std::int64_t ne10  = indices->ne[0];
-        const std::int64_t ne11  = indices->ne[1];
-        const std::int64_t ne12  = indices->ne[2];
-        const std::int64_t slice = ne11 * ne10;  // indices per ne12 slice
-        const std::int64_t nr    = slice * ne12;
+        using src_type = typename src_traits::type;
+        using dst_type = typename dst_traits::type;
+
+        const std::int64_t nc = src->ne[0];
+        const std::int64_t ne10 = indices->ne[0];
+        const std::int64_t ne11 = indices->ne[1];
+        const std::int64_t ne12 = indices->ne[2];
+        const std::int64_t nr = ne10 * ne11 * ne12;
 
         assert(dst->ne[0] == nc);
 
         for (std::int64_t i = 0; i < nr; ++i) {
-            const std::int64_t i12 = i / slice;
-            const std::int64_t i11 = (i - i12 * slice) / ne10;
-            const std::int64_t i10 = i - i12 * slice - i11 * ne10;
+            const std::int64_t i12 = i / (ne11 * ne10);
+            const std::int64_t i11 = (i - i12 * ne11 * ne10) / ne10;
+            const std::int64_t i10 = i - i12 * ne11 * ne10 - i11 * ne10;
 
             const std::int64_t i01 = *std::launder(reinterpret_cast<const std::int32_t *>(
                 static_cast<const std::byte *>(indices->data) +
@@ -205,7 +209,7 @@ struct ggml_hsa_get_rows_f {
                         reinterpret_cast<const src_type *>(src_row + i00 * src->nb[0]));
                     auto dst_ptr =
                         std::launder(reinterpret_cast<dst_type *>(dst_row + i00 * dst->nb[0]));
-                    ggml_hsa_convert_element<SrcT, DstT>(src_ptr, dst_ptr);
+                    *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
                 }
             }
         }
@@ -352,9 +356,9 @@ ggml_status ggml_hsa_compute_cont(ggml_backend_hsa_context & ctx, ggml_tensor * 
 ggml_status ggml_hsa_compute_get_rows(ggml_backend_hsa_context & ctx, ggml_tensor * t) {
     assert(ggml_hsa_nsrcs(*t) == 2);
 
-    auto * src0 = t->src[0];  // data table
-    auto * src1 = t->src[1];  // int32 row indices
-    auto * dst  = t;
+    auto * src0 = t->src[0]; // data table
+    auto * src1 = t->src[1]; // int32 row indices
+    auto * dst = t;
 
     assert(src1->type == GGML_TYPE_I32);
 
