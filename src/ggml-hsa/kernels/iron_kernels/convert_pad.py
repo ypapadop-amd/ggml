@@ -141,8 +141,11 @@ def convert_pad(
     # Per-worker fill/drain: worker w reads its band of rows from the contiguous src buffer and
     # writes them to the matching band of the (pre-zeroed) dst buffer. Each band is a contiguous
     # 1-D slice (offset, size) of the flat buffer, so every worker drives its own shim DMA path.
+    # The declared buffer types cover each ggml tensor in full -- the destination is [d0pad, d1pad],
+    # not the [d0pad, d1] subrange the workers write -- so the Runtime signature matches the buffer
+    # the backend actually passes. The drain access patterns below restrict the writes.
     src_ty = np.ndarray[(d0 * d1,), np.dtype[src.dtype]]
-    dst_ty = np.ndarray[(d0pad * d1,), np.dtype[output_tensor.dtype]]
+    dst_ty = np.ndarray[(d0pad * d1pad,), np.dtype[output_tensor.dtype]]
 
     def sequence(a_in, b_out, in_prods, out_conses):
         # Issue every worker's fill up front so their DMAs run concurrently, then wait on every
@@ -161,7 +164,7 @@ def convert_pad(
             )
             out_taps.append(
                 TensorAccessPattern(
-                    (d0pad * d1,),
+                    (d0pad * d1pad,),
                     offset=out_off,
                     sizes=[1, 1, 1, out_len],
                     strides=[0, 0, 0, 1],

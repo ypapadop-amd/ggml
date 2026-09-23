@@ -570,7 +570,10 @@ ggml_hsa_build_transform_kernel(const ggml_hsa_device_info::device_info & dev_in
                                 const ggml_tensor & out) {
     const std::string op_name = ggml_hsa_op_name(op);
 
-    // carrier tensor: destination metadata, single source = transform input
+    // carrier tensor: destination metadata, single source = transform input. Both objects are
+    // function-local and die together; kernel creation below reads their metadata synchronously and
+    // retains neither, so carrier.src[0] never outlives source. Anything that starts deferring or
+    // storing the carrier has to copy it first.
     ggml_tensor carrier = out;
     ggml_tensor source = in;
     for (auto & s : carrier.src) {

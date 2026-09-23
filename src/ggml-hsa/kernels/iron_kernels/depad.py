@@ -240,7 +240,9 @@ def depad(
     ]
 
     # Only the first d1 rows carry results; each padded row is d0pad wide, each dense row d0.
-    src_ty = np.ndarray[(d0pad * d1,), np.dtype[src.dtype]]
+    # The source type covers the padded tensor in full ([d0pad, d1pad]) so the Runtime signature
+    # matches the buffer the backend passes; the fill access patterns below restrict the reads.
+    src_ty = np.ndarray[(d0pad * d1pad,), np.dtype[src.dtype]]
     dst_ty = np.ndarray[(d0 * d1,), np.dtype[output_tensor.dtype]]
 
     # Access pattern dims are (chunk, row, element), outermost-first. The element run (size
@@ -254,7 +256,7 @@ def depad(
         for w in range(n_workers):
             n_chunks_w, rows_w, src_off, dst_off = bands[w]
             src_tap = TensorAccessPattern(
-                (d1, d0pad),
+                (d1pad, d0pad),
                 src_off,
                 [1, n_chunks_w, rows_w, chunk],
                 [0, chunk, d0pad, 1],

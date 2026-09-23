@@ -42,6 +42,14 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
  * @c ggml_build_forward_expand + @c ggml_backend_graph_compute like any other op.
  *
  * @note These operators are only supported by the HSA backend.
+ *
+ * @warning The returned node carries an op value above @c GGML_OP_COUNT, which core ggml does not
+ * expect. @c ggml_op_name indexes @c GGML_OP_NAME, an array of exactly @c GGML_OP_COUNT entries,
+ * with no bounds check, and generic consumers reach it through @c ggml_op_desc -- notably
+ * @c ggml_backend_sched's node dump, which runs when scheduler debug output is enabled
+ * (@c GGML_SCHED_DEBUG > 1). The HSA backend itself is safe (it routes every such site through
+ * @c ggml_hsa_op_name), but these nodes must not be handed to a scheduler with debug output on, or
+ * to any other generic ggml diagnostic, until core grows a supported extension range.
  * @{
  */
 
