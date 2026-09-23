@@ -2,6 +2,7 @@
 
 #include "ggml-hsa/host-ops.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <new>
 #include <utility>
@@ -61,6 +62,47 @@ struct ggml_hsa_copy_same_shape_tensors_f {
             for (std::int64_t i02 = 0; i02 < src->ne[2]; ++i02) {
                 for (std::int64_t i01 = 0; i01 < src->ne[1]; ++i01) {
                     for (std::int64_t i00 = 0; i00 < src->ne[0]; ++i00) {
+                        auto src_ptr = std::launder(reinterpret_cast<const src_type *>(
+                            static_cast<const std::byte *>(src->data) +
+                            (i00 * src->nb[0] + i01 * src->nb[1] + i02 * src->nb[2] +
+                             i03 * src->nb[3])));
+                        auto dst_ptr = std::launder(
+                            reinterpret_cast<dst_type *>(static_cast<std::byte *>(dst->data) +
+                                                         (i00 * dst->nb[0] + i01 * dst->nb[1] +
+                                                          i02 * dst->nb[2] + i03 * dst->nb[3])));
+
+                        *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
+                    }
+                }
+            }
+        }
+        return GGML_STATUS_SUCCESS;
+    }
+};
+
+/**
+ * @brief Copies the overlapping sub-block between two differently-shaped tensors.
+ *
+ * Iterates over the per-dimension overlap and indexes both tensors through their own strides, so a
+ * smaller logical tensor can be scattered into a larger zero-padded destination (or gathered back).
+ * Padding gaps in the destination are never written and must be pre-zeroed by the caller. Datatype
+ * conversion is handled identically to the same-shape copy.
+ */
+struct ggml_hsa_copy_subblock_f {
+    template <ggml_type SrcT, ggml_type DstT = SrcT>
+    ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
+        using src_type = typename ggml_hsa_type_traits<SrcT>::type;
+        using dst_type = typename ggml_hsa_type_traits<DstT>::type;
+
+        const std::int64_t ne0 = std::min(src->ne[0], dst->ne[0]);
+        const std::int64_t ne1 = std::min(src->ne[1], dst->ne[1]);
+        const std::int64_t ne2 = std::min(src->ne[2], dst->ne[2]);
+        const std::int64_t ne3 = std::min(src->ne[3], dst->ne[3]);
+
+        for (std::int64_t i03 = 0; i03 < ne3; ++i03) {
+            for (std::int64_t i02 = 0; i02 < ne2; ++i02) {
+                for (std::int64_t i01 = 0; i01 < ne1; ++i01) {
+                    for (std::int64_t i00 = 0; i00 < ne0; ++i00) {
                         auto src_ptr = std::launder(reinterpret_cast<const src_type *>(
                             static_cast<const std::byte *>(src->data) +
                             (i00 * src->nb[0] + i01 * src->nb[1] + i02 * src->nb[2] +
@@ -261,6 +303,10 @@ ggml_status ggml_hsa_copy_tensor(const ggml_tensor * src, ggml_tensor * dst) {
                        "destination tensors \"%s\" (%s)",
                        __func__, src->name, ggml_op_desc(src), dst->name, ggml_op_desc(dst));
     return GGML_STATUS_FAILED;
+}
+
+ggml_status ggml_hsa_copy_subblock(const ggml_tensor * src, ggml_tensor * dst) {
+    return ggml_hsa_assign(ggml_hsa_copy_subblock_f{}, src, dst);
 }
 
 ggml_status ggml_hsa_compute_dup(ggml_backend_hsa_context & ctx, ggml_tensor * t) {
