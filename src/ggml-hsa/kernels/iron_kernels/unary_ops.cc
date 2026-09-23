@@ -5,6 +5,8 @@
  * @brief Scalar unary operations for AIE kernels.
  */
 
+#include <cstring>
+
 #include "aie_kernel_math.h"
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
@@ -29,6 +31,124 @@ void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryO
     }
     event1();
 }
+
+/**
+ * @brief Unsigned integer type with the same width as the floating-point type @p T.
+ *
+ * Used to reinterpret a float as raw bits so the sign can be manipulated with integer operations.
+ * Only the float types the kernels are instantiated with are listed.
+ */
+template <typename T>
+struct aie_same_width_uint;
+
+template <>
+struct aie_same_width_uint<f32> {
+    using type = std::uint32_t;
+};
+
+template <>
+struct aie_same_width_uint<bf16> {
+    using type = std::uint16_t;
+};
+
+/**
+ * @brief Returns |v| for one element.
+ *
+ * For floats this clears the sign bit, which is exactly @c std::fabs -- the reference ggml
+ * computes on the host -- for every input, including -0.0 (which a @c v < 0 ? -v : v test leaves
+ * negative) and NaN. Integer types keep the ordinary comparison form, so the op stays as
+ * dtype-generic as the kernel that calls it.
+ *
+ * @tparam T Element type.
+ * @param[in] v The value to take the magnitude of.
+ * @return The magnitude of @p v.
+ */
+template <typename T>
+inline T scalar_abs(T v) {
+    if constexpr (is_floating_point_v<T>) {
+        using U = typename aie_same_width_uint<T>::type;
+        constexpr U magnitude_mask = static_cast<U>(~(U{1} << (sizeof(U) * 8 - 1)));
+        U bits = 0;
+        std::memcpy(&bits, &v, sizeof(bits));
+        bits &= magnitude_mask;
+        T result;
+        std::memcpy(&result, &bits, sizeof(result));
+        return result;
+    } else {
+        return v < T(0) ? -v : v;
+    }
+}
+
+// Vector sign manipulation without G_FNEG.
+//
+// aie2p only: Peano's aie2p backend has no legalization rule for G_FNEG on vector types, so
+// aie::neg on a float vector fails to compile there ("unable to legalize instruction: G_FNEG
+// <16 x s32>" for f32, "<32 x s16>" for bf16). The helpers below do the same job with integer
+// bit manipulation, which legalizes and is exact for every input. aie2 legalizes vector G_FNEG,
+// so it keeps using aie::neg -- no behaviour change on an architecture this cannot be tested on
+// here. Drop the split once the aie2p backend grows the missing rule.
+#if __AIE_ARCH__ != 20
+
+/**
+ * @brief Returns -v for every lane, by flipping the sign bit.
+ *
+ * Negation is exactly a sign-bit flip in IEEE-754, so doing it on the integer reinterpretation is
+ * exact for every input, zeros, infinities and NaNs included. Same technique as
+ * @c convert_f32_to_bf16_vector in ggml-aie.hpp.
+ *
+ * @tparam T Float element type.
+ * @tparam V Vector width.
+ * @param[in] v The vector to negate.
+ * @return The negated vector.
+ */
+template <typename T, unsigned V>
+inline aie::vector<T, V> vec_neg(const aie::vector<T, V> & v) {
+    using U = typename aie_same_width_uint<T>::type;
+    constexpr U sign_bit = static_cast<U>(U{1} << (sizeof(U) * 8 - 1));
+    return aie::vector_cast<T>(aie::bit_xor(sign_bit, aie::vector_cast<U>(v)));
+}
+
+/**
+ * @brief Returns |v| for every lane, by clearing the sign bit.
+ *
+ * Also avoids @c aie::abs, which does not compute a floating-point magnitude in this aie_api
+ * version (it returned 0.875 for -5.0f on aie2). Clearing the sign bit is exactly @c fabs for
+ * every input.
+ *
+ * @tparam T Float element type.
+ * @tparam V Vector width.
+ * @param[in] v The vector to take the magnitude of.
+ * @return The element-wise magnitude.
+ */
+template <typename T, unsigned V>
+inline aie::vector<T, V> vec_abs(const aie::vector<T, V> & v) {
+    using U = typename aie_same_width_uint<T>::type;
+    constexpr U magnitude_mask = static_cast<U>(~(U{1} << (sizeof(U) * 8 - 1)));
+    return aie::vector_cast<T>(aie::bit_and(magnitude_mask, aie::vector_cast<U>(v)));
+}
+
+#else // __AIE_ARCH__ == 20
+
+/**
+ * @brief Returns -v for every lane. aie2 legalizes vector @c G_FNEG, so use it directly.
+ */
+template <typename T, unsigned V>
+inline aie::vector<T, V> vec_neg(const aie::vector<T, V> & v) {
+    return aie::neg(v);
+}
+
+/**
+ * @brief Returns |v| for every lane.
+ *
+ * max(v, -v) rather than aie::abs: aie::abs does not compute a floating-point magnitude here
+ * (it returned 0.875 for -5.0f on aie2).
+ */
+template <typename T, unsigned V>
+inline aie::vector<T, V> vec_abs(const aie::vector<T, V> & v) {
+    return aie::max(v, aie::neg(v));
+}
+
+#endif // __AIE_ARCH__ != 20
 
 /**
  * @brief Applies a unary operation to N elements, vectorized when the operand types match.
@@ -141,11 +261,9 @@ void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
 void ggml_unary_op_abs(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
-    // max(v, -v) rather than aie::abs: aie::abs does not compute a floating-point
-    // magnitude here (it returned 0.875 for -5.0f on aie2).
     transform_vector_n(
-        in, out, N, [](auto v) { return aie::max(v, aie::neg(v)); },
-        [](auto v) { return static_cast<OUTPUT_DTYPE>(v < static_cast<INPUT_DTYPE>(0) ? -v : v); });
+        in, out, N, [](auto v) { return vec_abs(v); },
+        [](auto v) { return static_cast<OUTPUT_DTYPE>(scalar_abs(v)); });
 }
 
 #endif // GGML_UNARY_OP_ABS
@@ -187,7 +305,7 @@ void ggml_unary_op_neg(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
     transform_vector_n(
-        in, out, N, [](auto v) { return aie::neg(v); },
+        in, out, N, [](auto v) { return vec_neg(v); },
         [](auto v) { return static_cast<OUTPUT_DTYPE>(-v); });
 }
 
