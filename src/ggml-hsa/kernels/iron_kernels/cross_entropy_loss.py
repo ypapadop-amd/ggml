@@ -227,7 +227,9 @@ def _create_external_function(
         np.int32,  # tile_size (N)
     ]
 
-    compile_flags = []
+    # Row length is fixed per kernel instance (each shape JITs its own .o), so pass it as a
+    # compile-time constant: lets Peano bind the loop hints and fold the address arithmetic.
+    compile_flags = [f"-DCROSS_ENTROPY_N={tile_size}"]
 
     current_dir = Path(__file__).resolve().parent
     return ExternalFunction(
