@@ -166,6 +166,11 @@ _OP_KERNEL_MAP: dict[str, Kernel] = {
     "COUNT_EQUAL": Kernel("ggml_op_count_equal", "count_equal.py"),
     "CROSS_ENTROPY_LOSS": Kernel("ggml_op_cross_entropy_loss", "cross_entropy_loss.py"),
     "CONV_2D": Kernel("ggml_op_conv_2d", "conv_2d.py"),
+    # HSA-only transform kernels (not GGML ops)
+    "HSA_CONVERT_PAD": Kernel("ggml_hsa_convert_pad", "convert_pad.py"),
+    "HSA_DEPAD": Kernel("ggml_hsa_depad", "depad.py"),
+    # element-wise dtype cast
+    "HSA_CONVERT": Kernel("ggml_hsa_convert", "convert.py"),
 }
 
 

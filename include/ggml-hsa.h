@@ -33,6 +33,76 @@ GGML_BACKEND_API void ggml_backend_hsa_unregister_host_buffer(void * buffer);
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
 
+/**
+ * @defgroup ggml_hsa_ops HSA-only graph operators
+ *
+ * These build a single-node result whose op is one of the HSA-only operators (see @c ggml_hsa_op
+ * in the backend). They are the internal MUL_MAT convert/pad pre-amble and de-pad post-amble, plus
+ * the element-wise dtype cast, exposed as ordinary ggml ops so they can be driven through
+ * @c ggml_build_forward_expand + @c ggml_backend_graph_compute like any other op.
+ *
+ * @note These operators are only supported by the HSA backend.
+ *
+ * @warning The returned node carries an op value above @c GGML_OP_COUNT, which core ggml does not
+ * expect. @c ggml_op_name indexes @c GGML_OP_NAME, an array of exactly @c GGML_OP_COUNT entries,
+ * with no bounds check, and generic consumers reach it through @c ggml_op_desc -- notably
+ * @c ggml_backend_sched's node dump, which runs when scheduler debug output is enabled
+ * (@c GGML_SCHED_DEBUG > 1). The HSA backend itself is safe (it routes every such site through
+ * @c ggml_hsa_op_name), but these nodes must not be handed to a scheduler with debug output on, or
+ * to any other generic ggml diagnostic, until core grows a supported extension range.
+ * @{
+ */
+
+/**
+ * @brief Converts @p a to @p type and widens it into the given (larger or equal) 2D shape.
+ *
+ * The kernel writes the first @c a->ne[1] rows, zero-filling each one's tail columns
+ * <tt>[a->ne[0], ne0)</tt>.
+ *
+ * @warning The trailing rows <tt>[a->ne[1], ne1)</tt> are NOT written. The backend does not zero
+ * buffers at allocation, so when @p ne1 is greater than @c a->ne[1] the caller must pre-zero the
+ * destination (e.g. with @c ggml_backend_tensor_memset) or those rows hold whatever was already in
+ * the buffer.
+ *
+ * @param[in] ctx  context to allocate the result in
+ * @param[in] a    source tensor; must be 2D (@c ne[2] == @c ne[3] == 1)
+ * @param[in] type datatype of the result
+ * @param[in] ne0  padded row width, >= @c a->ne[0]
+ * @param[in] ne1  padded row count, >= @c a->ne[1]
+ * @return the result tensor, of shape <tt>[ne0, ne1, 1, 1]</tt>
+ */
+GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert_pad(
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type, int64_t ne0,
+    int64_t ne1);
+
+/**
+ * @brief Strips the zero-padding from @p a, gathering the top-left sub-block into the given
+ * (smaller or equal) 2D shape and converting it to @p type.
+ *
+ * @param[in] ctx  context to allocate the result in
+ * @param[in] a    padded source tensor; must be 2D (@c ne[2] == @c ne[3] == 1)
+ * @param[in] type datatype of the result
+ * @param[in] ne0  unpadded row width, <= @c a->ne[0]
+ * @param[in] ne1  unpadded row count, <= @c a->ne[1]
+ * @return the result tensor, of shape <tt>[ne0, ne1, 1, 1]</tt>
+ */
+GGML_BACKEND_API struct ggml_tensor * ggml_hsa_depad(
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type, int64_t ne0,
+    int64_t ne1);
+
+/**
+ * @brief Element-wise datatype cast of @p a to @p type, keeping the shape.
+ *
+ * @param[in] ctx  context to allocate the result in
+ * @param[in] a    source tensor; must be dense and contiguous
+ * @param[in] type datatype of the result
+ * @return the result tensor, with the same shape as @p a
+ */
+GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert(
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type);
+
+/** @} */
+
 #ifdef  __cplusplus
 }
 #endif
