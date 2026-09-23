@@ -295,7 +295,9 @@ void ggml_unary_op_gelu(const INPUT_DTYPE * __restrict in,
     constexpr float kSqrt2OverPi = 0.7978845608028654f; // sqrt(2/pi)
     constexpr float kCoefA = 0.044715f;
 
-    transform_n(in, N, out, [](auto v) -> OUTPUT_DTYPE {
+    // Scalar fallback: the vector path below is f32-only (vec_exp evaluates in f32), so any other
+    // element type, and the tail of a partial vector, goes through this.
+    auto scalar_gelu = [](auto v) -> OUTPUT_DTYPE {
         const float x = static_cast<float>(v);
         const float y = kSqrt2OverPi * (x + kCoefA * x * x * x);
 
@@ -305,7 +307,13 @@ void ggml_unary_op_gelu(const INPUT_DTYPE * __restrict in,
         const float tanh_y = (y < 0.0f) ? -tanh_abs : tanh_abs;
 
         return static_cast<OUTPUT_DTYPE>(0.5f * x * (1.0f + tanh_y));
-    });
+    };
+
+    if constexpr (std::is_same_v<INPUT_DTYPE, f32> && std::is_same_v<OUTPUT_DTYPE, f32>) {
+        transform_vector_n(in, out, N, [](auto v) { return vec_gelu(v); }, scalar_gelu);
+    } else {
+        transform_n(in, N, out, scalar_gelu);
+    }
 }
 
 #endif // GGML_UNARY_OP_GELU

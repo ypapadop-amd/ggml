@@ -26,6 +26,13 @@ from .utils import (
     tiled_tile_size,
 )
 
+# The vectorized GELU core's frame exceeds the AIE core's 1024-byte default stack (aiecc measures
+# 1600 bytes for the f32 path). Without an explicit size the core writes past the end of its own
+# stack into neighbouring core data memory; newer mlir-aie turns that into a build error. Shared by
+# every unary op built here -- the others need less, but the allocation is per-core and cheap.
+# Same pattern as softmax.py, cross_entropy_loss.py and gemm.py.
+_STACK_SIZE_BYTES = 2048
+
 
 def _unary_op(
     arch: str,
@@ -80,7 +87,11 @@ def _unary_op(
             of_in.release(1)
             of_out.release(1)
 
-    worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+    worker = Worker(
+        ext_core_fn,
+        fn_args=[of_in.cons(), of_out.prod(), function],
+        stack_size=_STACK_SIZE_BYTES,
+    )
 
     # Runtime operations to move data to/from the AIE-array
     input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
@@ -106,6 +117,7 @@ _VECTORIZED_OPS = frozenset(
     {
         "GGML_OP_SQR",
         "GGML_UNARY_OP_ABS",
+        "GGML_UNARY_OP_GELU",
         "GGML_UNARY_OP_NEG",
         "GGML_UNARY_OP_RELU",
     }
