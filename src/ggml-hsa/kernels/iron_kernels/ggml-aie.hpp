@@ -51,6 +51,51 @@ template <typename T>
 constexpr bool is_floating_point_v = is_floating_point<T>::value;
 
 /**
+ * @brief Unsigned integer type with the same width as @p T.
+ *
+ * Lets a value be reinterpreted as raw bits so it can be manipulated with integer operations --
+ * clearing or flipping a float's sign bit, for instance. Specialized for every element type alias
+ * above; an unlisted type is a compile error rather than a silent mismatch.
+ *
+ * @tparam T The type whose width is matched.
+ */
+template <typename T>
+struct same_width_uint;
+
+template <>
+struct same_width_uint<i8> {
+    using type = std::uint8_t;
+};
+
+template <>
+struct same_width_uint<i16> {
+    using type = std::uint16_t;
+};
+
+template <>
+struct same_width_uint<i32> {
+    using type = std::uint32_t;
+};
+
+template <>
+struct same_width_uint<bf16> {
+    using type = std::uint16_t;
+};
+
+template <>
+struct same_width_uint<f32> {
+    using type = std::uint32_t;
+};
+
+/**
+ * @brief Helper alias for same_width_uint.
+ *
+ * @tparam T The type whose width is matched.
+ */
+template <typename T>
+using same_width_uint_t = typename same_width_uint<T>::type;
+
+/**
  * @brief Converts one f32 element to bf16 bits (round-to-nearest-even, NaN -> quiet).
  *
  * Replicates the host @c ggml_compute_fp32_to_bf16 integer arithmetic bit-for-bit, so vectorized
@@ -70,6 +115,57 @@ inline std::uint16_t convert_f32_to_bf16_scalar(f32 v) {
         return static_cast<std::uint16_t>((bits.u >> 16) | 64u);
     }
     return static_cast<std::uint16_t>((bits.u + (0x7fffu + ((bits.u >> 16) & 1u))) >> 16);
+}
+
+/**
+ * @brief Widens one f16 bit pattern to f32.
+ *
+ * IEEE half -> single is exact for every input (single has both more exponent range and more
+ * mantissa bits), so this is pure integer bit manipulation with no rounding: rebias the exponent,
+ * normalize subnormals, and pass inf/NaN payloads through. Written against the raw 16-bit pattern
+ * because IRON has no f16 element type -- f16 tensors are streamed as i16 and reinterpreted here.
+ *
+ * Deliberately integer-only rather than a transcription of the host @c ggml_compute_fp16_to_fp32,
+ * which reaches its result via a float multiply and therefore inherits the hardware's NaN-quieting
+ * behaviour. The two agree bit-for-bit on every finite input, and on NaN inputs they differ only in
+ * the mantissa MSB, which the following @c convert_f32_to_bf16_scalar sets unconditionally (its
+ * `| 64` quieting). See test-convert-hsa, which checks all 65536 patterns.
+ *
+ * @param[in] h The f16 bit pattern.
+ * @return The widened f32 value.
+ */
+inline f32 convert_f16_bits_to_f32(std::uint16_t h) {
+    const std::uint32_t sign = static_cast<std::uint32_t>(h & 0x8000u) << 16;
+    const std::uint32_t exponent = (h >> 10) & 0x1Fu;
+    std::uint32_t mantissa = h & 0x3FFu;
+
+    std::uint32_t bits = 0;
+    if (exponent == 0) {
+        if (mantissa != 0) {
+            // Subnormal: shift the mantissa up until its implicit leading bit is in place, and
+            // lower the exponent by the same amount. f16 bias 15 -> f32 bias 127 gives 113 for the
+            // smallest normal exponent here.
+            std::uint32_t shift = 0;
+            while ((mantissa & 0x400u) == 0) {
+                mantissa <<= 1;
+                ++shift;
+            }
+            mantissa &= 0x3FFu;
+            bits = ((113u - shift) << 23) | (mantissa << 13);
+        }
+        // mantissa == 0 leaves bits == 0, i.e. a signed zero
+    } else if (exponent == 0x1Fu) {
+        bits = 0x7F800000u | (mantissa << 13); // inf / NaN, payload preserved
+    } else {
+        bits = ((exponent + 112u) << 23) | (mantissa << 13); // rebias: -15 + 127
+    }
+
+    union {
+        std::uint32_t u;
+        f32 f;
+    } out;
+    out.u = sign | bits;
+    return out.f;
 }
 
 /**

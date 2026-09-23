@@ -32,6 +32,17 @@ bool g_ggml_hsa_verbose = [] {
 #endif
 }();
 
+/// @brief Whether to report SCALE / DIAG_MASK_INF / SOFT_MAX as supported despite the in-graph AIE
+/// queue fault that otherwise routes them to the CPU (see ggml_backend_hsa_device_supports_op).
+/// Read once from @c GGML_HSA_ENABLE_FAULTING_OPS at startup. Intended for the standalone device
+/// tests of those kernels, which dispatch one op at a time and so do not trigger the fault.
+bool g_ggml_hsa_enable_faulting_ops = [] {
+    if (const char * enable = std::getenv("GGML_HSA_ENABLE_FAULTING_OPS"); enable != nullptr) {
+        return ggml_hsa_string_to_bool(enable);
+    }
+    return false;
+}();
+
 /// @brief Packets to accumulate before ringing the doorbell, or 0 if unset/invalid (use the
 /// per-queue default). Read once from @c GGML_HSA_DISPATCH_BATCH_SIZE at startup.
 static const std::size_t g_ggml_hsa_dispatch_batch_size = [] {
@@ -581,6 +592,15 @@ ggml_hsa_build_transform_kernel(const ggml_hsa_device_info::device_info & dev_in
     }
     carrier.src[0] = &source;
 
+    // The carrier describes the transform, not whatever produced @p out. @p out is sometimes an
+    // internal source node, i.e. a shallow copy of a producer graph tensor, which would otherwise
+    // drag that producer's op and op_params in: ggml_hsa_create_kernel_name appends an op_params
+    // hash gated on tensor.op, so two identical transforms would land under different cache keys
+    // (and recompile) purely because of what produced their input. Transform tensors built by
+    // ggml_hsa_new_transform carry no op_params, so this is a no-op for those.
+    carrier.op = static_cast<ggml_op>(op);
+    std::fill(std::begin(carrier.op_params), std::end(carrier.op_params), 0);
+
     auto kernel_name = ggml_hsa_create_kernel_name(carrier, op_name);
     auto kernel = ggml_hsa_get_cached_kernel(kernel_name, dev_info);
     if (kernel != nullptr) {
@@ -881,6 +901,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     }
 
     std::array<bool, GGML_MAX_SRC> update_src_buffer_size = {};
+    // Tracks *why* a source needs a temporary buffer. A source whose only difference from its
+    // parent is the element type can be pre-processed on the device by the element-wise
+    // GGML_HSA_OP_CONVERT kernel; one that also needs its layout rewritten cannot, because that
+    // kernel only streams contiguous runs. The flatten step below erases the distinction from the
+    // tensors themselves, so it has to be recorded here.
+    std::array<bool, GGML_MAX_SRC> src_dtype_only = {};
 
     // F32 MUL_MAT is handled specially: the operands are converted to bf16 and zero-padded to the
     // GEMM tile multiples. This fully sets up the internal nodes (dtype, shape, buffer sizes,
@@ -912,6 +938,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 auto & src_node = sources[src_idx];
                 if (src_node.tensor.type == GGML_TYPE_F16) {
                     update_src_buffer_size[src_idx] = true;
+                    src_dtype_only[src_idx] = true;
                     src_node.tensor.type = GGML_TYPE_BF16;
                 }
             }
@@ -926,6 +953,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             auto & src_node = sources[src_idx];
             if (!ggml_hsa_has_trivial_layout(src_node.tensor)) {
                 update_src_buffer_size[src_idx] = true;
+                src_dtype_only[src_idx] = false;
                 ggml_hsa_set_contiguous_strides(src_node.tensor);
             }
         }
@@ -946,6 +974,18 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 src_node.buffer_size = GGML_PAD(ggml_nbytes(&src_node.tensor), dev_info.alignment);
             }
         }
+    }
+
+    // Build on-device pre-processing kernels for the sources that only change element type. These
+    // run the parent -> internal conversion on the device queue in place of the host copy in
+    // graph_compute, removing the queue drain that copy would otherwise force. A null kernel (the
+    // dtype pair or element count is not streamable) simply leaves the source on the host path.
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+        if (!src_dtype_only[src_idx] || !ggml_is_contiguous(parent_tensor.src[src_idx])) {
+            continue;
+        }
+        sources[src_idx].preprocess_kernel = ggml_hsa_build_transform_kernel(
+            dev_info, GGML_HSA_OP_CONVERT, *parent_tensor.src[src_idx], sources[src_idx].tensor);
     }
 
     // create a kernel for the operation
@@ -1668,12 +1708,13 @@ ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool d
 static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
                                                 ggml_backend_hsa_tensor_extra & tensor_extra,
                                                 ggml_tensor * node) {
-    if (tensor_extra.sources.sync_mode == ggml_backend_hsa_tensor_extra::sync_mode_t::none) {
+    using sync_mode_t = ggml_backend_hsa_tensor_extra::sync_mode_t;
+
+    if (tensor_extra.sources.sync_mode == sync_mode_t::none) {
         return GGML_STATUS_SUCCESS;
     }
 
-    const bool use_device_transforms =
-        tensor_extra.sources.sync_mode == ggml_backend_hsa_tensor_extra::sync_mode_t::device;
+    const bool use_device_transforms = tensor_extra.sources.sync_mode == sync_mode_t::device;
     ggml_tensor & internal_node = tensor_extra.node.tensor;
 
     if (!use_device_transforms) {
@@ -1838,6 +1879,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 
         auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
 
+        // break out of the node loop on failure so the trailing flush still runs
         if (status = ggml_hsa_dispatch_preprocess(ctx, tensor_extra, node);
             status != GGML_STATUS_SUCCESS) {
             break;
@@ -2300,16 +2342,28 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         // standalone device tests pass, including on GPT-2-shaped inputs -- but when they run back
         // to back inside the full attention graph they fault the hardware AIE queue after a number
         // of tokens, which ROCr turns into an abort() at the next doorbell ring (unrecoverable, not
-        // a status we can catch). The softmax kernel is additionally known-broken numerically (see
-        // memory: aie2p reduction/ping-pong codegen bug). Until the queue fault is root-caused,
-        // route all three to the CPU fallback so the whole attention block stays on the CPU (no
-        // cross-device copies) and graphs containing them run to completion. The heavy MUL_MATs
-        // already fall back to the CPU (the GEMM kernel requires tile-aligned shapes), so the NPU
-        // still runs the FFN/layernorm/residual ops (NORM/ADD/MUL/GELU).
+        // a status we can catch). Until the queue fault is root-caused, route all three to the CPU
+        // fallback so graphs containing them run to completion.
+        //
+        // This alone does not keep the surrounding attention block on the CPU. Declining these
+        // three says nothing about the neighbouring KQ/KQV MUL_MATs, and where those are supported
+        // the scheduler leaves them on this device and their tensors cross the CPU/HSA boundary
+        // around each declined node. It happens that for GPT-2 they are not supported either --
+        // the GEMM kernel requires tile-aligned shapes and its build asserts "A/B must be tileable
+        // into (m * n_aie_rows, k)-sized blocks" -- so that block does end up entirely on the CPU,
+        // but that is a property of the MUL_MAT shapes, not something this switch arranges.
+        //
+        // The kernels themselves are still built and still correct, so their standalone device
+        // tests must keep running: reporting "unsupported" to those would make them skip every
+        // case and pass vacuously, leaving the kernels unguarded against regressions. They set
+        // GGML_HSA_ENABLE_FAULTING_OPS to opt back in. Do not set it for whole-graph workloads.
         case GGML_OP_SCALE:
         case GGML_OP_DIAG_MASK_INF:
         case GGML_OP_SOFT_MAX:
-            return false;
+            if (!g_ggml_hsa_enable_faulting_ops) {
+                return false;
+            }
+            break;
         default:
             break;
     }

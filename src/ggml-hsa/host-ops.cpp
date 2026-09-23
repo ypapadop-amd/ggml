@@ -4,10 +4,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 #include <new>
 #include <utility>
-
-#include <cstring>
 
 #include "ggml-hsa/common.hpp"
 #include "ggml-hsa/type-traits.hpp"
@@ -200,17 +199,23 @@ struct ggml_hsa_get_rows_f {
             auto * dst_row = static_cast<std::byte *>(dst->data) +
                              (i10 * dst->nb[1] + i11 * dst->nb[2] + i12 * dst->nb[3]);
 
+            // Same dtype and both rows densely packed: copy the row whole. The element loop below
+            // honours nb[0] on each side, so the fast path must check it rather than assume it --
+            // a source reached through a permute can leave nb[0] != the element size while the
+            // tensor still looks contiguously allocated.
             if constexpr (SrcT == DstT) {
-                // Same dtype: the row is contiguous (nb[0] == element size), so copy it whole.
-                std::memcpy(dst_row, src_row, static_cast<std::size_t>(nc) * sizeof(src_type));
-            } else {
-                for (std::int64_t i00 = 0; i00 < nc; ++i00) {
-                    auto src_ptr = std::launder(
-                        reinterpret_cast<const src_type *>(src_row + i00 * src->nb[0]));
-                    auto dst_ptr =
-                        std::launder(reinterpret_cast<dst_type *>(dst_row + i00 * dst->nb[0]));
-                    *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
+                if ((src->nb[0] == sizeof(src_type)) && (dst->nb[0] == sizeof(dst_type))) {
+                    std::memcpy(dst_row, src_row, static_cast<std::size_t>(nc) * sizeof(src_type));
+                    continue;
                 }
+            }
+
+            for (std::int64_t i00 = 0; i00 < nc; ++i00) {
+                auto src_ptr =
+                    std::launder(reinterpret_cast<const src_type *>(src_row + i00 * src->nb[0]));
+                auto dst_ptr =
+                    std::launder(reinterpret_cast<dst_type *>(dst_row + i00 * dst->nb[0]));
+                *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
             }
         }
         return GGML_STATUS_SUCCESS;
