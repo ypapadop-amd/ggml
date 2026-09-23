@@ -22,6 +22,14 @@ from aie.iron.controlflow import range_
 
 from .utils import align_to_arch, fill_drain_program, row_dimensions
 
+
+# The core's frame exceeds the AIE core's 1024-byte default stack: aiecc measures 1152 bytes.
+# Without an explicit size the core silently writes past the end of its stack into neighbouring
+# core data memory. Newer mlir-aie turns that into a build error ("stack_size is absent ... but it
+# needs N bytes"); older toolchains built it and corrupted memory at run time. Same pattern as
+# softmax.py and gemm.py.
+_STACK_SIZE_BYTES = 2048
+
 # Vector size for AIE kernel vector operations
 KERN_VEC_SIZE = 8
 
@@ -173,6 +181,7 @@ def create_reduction_program(
     worker = Worker(
         ext_core_fn,
         fn_args=[of_logits.cons(), of_labels.cons(), of_out.prod(), function],
+        stack_size=_STACK_SIZE_BYTES,
     )
 
     logits_tensor_ty = np.ndarray[
