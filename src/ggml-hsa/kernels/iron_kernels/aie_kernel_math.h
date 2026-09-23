@@ -363,6 +363,43 @@ inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
 }
 
 /**
+ * @brief Applies the GELU activation (tanh approximation) to every lane.
+ *
+ * Vector counterpart of the scalar path in unary_ops.cc, computing
+ *   gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 x^3))).
+ *
+ * Evaluated in the algebraically equivalent sigmoid form
+ *   0.5 * x * (1 + tanh(y)) == x * sigmoid(2y) == x / (1 + exp(-2y)),
+ * which needs one exp and one reciprocal per lane instead of the scalar form's exp, divide and
+ * two sign branches. The scalar form takes |y| and re-applies the sign for stability against
+ * exp() overflow; that is unnecessary here because @ref vec_exp clamps its argument to
+ * [-88, 88], so a large negative y saturates the denominator and the result goes to zero rather
+ * than to NaN, and a large positive y leaves the denominator at 1 so the result approaches x.
+ *
+ * @tparam VecSize Vector width.
+ * @param[in] x The input vector.
+ * @return The element-wise GELU.
+ */
+template <unsigned VecSize>
+inline aie::vector<float, VecSize> vec_gelu(const aie::vector<float, VecSize> & x) {
+    constexpr float kSqrt2OverPi = 0.7978845608028654f; // sqrt(2/pi)
+    constexpr float kCoefA = 0.044715f;
+
+    // y = sqrt(2/pi) * (x + 0.044715 * x^3)
+    const aie::vector<float, VecSize> x2 = aie::mul(x, x).template to_vector<float>();
+    const aie::vector<float, VecSize> x3 = aie::mul(x2, x).template to_vector<float>();
+    const aie::vector<float, VecSize> inner =
+        aie::add(x, aie::mul(x3, kCoefA).template to_vector<float>());
+
+    // t = -2y, then exp(t); vec_exp clamps, so no overflow guard is needed here
+    aie::vector<float, VecSize> t =
+        aie::mul(inner, -2.0f * kSqrt2OverPi).template to_vector<float>();
+    const aie::vector<float, VecSize> e = vec_exp<static_cast<int32_t>(VecSize)>(t);
+
+    return aie::mul(x, aie::inv(aie::add(e, 1.0f))).template to_vector<float>();
+}
+
+/**
  * @brief Returns |v| for one element.
  *
  * For floats this clears the sign bit, which is exactly @c std::fabs -- the reference ggml computes
