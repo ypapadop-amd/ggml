@@ -125,6 +125,11 @@ int main() {
         {768, 4, 1, "gpt2 n_embd"},
         {32, 8, 4, "3d"},
         {64, 4, 3, "3d wide"},
+        // Row lengths that are not a multiple of the 16-lane f32 vector. Unlike the unary ops,
+        // NORM passes the row length straight to the kernel as N, so these do straddle the
+        // boundary: 70 vectorizes 64 elements and leaves a 6-element tail, 100 leaves 4.
+        {70, 3, 1, "tail (64 + 6)"},
+        {100, 2, 1, "tail (96 + 4)"},
     };
 
     bool all_ok = true;

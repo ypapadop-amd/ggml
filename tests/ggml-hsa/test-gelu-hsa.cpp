@@ -102,6 +102,14 @@ int main() {
         {64, 1, "1d"},
         {768, 4, "gpt2 embd"},
         {3072, 8, "gpt2 mlp"},
+        // Element counts that are not a multiple of the 16-lane f32 vector. A unary op is
+        // flattened and tiled by max_tile_size, which is a power of two <= 16 dividing the
+        // element count, so the kernel sees N = 8 and N = 1 here and takes the scalar path
+        // end to end. That is the only way to reach it: a partial tail (some lanes vectorized,
+        // some not) cannot occur for a unary op, because N is either 16 or a power of two
+        // below it. These cases check the scalar fallback still agrees with the vector body.
+        {24, 1, "non-multiple (N=8)"},
+        {65, 1, "non-multiple (N=1)"},
     };
 
     bool all_ok = true;
