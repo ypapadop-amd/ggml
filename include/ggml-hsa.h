@@ -33,6 +33,29 @@ GGML_BACKEND_API void ggml_backend_hsa_unregister_host_buffer(void * buffer);
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
 
+// HSA-only graph operators.
+//
+// These build a single-node result whose op is one of the HSA-only operators (see enum ggml_hsa_op
+// in the backend). They are the internal MUL_MAT convert/pad pre-amble and de-pad post-amble, plus
+// the element-wise dtype cast, exposed as ordinary ggml ops so they can be driven through
+// ggml_build_forward_expand + ggml_backend_graph_compute like any other op. They are only supported
+// by the HSA backend.
+
+// dtype-convert `a` to `type` and zero-pad it into the given (larger or equal) 2D shape.
+GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert_pad(
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type, int64_t ne0,
+    int64_t ne1);
+
+// strip the zero-padding from `a`, gathering the top-left sub-block into the given (smaller or
+// equal) 2D shape and converting it to `type`.
+GGML_BACKEND_API struct ggml_tensor * ggml_hsa_depad(
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type, int64_t ne0,
+    int64_t ne1);
+
+// element-wise dtype cast of `a` to `type` (same shape).
+GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert(
+    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type);
+
 #ifdef  __cplusplus
 }
 #endif
