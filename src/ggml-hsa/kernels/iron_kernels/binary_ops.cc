@@ -466,6 +466,13 @@ void ggml_op_sub_row(const INPUT0_DTYPE * __restrict src0,
  * aie::mul yields an accumulator, so the vector result is narrowed back to the operand
  * type before the store (same shape as the SCALE kernel).
  *
+ * On aie2 (NPU1) there is no native fp32 multiplier: aie::mul lowers, via the shim in
+ * aie_kernel_math.h, to Peano's bf16 triple-product emulation, so the vector path is not
+ * bit-identical to the scalar `a * b` the tail uses. Measured against the CPU it costs one
+ * ulp of the operand scale (test-broadcast-hsa reports it), which is the same order as the
+ * ADD and SUB row kernels above -- those are within one ulp too, on both their vector and
+ * scalar paths. Only DIV below, and this kernel's own scalar tail, come out exact.
+ *
  * @param[in]  src0 First input row of N elements.
  * @param[in]  src1 Reused row of N elements.
  * @param[out] out  Output row of N elements.
@@ -489,11 +496,13 @@ void ggml_op_mul_row(const INPUT0_DTYPE * __restrict src0,
  * @brief out[i] = src0[i] / src1[i] for one dst row; src1 is reused across all dst rows.
  *
  * Scalar body, unlike the other three: there is no float vector divide instruction, and
- * aie::div is a multiply by aie::inv (an approximate reciprocal), so a vectorized body
- * would not match the CPU reference the device tests compare against element for element.
- * Row-tiling still removes the seven per-element broadcast divisions, leaving only the one
- * division the operation requires. If a looser tolerance is ever acceptable here, the
- * aie::div path is the obvious next step.
+ * aie::div is a multiply by aie::inv, an approximate reciprocal whose error is orders of
+ * magnitude larger than the sub-ulp drift the vectorized ADD/SUB/MUL kernels above accept.
+ * That gap, not bit-exactness, is the reason to stay scalar: none of the fp32 kernels here
+ * is bit-identical to the CPU (aie2 has no native fp32 ALU), they are simply all within one
+ * ulp, and aie::div would not be. Row-tiling still removes the seven per-element broadcast
+ * divisions, leaving only the one division the operation requires. If a tolerance that
+ * loose is ever acceptable, the aie::div path is the obvious next step.
  *
  * @param[in]  src0 Dividend row of N elements.
  * @param[in]  src1 Reused divisor row of N elements.

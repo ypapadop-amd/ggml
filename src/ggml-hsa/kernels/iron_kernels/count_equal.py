@@ -136,10 +136,10 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor):
     return fill_drain_program(
         arch,
         [worker],
-        [input_tensor_ty, input_tensor_ty],
-        output_tensor_ty,
-        [of_in0.prod(), of_in1.prod()],
-        of_out.cons(),
+        input_tys=[input_tensor_ty, input_tensor_ty],
+        output_ty=output_tensor_ty,
+        in_prods=[of_in0.prod(), of_in1.prod()],
+        out_cons=of_out.cons(),
     )
 
 

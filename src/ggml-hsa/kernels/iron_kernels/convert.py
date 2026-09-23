@@ -135,7 +135,12 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     dst_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
 
     return fill_drain_program(
-        arch, [worker], [src_ty], dst_ty, [of_in.prod()], of_out.cons()
+        arch,
+        [worker],
+        input_tys=[src_ty],
+        output_ty=dst_ty,
+        in_prods=[of_in.prod()],
+        out_cons=of_out.cons(),
     )
 
 

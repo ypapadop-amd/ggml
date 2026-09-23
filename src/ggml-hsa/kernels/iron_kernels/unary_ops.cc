@@ -30,6 +30,17 @@ void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryO
     event1();
 }
 
+/// Whether unary_ops.py selected the large L1-budgeted tile for this op, which it does for
+/// exactly the ops with a vectorized body here. Templated so the static_assert below is
+/// dependent and therefore checked per instantiation rather than at definition.
+template <typename>
+inline constexpr bool vectorized_tiling_v =
+#ifdef GGML_VECTORIZED_TILING
+    true;
+#else
+    false;
+#endif
+
 /**
  * @brief Applies a unary operation to N elements, vectorized when the operand types match.
  *
@@ -37,6 +48,13 @@ void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryO
  * The vector path is gated on TIn == TOut because it operates on the loaded vector without
  * a per-element cast; a widening or narrowing op keeps the scalar path unchanged.
  *
+ * @tparam Aligned  Whether the tile base is 512-bit aligned, so aligned loads/stores are
+ *                  safe. False (the default) is always correct; true is only valid when the
+ *                  streamed tile is a whole number of vector registers, which holds for the
+ *                  ops unary_ops.py gives the L1-budgeted tile (its tile is a multiple of V,
+ *                  and the fallback tile below V leaves vend == 0 so no vector load runs).
+ *                  Only RELU has been measured on the aligned path; the others are correct
+ *                  either way and stay on the conservative default until measured.
  * @tparam TIn      Input element type.
  * @tparam TOut     Output element type.
  * @tparam VecOp    Callable applied to a vector of TIn.
@@ -48,9 +66,14 @@ void transform_n(const T * __restrict in, Size count, T * __restrict out, UnaryO
  * @param[in]  vec_op    Vector operation to apply.
  * @param[in]  scalar_op Scalar operation to apply.
  */
-template <typename TIn, typename TOut, typename VecOp, typename ScalarOp>
+template <bool Aligned = false, typename TIn, typename TOut, typename VecOp, typename ScalarOp>
 void transform_vector_n(
     const TIn * __restrict in, TOut * __restrict out, int32_t N, VecOp vec_op, ScalarOp scalar_op) {
+    static_assert(vectorized_tiling_v<TIn>,
+                  "this op has a vectorized body but was compiled without "
+                  "GGML_VECTORIZED_TILING, so it streams one vector register per object-fifo "
+                  "round trip: add its op name to _VECTORIZED_OPS in unary_ops.py");
+
     event0();
 
     int32_t vend = 0;
@@ -59,13 +82,25 @@ void transform_vector_n(
         constexpr int32_t V = 512 / (sizeof(TOut) * 8);
         vend = (N / V) * V;
 
-        // Unaligned loads/stores and no AIE_LOOP_MIN_ITERATION_COUNT, for the same reasons
-        // as the binary row kernels: the tile stride is not guaranteed vector-aligned, and
-        // a tensor narrower than V would make vend 0.
+        // No AIE_LOOP_MIN_ITERATION_COUNT: a tensor narrower than V makes vend 0, and
+        // promising >= 1 iteration would make the pipelined prologue run the body on too
+        // few elements.
         AIE_PREPARE_FOR_PIPELINING
         for (int32_t i = 0; i < vend; i += V) {
-            aie::vector<TIn, V> v = aie::load_unaligned_v<V>(in + i);
-            aie::store_unaligned_v(out + i, vec_op(v));
+            aie::vector<TIn, V> v;
+            if constexpr (Aligned) {
+                v = aie::load_v<V>(in + i);
+            } else {
+                v = aie::load_unaligned_v<V>(in + i);
+            }
+
+            const auto r = vec_op(v);
+
+            if constexpr (Aligned) {
+                aie::store_v(out + i, r);
+            } else {
+                aie::store_unaligned_v(out + i, r);
+            }
         }
     }
 
@@ -224,25 +259,9 @@ void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
                         int32_t N) {
     static_assert(std::is_same_v<INPUT_DTYPE, OUTPUT_DTYPE>,
                   "ReLU requires matching input and output types");
-    event0();
-
-    constexpr int32_t V = 512 / (sizeof(INPUT_DTYPE) * 8);
-    const int32_t vend = (N / V) * V;
-    const aie::vector<INPUT_DTYPE, V> zero = aie::broadcast<INPUT_DTYPE, V>(0);
-
-    // No AIE_LOOP_MIN_ITERATION_COUNT: max_tile_size may pick a tile < V when
-    // num_elements is not a multiple of V, giving vend == 0 (see binary_ops ADD).
-    AIE_PREPARE_FOR_PIPELINING
-    for (int32_t i = 0; i < vend; i += V) {
-        aie::vector<INPUT_DTYPE, V> v = aie::load_v<V>(in + i);
-        aie::store_v(out + i, aie::max(v, zero));
-    }
-
-    for (int32_t i = vend; i < N; ++i) {
-        out[i] = std::max<INPUT_DTYPE>(in[i], 0);
-    }
-
-    event1();
+    transform_vector_n<true>(
+        in, out, N, [](auto v) { return aie::max(v, static_cast<INPUT_DTYPE>(0)); },
+        [](auto v) { return std::max<OUTPUT_DTYPE>(v, 0); });
 }
 
 #endif // GGML_UNARY_OP_RELU
