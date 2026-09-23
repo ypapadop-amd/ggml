@@ -64,10 +64,21 @@ void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict
     unsigned m = eq.to_uint32() & 0xFFFFu;
     int32_t idx = 0;
     if (m != 0u) {
-        if ((m & 0x00FFu) == 0u) { idx += 8; m >>= 8; }
-        if ((m & 0x000Fu) == 0u) { idx += 4; m >>= 4; }
-        if ((m & 0x0003u) == 0u) { idx += 2; m >>= 2; }
-        if ((m & 0x0001u) == 0u) { idx += 1; }
+        if ((m & 0x00FFu) == 0u) {
+            idx += 8;
+            m >>= 8;
+        }
+        if ((m & 0x000Fu) == 0u) {
+            idx += 4;
+            m >>= 4;
+        }
+        if ((m & 0x0003u) == 0u) {
+            idx += 2;
+            m >>= 2;
+        }
+        if ((m & 0x0001u) == 0u) {
+            idx += 1;
+        }
     }
     out[0] = static_cast<OUTPUT_DTYPE>(idx);
 #else
