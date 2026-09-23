@@ -1654,8 +1654,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
             // combinations ggml_hsa_assign supports for this op).
             return (op->src[0] != nullptr) && (op->src[1] != nullptr) &&
                    (op->src[1]->type == GGML_TYPE_I32) &&
-                   ((op->src[0]->type == GGML_TYPE_F32) ||
-                    (op->src[0]->type == GGML_TYPE_F16) ||
+                   ((op->src[0]->type == GGML_TYPE_F32) || (op->src[0]->type == GGML_TYPE_F16) ||
                     (op->src[0]->type == GGML_TYPE_BF16)) &&
                    (op->type == GGML_TYPE_F32);
         default:

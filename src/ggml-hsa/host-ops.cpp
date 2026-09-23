@@ -139,11 +139,11 @@ struct ggml_hsa_get_rows_f {
         using src_type = typename src_traits::type;
         using dst_type = typename dst_traits::type;
 
-        const std::int64_t nc   = src->ne[0];
+        const std::int64_t nc = src->ne[0];
         const std::int64_t ne10 = indices->ne[0];
         const std::int64_t ne11 = indices->ne[1];
         const std::int64_t ne12 = indices->ne[2];
-        const std::int64_t nr   = ne10 * ne11 * ne12;
+        const std::int64_t nr = ne10 * ne11 * ne12;
 
         assert(dst->ne[0] == nc);
 
@@ -168,8 +168,8 @@ struct ggml_hsa_get_rows_f {
                              (i10 * dst->nb[1] + i11 * dst->nb[2] + i12 * dst->nb[3]);
 
             for (std::int64_t i00 = 0; i00 < nc; ++i00) {
-                auto src_ptr = std::launder(
-                    reinterpret_cast<const src_type *>(src_row + i00 * src->nb[0]));
+                auto src_ptr =
+                    std::launder(reinterpret_cast<const src_type *>(src_row + i00 * src->nb[0]));
                 auto dst_ptr =
                     std::launder(reinterpret_cast<dst_type *>(dst_row + i00 * dst->nb[0]));
 
@@ -330,9 +330,9 @@ ggml_status ggml_hsa_compute_cont(ggml_backend_hsa_context & ctx, ggml_tensor * 
 ggml_status ggml_hsa_compute_get_rows(ggml_backend_hsa_context & ctx, ggml_tensor * t) {
     assert(ggml_hsa_nsrcs(*t) == 2);
 
-    auto * src0 = t->src[0];  // data table
-    auto * src1 = t->src[1];  // int32 row indices
-    auto * dst  = t;
+    auto * src0 = t->src[0]; // data table
+    auto * src1 = t->src[1]; // int32 row indices
+    auto * dst = t;
 
     assert(src1->type == GGML_TYPE_I32);
 
