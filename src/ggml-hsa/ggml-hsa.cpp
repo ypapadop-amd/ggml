@@ -1932,8 +1932,15 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         // to back inside the full attention graph they fault the hardware AIE queue after a number
         // of tokens, which ROCr turns into an abort() at the next doorbell ring (unrecoverable, not
         // a status we can catch). Until the queue fault is root-caused, route all three to the CPU
-        // fallback so the whole attention block stays on the CPU (no cross-device copies) and
-        // graphs containing them run to completion.
+        // fallback so graphs containing them run to completion.
+        //
+        // This alone does not keep the surrounding attention block on the CPU. Declining these
+        // three says nothing about the neighbouring KQ/KQV MUL_MATs, and where those are supported
+        // the scheduler leaves them on this device and their tensors cross the CPU/HSA boundary
+        // around each declined node. It happens that for GPT-2 they are not supported either --
+        // the GEMM kernel requires tile-aligned shapes and its build asserts "A/B must be tileable
+        // into (m * n_aie_rows, k)-sized blocks" -- so that block does end up entirely on the CPU,
+        // but that is a property of the MUL_MAT shapes, not something this switch arranges.
         //
         // The kernels themselves are still built and still correct, so their standalone device
         // tests must keep running: reporting "unsupported" to those would make them skip every

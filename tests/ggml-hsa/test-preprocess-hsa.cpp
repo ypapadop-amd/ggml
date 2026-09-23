@@ -39,8 +39,8 @@ enum class case_result { pass, fail, skip };
 float src0_val(int64_t i) { return static_cast<float>(i % 61) - 30.0f; }
 float src1_val(int64_t i) { return static_cast<float>(i % 29) - 14.0f; }
 
-case_result run_case(ggml_backend_t backend, int64_t d0, int64_t d1) {
-    const std::size_t ctx_size = 3 * ggml_tensor_overhead() + ggml_graph_overhead();
+case_result run_case(ggml_backend_t backend, int64_t d0, int64_t d1, bool expect_on_queue) {
+    const std::size_t ctx_size = 4 * ggml_tensor_overhead() + ggml_graph_overhead();
     ggml_init_params params{
         /*.mem_size   =*/ctx_size,
         /*.mem_buffer =*/nullptr,
@@ -58,6 +58,21 @@ case_result run_case(ggml_backend_t backend, int64_t d0, int64_t d1) {
     if (!ggml_backend_supports_op(backend, dst)) {
         printf("  op not supported (skipped)\n");
         return case_result::skip;
+    }
+
+    // Which path the sources take is not observable from the result: the host copy and the
+    // on-queue convert produce identical values, so the numerical check below would pass even if
+    // the device path never ran. Assert the thing that selects the path instead. sources.sync_mode
+    // is device exactly when every converted source has a preprocess kernel, and that kernel is
+    // the element-wise f16 -> bf16 convert built for this source; probing the same transform as a
+    // standalone op therefore reports exactly whether that kernel builds.
+    ggml_tensor * convert_probe = ggml_hsa_convert(ctx.get(), a, GGML_TYPE_BF16);
+    ggml_set_name(convert_probe, "convert_probe");
+    const bool on_queue = ggml_backend_supports_op(backend, convert_probe);
+    if (on_queue != expect_on_queue) {
+        printf("  expected %s pre-processing, got %s\n", expect_on_queue ? "on-queue" : "host",
+               on_queue ? "on-queue" : "host");
+        return case_result::fail;
     }
 
     ggml_cgraph * gf = ggml_new_graph(ctx.get());
@@ -113,21 +128,22 @@ int main() {
     struct {
         int64_t d0, d1;
         const char * name;
+        bool expect_on_queue;
     } cases[] = {
-        {64, 8, "even numel (on-queue convert)"},
-        {256, 4, "even numel, larger"},
-        {1, 64, "single col"},
+        {64, 8, "even numel (on-queue convert)", true},
+        {256, 4, "even numel, larger", true},
+        {1, 64, "single col", true},
         // Odd element count: a 2-byte tensor is not a whole number of DMA words, so HSA_CONVERT
         // declines and the source conversion falls back to the host copy path.
-        {15, 1, "odd numel (host fallback)"},
-        {33, 3, "odd numel rows (host fallback)"},
+        {15, 1, "odd numel (host fallback)", false},
+        {33, 3, "odd numel rows (host fallback)", false},
     };
 
     bool any_fail = false;
     int passed = 0;
     int skipped = 0;
     for (const auto & c : cases) {
-        const case_result r = run_case(backend, c.d0, c.d1);
+        const case_result r = run_case(backend, c.d0, c.d1, c.expect_on_queue);
         const char * label = r == case_result::pass   ? "PASSED"
                              : r == case_result::skip ? "SKIPPED"
                                                       : "FAILED";
