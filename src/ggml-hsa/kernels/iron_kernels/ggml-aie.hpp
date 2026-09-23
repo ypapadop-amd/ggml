@@ -101,6 +101,7 @@ inline aie::vector<bf16, V> convert_f32_to_bf16_vector(const aie::vector<f32, V>
     const auto nan_mask = aie::gt(aie::bit_and(0x7fffffffu, u), 0x7f800000u);
     const aie::vector<std::uint32_t, V> res32 = aie::select(rne_val, nan_val, nan_mask);
 
-    const aie::vector<std::uint16_t, V> res16 = aie::filter_even(aie::vector_cast<std::uint16_t>(res32));
+    const aie::vector<std::uint16_t, V> res16 =
+        aie::filter_even(aie::vector_cast<std::uint16_t>(res32));
     return aie::vector_cast<bf16>(res16);
 }

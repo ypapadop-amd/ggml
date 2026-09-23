@@ -219,7 +219,12 @@ def depad(
     workers = [
         Worker(
             core_fn,
-            fn_args=[of_ins[w].cons(), of_outs[w].prod(), function, bands[w][0] * bands[w][1]],
+            fn_args=[
+                of_ins[w].cons(),
+                of_outs[w].prod(),
+                function,
+                bands[w][0] * bands[w][1],
+            ],
         )
         for w in range(n_workers)
     ]
@@ -239,7 +244,10 @@ def depad(
         for w in range(n_workers):
             n_chunks_w, rows_w, src_off, dst_off = bands[w]
             src_tap = TensorAccessPattern(
-                (d1, d0pad), src_off, [1, n_chunks_w, rows_w, chunk], [0, chunk, d0pad, 1]
+                (d1, d0pad),
+                src_off,
+                [1, n_chunks_w, rows_w, chunk],
+                [0, chunk, d0pad, 1],
             )
             out_taps.append(
                 TensorAccessPattern(

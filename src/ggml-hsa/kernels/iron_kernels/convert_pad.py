@@ -151,7 +151,10 @@ def convert_pad(
             )
             out_taps.append(
                 TensorAccessPattern(
-                    (d0pad * d1,), offset=out_off, sizes=[1, 1, 1, out_len], strides=[0, 0, 0, 1]
+                    (d0pad * d1,),
+                    offset=out_off,
+                    sizes=[1, 1, 1, out_len],
+                    strides=[0, 0, 0, 1],
                 )
             )
             in_prods[w].fill(a_in, in_tap)
