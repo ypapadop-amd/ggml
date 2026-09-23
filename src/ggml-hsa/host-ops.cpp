@@ -45,46 +45,16 @@ ggml_hsa_convert(const typename ggml_hsa_type_traits<SrcT>::type & src) {
 }
 
 /**
- * @brief Copies data from a source tensor to a destination tensor with the same shape, converting
- * between types as needed based on their type traits.
- */
-struct ggml_hsa_copy_same_shape_tensors_f {
-    template <ggml_type SrcT, ggml_type DstT = SrcT>
-    ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
-        assert(ggml_are_same_shape(src, dst));
-
-        using src_type = typename ggml_hsa_type_traits<SrcT>::type;
-        using dst_type = typename ggml_hsa_type_traits<DstT>::type;
-
-        for (std::int64_t i03 = 0; i03 < src->ne[3]; ++i03) {
-            for (std::int64_t i02 = 0; i02 < src->ne[2]; ++i02) {
-                for (std::int64_t i01 = 0; i01 < src->ne[1]; ++i01) {
-                    for (std::int64_t i00 = 0; i00 < src->ne[0]; ++i00) {
-                        auto src_ptr = std::launder(reinterpret_cast<const src_type *>(
-                            static_cast<const std::byte *>(src->data) +
-                            (i00 * src->nb[0] + i01 * src->nb[1] + i02 * src->nb[2] +
-                             i03 * src->nb[3])));
-                        auto dst_ptr = std::launder(
-                            reinterpret_cast<dst_type *>(static_cast<std::byte *>(dst->data) +
-                                                         (i00 * dst->nb[0] + i01 * dst->nb[1] +
-                                                          i02 * dst->nb[2] + i03 * dst->nb[3])));
-
-                        *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
-                    }
-                }
-            }
-        }
-        return GGML_STATUS_SUCCESS;
-    }
-};
-
-/**
- * @brief Copies the overlapping sub-block between two differently-shaped tensors.
+ * @brief Copies the overlapping sub-block between two tensors.
  *
  * Iterates over the per-dimension overlap and indexes both tensors through their own strides, so a
  * smaller logical tensor can be scattered into a larger zero-padded destination (or gathered back).
- * Padding gaps in the destination are never written and must be pre-zeroed by the caller. Datatype
- * conversion is handled identically to the same-shape copy.
+ * Padding gaps in the destination are never written and must be pre-zeroed by the caller.
+ *
+ * Also serves the equal-shape case, where every @c min below is just the shared extent: this is the
+ * general copy for any pair of tensors that share an element layout, whether or not they share a
+ * shape. Only a destination that reshapes the source (same element count, different shape) needs
+ * something else -- see @ref ggml_hsa_copy_tensor_to_cont_tensor_f.
  */
 struct ggml_hsa_copy_subblock_f {
     template <ggml_type SrcT, ggml_type DstT = SrcT>
@@ -301,7 +271,7 @@ ggml_status ggml_hsa_copy_tensor(const ggml_tensor * src, ggml_tensor * dst) {
     }
 
     if (ggml_are_same_shape(src, dst)) {
-        return ggml_hsa_assign(ggml_hsa_copy_same_shape_tensors_f{}, src, dst);
+        return ggml_hsa_assign(ggml_hsa_copy_subblock_f{}, src, dst);
     }
 
     GGML_HSA_LOG_ERROR("%s: unsupported tensor combination between source \"%s\" (%s) and "
@@ -332,7 +302,8 @@ ggml_status ggml_hsa_compute_dup(ggml_backend_hsa_context & ctx, ggml_tensor * t
         return ggml_hsa_assign(ggml_hsa_copy_tensor_to_cont_tensor_f{}, src, dst);
     }
 
-    return ggml_hsa_assign(ggml_hsa_copy_same_shape_tensors_f{}, src, dst);
+    // Same shape (asserted above), so the sub-block copy's per-dimension min is the shared extent.
+    return ggml_hsa_assign(ggml_hsa_copy_subblock_f{}, src, dst);
 }
 
 ggml_status ggml_hsa_compute_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * t) {
