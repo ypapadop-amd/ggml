@@ -10,6 +10,39 @@
 #include "ggml-hsa/type-traits.hpp"
 
 /**
+ * @brief Converts one element from @p SrcT to @p DstT using the type traits of both.
+ *
+ * Types that are not fundamental (fp16, bf16) are promoted through fp32 on whichever side needs
+ * it; a same-type conversion is a plain copy. Shared by every host-op functor below so the
+ * promotion rules live in exactly one place.
+ */
+template <ggml_type SrcT, ggml_type DstT>
+constexpr typename ggml_hsa_type_traits<DstT>::type ggml_hsa_convert(
+    const typename ggml_hsa_type_traits<SrcT>::type & src) {
+    using src_traits = ggml_hsa_type_traits<SrcT>;
+    using dst_traits = ggml_hsa_type_traits<DstT>;
+
+    using dst_type = typename dst_traits::type;
+
+    if constexpr (SrcT == DstT) {
+        // no conversion needed
+        return src;
+    } else if constexpr (src_traits::is_fundamental && dst_traits::is_fundamental) {
+        // trivial conversion based on fundamental types
+        return static_cast<dst_type>(src);
+    } else if constexpr (src_traits::is_fundamental) {
+        // conversion using promotion of source type to fp32
+        return dst_traits::from_fp32(static_cast<float>(src));
+    } else if constexpr (dst_traits::is_fundamental) {
+        // conversion using promotion of destination type to fp32
+        return static_cast<dst_type>(src_traits::to_fp32(src));
+    } else {
+        // conversion using promotion of source and destination types to fp32
+        return dst_traits::from_fp32(src_traits::to_fp32(src));
+    }
+}
+
+/**
  * @brief Copies data from a source tensor to a destination tensor with the same shape, converting
  * between types as needed based on their type traits.
  */
@@ -37,26 +70,7 @@ struct ggml_hsa_copy_same_shape_tensors_f {
                                                          (i00 * dst->nb[0] + i01 * dst->nb[1] +
                                                           i02 * dst->nb[2] + i03 * dst->nb[3])));
 
-                        if constexpr (SrcT == DstT) {
-                            // no conversion needed
-                            *dst_ptr = *src_ptr;
-                        } else if constexpr (src_traits::is_fundamental &&
-                                             dst_traits::is_fundamental) {
-                            // trivial conversion based on fundamental types
-                            *dst_ptr = static_cast<dst_type>(*src_ptr);
-                        } else if constexpr (src_traits::is_fundamental) {
-                            // conversion using promotion of source type to fp32
-                            auto src_v = static_cast<float>(*src_ptr);
-                            *dst_ptr = dst_traits::from_fp32(src_v);
-                        } else if constexpr (dst_traits::is_fundamental) {
-                            // conversion using promotion of destination type to fp32
-                            auto src_v = src_traits::to_fp32(*src_ptr);
-                            *dst_ptr = static_cast<dst_type>(src_v);
-                        } else {
-                            // conversion using promotion of source and destination types to fp32
-                            auto src_v = src_traits::to_fp32(*src_ptr);
-                            *dst_ptr = dst_traits::from_fp32(src_v);
-                        }
+                        *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
                     }
                 }
             }
@@ -91,26 +105,7 @@ struct ggml_hsa_copy_tensor_to_cont_tensor_f {
                             static_cast<const std::byte *>(src->data) +
                             (i00 * src->nb[0] + i01 * src->nb[1] + i02 * src->nb[2] +
                              i03 * src->nb[3])));
-                        if constexpr (SrcT == DstT) {
-                            // no conversion needed
-                            dst_ptr[id] = *src_ptr;
-                        } else if constexpr (src_traits::is_fundamental &&
-                                             dst_traits::is_fundamental) {
-                            // trivial conversion based on fundamental types
-                            dst_ptr[id] = static_cast<dst_type>(*src_ptr);
-                        } else if constexpr (src_traits::is_fundamental) {
-                            // conversion using promotion of source type to fp32
-                            auto src_v = static_cast<float>(*src_ptr);
-                            dst_ptr[id] = dst_traits::from_fp32(src_v);
-                        } else if constexpr (dst_traits::is_fundamental) {
-                            // conversion using promotion of destination type to fp32
-                            auto src_v = src_traits::to_fp32(*src_ptr);
-                            dst_ptr[id] = static_cast<dst_type>(src_v);
-                        } else {
-                            // conversion using promotion of source and destination types to fp32
-                            auto src_v = src_traits::to_fp32(*src_ptr);
-                            dst_ptr[id] = dst_traits::from_fp32(src_v);
-                        }
+                        dst_ptr[id] = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
                         ++id;
                     }
                 }
@@ -173,22 +168,7 @@ struct ggml_hsa_get_rows_f {
                 auto dst_ptr =
                     std::launder(reinterpret_cast<dst_type *>(dst_row + i00 * dst->nb[0]));
 
-                if constexpr (SrcT == DstT) {
-                    // no conversion needed
-                    *dst_ptr = *src_ptr;
-                } else if constexpr (src_traits::is_fundamental && dst_traits::is_fundamental) {
-                    // trivial conversion based on fundamental types
-                    *dst_ptr = static_cast<dst_type>(*src_ptr);
-                } else if constexpr (src_traits::is_fundamental) {
-                    // conversion using promotion of source type to fp32
-                    *dst_ptr = dst_traits::from_fp32(static_cast<float>(*src_ptr));
-                } else if constexpr (dst_traits::is_fundamental) {
-                    // conversion using promotion of destination type to fp32
-                    *dst_ptr = static_cast<dst_type>(src_traits::to_fp32(*src_ptr));
-                } else {
-                    // conversion using promotion of source and destination types to fp32
-                    *dst_ptr = dst_traits::from_fp32(src_traits::to_fp32(*src_ptr));
-                }
+                *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
             }
         }
         return GGML_STATUS_SUCCESS;
