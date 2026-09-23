@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-// Shared helpers for the HSA backend tests: f32/bf16 element encode/decode/round used to build
+// Shared helpers for the HSA backend tests: f32/f16/bf16 element encode/decode/round used to build
 // inputs and compute references for the convert / convert_pad / depad ops.
 
 #pragma once
@@ -11,10 +11,12 @@
 
 namespace hsa_test {
 
-// Writes the float value @p v into @p bytes at element @p idx, encoded as @p type (f32 or bf16).
+// Writes the float value @p v into @p bytes at element @p idx, encoded as @p type.
 inline void store_val(ggml_type type, void * bytes, int64_t idx, float v) {
     if (type == GGML_TYPE_F32) {
         static_cast<float *>(bytes)[idx] = v;
+    } else if (type == GGML_TYPE_F16) {
+        static_cast<uint16_t *>(bytes)[idx] = ggml_fp32_to_fp16(v);
     } else {
         static_cast<uint16_t *>(bytes)[idx] = ggml_fp32_to_bf16(v).bits;
     }
@@ -25,6 +27,9 @@ inline float load_val(ggml_type type, const void * bytes, int64_t idx) {
     if (type == GGML_TYPE_F32) {
         return static_cast<const float *>(bytes)[idx];
     }
+    if (type == GGML_TYPE_F16) {
+        return ggml_fp16_to_fp32(static_cast<const uint16_t *>(bytes)[idx]);
+    }
     return ggml_bf16_to_fp32(ggml_bf16_t{static_cast<const uint16_t *>(bytes)[idx]});
 }
 
@@ -32,6 +37,9 @@ inline float load_val(ggml_type type, const void * bytes, int64_t idx) {
 inline float cast_val(ggml_type type, float v) {
     if (type == GGML_TYPE_F32) {
         return v;
+    }
+    if (type == GGML_TYPE_F16) {
+        return ggml_fp16_to_fp32(ggml_fp32_to_fp16(v));
     }
     return ggml_bf16_to_fp32(ggml_fp32_to_bf16(v));
 }

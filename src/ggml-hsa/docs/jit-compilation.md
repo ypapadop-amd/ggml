@@ -99,8 +99,9 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
            ▼
  ggml_backend_hsa_graph_compute()             ─── ggml-hsa.cpp
    for each node:
-     • optional CPU-side data transforms (requires_sync)
+     • optional source pre-processing (sources.sync_mode: on-queue or CPU-side)
      • tensor_extra.kernel->dispatch(ctx, srcs, dst)
+     • optional output post-processing (node.sync_mode: CPU-side)
            │
            ▼
  ggml_hsa_aie_kernel::dispatch()              ─── aie-kernel.cpp

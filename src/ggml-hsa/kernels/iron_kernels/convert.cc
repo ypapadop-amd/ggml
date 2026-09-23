@@ -11,7 +11,9 @@
  *
  * The f32 -> bf16 direction replicates the host ggml_compute_fp32_to_bf16 integer arithmetic
  * (round-to-nearest-even, NaN -> quiet) bit-for-bit, matching convert_pad. The bf16 -> f32
- * direction is an exact widening. f32 -> f32 (or bf16 -> bf16) is a plain copy.
+ * direction is an exact widening. f32 -> f32 (or bf16 -> bf16) is a plain copy. The f16 -> bf16
+ * direction widens the raw f16 bits to f32 (exact) and then reuses the same bit-exact RNE
+ * narrowing; f16 arrives as i16 because IRON has no f16 element type.
  */
 
 #include <aie_api/aie.hpp>
@@ -42,7 +44,20 @@ void ggml_hsa_convert(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restri
     const int32_t Nv = N;
 #endif
 
-#ifdef CONVERT_F32_TO_BF16
+#ifdef CONVERT_F16_TO_BF16
+    {
+        // f16 -> bf16. IRON has no f16 element type, so the input arrives as raw i16 bit patterns.
+        // Widen each to f32 exactly (no rounding is possible in that direction), then apply the
+        // same bit-exact RNE narrowing the f32 -> bf16 path uses, which makes the composition
+        // identical to the host's GGML_FP32_TO_BF16(GGML_FP16_TO_FP32(v)).
+        for (int32_t i = 0; i < Nv; ++i) {
+            uint16_t h = 0;
+            std::memcpy(&h, &in[i], sizeof(h));
+            const uint16_t lo = ::convert_f32_to_bf16_scalar(::convert_f16_bits_to_f32(h));
+            std::memcpy(&out[i], &lo, sizeof(bf16));
+        }
+    }
+#elif defined(CONVERT_F32_TO_BF16)
     {
         // f32 -> bf16, bit-identical to the host reference (see convert_pad.cc for the derivation).
         constexpr int32_t V = 512 / (sizeof(f32) * 8);
