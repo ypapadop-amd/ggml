@@ -51,6 +51,51 @@ template <typename T>
 constexpr bool is_floating_point_v = is_floating_point<T>::value;
 
 /**
+ * @brief Unsigned integer type with the same width as @p T.
+ *
+ * Lets a value be reinterpreted as raw bits so it can be manipulated with integer operations --
+ * clearing or flipping a float's sign bit, for instance. Specialized for every element type alias
+ * above; an unlisted type is a compile error rather than a silent mismatch.
+ *
+ * @tparam T The type whose width is matched.
+ */
+template <typename T>
+struct same_width_uint;
+
+template <>
+struct same_width_uint<i8> {
+    using type = std::uint8_t;
+};
+
+template <>
+struct same_width_uint<i16> {
+    using type = std::uint16_t;
+};
+
+template <>
+struct same_width_uint<i32> {
+    using type = std::uint32_t;
+};
+
+template <>
+struct same_width_uint<bf16> {
+    using type = std::uint16_t;
+};
+
+template <>
+struct same_width_uint<f32> {
+    using type = std::uint32_t;
+};
+
+/**
+ * @brief Helper alias for same_width_uint.
+ *
+ * @tparam T The type whose width is matched.
+ */
+template <typename T>
+using same_width_uint_t = typename same_width_uint<T>::type;
+
+/**
  * @brief Converts one f32 element to bf16 bits (round-to-nearest-even, NaN -> quiet).
  *
  * Replicates the host @c ggml_compute_fp32_to_bf16 integer arithmetic bit-for-bit, so vectorized

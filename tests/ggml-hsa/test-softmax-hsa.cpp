@@ -5,16 +5,18 @@
 // compares against a double-precision CPU reference. Includes the GPT-2 attention
 // shape [1024,1024,12] and a non-multiple-of-16 row length.
 //
-// KNOWN FAILING: the NPU softmax kernel is currently numerically incorrect (it
-// mis-tiles rows -- e.g. odd rows come back zero on a uniform input), a pre-existing
-// bug this test was written to expose. The device result is therefore reported but
-// NOT asserted, so the suite stays green until the kernel is fixed.
+// This test was written to expose a kernel that mis-tiled rows (odd rows came back zero
+// on a uniform input) and later stopped compiling at all under mlir-aie 1.4.3
+// ("stack_size is absent ... needs 1088 bytes"). Both were the same defect: the core's
+// stack frame exceeded the AIE core's 1024-byte default stack, so it wrote 64 bytes past
+// the end of its own stack into the neighbouring ObjectFifo buffer -- corrupting every
+// other tile, which is what produced the odd-row pattern. Newer toolchains measure the
+// frame and refuse to build; older ones compiled it and corrupted memory at run time.
+// softmax.py now sets an explicit stack_size, and the device result is asserted.
 //
-// As of mlir-aie 1.4.3 the kernel does not even compile ("stack_size is absent ...
-// needs 1088 bytes"), so every case reports the op as unsupported and this test
-// currently exercises nothing. Because it never returns non-zero it also cannot
-// report an unrelated regression (allocation or graph-compute failure).
-// TODO: once the kernel builds and is fixed, make the device result fatal (see main()).
+// Note SOFT_MAX is reported unsupported by default -- it faults the AIE queue when run back to
+// back inside a full attention graph -- so every case here skips unless
+// GGML_HSA_ENABLE_FAULTING_OPS is set. ctest sets it; a bare run of the binary will skip.
 
 #include <cmath>
 #include <cstddef>
@@ -146,11 +148,11 @@ int main() {
                 ++passed;
                 break;
             case case_result::mismatch:
-                label = "MISMATCH (known pre-existing NPU softmax bug)";
+                label = "MISMATCH";
                 ++mismatched;
                 break;
             case case_result::skip:
-                label = "SKIPPED (kernel does not build)";
+                label = "SKIPPED (op reported unsupported)";
                 ++skipped;
                 break;
             default:
@@ -163,21 +165,24 @@ int main() {
 
     ggml_backend_free(backend);
 
-    // Only an infrastructure failure is fatal. A numerical mismatch is the known kernel bug this
-    // test exists to document, and a skip means the backend declined the op -- neither should turn
-    // CI red, but an allocation or graph-compute failure is a real regression and must.
+    // A numerical mismatch is now fatal: the kernel is expected to be correct, so a mismatch is a
+    // regression rather than the documented bug it once was. A skip still is not fatal -- the
+    // backend may legitimately decline a shape, or route the op to the CPU.
     if (any_error) {
-        printf("ERRORS (setup or execution failed; not the known numerical bug)\n");
+        printf("ERRORS (setup or execution failed)\n");
         return 1;
     }
-    if ((passed == 0) && (mismatched == 0) && (skipped > 0)) {
-        // Nothing actually ran, so say so rather than reporting a green result. There are two
-        // independent reasons a case can skip and the per-case lines above distinguish them: the
-        // op is CPU-routed unless GGML_HSA_ENABLE_FAULTING_OPS is set (ctest sets it), and
-        // separately the SOFT_MAX kernel does not currently build on this toolchain.
+    if (mismatched > 0) {
+        printf("FAILURES (%d numerical mismatch)\n", mismatched);
+        return 1;
+    }
+    if ((passed == 0) && (skipped > 0)) {
+        // Nothing actually ran, so say so rather than reporting a green result. The kernel builds
+        // now, so the remaining reason to skip is that SOFT_MAX is reported unsupported unless
+        // GGML_HSA_ENABLE_FAULTING_OPS is set (ctest sets it for this suite).
         printf("ALL SKIPPED (no case ran; see the per-case reasons above)\n");
         return 0;
     }
-    printf("%d passed, %d known-mismatch, %d skipped\n", passed, mismatched, skipped);
+    printf("%d passed, %d skipped\n", passed, skipped);
     return 0;
 }
