@@ -369,19 +369,66 @@ const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t 
  * with transformations applied (e.g., making them contiguous, flattening).
  */
 struct ggml_backend_hsa_tensor_extra {
-    /// @brief Internal graph node.
+    /// @brief How a group's parent<->internal tensor transformations (e.g. dtype conversion) are
+    /// synchronized relative to the main kernel dispatch. Decided per group (sources vs output);
+    /// device is preferred over host.
+    enum class sync_mode_t {
+        none,   ///< No pre/post-processing is required for the group.
+        host,   ///< Pre/post-processing runs on the host; requires a queue drain (before the
+                ///< dispatch for sources, after it for the output).
+        device, ///< Pre/post-processing runs on the device queue via `preprocess_kernel`; no queue
+                ///< drain needed.
+    };
+
+    /// @brief Internal output graph node.
     struct node_t {
         ggml_tensor tensor{};      ///< Transformed tensor.
         std::size_t buffer_size{}; ///< Temporary storage size in bytes.
-        bool convert_dtype{};      ///< True if data conversion is necessary.
+        /// @brief Synchronization mode for the output post-processing after the main kernel
+        /// dispatch.
+        sync_mode_t sync_mode{sync_mode_t::none};
+        bool convert_dtype{}; ///< True if data conversion is necessary.
     };
 
-    std::int32_t nsrcs{};                         ///< Number of source tensors.
-    node_t node{};                                ///< Internal graph node.
-    std::array<node_t, GGML_MAX_SRC> src_nodes{}; ///< Internal graph node sources.
-    std::shared_ptr<ggml_hsa_kernel> kernel;      ///< Kernel associated with the tensor.
-    ggml_hsa_unique_ptr<std::byte> buffer;        ///< Temporary storage for tensor data.
-    bool requires_sync{false}; ///< True if CPU tensor transformations are necessary.
+    /// @brief Internal source graph node.
+    struct source_node_t {
+        ggml_tensor tensor{};      ///< Transformed tensor.
+        std::size_t buffer_size{}; ///< Temporary storage size in bytes.
+        /// @brief Optional on-device pre-processing kernel: transforms the parent source tensor
+        /// into this internal buffer (dtype conversion) on the device queue instead of on the
+        /// host. Null when the source needs no on-device pre-processing.
+        std::shared_ptr<ggml_hsa_kernel> preprocess_kernel;
+    };
+
+    /// @brief Internal source graph nodes plus their count.
+    struct sources_t {
+        /// @brief Number of source tensors.
+        std::int32_t count{};
+        /// @brief Synchronization mode for the source pre-processing before the main kernel
+        /// dispatch. Applies to the whole group: a host transformation on any source drains before
+        /// all of them.
+        sync_mode_t sync_mode{sync_mode_t::none};
+        /// @brief Internal graph node sources, indices [0, count) are valid.
+        std::array<source_node_t, GGML_MAX_SRC> nodes{};
+
+        /// @brief Returns the source node at index @p i.
+        source_node_t & operator[](std::int32_t i) { return nodes[i]; }
+        /// @brief Returns the source node at index @p i.
+        const source_node_t & operator[](std::int32_t i) const { return nodes[i]; }
+        /// @brief Iterator to the first valid source node.
+        source_node_t * begin() { return nodes.data(); }
+        /// @brief Iterator past the last valid source node.
+        source_node_t * end() { return nodes.data() + count; }
+        /// @brief Iterator to the first valid source node.
+        const source_node_t * begin() const { return nodes.data(); }
+        /// @brief Iterator past the last valid source node.
+        const source_node_t * end() const { return nodes.data() + count; }
+    };
+
+    node_t node{};                           ///< Internal output graph node.
+    sources_t sources{};                     ///< Internal source graph nodes.
+    std::shared_ptr<ggml_hsa_kernel> kernel; ///< Kernel associated with the tensor.
+    ggml_hsa_unique_ptr<std::byte> buffer;   ///< Temporary storage for tensor data.
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);

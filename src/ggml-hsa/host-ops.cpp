@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 #include <new>
 #include <utility>
 
@@ -52,11 +53,8 @@ struct ggml_hsa_copy_same_shape_tensors_f {
     ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
         assert(ggml_are_same_shape(src, dst));
 
-        using src_traits = ggml_hsa_type_traits<SrcT>;
-        using dst_traits = ggml_hsa_type_traits<DstT>;
-
-        using src_type = typename src_traits::type;
-        using dst_type = typename dst_traits::type;
+        using src_type = typename ggml_hsa_type_traits<SrcT>::type;
+        using dst_type = typename ggml_hsa_type_traits<DstT>::type;
 
         for (std::int64_t i03 = 0; i03 < src->ne[3]; ++i03) {
             for (std::int64_t i02 = 0; i02 < src->ne[2]; ++i02) {
@@ -130,11 +128,8 @@ struct ggml_hsa_copy_tensor_to_cont_tensor_f {
     ggml_status operator()(const ggml_tensor * src, ggml_tensor * dst) {
         assert((ggml_nelements(src) == ggml_nelements(dst)) && ggml_is_contiguous(dst));
 
-        using src_traits = ggml_hsa_type_traits<SrcT>;
-        using dst_traits = ggml_hsa_type_traits<DstT>;
-
-        using src_type = typename src_traits::type;
-        using dst_type = typename dst_traits::type;
+        using src_type = typename ggml_hsa_type_traits<SrcT>::type;
+        using dst_type = typename ggml_hsa_type_traits<DstT>::type;
 
         auto dst_ptr = std::launder(static_cast<dst_type *>(dst->data));
 
@@ -204,13 +199,17 @@ struct ggml_hsa_get_rows_f {
             auto * dst_row = static_cast<std::byte *>(dst->data) +
                              (i10 * dst->nb[1] + i11 * dst->nb[2] + i12 * dst->nb[3]);
 
-            for (std::int64_t i00 = 0; i00 < nc; ++i00) {
-                auto src_ptr =
-                    std::launder(reinterpret_cast<const src_type *>(src_row + i00 * src->nb[0]));
-                auto dst_ptr =
-                    std::launder(reinterpret_cast<dst_type *>(dst_row + i00 * dst->nb[0]));
-
-                *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
+            if constexpr (SrcT == DstT) {
+                // Same dtype: the row is contiguous (nb[0] == element size), so copy it whole.
+                std::memcpy(dst_row, src_row, static_cast<std::size_t>(nc) * sizeof(src_type));
+            } else {
+                for (std::int64_t i00 = 0; i00 < nc; ++i00) {
+                    auto src_ptr = std::launder(
+                        reinterpret_cast<const src_type *>(src_row + i00 * src->nb[0]));
+                    auto dst_ptr =
+                        std::launder(reinterpret_cast<dst_type *>(dst_row + i00 * dst->nb[0]));
+                    *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
+                }
             }
         }
         return GGML_STATUS_SUCCESS;
