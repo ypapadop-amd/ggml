@@ -59,7 +59,9 @@ def compile_iron_kernel(
     # object file (gemm.py registers zero_fn and matmul_fn against matmul_core_functions.o,
     # two symbols in one translation unit). Unlinking inside the loop would delete the
     # object the previous iteration just produced and compile the same source again.
-    for object_file_name in {func.object_file_name for func in ExternalFunction._instances}:
+    for object_file_name in {
+        func.object_file_name for func in ExternalFunction._instances
+    }:
         (work_dir / object_file_name).unlink(missing_ok=True)
 
     for func in ExternalFunction._instances:
