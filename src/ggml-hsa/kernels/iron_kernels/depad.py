@@ -156,6 +156,16 @@ def depad(
         msg = "depad tensors must be contiguous in memory."
         raise ValueError(msg)
 
+    # The tensors are addressed as 2D [d0, d1]; higher dimensions are never streamed, so a
+    # 3D/4D operand would silently have all but its first slice dropped.
+    for name, t in (("source", src), ("destination", output_tensor)):
+        if t.shape[2] != 1 or t.shape[3] != 1:
+            msg = (
+                f"depad {name} must be 2D; got shape {t.shape} "
+                f"(ne[2]={t.shape[2]}, ne[3]={t.shape[3]})."
+            )
+            raise ValueError(msg)
+
     # GGML convention: shape[0] is innermost/contiguous.
     d0pad, d1pad = src.shape[0], src.shape[1]
     d0, d1 = output_tensor.shape[0], output_tensor.shape[1]

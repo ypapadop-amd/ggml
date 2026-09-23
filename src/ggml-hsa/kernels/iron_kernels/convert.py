@@ -41,7 +41,7 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         The resolved IRON program (MLIR module).
 
     Raises:
-        ValueError: On invalid tensor count, contiguity, or element-count mismatch.
+        ValueError: On invalid tensor count, dtype, contiguity, or element-count mismatch.
 
     """
     del op_params
@@ -52,6 +52,16 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     src = input_tensors[0]
 
+    # convert.cc implements f32 -> bf16 (host-identical RNE), bf16 -> f32 (exact widening) and the
+    # same-dtype copy. Any other pair would silently fall into its static_cast branch, whose
+    # rounding is Peano's rather than the host reference's, so reject it here.
+    supported = (np.float32, bfloat16)
+    if src.dtype not in supported or output_tensor.dtype not in supported:
+        msg = (
+            f"convert supports only float32 and bfloat16; got src {src.dtype}, dst "
+            f"{output_tensor.dtype}."
+        )
+        raise ValueError(msg)
     if not src.contiguous or not output_tensor.contiguous:
         msg = "convert tensors must be contiguous in memory."
         raise ValueError(msg)
@@ -63,7 +73,14 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         raise ValueError(msg)
 
     # Flatten to 1D: a cast is element-wise, so any shape streams as one contiguous run.
-    num_elements = arch_aligned_num_elements(arch=arch, tensor=src)
+    # The same count declares both the source and the destination transfer, so it has to satisfy
+    # the alignment of both dtypes: aligning on the source alone leaves the destination's byte size
+    # unaligned whenever the two itemsizes differ (e.g. an odd element count f32 -> bf16 gives a
+    # 2-byte-odd destination). The larger of the two aligned counts satisfies both.
+    num_elements = max(
+        arch_aligned_num_elements(arch=arch, tensor=src),
+        arch_aligned_num_elements(arch=arch, tensor=output_tensor),
+    )
     tile_size = max_tile_size(arch, src.dtype, num_elements)
     num_tiles = num_elements // tile_size
 

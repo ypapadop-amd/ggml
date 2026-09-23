@@ -8,9 +8,13 @@
 // KNOWN FAILING: the NPU softmax kernel is currently numerically incorrect (it
 // mis-tiles rows -- e.g. odd rows come back zero on a uniform input), a pre-existing
 // bug this test was written to expose. The device result is therefore reported but
-// NOT asserted, so the suite stays green until the kernel is fixed. The reference is
-// validated by the same checks passing on the CPU backend.
-// TODO: once the kernel is fixed, make the device result fatal (see main()).
+// NOT asserted, so the suite stays green until the kernel is fixed.
+//
+// As of mlir-aie 1.4.3 the kernel does not even compile ("stack_size is absent ...
+// needs 1088 bytes"), so every case reports the op as unsupported and this test
+// currently exercises nothing. Because it never returns non-zero it also cannot
+// report an unrelated regression (allocation or graph-compute failure).
+// TODO: once the kernel builds and is fixed, make the device result fatal (see main()).
 
 #include <cmath>
 #include <cstddef>

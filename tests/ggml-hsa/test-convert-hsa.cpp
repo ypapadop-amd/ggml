@@ -102,6 +102,11 @@ int main() {
         {768, 4, "gpt2 n_embd"},
         {500, 500, "square"},
         {1, 64, "single col"},
+        // Odd element count: the declared transfer count has to be aligned for both the source and
+        // the destination dtype, which differ in itemsize. Aligning on one alone leaves the other
+        // side's byte size unaligned.
+        {15, 1, "odd numel"},
+        {33, 3, "odd numel rows"},
     };
 
     struct {

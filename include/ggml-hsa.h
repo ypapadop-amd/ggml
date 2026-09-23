@@ -39,9 +39,14 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
 // in the backend). They are the internal MUL_MAT convert/pad pre-amble and de-pad post-amble, plus
 // the element-wise dtype cast, exposed as ordinary ggml ops so they can be driven through
 // ggml_build_forward_expand + ggml_backend_graph_compute like any other op. They are only supported
-// by the HSA backend.
+// by the HSA backend. `a` must be 2D (ne[2] == ne[3] == 1).
 
-// dtype-convert `a` to `type` and zero-pad it into the given (larger or equal) 2D shape.
+// dtype-convert `a` to `type` and widen it into the given (larger or equal) 2D shape.
+//
+// The kernel writes the first `a->ne[1]` rows, zero-filling each one's tail columns
+// [a->ne[0], ne0). It does NOT write the trailing rows [a->ne[1], ne1): the backend does not zero
+// buffers at allocation, so when ne1 > a->ne[1] the caller must pre-zero the destination (e.g. with
+// ggml_backend_tensor_memset) or those rows hold whatever was in the buffer.
 GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert_pad(
     struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type, int64_t ne0,
     int64_t ne1);

@@ -79,6 +79,20 @@ const char * ggml_hsa_op_name(ggml_hsa_op op) {
     GGML_ABORT("invalid ggml_hsa_op: %d", static_cast<int>(op));
 }
 
+/**
+ * @brief Returns a printable operation name for @p t, accepting HSA-only operators.
+ *
+ * @c ggml_op_desc indexes @c GGML_OP_NAME, an array of exactly @c GGML_OP_COUNT entries, without a
+ * bounds check, so passing it a tensor carrying an HSA-only op (numbered above @c GGML_OP_COUNT)
+ * reads past the end of that array. Error paths shared by both kinds of node must use this instead.
+ */
+static const char * ggml_hsa_tensor_op_desc(const ggml_tensor & t) {
+    if (ggml_hsa_is_hsa_op(t.op)) {
+        return ggml_hsa_op_name(static_cast<ggml_hsa_op>(t.op));
+    }
+    return ggml_op_desc(&t);
+}
+
 const char * ggml_hsa_get_status_string(hsa_status_t status) {
     const char * msg = nullptr;
     if (hsa_status_string(status, &msg) != HSA_STATUS_SUCCESS) {
@@ -151,7 +165,7 @@ static std::string ggml_hsa_create_kernel_name(const ggml_tensor & tensor,
 
     // no operation name supplied - use the tensor operation name
     if (op_name.empty()) {
-        op_name = ggml_op_desc(&tensor);
+        op_name = ggml_hsa_tensor_op_desc(tensor);
     }
 
     std::ostringstream oss;
@@ -665,6 +679,13 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // maps the sole parent source into this node's shape/dtype; no generic layout/flatten handling.
     if (ggml_hsa_is_hsa_op(node.tensor.op)) {
         const auto hsa_op = static_cast<ggml_hsa_op>(node.tensor.op);
+        if (parent_tensor.src[0] == nullptr) {
+            throw std::runtime_error{std::string{"HSA transform \""}
+                                         .append(ggml_get_name(&parent_tensor))
+                                         .append("\" (")
+                                         .append(ggml_hsa_op_name(hsa_op))
+                                         .append(") has no source tensor")};
+        }
         kernel =
             ggml_hsa_build_transform_kernel(dev_info, hsa_op, *parent_tensor.src[0], parent_tensor);
         if (kernel == nullptr) {
@@ -750,7 +771,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             throw std::runtime_error{std::string{"Could not create kernel for tensor \""}
                                          .append(node.tensor.name)
                                          .append("\" (")
-                                         .append(ggml_op_desc(&node.tensor))
+                                         .append(ggml_hsa_tensor_op_desc(node.tensor))
                                          .append(")")};
         }
         ggml_hsa_cache_kernel(std::move(kernel_name), dev_info.device, kernel);
@@ -797,7 +818,7 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     }
 
     GGML_HSA_LOG_INFO("%s: created temporary storage for tensor %s (%s)", __func__,
-                      node.tensor.name, ggml_op_desc(&node.tensor));
+                      node.tensor.name, ggml_hsa_tensor_op_desc(node.tensor));
 
     return GGML_STATUS_SUCCESS;
 }
@@ -1424,7 +1445,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 if (status = ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
                     status != GGML_STATUS_SUCCESS) {
                     GGML_HSA_LOG_ERROR("%s: failed to copy source %i for tensor \"%s (%s)\"",
-                                       __func__, src_idx, node->name, ggml_op_desc(node));
+                                       __func__, src_idx, node->name, ggml_hsa_tensor_op_desc(*node));
                     break;
                 }
             }
@@ -1438,7 +1459,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                                                    internal_node);
             status != GGML_STATUS_SUCCESS) {
             GGML_HSA_LOG_ERROR("%s: failed to dispatch kernel for tensor \"%s\" (%s)", __func__,
-                               node->name, ggml_op_desc(node));
+                               node->name, ggml_hsa_tensor_op_desc(*node));
             break;
         }
 
@@ -1448,7 +1469,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             if (status = ggml_hsa_copy_tensor(&internal_node, node);
                 status != GGML_STATUS_SUCCESS) {
                 GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__,
-                                   node->name, ggml_op_desc(node));
+                                   node->name, ggml_hsa_tensor_op_desc(*node));
                 break;
             }
         }
