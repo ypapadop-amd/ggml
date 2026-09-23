@@ -32,7 +32,6 @@ from .utils import fill_drain_program, row_dimensions
 _STACK_SIZE_BYTES = 2048
 
 
-
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """Build the softmax IRON program, dispatching by input count (1=plain, 2=masked, 3=sinks).
 
