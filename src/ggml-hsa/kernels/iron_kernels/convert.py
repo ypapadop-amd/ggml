@@ -25,7 +25,12 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_aligned_num_elements, fill_drain_program, max_tile_size
+from .utils import fill_drain_program, max_tile_size
+
+
+# Shim-DMA transfers are issued in whole 4-byte words (see align_to_arch), so a tensor whose
+# byte size is not a multiple of this cannot be streamed in full.
+_DMA_ALIGNMENT_BYTES = 4
 
 
 def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -41,7 +46,8 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         The resolved IRON program (MLIR module).
 
     Raises:
-        ValueError: On invalid tensor count, contiguity, or element-count mismatch.
+        ValueError: On invalid tensor count, dtype, contiguity, element-count mismatch, or a
+            byte size that is not a whole number of DMA words.
 
     """
     del op_params
@@ -52,6 +58,16 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     src = input_tensors[0]
 
+    # convert.cc implements f32 -> bf16 (host-identical RNE), bf16 -> f32 (exact widening) and the
+    # same-dtype copy. Any other pair would silently fall into its static_cast branch, whose
+    # rounding is Peano's rather than the host reference's, so reject it here.
+    supported = (np.float32, bfloat16)
+    if src.dtype not in supported or output_tensor.dtype not in supported:
+        msg = (
+            f"convert supports only float32 and bfloat16; got src {src.dtype}, dst "
+            f"{output_tensor.dtype}."
+        )
+        raise ValueError(msg)
     if not src.contiguous or not output_tensor.contiguous:
         msg = "convert tensors must be contiguous in memory."
         raise ValueError(msg)
@@ -62,8 +78,23 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         )
         raise ValueError(msg)
 
+    # One element count declares both the source and the destination transfer, so it has to be
+    # valid for both dtypes. Rounding it up to satisfy the stricter one is not an option here:
+    # ggml allocates exactly ggml_nbytes, so a count above the tensor's own element count makes
+    # the shim DMA read and write past the end of the buffer. Instead require that both tensors
+    # are already a whole number of DMA words -- for a 2-byte dtype that means an even element
+    # count -- and stream exactly that many elements. Anything else is left to the host copy path.
+    for name, t in (("source", src), ("destination", output_tensor)):
+        if (t.numel() * t.dtype.itemsize) % _DMA_ALIGNMENT_BYTES != 0:
+            msg = (
+                f"convert {name} of {t.numel()} x {t.dtype} is not a multiple of "
+                f"{_DMA_ALIGNMENT_BYTES} bytes; cannot be streamed without over-running the "
+                f"allocation."
+            )
+            raise ValueError(msg)
+
     # Flatten to 1D: a cast is element-wise, so any shape streams as one contiguous run.
-    num_elements = arch_aligned_num_elements(arch=arch, tensor=src)
+    num_elements = src.numel()
     tile_size = max_tile_size(arch, src.dtype, num_elements)
     num_tiles = num_elements // tile_size
 

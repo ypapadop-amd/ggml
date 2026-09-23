@@ -205,6 +205,22 @@ def fan_out_worker_count(
     return max(1, min(max_workers, n_units, by_work))
 
 
+def arch_num_columns(arch: str) -> int:
+    """Number of array columns for an architecture (aie2p -> 8, aie2 -> 4).
+
+    Each column has its own shim tile / external-DMA path, so the column count is the natural
+    upper bound on independent data-parallel workers streaming to/from external memory: one worker
+    per column saturates the available shim-DMA bandwidth without oversubscribing a column.
+
+    Args:
+        arch: Target architecture.
+
+    Returns:
+        The number of columns in the array.
+    """
+    return arch_to_device(arch).cols
+
+
 def partition_units(num_workers: int, n_units: int) -> tuple[list[int], list[int]]:
     """Split n_units contiguous units as evenly as possible across num_workers.
 
@@ -246,22 +262,6 @@ class CoreFunctionSpec:
     def tile_size(self) -> int:
         """Tile size used by the external function."""
         return self.external_function.tile_size(0)
-
-
-def arch_num_columns(arch: str) -> int:
-    """Number of array columns for an architecture (aie2p -> 8, aie2 -> 4).
-
-    Each column has its own shim tile / external-DMA path, so the column count is the natural
-    upper bound on independent data-parallel workers streaming to/from external memory: one worker
-    per column saturates the available shim-DMA bandwidth without oversubscribing a column.
-
-    Args:
-        arch: Target architecture.
-
-    Returns:
-        The number of columns in the array.
-    """
-    return arch_to_device(arch).cols
 
 
 def arch_to_device(device):

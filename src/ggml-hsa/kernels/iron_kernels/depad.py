@@ -156,6 +156,16 @@ def depad(
         msg = "depad tensors must be contiguous in memory."
         raise ValueError(msg)
 
+    # The tensors are addressed as 2D [d0, d1]; higher dimensions are never streamed, so a
+    # 3D/4D operand would silently have all but its first slice dropped.
+    for name, t in (("source", src), ("destination", output_tensor)):
+        if t.shape[2] != 1 or t.shape[3] != 1:
+            msg = (
+                f"depad {name} must be 2D; got shape {t.shape} "
+                f"(ne[2]={t.shape[2]}, ne[3]={t.shape[3]})."
+            )
+            raise ValueError(msg)
+
     # GGML convention: shape[0] is innermost/contiguous.
     d0pad, d1pad = src.shape[0], src.shape[1]
     d0, d1 = output_tensor.shape[0], output_tensor.shape[1]
@@ -219,13 +229,20 @@ def depad(
     workers = [
         Worker(
             core_fn,
-            fn_args=[of_ins[w].cons(), of_outs[w].prod(), function, bands[w][0] * bands[w][1]],
+            fn_args=[
+                of_ins[w].cons(),
+                of_outs[w].prod(),
+                function,
+                bands[w][0] * bands[w][1],
+            ],
         )
         for w in range(n_workers)
     ]
 
     # Only the first d1 rows carry results; each padded row is d0pad wide, each dense row d0.
-    src_ty = np.ndarray[(d0pad * d1,), np.dtype[src.dtype]]
+    # The source type covers the padded tensor in full ([d0pad, d1pad]) so the Runtime signature
+    # matches the buffer the backend passes; the fill access patterns below restrict the reads.
+    src_ty = np.ndarray[(d0pad * d1pad,), np.dtype[src.dtype]]
     dst_ty = np.ndarray[(d0 * d1,), np.dtype[output_tensor.dtype]]
 
     # Access pattern dims are (chunk, row, element), outermost-first. The element run (size
@@ -239,7 +256,10 @@ def depad(
         for w in range(n_workers):
             n_chunks_w, rows_w, src_off, dst_off = bands[w]
             src_tap = TensorAccessPattern(
-                (d1, d0pad), src_off, [1, n_chunks_w, rows_w, chunk], [0, chunk, d0pad, 1]
+                (d1pad, d0pad),
+                src_off,
+                [1, n_chunks_w, rows_w, chunk],
+                [0, chunk, d0pad, 1],
             )
             out_taps.append(
                 TensorAccessPattern(

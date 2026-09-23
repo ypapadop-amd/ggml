@@ -8,9 +8,13 @@
 // KNOWN FAILING: the NPU softmax kernel is currently numerically incorrect (it
 // mis-tiles rows -- e.g. odd rows come back zero on a uniform input), a pre-existing
 // bug this test was written to expose. The device result is therefore reported but
-// NOT asserted, so the suite stays green until the kernel is fixed. The reference is
-// validated by the same checks passing on the CPU backend.
-// TODO: once the kernel is fixed, make the device result fatal (see main()).
+// NOT asserted, so the suite stays green until the kernel is fixed.
+//
+// As of mlir-aie 1.4.3 the kernel does not even compile ("stack_size is absent ...
+// needs 1088 bytes"), so every case reports the op as unsupported and this test
+// currently exercises nothing. Because it never returns non-zero it also cannot
+// report an unrelated regression (allocation or graph-compute failure).
+// TODO: once the kernel builds and is fixed, make the device result fatal (see main()).
 
 #include <cmath>
 #include <cstddef>
@@ -26,7 +30,13 @@
 
 namespace {
 
-bool run_case(ggml_backend_t backend, int64_t ne0, int64_t ne1, int64_t ne2, const char * name) {
+// A case either runs and matches (pass), runs and mismatches (mismatch -- the known kernel bug,
+// reported but not fatal), is declined by the backend (skip), or fails to set up or execute at all
+// (error -- an infrastructure regression, which IS fatal).
+enum class case_result { pass, mismatch, skip, error };
+
+case_result run_case(ggml_backend_t backend, int64_t ne0, int64_t ne1, int64_t ne2,
+                     const char * name) {
     const int64_t n = ne0 * ne1 * ne2;
 
     const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
@@ -43,8 +53,8 @@ bool run_case(ggml_backend_t backend, int64_t ne0, int64_t ne1, int64_t ne2, con
     ggml_set_name(dst, "dst");
 
     if (!ggml_backend_supports_op(backend, dst)) {
-        printf("  %-18s: op not supported\n", name);
-        return false;
+        printf("  %-18s: op not supported (skipped)\n", name);
+        return case_result::skip;
     }
 
     ggml_cgraph * gf = ggml_new_graph(ctx.get());
@@ -54,7 +64,7 @@ bool run_case(ggml_backend_t backend, int64_t ne0, int64_t ne1, int64_t ne2, con
         ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
     if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
         printf("  %-18s: graph allocation failed\n", name);
-        return false;
+        return case_result::error;
     }
 
     // Varied, deterministic input spanning a wide range (exercises the max-subtraction path).
@@ -68,7 +78,7 @@ bool run_case(ggml_backend_t backend, int64_t ne0, int64_t ne1, int64_t ne2, con
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
         printf("  %-18s: graph compute failed\n", name);
-        return false;
+        return case_result::error;
     }
 
     std::vector<float> dst_host(n);
@@ -97,7 +107,7 @@ bool run_case(ggml_backend_t backend, int64_t ne0, int64_t ne1, int64_t ne2, con
             }
         }
     }
-    return ok;
+    return ok ? case_result::pass : case_result::mismatch;
 }
 
 } // namespace
@@ -123,18 +133,43 @@ int main() {
         // tiles (see the softmax watchdog fix).
     };
 
-    bool all_ok = true;
+    int passed = 0;
+    int mismatched = 0;
+    int skipped = 0;
+    bool any_error = false;
     for (const auto & c : cases) {
-        bool ok = run_case(backend, c.ne0, c.ne1, c.ne2, c.name);
-        printf("SOFT_MAX %-18s: %s\n", c.name,
-               ok ? "PASSED" : "FAILED (known pre-existing NPU softmax bug)");
-        all_ok = all_ok && ok;
+        const case_result r = run_case(backend, c.ne0, c.ne1, c.ne2, c.name);
+        const char * label;
+        switch (r) {
+            case case_result::pass:
+                label = "PASSED";
+                ++passed;
+                break;
+            case case_result::mismatch:
+                label = "MISMATCH (known pre-existing NPU softmax bug)";
+                ++mismatched;
+                break;
+            case case_result::skip:
+                label = "SKIPPED (kernel does not build)";
+                ++skipped;
+                break;
+            default:
+                label = "ERROR";
+                any_error = true;
+                break;
+        }
+        printf("SOFT_MAX %-18s: %s\n", c.name, label);
     }
 
     ggml_backend_free(backend);
-    printf("%s\n", all_ok ? "ALL PASSED" : "KNOWN FAILURES (NPU softmax bug; not asserted)");
-    // Intentionally not fatal while the kernel is known-broken; the reference is
-    // covered by the CPU backend. TODO: return `all_ok ? 0 : 1` once the NPU
-    // softmax kernel is fixed so this becomes a real regression guard.
+
+    // Only an infrastructure failure is fatal. A numerical mismatch is the known kernel bug this
+    // test exists to document, and a skip means the backend declined the op -- neither should turn
+    // CI red, but an allocation or graph-compute failure is a real regression and must.
+    if (any_error) {
+        printf("ERRORS (setup or execution failed; not the known numerical bug)\n");
+        return 1;
+    }
+    printf("%d passed, %d known-mismatch, %d skipped\n", passed, mismatched, skipped);
     return 0;
 }
