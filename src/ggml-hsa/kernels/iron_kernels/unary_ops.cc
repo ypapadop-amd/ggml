@@ -141,11 +141,9 @@ void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
 void ggml_unary_op_abs(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
-    // max(v, -v) rather than aie::abs: aie::abs does not compute a floating-point
-    // magnitude here (it returned 0.875 for -5.0f on aie2).
     transform_vector_n(
-        in, out, N, [](auto v) { return aie::max(v, aie::neg(v)); },
-        [](auto v) { return static_cast<OUTPUT_DTYPE>(v < static_cast<INPUT_DTYPE>(0) ? -v : v); });
+        in, out, N, [](auto v) { return vec_abs(v); },
+        [](auto v) { return static_cast<OUTPUT_DTYPE>(scalar_abs(v)); });
 }
 
 #endif // GGML_UNARY_OP_ABS
@@ -187,7 +185,7 @@ void ggml_unary_op_neg(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
     transform_vector_n(
-        in, out, N, [](auto v) { return aie::neg(v); },
+        in, out, N, [](auto v) { return vec_neg(v); },
         [](auto v) { return static_cast<OUTPUT_DTYPE>(-v); });
 }
 

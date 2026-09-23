@@ -362,4 +362,92 @@ inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
     return result;
 }
 
+/**
+ * @brief Returns |v| for one element.
+ *
+ * For floats this clears the sign bit, which is exactly @c std::fabs -- the reference ggml computes
+ * on the host -- for every input, including -0.0 (which a @c v < 0 ? -v : v test leaves negative)
+ * and NaN. Integer types keep the ordinary comparison form.
+ *
+ * @tparam T Element type.
+ * @param[in] v The value to take the magnitude of.
+ * @return The magnitude of @p v.
+ */
+template <typename T>
+inline T scalar_abs(T v) {
+    if constexpr (is_floating_point_v<T>) {
+        using U = same_width_uint_t<T>;
+        constexpr U magnitude_mask = static_cast<U>(~(U{1} << (sizeof(U) * 8 - 1)));
+        U bits = 0;
+        std::memcpy(&bits, &v, sizeof(bits));
+        bits &= magnitude_mask;
+        T result;
+        std::memcpy(&result, &bits, sizeof(result));
+        return result;
+    } else {
+        return v < T(0) ? -v : v;
+    }
+}
+
+/**
+ * @brief Returns |v| for every lane, by clearing the sign bit.
+ *
+ * Exactly @c fabs for every input, so signed zeros and NaNs come back with the sign cleared like
+ * the host reference. Deliberately not @c aie::max(v, aie::neg(v)): that picks whichever operand
+ * compares larger, which for -0.0 and NaN can keep the input's sign. Also avoids @c aie::abs, which
+ * does not compute a floating-point magnitude in this aie_api version (it returned 0.875 for -5.0f
+ * on aie2). Pure integer bit manipulation, so it needs no architecture split.
+ *
+ * @tparam T Float element type.
+ * @tparam V Vector width.
+ * @param[in] v The vector to take the magnitude of.
+ * @return The element-wise magnitude.
+ */
+template <typename T, unsigned V>
+inline aie::vector<T, V> vec_abs(const aie::vector<T, V> & v) {
+    using U = same_width_uint_t<T>;
+    constexpr U magnitude_mask = static_cast<U>(~(U{1} << (sizeof(U) * 8 - 1)));
+    return aie::vector_cast<T>(aie::bit_and(magnitude_mask, aie::vector_cast<U>(v)));
+}
+
+// aie2p has no legalization rule for G_FNEG on vector types, so aie::neg on a float vector fails to
+// compile there ("unable to legalize instruction: G_FNEG <16 x s32>" for f32, "<32 x s16>" for
+// bf16). Flipping the sign bit with integer operations is exactly IEEE-754 negation and needs no
+// such rule. aie2 does legalize it, so it keeps aie::neg -- no behaviour change on an architecture
+// that cannot be tested here, and both forms are bit-exact for negation. Drop the split once the
+// aie2p backend grows the missing rule.
+#if __AIE_ARCH__ != 20
+
+/**
+ * @brief Returns -v for every lane, by flipping the sign bit.
+ *
+ * @tparam T Float element type.
+ * @tparam V Vector width.
+ * @param[in] v The vector to negate.
+ * @return The negated vector.
+ */
+template <typename T, unsigned V>
+inline aie::vector<T, V> vec_neg(const aie::vector<T, V> & v) {
+    using U = same_width_uint_t<T>;
+    constexpr U sign_bit = static_cast<U>(U{1} << (sizeof(U) * 8 - 1));
+    return aie::vector_cast<T>(aie::bit_xor(sign_bit, aie::vector_cast<U>(v)));
+}
+
+#else // __AIE_ARCH__ == 20
+
+/**
+ * @brief Returns -v for every lane. aie2 legalizes vector @c G_FNEG, so use it directly.
+ *
+ * @tparam T Float element type.
+ * @tparam V Vector width.
+ * @param[in] v The vector to negate.
+ * @return The negated vector.
+ */
+template <typename T, unsigned V>
+inline aie::vector<T, V> vec_neg(const aie::vector<T, V> & v) {
+    return aie::neg(v);
+}
+
+#endif // __AIE_ARCH__ != 20
+
 #endif // AIE_KERNEL_MATH
