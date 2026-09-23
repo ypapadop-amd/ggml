@@ -17,8 +17,8 @@
  * promotion rules live in exactly one place.
  */
 template <ggml_type SrcT, ggml_type DstT>
-constexpr typename ggml_hsa_type_traits<DstT>::type ggml_hsa_convert(
-    const typename ggml_hsa_type_traits<SrcT>::type & src) {
+constexpr typename ggml_hsa_type_traits<DstT>::type
+ggml_hsa_convert(const typename ggml_hsa_type_traits<SrcT>::type & src) {
     using src_traits = ggml_hsa_type_traits<SrcT>;
     using dst_traits = ggml_hsa_type_traits<DstT>;
 
