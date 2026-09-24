@@ -460,16 +460,6 @@ struct ggml_backend_hsa_context {
     std::size_t n_batched{};            ///< Packets written since the last doorbell ring.
 
     /// @brief First error reported by the queue's error callback, or @c HSA_STATUS_SUCCESS.
-    ///
-    /// Sticky. A submission failure suspends the queue in the runtime and leaves the packets that
-    /// never ran without their completion signals released, so the queue cannot recover and a wait
-    /// for @ref dispatch_signal to drain would never return. Recording the error lets the dispatch
-    /// path skip that wait and fail the graph instead of hanging.
-    ///
-    /// The expected cause is the queue's compute-unit limit: a hardware context holds at most 32
-    /// distinct kernels, and the runtime rejects the packet that would need a 33rd. Kernels are
-    /// specialized per shape, so a workload that keeps introducing shapes (an attention graph over
-    /// a growing KV cache, say) reaches that ceiling as it runs.
     std::atomic<hsa_status_t> queue_error{HSA_STATUS_SUCCESS};
 
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
