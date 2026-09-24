@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -45,14 +46,42 @@ bool g_ggml_hsa_enable_faulting_ops = [] {
     return false;
 }();
 
-void ggml_hsa_warn_invalid_env(const char * name, const char * value) {
-    GGML_HSA_LOG_WARN("ggml_hsa: ignoring invalid %s (\"%s\")", name, value);
+/**
+ * @brief Reads integer environment variable @p name, restricted to an accepted range.
+ *
+ * Returns @p fallback when @p name is unset, is not an integer, has trailing characters, or parses
+ * to a value outside [@p min, @p max]; every rejection is logged. The range check is not optional
+ * padding: @c std::from_chars accepts a leading `-`, so without a lower bound a negative value
+ * parses cleanly and silently yields a nonsensical setting.
+ *
+ * @param[in] name environment variable to read
+ * @param[in] fallback value returned when @p name is absent or rejected
+ * @param[in] min smallest accepted value
+ * @param[in] max largest accepted value
+ */
+static std::int64_t ggml_hsa_getenv_int(const char * name,
+                                        std::int64_t fallback,
+                                        std::int64_t min,
+                                        std::int64_t max) {
+    const char * env = std::getenv(name);
+    if (env == nullptr) {
+        return fallback;
+    }
+    std::int64_t parsed = 0;
+    const auto * end = env + std::strlen(env);
+    const auto [ptr, ec] = std::from_chars(env, end, parsed);
+    if (ec != std::errc{} || ptr != end || parsed < min || parsed > max) {
+        GGML_HSA_LOG_WARN("ggml_hsa: ignoring invalid %s (\"%s\")", name, env);
+        return fallback;
+    }
+    return parsed;
 }
 
 /// @brief Packets to accumulate before ringing the doorbell, or 0 if unset/invalid (use the
 /// per-queue default). Read once from @c GGML_HSA_DISPATCH_BATCH_SIZE at startup.
-static const std::size_t g_ggml_hsa_dispatch_batch_size = ggml_hsa_getenv_int<std::size_t>(
-    "GGML_HSA_DISPATCH_BATCH_SIZE", 0, 1, std::numeric_limits<std::size_t>::max());
+static const std::size_t g_ggml_hsa_dispatch_batch_size = static_cast<std::size_t>(
+    ggml_hsa_getenv_int("GGML_HSA_DISPATCH_BATCH_SIZE", 0, 1,
+                        std::numeric_limits<std::int64_t>::max()));
 
 /// @brief How long teardown waits for packets that were in flight when the queue was suspended,
 /// in milliseconds. Read once from @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS at startup; 0 means
@@ -61,8 +90,7 @@ static const std::size_t g_ggml_hsa_dispatch_batch_size = ggml_hsa_getenv_int<st
 /// The upper bound keeps @c deadline = now() + timeout inside @c steady_clock::time_point's range,
 /// so an absurd value cannot overflow the addition into a deadline in the past.
 static const std::chrono::milliseconds g_ggml_hsa_queue_error_drain_timeout{
-    ggml_hsa_getenv_int<std::chrono::milliseconds::rep>(
-        "GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS", 1000, 0, 60 * 60 * 1000)};
+    ggml_hsa_getenv_int("GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS", 1000, 0, 60 * 60 * 1000)};
 
 /// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
 #define MATRIX_ROW_PADDING 512
