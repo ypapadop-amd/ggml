@@ -59,10 +59,8 @@ bool g_ggml_hsa_enable_faulting_ops = [] {
  * @param[in] min smallest accepted value
  * @param[in] max largest accepted value
  */
-static std::int64_t ggml_hsa_getenv_int(const char * name,
-                                        std::int64_t fallback,
-                                        std::int64_t min,
-                                        std::int64_t max) {
+static std::int64_t
+ggml_hsa_getenv_int(const char * name, std::int64_t fallback, std::int64_t min, std::int64_t max) {
     const char * env = std::getenv(name);
     if (env == nullptr) {
         return fallback;
@@ -79,9 +77,9 @@ static std::int64_t ggml_hsa_getenv_int(const char * name,
 
 /// @brief Packets to accumulate before ringing the doorbell, or 0 if unset/invalid (use the
 /// per-queue default). Read once from @c GGML_HSA_DISPATCH_BATCH_SIZE at startup.
-static const std::size_t g_ggml_hsa_dispatch_batch_size = static_cast<std::size_t>(
-    ggml_hsa_getenv_int("GGML_HSA_DISPATCH_BATCH_SIZE", 0, 1,
-                        std::numeric_limits<std::int64_t>::max()));
+static const std::size_t g_ggml_hsa_dispatch_batch_size =
+    static_cast<std::size_t>(ggml_hsa_getenv_int(
+        "GGML_HSA_DISPATCH_BATCH_SIZE", 0, 1, std::numeric_limits<std::int64_t>::max()));
 
 /// @brief How long teardown waits for packets that were in flight when the queue was suspended,
 /// in milliseconds. Read once from @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS at startup; 0 means
