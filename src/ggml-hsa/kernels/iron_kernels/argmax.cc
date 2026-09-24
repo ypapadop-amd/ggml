@@ -5,9 +5,7 @@
  * @brief Argmax operation for AIE kernels.
  */
 
-#include <cstdint>
-
-#include <aie_api/aie.hpp>
+#include <limits>
 
 #include "ggml-aie.hpp"
 
@@ -27,75 +25,34 @@ extern "C" {
 void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     event0();
 
-    // The scalar scan below carries a loop-carried dependency and a data-dependent branch per
-    // element, which is why it showed up at 1.42 us/image of a 34.67 us MNIST baseline (4.1%)
-    // despite only covering a 10-element row. When the row length is known at compile time and
-    // fits one vector, do it branch-free instead: one reduce_max, one compare, one bit scan.
+    // Transcribed from ggml_vec_argmax_f32 (ggml-cpu/vec.h), which is the reference this has to
+    // match. Two things in it are easy to get wrong, and the previous body got both:
     //
-    // The design streams exactly one row per tile (see argmax.py), and the tile is exactly N
-    // elements, so a vector load off `in` would read past the buffer. Stage the row into a
-    // padded, vector-aligned scratch buffer. The padding lanes hold in[0], a value already in
-    // the row: they cannot raise the maximum, and if in[0] *is* the maximum then lane 0 is set
-    // too and the first-set-lane scan below still returns 0.
-#if defined(ARGMAX_N) && (ARGMAX_N) > 0 && (ARGMAX_N) <= 16
-    constexpr int32_t Nv = ARGMAX_N;
-    constexpr int32_t V = 16;
-    (void)N;
-
-    alignas(64) INPUT_DTYPE xs[V];
-    for (int32_t i = 0; i < Nv; i++) {
-        xs[i] = in[i];
-    }
-    for (int32_t i = Nv; i < V; i++) {
-        xs[i] = in[0];
-    }
-
-    const auto xv = aie::load_v<V>(xs);
-    const auto max_val = aie::reduce_max(xv);
-
-    // First lane equal to the maximum. Matches the scalar scan's strictly-greater comparison,
-    // which keeps the first occurrence on ties.
-    const auto eq = aie::eq(xv, aie::broadcast<INPUT_DTYPE, V>(max_val));
-
-    // Index of the lowest set bit, by binary search over the 16-bit lane mask. Not
-    // __builtin_ctz: that lowers to G_CTTZ_ZERO_UNDEF, which Peano cannot legalize for aie2
-    // ("unable to legalize instruction"). The mask is only zero if no lane compared equal,
-    // which needs every lane to be NaN; the scalar scan returns 0 for that input, so match it.
-    unsigned m = eq.to_uint32() & 0xFFFFu;
-    int32_t idx = 0;
-    if (m != 0u) {
-        if ((m & 0x00FFu) == 0u) {
-            idx += 8;
-            m >>= 8;
-        }
-        if ((m & 0x000Fu) == 0u) {
-            idx += 4;
-            m >>= 4;
-        }
-        if ((m & 0x0003u) == 0u) {
-            idx += 2;
-            m >>= 2;
-        }
-        if ((m & 0x0001u) == 0u) {
-            idx += 1;
-        }
-    }
-    out[0] = static_cast<OUTPUT_DTYPE>(idx);
-#else
+    //   max = MAX(max, x[i]); if (max == x[i]) { idx = i; }
+    //
+    // The index is updated on *equality*, not on strictly-greater, so on a tie the reference
+    // keeps the LAST index holding the maximum. The previous `if (in[i] > max_val)` kept the
+    // first, so a row like [0,1,9,3,4,3,2,9,0,-1] returned 2 where the reference returns 7.
+    //
+    // And the running maximum starts at -inf rather than in[0]. Since MAX(a,b) is (a > b ? a : b),
+    // a NaN operand is not propagated -- it is replaced by the next element -- so a leading NaN
+    // does not poison the scan. Seeding with in[0] meant a NaN there made every later comparison
+    // false and the result was always 0.
+    //
+    // See test-argmax-hsa for the rows that pin these down.
     if (N > 0) {
-        auto max_val = in[0];
+        auto max_val = -std::numeric_limits<INPUT_DTYPE>::infinity();
         int32_t argmax_idx = 0;
 
-        for (int32_t i = 1; i < N; i++) {
-            if (in[i] > max_val) {
-                max_val = in[i];
+        for (int32_t i = 0; i < N; i++) {
+            max_val = (max_val > in[i]) ? max_val : in[i];
+            if (max_val == in[i]) {
                 argmax_idx = i;
             }
         }
 
         out[0] = static_cast<OUTPUT_DTYPE>(argmax_idx);
     }
-#endif
 
     event1();
 }
