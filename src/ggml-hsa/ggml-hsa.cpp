@@ -10,11 +10,11 @@
 
 #include <algorithm>
 #include <cctype>
-#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -45,43 +45,25 @@ bool g_ggml_hsa_enable_faulting_ops = [] {
     return false;
 }();
 
+void ggml_hsa_warn_invalid_env(const char * name, const char * value) {
+    GGML_HSA_LOG_WARN("ggml_hsa: ignoring invalid %s (\"%s\")", name, value);
+}
+
 /// @brief Packets to accumulate before ringing the doorbell, or 0 if unset/invalid (use the
 /// per-queue default). Read once from @c GGML_HSA_DISPATCH_BATCH_SIZE at startup.
-static const std::size_t g_ggml_hsa_dispatch_batch_size = [] {
-    const char * env = std::getenv("GGML_HSA_DISPATCH_BATCH_SIZE");
-    if (env == nullptr) {
-        return static_cast<std::size_t>(0);
-    }
-    std::size_t parsed = 0;
-    const auto * end = env + std::strlen(env);
-    const auto [ptr, ec] = std::from_chars(env, end, parsed);
-    if (ec != std::errc{} || ptr != end || parsed == 0) {
-        GGML_HSA_LOG_WARN("ggml_hsa: ignoring invalid GGML_HSA_DISPATCH_BATCH_SIZE (\"%s\")", env);
-        return static_cast<std::size_t>(0);
-    }
-    return parsed;
-}();
+static const std::size_t g_ggml_hsa_dispatch_batch_size =
+    ggml_hsa_getenv_int<std::size_t>("GGML_HSA_DISPATCH_BATCH_SIZE", 0, 1,
+                                     std::numeric_limits<std::size_t>::max());
 
 /// @brief How long teardown waits for packets that were in flight when the queue was suspended,
 /// in milliseconds. Read once from @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS at startup; 0 means
 /// do not wait at all. See @c ggml_hsa_drain_after_queue_error for why the wait is bounded.
-static const std::chrono::milliseconds g_ggml_hsa_queue_error_drain_timeout = [] {
-    constexpr std::chrono::milliseconds default_timeout{1000};
-    const char * env = std::getenv("GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS");
-    if (env == nullptr) {
-        return default_timeout;
-    }
-    std::chrono::milliseconds::rep parsed = 0;
-    const auto * end = env + std::strlen(env);
-    const auto [ptr, ec] = std::from_chars(env, end, parsed);
-    if (ec != std::errc{} || ptr != end) {
-        GGML_HSA_LOG_WARN("ggml_hsa: ignoring invalid GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS "
-                          "(\"%s\")",
-                          env);
-        return default_timeout;
-    }
-    return std::chrono::milliseconds{parsed};
-}();
+///
+/// The upper bound keeps @c deadline = now() + timeout inside @c steady_clock::time_point's range,
+/// so an absurd value cannot overflow the addition into a deadline in the past.
+static const std::chrono::milliseconds g_ggml_hsa_queue_error_drain_timeout{
+    ggml_hsa_getenv_int<std::chrono::milliseconds::rep>("GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS",
+                                                        1000, 0, 60 * 60 * 1000)};
 
 /// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
 #define MATRIX_ROW_PADDING 512
@@ -931,6 +913,13 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
 static void ggml_hsa_queue_error_callback(hsa_status_t status, hsa_queue_t * source, void * data) {
     GGML_UNUSED(source);
 
+    // The callback signals asynchronous queue events, not only failures. A success status carries
+    // nothing to record, and letting it through would both log a bogus suspension and satisfy the
+    // "first error wins" compare-exchange below without storing an error.
+    if (status == HSA_STATUS_SUCCESS) {
+        return;
+    }
+
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(data);
     hsa_status_t expected = HSA_STATUS_SUCCESS;
     if (ctx.queue_error.compare_exchange_strong(expected, status)) {
@@ -1028,32 +1017,44 @@ static bool ggml_hsa_drain_after_queue_error(ggml_backend_hsa_context & ctx) {
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     // Drain outstanding work before tearing down the queue and signal; otherwise batched-but-
     // unrung packets would be lost and in-flight packets would reference a destroyed signal.
-    ggml_hsa_wait_dispatches(*this);
-    ggml_hsa_purge_unused_cached_kernels(device);
-
     // ggml_hsa_wait_dispatches returns without draining when the queue was suspended, so the
     // packets that were in flight when it went down may still hold this signal. Give them a
-    // bounded window to retire; if they do not, leak the signal rather than destroy it while the
-    // device is still decrementing it.
-    bool signal_drained = true;
-    if (queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
-        signal_drained = ggml_hsa_drain_after_queue_error(*this);
-        if (!signal_drained) {
-            GGML_HSA_LOG_WARN("%s: work still in flight on the suspended queue after %lld ms; "
-                              "leaking the dispatch signal",
-                              __func__,
-                              static_cast<long long>(g_ggml_hsa_queue_error_drain_timeout.count()));
-        }
+    // bounded window to retire; if they do not, leak rather than free what they still reference.
+    //
+    // Everything that frees device memory has to sit after this point. A packet still in flight
+    // names its kernel's instruction and PDI buffers, and the kernel purge below drops the last
+    // reference to both -- running it first would hand the device freed memory to read.
+    (void) ggml_hsa_wait_dispatches(*this);
+    const bool drained = queue_error.load(std::memory_order_relaxed) == HSA_STATUS_SUCCESS ||
+                         ggml_hsa_drain_after_queue_error(*this);
+
+    if (!drained) {
+        GGML_HSA_LOG_WARN("%s: work still in flight on the suspended queue after %lld ms; leaking "
+                          "the dispatch signal and its kernels",
+                          __func__,
+                          static_cast<long long>(g_ggml_hsa_queue_error_drain_timeout.count()));
+    } else {
+        ggml_hsa_purge_unused_cached_kernels(device);
+        GGML_HSA_CHECK_WARN(hsa_signal_destroy(dispatch_signal));
     }
-    if (signal_drained) {
-        GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
-    }
-    GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
+
+    // Warn rather than abort: destroying a queue the runtime already suspended can legitimately
+    // fail, and aborting would turn the reportable failure the rest of this path delivers into a
+    // crash at backend free.
+    GGML_HSA_CHECK_WARN(hsa_queue_destroy(queue));
 }
 
-void ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
+ggml_status ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
+    // Never ring a queue the runtime has already suspended. It would not submit anything -- the
+    // runtime drops the doorbell once the queue is down -- and for the hardware-fault case
+    // documented at ggml_backend_hsa_device_supports_op, ringing after the fault is what turns it
+    // into an unrecoverable abort. Checking here, rather than at each call site, is what keeps
+    // that unreachable: every ring in the backend goes through this function.
+    if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
+        return GGML_STATUS_FAILED;
+    }
     if (ctx.n_batched == 0) {
-        return;
+        return GGML_STATUS_SUCCESS;
     }
     // Ring the doorbell for the last written packet (write_index - 1, since write_index points one
     // past the last reserved slot); the device processes every packet up to it, and the release
@@ -1063,19 +1064,24 @@ void ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
     const std::uint64_t last_packet = hsa_queue_load_write_index_relaxed(ctx.queue) - 1;
     hsa_signal_store_screlease(ctx.queue->doorbell_signal, last_packet);
     ctx.n_batched = 0;
+
+    // The ring is where a submission failure surfaces: on this backend's AIE queue the runtime
+    // submits the batch inline from the doorbell store and reports a failure through the queue
+    // error callback before returning, so the flag is already up by the time control gets here.
+    return ctx.queue_error.load(std::memory_order_relaxed) == HSA_STATUS_SUCCESS
+               ? GGML_STATUS_SUCCESS
+               : GGML_STATUS_FAILED;
 }
 
-void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
+ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
     // Flush pending packets first, otherwise the wait below could block forever on packets that
-    // were written but never rung. The flush is also what surfaces a submission failure: the
-    // runtime reports it through the error callback from inside the doorbell ring.
-    ggml_hsa_flush_dispatches(ctx);
-
+    // were written but never rung.
+    //
     // A suspended queue never releases the completion signals of the packets it did not run, so
-    // the drain below would never return. graph_compute turns the recorded error into a failed
-    // graph; there is nothing left to wait for here.
-    if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
-        return;
+    // the drain below would never return. Report the failure instead of waiting for work that
+    // cannot complete; callers must not read device buffers after this returns non-success.
+    if (const ggml_status status = ggml_hsa_flush_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
+        return status;
     }
 
     if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
@@ -1083,6 +1089,7 @@ void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
         val != 0) {
         GGML_ABORT("%s: unexpected signal value (%ld)\n", __func__, val);
     }
+    return GGML_STATUS_SUCCESS;
 }
 
 // HSA buffer
@@ -1547,7 +1554,10 @@ static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t backend_src,
 
 static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
-    ggml_hsa_wait_dispatches(ctx);
+    // The backend interface gives synchronize no way to report a failure. A suspended queue is
+    // already recorded on the context, and every graph_compute from here on returns
+    // GGML_STATUS_FAILED, so the error still reaches the caller through that path.
+    (void) ggml_hsa_wait_dispatches(ctx);
 }
 
 /**
@@ -1580,7 +1590,10 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
     ggml_tensor & internal_node = tensor_extra.node.tensor;
 
     if (!use_device_transforms) {
-        ggml_hsa_wait_dispatches(ctx);
+        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
+            status != GGML_STATUS_SUCCESS) {
+            return status;
+        }
     }
     for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
         if (tensor_extra.sources[src_idx].buffer_size == 0) {
@@ -1628,7 +1641,9 @@ static ggml_status ggml_hsa_dispatch_postprocess(ggml_backend_hsa_context & ctx,
     }
 
     // change layout and/or convert datatypes
-    ggml_hsa_wait_dispatches(ctx);
+    if (const ggml_status status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
     ggml_status status = ggml_hsa_copy_tensor(&tensor_extra.node.tensor, node);
     if (status != GGML_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__, node->name,
@@ -1716,12 +1731,12 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     // callers reading via the buffer get/copy paths (which don't synchronize) see complete results.
     // This is also where a submission failure surfaces: the runtime runs the queue error callback
     // from inside the doorbell ring.
-    ggml_hsa_flush_dispatches(ctx);
-
+    //
     // A suspended queue cannot have produced this graph's results, and it stays suspended, so
     // every later graph on this backend fails here too rather than returning wrong data.
-    if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
-        return GGML_STATUS_FAILED;
+    if (const ggml_status flush_status = ggml_hsa_flush_dispatches(ctx);
+        flush_status != GGML_STATUS_SUCCESS) {
+        return flush_status;
     }
 
     return status;
@@ -1800,9 +1815,15 @@ static void ggml_hsa_event_wait_for_snapshot(const ggml_hsa_event_context & ec) 
     assert(ec.ctx != nullptr);
     // Flush pending packets on the recording context; the drain below waits for the dispatch
     // signal to reach zero, which never happens if written packets were never rung.
-    ggml_hsa_flush_dispatches(*ec.ctx);
-    // Same reasoning as in ggml_hsa_wait_dispatches: a suspended queue never drains.
-    if (ec.ctx->queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
+    //
+    // Same reasoning as in ggml_hsa_wait_dispatches: a suspended queue never drains, so there is
+    // nothing to wait for. The event interface returns void, so this cannot be reported here; warn
+    // loudly instead, because unlike the compute paths a cross-queue waiter has no other channel
+    // and would otherwise proceed as if the fenced work had completed.
+    if (ggml_hsa_flush_dispatches(*ec.ctx) != GGML_STATUS_SUCCESS) {
+        GGML_HSA_LOG_WARN("%s: queue suspended; the work this event fences did not run and is not "
+                          "being waited for",
+                          __func__);
         return;
     }
     hsa_signal_wait_scacquire(ec.signal(), HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX,
@@ -1825,8 +1846,9 @@ static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_e
     auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
     auto & ec = *static_cast<ggml_hsa_event_context *>(event->context);
     // Flush pending packets so the work fenced by this event is actually in flight; otherwise a
-    // later wait on the snapshot could block on packets that were never rung.
-    ggml_hsa_flush_dispatches(ctx);
+    // later wait on the snapshot could block on packets that were never rung. A failure here is
+    // recorded on the context and reported by the waiter (and by every later graph_compute).
+    (void) ggml_hsa_flush_dispatches(ctx);
     ec.ctx = &ctx;
     ec.snapshot = hsa_signal_load_scacquire(ctx.dispatch_signal);
     ec.queue = ctx.queue;
@@ -2039,6 +2061,27 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         case GGML_OP_SCALE:
         case GGML_OP_DIAG_MASK_INF:
         case GGML_OP_SOFT_MAX:
+            // GPT-2 attention block (KQ -> SCALE -> DIAG_MASK_INF -> SOFT_MAX -> KQV, over the 3D
+            // KQ tensor [n_kv, N, n_head]). Each of these IRON kernels is correct in isolation --
+            // the standalone device tests pass, including on GPT-2-shaped inputs -- but when they
+            // run back to back inside the full attention graph they fault the hardware AIE queue
+            // after a number of tokens, which ROCr turns into an abort() at the next doorbell ring
+            // (unrecoverable, not a status we can catch). Until the queue fault is root-caused,
+            // route all three to the CPU fallback so graphs containing them run to completion.
+            //
+            // This alone does not keep the surrounding attention block on the CPU. Declining these
+            // three says nothing about the neighbouring KQ/KQV MUL_MATs, and where those are
+            // supported the scheduler leaves them on this device and their tensors cross the
+            // CPU/HSA boundary around each declined node. It happens that for GPT-2 they are not
+            // supported either -- the GEMM kernel requires tile-aligned shapes and its build
+            // asserts "A/B must be tileable into (m * n_aie_rows, k)-sized blocks" -- so that block
+            // does end up entirely on the CPU, but that is a property of the MUL_MAT shapes, not
+            // something this switch arranges.
+            //
+            // The kernels themselves are still built and still correct, so their standalone device
+            // tests must keep running: reporting "unsupported" to those would make them skip every
+            // case and pass vacuously, leaving the kernels unguarded against regressions. They set
+            // GGML_HSA_ENABLE_FAULTING_OPS to opt back in. Do not set it for whole-graph workloads.
             if (!g_ggml_hsa_enable_faulting_ops) {
                 return false;
             }

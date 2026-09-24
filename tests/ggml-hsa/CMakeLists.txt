@@ -157,6 +157,21 @@ add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
 set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT
              "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw" "GGML_HSA_ENABLE_FAULTING_OPS=1")
 #
+# test-env-config-hsa
+#
+# Pure parser test: no device, no kernel JIT, so it runs on any build host.
+# The imported HSA target is scoped to src/ggml-hsa, so look it up again here.
+find_package(hsa-runtime64 1.0 REQUIRED)
+set(TEST_TARGET test-env-config-hsa)
+add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
+# common.hpp is a backend-private header that includes the HSA headers, so this needs the same
+# include path and runtime target the backend's own sources compile against.
+target_link_libraries(${TEST_TARGET} PRIVATE ggml ggml-hsa hsa-runtime64::hsa-runtime64)
+target_include_directories(${TEST_TARGET} PRIVATE ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
+set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
+
+#
 # test-preprocess-hsa
 #
 set(TEST_TARGET test-preprocess-hsa)

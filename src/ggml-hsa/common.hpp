@@ -8,13 +8,17 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -101,6 +105,45 @@ const char * ggml_hsa_op_name(ggml_hsa_op op);
 bool ggml_hsa_string_to_bool(std::string_view s);
 
 /**
+ * @brief Warns that environment variable @p name was set to the unusable value @p value.
+ *
+ * Out of line so @ref ggml_hsa_getenv_int can report without expanding a logging macro inside a
+ * template, which would require this header to pull in ggml's logging header.
+ */
+void ggml_hsa_warn_invalid_env(const char * name, const char * value);
+
+/**
+ * @brief Reads integer environment variable @p name, restricted to an accepted range.
+ *
+ * Returns @p fallback when @p name is unset, is not an integer, has trailing characters, or parses
+ * to a value outside [@p min, @p max]; every rejection is logged. The range check is not optional
+ * padding: @c std::from_chars accepts a leading `-` for a signed @c T, so without a lower bound a
+ * negative value parses cleanly and silently yields a nonsensical setting.
+ *
+ * @tparam T integral type to parse into
+ * @param[in] name environment variable to read
+ * @param[in] fallback value returned when @p name is absent or rejected
+ * @param[in] min smallest accepted value
+ * @param[in] max largest accepted value
+ */
+template <typename T> T ggml_hsa_getenv_int(const char * name, T fallback, T min, T max) {
+    static_assert(std::is_integral_v<T>, "ggml_hsa_getenv_int requires an integral type");
+
+    const char * env = std::getenv(name);
+    if (env == nullptr) {
+        return fallback;
+    }
+    T parsed{};
+    const auto * end = env + std::strlen(env);
+    const auto [ptr, ec] = std::from_chars(env, end, parsed);
+    if (ec != std::errc{} || ptr != end || parsed < min || parsed > max) {
+        ggml_hsa_warn_invalid_env(name, env);
+        return fallback;
+    }
+    return parsed;
+}
+
+/**
  * @brief Returns the description of @p status as a string.
  */
 const char * ggml_hsa_get_status_string(hsa_status_t status);
@@ -126,6 +169,21 @@ void ggml_hsa_error(
         auto status_ = (status);                                                                   \
         if (status_ != HSA_STATUS_SUCCESS)                                                         \
             ggml_hsa_error(#status, __func__, __FILE__, __LINE__, status_);                        \
+    } while (false)
+
+/**
+ * @brief Checks if @p status is an error code and logs a warning.
+ *
+ * For cleanup paths that cannot abort or throw: a destructor, or teardown after the queue was
+ * already suspended, where the release call is expected to be able to fail and a crash would
+ * replace a reportable error with one.
+ */
+#define GGML_HSA_CHECK_WARN(status)                                                                \
+    do {                                                                                           \
+        auto status_ = (status);                                                                   \
+        if (status_ != HSA_STATUS_SUCCESS)                                                         \
+            GGML_HSA_LOG_WARN("%s: %s failed: %s", __func__, #status,                              \
+                              ggml_hsa_get_status_string(status_));                                \
     } while (false)
 
 /**
@@ -477,8 +535,12 @@ struct ggml_backend_hsa_context {
  * @brief Waits for all dispatched kernels to finish.
  *
  * @param[in] ctx backend context
+ * @retval GGML_STATUS_SUCCESS the queue drained; the device is idle and its buffers are safe to
+ *         read on the host
+ * @retval GGML_STATUS_FAILED  the queue is suspended, so the work this waited on did not run and
+ *         never will. Nothing was waited for: callers must propagate rather than read results
  */
-void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
+[[nodiscard]] ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
 
 /**
  * @brief Rings the doorbell for any packets accumulated since the last ring.
@@ -487,6 +549,12 @@ void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
  * @ref ggml_backend_hsa_context::dispatch_batch_size packets accumulate, or a synchronization
  * point forces a flush. Submits pending packets for processing; does @e not wait for completion.
  *
+ * This is the backend's only doorbell ring, and it refuses to ring a suspended queue, so no caller
+ * can submit to one.
+ *
  * @param[in] ctx backend context
+ * @retval GGML_STATUS_SUCCESS pending packets were submitted
+ * @retval GGML_STATUS_FAILED  the queue is suspended, either from an earlier failure or from this
+ *         submission; the pending packets did not run
  */
-void ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx);
+[[nodiscard]] ggml_status ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx);

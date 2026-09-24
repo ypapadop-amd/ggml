@@ -42,13 +42,12 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // free.
     while (hsa_queue_load_write_index_relaxed(queue) - hsa_queue_load_read_index_scacquire(queue) >=
            queue->size) {
-        ggml_hsa_wait_dispatches(ctx);
-
         // A suspended queue never consumes its packets, so the read index stops advancing and the
-        // slot this is waiting for never frees. The wait above returns immediately in that state,
-        // which would turn this into a spin. Fail the dispatch instead; graph_compute reports it.
-        if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
-            return GGML_STATUS_FAILED;
+        // slot this is waiting for never frees. The wait reports that rather than draining, which
+        // is what keeps this loop from spinning; fail the dispatch and let graph_compute report it.
+        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
+            status != GGML_STATUS_SUCCESS) {
+            return status;
         }
     }
 
@@ -93,7 +92,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // recent write index. Synchronization points flush any remaining pending packets separately.
     ++ctx.n_batched;
     if (ctx.n_batched >= ctx.dispatch_batch_size) {
-        ggml_hsa_flush_dispatches(ctx);
+        return ggml_hsa_flush_dispatches(ctx);
     }
 
     return GGML_STATUS_SUCCESS;
