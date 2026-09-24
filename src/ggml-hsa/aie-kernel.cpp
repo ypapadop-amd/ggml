@@ -43,6 +43,13 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     while (hsa_queue_load_write_index_relaxed(queue) - hsa_queue_load_read_index_scacquire(queue) >=
            queue->size) {
         ggml_hsa_wait_dispatches(ctx);
+
+        // A suspended queue never consumes its packets, so the read index stops advancing and the
+        // slot this is waiting for never frees. The wait above returns immediately in that state,
+        // which would turn this into a spin. Fail the dispatch instead; graph_compute reports it.
+        if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
+            return GGML_STATUS_FAILED;
+        }
     }
 
     // reserve the queue slot

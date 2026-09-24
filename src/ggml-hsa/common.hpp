@@ -6,6 +6,7 @@
 #include "ggml.h"
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -457,6 +458,9 @@ struct ggml_backend_hsa_context {
     ggml_hsa_kernarg_pool kernargs;     ///< Per-ring-slot kernarg buffers for in-flight packets.
     std::size_t dispatch_batch_size{1}; ///< Packets accumulated before the doorbell is rung.
     std::size_t n_batched{};            ///< Packets written since the last doorbell ring.
+
+    /// @brief First error reported by the queue's error callback, or @c HSA_STATUS_SUCCESS.
+    std::atomic<hsa_status_t> queue_error{HSA_STATUS_SUCCESS};
 
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 
