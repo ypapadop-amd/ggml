@@ -51,9 +51,8 @@ void ggml_hsa_warn_invalid_env(const char * name, const char * value) {
 
 /// @brief Packets to accumulate before ringing the doorbell, or 0 if unset/invalid (use the
 /// per-queue default). Read once from @c GGML_HSA_DISPATCH_BATCH_SIZE at startup.
-static const std::size_t g_ggml_hsa_dispatch_batch_size =
-    ggml_hsa_getenv_int<std::size_t>("GGML_HSA_DISPATCH_BATCH_SIZE", 0, 1,
-                                     std::numeric_limits<std::size_t>::max());
+static const std::size_t g_ggml_hsa_dispatch_batch_size = ggml_hsa_getenv_int<std::size_t>(
+    "GGML_HSA_DISPATCH_BATCH_SIZE", 0, 1, std::numeric_limits<std::size_t>::max());
 
 /// @brief How long teardown waits for packets that were in flight when the queue was suspended,
 /// in milliseconds. Read once from @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS at startup; 0 means
@@ -62,8 +61,8 @@ static const std::size_t g_ggml_hsa_dispatch_batch_size =
 /// The upper bound keeps @c deadline = now() + timeout inside @c steady_clock::time_point's range,
 /// so an absurd value cannot overflow the addition into a deadline in the past.
 static const std::chrono::milliseconds g_ggml_hsa_queue_error_drain_timeout{
-    ggml_hsa_getenv_int<std::chrono::milliseconds::rep>("GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS",
-                                                        1000, 0, 60 * 60 * 1000)};
+    ggml_hsa_getenv_int<std::chrono::milliseconds::rep>(
+        "GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS", 1000, 0, 60 * 60 * 1000)};
 
 /// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
 #define MATRIX_ROW_PADDING 512
@@ -1024,7 +1023,7 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     // Everything that frees device memory has to sit after this point. A packet still in flight
     // names its kernel's instruction and PDI buffers, and the kernel purge below drops the last
     // reference to both -- running it first would hand the device freed memory to read.
-    (void) ggml_hsa_wait_dispatches(*this);
+    (void)ggml_hsa_wait_dispatches(*this);
     const bool drained = queue_error.load(std::memory_order_relaxed) == HSA_STATUS_SUCCESS ||
                          ggml_hsa_drain_after_queue_error(*this);
 
@@ -1557,7 +1556,7 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
     // The backend interface gives synchronize no way to report a failure. A suspended queue is
     // already recorded on the context, and every graph_compute from here on returns
     // GGML_STATUS_FAILED, so the error still reaches the caller through that path.
-    (void) ggml_hsa_wait_dispatches(ctx);
+    (void)ggml_hsa_wait_dispatches(ctx);
 }
 
 /**
@@ -1848,7 +1847,7 @@ static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_e
     // Flush pending packets so the work fenced by this event is actually in flight; otherwise a
     // later wait on the snapshot could block on packets that were never rung. A failure here is
     // recorded on the context and reported by the waiter (and by every later graph_compute).
-    (void) ggml_hsa_flush_dispatches(ctx);
+    (void)ggml_hsa_flush_dispatches(ctx);
     ec.ctx = &ctx;
     ec.snapshot = hsa_signal_load_scacquire(ctx.dispatch_signal);
     ec.queue = ctx.queue;

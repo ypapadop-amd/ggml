@@ -126,7 +126,8 @@ void ggml_hsa_warn_invalid_env(const char * name, const char * value);
  * @param[in] min smallest accepted value
  * @param[in] max largest accepted value
  */
-template <typename T> T ggml_hsa_getenv_int(const char * name, T fallback, T min, T max) {
+template <typename T>
+T ggml_hsa_getenv_int(const char * name, T fallback, T min, T max) {
     static_assert(std::is_integral_v<T>, "ggml_hsa_getenv_int requires an integral type");
 
     const char * env = std::getenv(name);
