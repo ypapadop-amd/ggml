@@ -894,6 +894,28 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     return GGML_STATUS_SUCCESS;
 }
 
+/**
+ * @brief Records an asynchronous queue error on the owning context.
+ *
+ * The runtime calls this synchronously, on the thread that rang the doorbell, when it cannot
+ * submit a packet; it then suspends the queue. Only the first error is kept: that is the one that
+ * suspended the queue, and every later failure is a consequence of it.
+ *
+ * @param[in] status error reported by the runtime
+ * @param[in] source queue the error occurred on (unused; the context identifies it)
+ * @param[in] data   owning @ref ggml_backend_hsa_context, passed at queue creation
+ */
+static void ggml_hsa_queue_error_callback(hsa_status_t status, hsa_queue_t * source, void * data) {
+    GGML_UNUSED(source);
+
+    auto & ctx = *static_cast<ggml_backend_hsa_context *>(data);
+    hsa_status_t expected = HSA_STATUS_SUCCESS;
+    if (ctx.queue_error.compare_exchange_strong(expected, status)) {
+        GGML_HSA_LOG_ERROR("%s: queue suspended by the runtime: %s", __func__,
+                           ggml_hsa_get_status_string(status));
+    }
+}
+
 ggml_backend_hsa_context::ggml_backend_hsa_context(
     const ggml_hsa_device_info::device_info & dev_info) :
     device{dev_info.device}, name{ggml_hsa_format_name(device)} {
@@ -901,8 +923,12 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
 
     // create queue
     const std::uint32_t min_queue_size = ggml_hsa_get_agent_min_queue_size(agent);
-    if (auto status = hsa_queue_create(agent, min_queue_size, HSA_QUEUE_TYPE_SINGLE, nullptr,
-                                       nullptr, 0, 0, &queue);
+    // The callback receives `this` while the object is still under construction. It only touches
+    // queue_error, which its default member initializer has already set, and the runtime cannot
+    // invoke it before a packet is submitted -- which cannot happen until construction finishes.
+    if (auto status =
+            hsa_queue_create(agent, min_queue_size, HSA_QUEUE_TYPE_SINGLE,
+                             ggml_hsa_queue_error_callback, this, 0, 0, &queue);
         status != HSA_STATUS_SUCCESS) {
         throw std::runtime_error{std::string("Could not create hsa_queue (")
                                      .append(ggml_hsa_get_status_string(status))
@@ -977,8 +1003,16 @@ void ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
 
 void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
     // Flush pending packets first, otherwise the wait below could block forever on packets that
-    // were written but never rung.
+    // were written but never rung. The flush is also what surfaces a submission failure: the
+    // runtime reports it through the error callback from inside the doorbell ring.
     ggml_hsa_flush_dispatches(ctx);
+
+    // A suspended queue never releases the completion signals of the packets it did not run, so
+    // the drain below would never return. graph_compute turns the recorded error into a failed
+    // graph; there is nothing left to wait for here.
+    if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
+        return;
+    }
 
     if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
                                              UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
@@ -1616,7 +1650,15 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     // Flush unconditionally, including on the error paths above: packets written for
     // successfully-dispatched earlier nodes must be rung so their work reaches the device and
     // callers reading via the buffer get/copy paths (which don't synchronize) see complete results.
+    // This is also where a submission failure surfaces: the runtime runs the queue error callback
+    // from inside the doorbell ring.
     ggml_hsa_flush_dispatches(ctx);
+
+    // A suspended queue cannot have produced this graph's results, and it stays suspended, so
+    // every later graph on this backend fails here too rather than returning wrong data.
+    if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
+        return GGML_STATUS_FAILED;
+    }
 
     return status;
 }
@@ -1695,6 +1737,10 @@ static void ggml_hsa_event_wait_for_snapshot(const ggml_hsa_event_context & ec) 
     // Flush pending packets on the recording context; the drain below waits for the dispatch
     // signal to reach zero, which never happens if written packets were never rung.
     ggml_hsa_flush_dispatches(*ec.ctx);
+    // Same reasoning as in ggml_hsa_wait_dispatches: a suspended queue never drains.
+    if (ec.ctx->queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
+        return;
+    }
     hsa_signal_wait_scacquire(ec.signal(), HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX,
                               HSA_WAIT_STATE_BLOCKED);
 }
