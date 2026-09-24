@@ -97,17 +97,21 @@ cd tests/ggml-hsa/benchmarks
 ```
 
 The NPU MUL_MAT kernel defaults to the IRON path. Set
-`GGML_HSA_PREFER_TRITON=1` to benchmark the Triton path instead — it
-flips the kernel-spec order (Triton primary, IRON fallback) and tags the output
+`GGML_HSA_JIT_COMPILER_ORDER=triton,iron` to benchmark the Triton path instead —
+it reorders the kernel specs (Triton primary, IRON fallback) and tags the output
 files with `-triton` so they don't overwrite the IRON results:
 
 ```bash
-GGML_HSA_PREFER_TRITON=1 ./repro-matmul.sh npu   # -> results-npu-aie2-triton.*
+GGML_HSA_JIT_COMPILER_ORDER=triton,iron ./repro-matmul.sh npu   # -> results-npu-aie2-triton.*
 ```
 
 Env vars: `BUILD_DIR`, `REPS` (default 10), `MIN_TIME` (default `0.5s`),
-`OUTDIR` (default: this directory), `GGML_HSA_PREFER_TRITON` (NPU only:
-`1` = use the Triton kernel and tag output `-triton`).
+`OUTDIR` (default: this directory), `GGML_HSA_JIT_COMPILER_ORDER` (NPU only:
+comma-separated backend order; a leading `triton` tags the output `-triton`).
+
+> **Note:** `GGML_HSA_PREFER_TRITON` was the previous boolean. It is no longer
+> read by anything in `src/`, so runs using it silently measured IRON. Both
+> repro scripts now refuse to run when it is set.
 
 Notes:
 - The script activates `${REPO_ROOT}/.venv` (IRON / mlir_aie toolchain) for the
@@ -157,27 +161,37 @@ BUILD_DIR=build-bench-npu ./repro-relu.sh npu   # -> results-relu-npu-<arch>.*
 
 ### IRON vs. Triton on the NPU
 
-The NPU RELU op ships both an IRON and a Triton kernel, selected by
-`GGML_HSA_PREFER_TRITON` (see [`../../../src/ggml-hsa/kernels`], `order_kernel_specs`).
-The intent is to run the benchmark twice and diff:
+The NPU RELU op ships both an IRON and a Triton kernel, ordered by
+`GGML_HSA_JIT_COMPILER_ORDER` (see `src/ggml-hsa/kernels/build.py`,
+`_make_kernel_specs` / `CompilerConfig.compilers`). Run the benchmark twice and
+diff:
 
 ```bash
-BUILD_DIR=build-bench-npu ./repro-relu.sh npu                          # IRON   (default)
-GGML_HSA_PREFER_TRITON=1 BUILD_DIR=build-bench-npu ./repro-relu.sh npu # Triton (tag -triton)
+BUILD_DIR=build-bench-npu ./repro-relu.sh npu   # IRON (default)
+GGML_HSA_JIT_COMPILER_ORDER=triton,iron BUILD_DIR=build-bench-npu ./repro-relu.sh npu
+                                                # Triton (tag -triton)
 ```
 
-**Result on this box (aie2 / Phoenix NPU, 2026-07-20): a true head-to-head is not
-currently possible — the Triton RELU kernel fails to compile.** With
-`GGML_HSA_PREFER_TRITON=1`, Triton is tried first, its `aircc` step fails
-(`'transform.structured.pad' op expects a padding value of type 'f32', got
-0.000000e+00 : bf16` in `relu_aie2.mlir`, plus `'aie.tile' op allocated buffers
-exceeded available memory`), and the dispatch **falls back to IRON**. So both the
-default and the `-triton`-tagged run measure the *same* IRON kernel and report
-identical times. To get a real Triton number, the `relu_aie2.mlir` transform
-script needs the bf16/f32 pad-value fix first. Always confirm which backend
-actually ran by checking the cached artifact: a successful Triton compile leaves
-`~/.cache/ggml/aie2/relu-<n>f32-<n>f32.pdi` sourced from `*-triton-artifacts`; on
-this box only `*-iron-artifacts` produces the `.pdi`.
+**Status: the IRON-vs-Triton comparison has not been validly measured yet.**
+
+An earlier attempt (aie2 / Phoenix NPU, 2026-07-20) drove the comparison with
+`GGML_HSA_PREFER_TRITON=1`. That variable is read by nothing in `src/` — it was
+replaced by `GGML_HSA_JIT_COMPILER_ORDER` — so it never reordered anything, and
+the script used it only to tag the filename. Both the default and the
+`-triton`-tagged run therefore executed the *same* IRON kernel, which is why they
+reported identical times. Any `*-triton.*` result file predating this note is an
+IRON measurement and should be discarded.
+
+That attempt also recorded two `aircc` failures for the Triton RELU path:
+`'transform.structured.pad' op expects a padding value of type 'f32', got
+0.000000e+00 : bf16` in `relu_aie2.mlir`, and `'aie.tile' op allocated buffers
+exceeded available memory`. The `_f32` transform-script variants
+(`relu_<arch>_f32.mlir`) address the first; the second is untested. Neither has
+been re-measured with the correct environment variable.
+
+Always confirm which backend actually ran by checking the cached artifact: a
+successful Triton compile leaves `~/.cache/ggml/aie2/relu-<n>f32-<n>f32.pdi`
+sourced from `*-triton-artifacts` rather than `*-iron-artifacts`.
 
 Cache caveat: the kernel cache key (`relu-<nelem>f32-<nelem>f32`) does **not**
 encode the backend, so a `.pdi` compiled by one backend is reused by the other.

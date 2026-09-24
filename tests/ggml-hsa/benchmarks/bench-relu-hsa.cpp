@@ -5,9 +5,11 @@
 // realistic MNIST activation tensors and the reported metric is memory bandwidth.
 //
 // The NPU (HSA) backend ships both an IRON and a Triton RELU kernel; which one is
-// used is selected at kernel-JIT time by the GGML_HSA_PREFER_TRITON environment
-// variable (unset/0 = IRON, 1 = Triton). Run this binary twice with the HSA
-// filter, flipping that variable, to compare the two paths (see repro-relu.sh).
+// used is selected at kernel-JIT time by the GGML_HSA_JIT_COMPILER_ORDER
+// environment variable (a comma-separated backend list; unset = the dispatch
+// order, which is IRON first). Run this binary twice with the HSA filter, once
+// with GGML_HSA_JIT_COMPILER_ORDER=triton,iron, to compare the two paths (see
+// repro-relu.sh).
 
 #include "bench-hsa-common.hpp"
 

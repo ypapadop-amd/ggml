@@ -17,6 +17,15 @@
 #   REPS         --benchmark_repetitions                    (default: 10)
 #   MIN_TIME     per-benchmark min wall time, e.g. 0.5s     (default: 0.5s)
 #   OUTDIR       where JSON + reports are written           (default: script dir)
+#   GGML_HSA_JIT_COMPILER_ORDER  (NPU only) JIT backend order; leading "triton"
+#                tags the output -triton
+#
+# The NPU MUL_MAT op ships both an IRON and a Triton kernel. Which one runs is
+# chosen at JIT time by GGML_HSA_JIT_COMPILER_ORDER, a comma-separated backend
+# list; the dispatch order (IRON first) is used when it is unset:
+#     ./repro-matmul.sh npu    # -> results-npu-<arch>.*        (IRON)
+#     GGML_HSA_JIT_COMPILER_ORDER=triton,iron ./repro-matmul.sh npu
+#                              # -> results-npu-<arch>-triton.* (Triton)
 set -euo pipefail
 
 TARGET="${1:-}"
@@ -24,6 +33,14 @@ case "${TARGET}" in
     cpu|gpu|npu) ;;
     *) echo "Usage: $0 [cpu|gpu|npu]" >&2; exit 1 ;;
 esac
+
+# GGML_HSA_PREFER_TRITON was the old boolean; nothing reads it any more, so a
+# stale invocation would silently measure IRON and label it Triton. Fail loudly.
+if [[ -n "${GGML_HSA_PREFER_TRITON:-}" ]]; then
+    echo "error: GGML_HSA_PREFER_TRITON is obsolete and is ignored by the backend." >&2
+    echo "       use: GGML_HSA_JIT_COMPILER_ORDER=triton,iron $0 ${TARGET}" >&2
+    exit 1
+fi
 
 # resolve paths relative to this script so it works from any cwd
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,9 +85,11 @@ case "${TARGET}" in
     npu) FILTER="BackendType::HSA"; HIPVIS="-1"; STEM="results-npu-${ARCH}" ;;
 esac
 
-# GGML_HSA_PREFER_TRITON flips the NPU kernel to the Triton path; tag the
-# output so it doesn't overwrite the default (IRON) NPU results.
-if [[ "${TARGET}" == "npu" && "${GGML_HSA_PREFER_TRITON:-0}" == "1" ]]; then
+# GGML_HSA_JIT_COMPILER_ORDER decides which JIT backend is tried first (it is
+# exported by the caller and inherited by the benchmark). Tag the output when
+# Triton leads so it doesn't overwrite the default (IRON) NPU results.
+JIT_ORDER="${GGML_HSA_JIT_COMPILER_ORDER:-}"
+if [[ "${TARGET}" == "npu" && "${JIT_ORDER}" == triton* ]]; then
     STEM="${STEM}-triton"
 fi
 
@@ -85,6 +104,9 @@ fi
 
 echo "==> ${TARGET}: ${BENCH_BIN}"
 echo "    filter=${FILTER}  reps=${REPS}  min_time=${MIN_TIME}  HIP_VISIBLE_DEVICES=${HIPVIS}"
+if [[ "${TARGET}" == "npu" ]]; then
+    echo "    GGML_HSA_JIT_COMPILER_ORDER=${JIT_ORDER:-<unset: dispatch order, IRON first>}"
+fi
 echo "    json=${JSON}"
 
 # The HSA backend currently segfaults during process teardown *after* all
