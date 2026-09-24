@@ -62,6 +62,15 @@ def argmax_op(arch: str, input_tensors: list, output_tensor):
         msg = f"Output tensor dtype must be int32, got {output_tensor.dtype}."
         raise ValueError(msg)
 
+    # f32 only, matching ggml: ggml_compute_forward_argmax implements GGML_TYPE_F32 and aborts
+    # on everything else, so there is no reference to match for any other input type. The kernel
+    # also seeds its running maximum with -infinity (see argmax.cc); for an integer INPUT_DTYPE
+    # numeric_limits<T>::infinity() is 0, which would silently return index 0 for an all-negative
+    # row. Reject here so the op falls back instead of computing a wrong answer on device.
+    if input_tensor.dtype != np.float32:
+        msg = f"Input tensor dtype must be float32, got {input_tensor.dtype}."
+        raise ValueError(msg)
+
     function = _create_external_function(
         op_name="GGML_OP_ARGMAX",
         input_tensor=input_tensor,
