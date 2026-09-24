@@ -7,6 +7,8 @@
 
 """Top-level entry points for GGML unary operations."""
 
+from pathlib import Path
+
 from .kernel import Backend, KernelSpec
 
 
@@ -45,6 +47,86 @@ def _make_iron_unary_kernel_spec(
             input_tensors=input_tensors,
             output_tensor=output_tensor,
         ),
+    )
+
+
+def _make_triton_relu_kernel_spec(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+) -> KernelSpec:
+    """Create a TRITON-backend KernelSpec for RELU.
+
+    Args:
+        arch: Target architecture.
+        input_tensors: List of one input tensor.
+        output_tensor: Output tensor.
+
+    Returns:
+        KernelSpec configured for the TRITON backend.
+
+    Raises:
+        ValueError: If the tensors are non-contiguous (raised lazily when the
+            returned compile function is invoked).
+    """
+    n_elements = output_tensor.numel()
+
+    def _compile(
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        n_elements=n_elements,
+    ):
+        # All imports, grid specialisation, and tensor creation are deferred into
+        # _compile so that any failure is caught by the try/except in build.py.
+        # IRON is the primary backend (tried first); this Triton spec is the
+        # fallback, reached only if IRON compilation fails.
+        import torch
+        import triton
+
+        from .triton_kernels.relu import relu
+        from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
+
+        if any(not t.contiguous for t in (*input_tensors, output_tensor)):
+            msg = "Non-contiguous tensors detected."
+            raise ValueError(msg)
+
+        block_size = 1 << (min(1024, n_elements) - 1).bit_length()
+        block_size = min(block_size, 1024)
+        grid = (triton.cdiv(n_elements, block_size),)
+        device = triton_device(arch)
+        x = torch.randn(
+            n_elements,
+            device=device,
+            dtype=numpy_dtype_to_torch(input_tensors[0].dtype),
+        )
+        y = torch.empty(
+            n_elements,
+            device=device,
+            dtype=numpy_dtype_to_torch(output_tensor.dtype),
+        )
+        return relu[grid](X=x, Y=y, n_elements=n_elements, BLOCK_SIZE_N=block_size)
+
+    # The bf16 transform script (relu_{arch}.mlir) pads with a bf16 zero, which
+    # aircc rejects for f32 tensors. Select an f32-padding variant for f32 inputs.
+    import numpy as np
+
+    script_stem = f"relu_{arch}"
+    if np.dtype(output_tensor.dtype) == np.float32:
+        script_stem += "_f32"
+
+    return KernelSpec(
+        backend=Backend.TRITON,
+        op_name="GGML_UNARY_OP_RELU",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        function=_compile,
+        config={
+            "transform_script": str(
+                Path(__file__).parent / "triton_kernels" / f"{script_stem}.mlir"
+            ),
+        },
     )
 
 
@@ -271,10 +353,14 @@ def ggml_unary_op_elu(
 
 def ggml_unary_op_relu(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
-) -> KernelSpec:
-    """Return the KernelSpec for GGML_UNARY_OP_RELU.
+) -> list[KernelSpec]:
+    """Return KernelSpecs for GGML_UNARY_OP_RELU (IRON primary, Triton fallback).
 
-    Parameters:
+    IRON is tried first; the Triton spec is the fallback, reached only if IRON
+    compilation fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the
+    order so Triton is tried first (used to benchmark or exercise the Triton path).
+
+    Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
@@ -282,12 +368,17 @@ def ggml_unary_op_relu(
             by the dispatch interface).
 
     Returns:
-        KernelSpec for the RELU operation.
+        List of KernelSpecs for the RELU operation: IRON first, then Triton as a
+        fallback (reordered by CompilerConfig.compilers /
+        ``GGML_HSA_JIT_COMPILER_ORDER``).
 
     """
-    return _make_iron_unary_kernel_spec(
-        arch, input_tensors, output_tensor, "GGML_UNARY_OP_RELU"
-    )
+    return [
+        _make_iron_unary_kernel_spec(
+            arch, input_tensors, output_tensor, "GGML_UNARY_OP_RELU"
+        ),
+        _make_triton_relu_kernel_spec(arch, input_tensors, output_tensor),
+    ]
 
 
 def ggml_unary_op_sigmoid(
