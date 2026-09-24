@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +20,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 bool g_ggml_hsa_verbose = [] {
@@ -58,6 +60,27 @@ static const std::size_t g_ggml_hsa_dispatch_batch_size = [] {
         return static_cast<std::size_t>(0);
     }
     return parsed;
+}();
+
+/// @brief How long teardown waits for packets that were in flight when the queue was suspended,
+/// in milliseconds. Read once from @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS at startup; 0 means
+/// do not wait at all. See @c ggml_hsa_drain_after_queue_error for why the wait is bounded.
+static const std::chrono::milliseconds g_ggml_hsa_queue_error_drain_timeout = [] {
+    constexpr std::chrono::milliseconds default_timeout{1000};
+    const char * env = std::getenv("GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS");
+    if (env == nullptr) {
+        return default_timeout;
+    }
+    std::chrono::milliseconds::rep parsed = 0;
+    const auto * end = env + std::strlen(env);
+    const auto [ptr, ec] = std::from_chars(env, end, parsed);
+    if (ec != std::errc{} || ptr != end) {
+        GGML_HSA_LOG_WARN("ggml_hsa: ignoring invalid GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS "
+                          "(\"%s\")",
+                          env);
+        return default_timeout;
+    }
+    return std::chrono::milliseconds{parsed};
 }();
 
 /// @brief Last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses.
@@ -977,12 +1000,54 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     dispatch_batch_size = batch_size;
 }
 
+/**
+ * @brief Waits, with a bound, for the packets still in flight on a suspended queue.
+ *
+ * A suspended queue never releases the completion signals of the packets it did not run, so the
+ * dispatch signal can never reach zero and there is no value to wait for: the packets rung before
+ * the failure still decrement it as they retire, but how many of them will ever retire is unknown.
+ * Poll for the signal to drain and give up after @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS. The
+ * poll is only ever reached once, at teardown after a fatal error, so its cost does not matter.
+ *
+ * @param[in] ctx backend context
+ * @retval true  the signal reached zero and can be destroyed
+ * @retval false the deadline expired; packets may still reference the signal
+ */
+static bool ggml_hsa_drain_after_queue_error(ggml_backend_hsa_context & ctx) {
+    constexpr std::chrono::milliseconds poll_interval{1};
+    const auto deadline = std::chrono::steady_clock::now() + g_ggml_hsa_queue_error_drain_timeout;
+    while (hsa_signal_load_scacquire(ctx.dispatch_signal) != 0) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(poll_interval);
+    }
+    return true;
+}
+
 ggml_backend_hsa_context::~ggml_backend_hsa_context() {
     // Drain outstanding work before tearing down the queue and signal; otherwise batched-but-
     // unrung packets would be lost and in-flight packets would reference a destroyed signal.
     ggml_hsa_wait_dispatches(*this);
     ggml_hsa_purge_unused_cached_kernels(device);
-    GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
+
+    // ggml_hsa_wait_dispatches returns without draining when the queue was suspended, so the
+    // packets that were in flight when it went down may still hold this signal. Give them a
+    // bounded window to retire; if they do not, leak the signal rather than destroy it while the
+    // device is still decrementing it.
+    bool signal_drained = true;
+    if (queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
+        signal_drained = ggml_hsa_drain_after_queue_error(*this);
+        if (!signal_drained) {
+            GGML_HSA_LOG_WARN("%s: work still in flight on the suspended queue after %lld ms; "
+                              "leaking the dispatch signal",
+                              __func__,
+                              static_cast<long long>(g_ggml_hsa_queue_error_drain_timeout.count()));
+        }
+    }
+    if (signal_drained) {
+        GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
+    }
     GGML_HSA_CHECK_ABORT(hsa_queue_destroy(queue));
 }
 
