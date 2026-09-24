@@ -40,11 +40,32 @@ def transform_script(stem: str, arch: str, dtype=None) -> str:
 def elementwise_block_size(n_elements: int, max_block: int = 1024) -> int:
     """Round n_elements up to a power of two, capped at max_block.
 
+    The elementwise Triton kernels (vecadd, relu) apply no bounds mask: every
+    lane of every program loads and stores unconditionally. The launch grid is
+    ``cdiv(n_elements, block)``, so unless the block divides n_elements exactly
+    the last program runs off the end of the tensor -- e.g. n_elements=1000
+    gives one 1024-lane program that touches 24 elements past the allocation.
+    Rather than silently corrupting memory, reject those shapes here: the caller
+    runs inside a KernelSpec compile function, so the ValueError is caught by
+    build.py and dispatch falls back to IRON, which has no such restriction.
+
     Args:
         n_elements: Number of elements the kernel covers.
         max_block: Largest permitted block size.
 
     Returns:
-        A power of two in [1, max_block].
+        A power of two in [1, max_block] that divides n_elements exactly.
+
+    Raises:
+        ValueError: If no such block size exists, i.e. n_elements is not a
+            multiple of the selected power-of-two block.
     """
-    return 1 << (min(max_block, n_elements) - 1).bit_length()
+    block = 1 << (min(max_block, n_elements) - 1).bit_length()
+    if n_elements % block != 0:
+        msg = (
+            f"n_elements={n_elements} is not a multiple of the {block}-element "
+            f"block; the Triton elementwise kernels are unmasked and would "
+            f"access {block - n_elements % block} elements out of bounds."
+        )
+        raise ValueError(msg)
+    return block

@@ -89,7 +89,19 @@ def _make_triton_matmul_kernel_spec(
             raise ValueError(msg)
 
         # GGML shape convention (innermost first): A is [K, M], B is [K, N],
-        # C is [M, N]. The matmul reads A as [M, K] and B as [K, N] row-major.
+        # C is [M, N]. The kernel is a plain 2D M x N matmul, so any batch or
+        # broadcast dimension would be silently ignored, computing only the
+        # first matrix and leaving the rest of C untouched. Reject those and let
+        # dispatch fall back to IRON.
+        for label, t in (
+            ("A", input_tensors[0]),
+            ("B", input_tensors[1]),
+            ("C", output_tensor),
+        ):
+            if any(d != 1 for d in t.shape[2:]):
+                msg = f"{label} has batch dimensions {tuple(t.shape[2:])}; 2D only."
+                raise ValueError(msg)
+
         m = input_tensors[0].shape[1]
         k = input_tensors[0].shape[0]
         n = input_tensors[1].shape[1]
@@ -106,6 +118,24 @@ def _make_triton_matmul_kernel_spec(
         device = triton_device(arch)
         # Contents are never read: the kernel is compiled, not launched, so
         # these exist only to carry dtype/stride metadata to Triton.
+        #
+        # KNOWN LIMITATION (operand layout). GGML tensors are innermost-first
+        # contiguous, so B with ne == (K, N) is N rows of K, i.e. the
+        # mathematical K x N matrix stored COLUMN-major; likewise C. The IRON
+        # path declares exactly that via b_col_maj=True / c_col_maj=True in
+        # iron_kernels/gemm.py. The row-major strides baked in below therefore
+        # do NOT describe the GGML buffers this kernel would run against.
+        #
+        # The obvious fix -- torch.empty_strided((k, n), (1, k)) and
+        # ((m, n), (1, m)) -- does not compile: the shim DMA requires strides
+        # divisible by 4 bytes, and a column-major bf16 operand has an innermost
+        # stride of one element = 2 bytes, so aircc rejects the design with
+        # "'aie.dma_bd' op Stride 1 is 1 elements * 2 bytes = 2 bytes, which is
+        # not divisible by 4" (measured on aie2 and aie2p, all shapes).
+        # Expressing the GGML layout needs the transpose handled inside the
+        # transform script, not via operand strides. Until then the Triton
+        # MUL_MAT is compile-validated only; IRON is the primary path and this
+        # spec is reached only when IRON fails.
         a = torch.empty(
             (m, k), device=device, dtype=numpy_dtype_to_torch(input_tensors[0].dtype)
         )

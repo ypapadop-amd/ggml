@@ -78,8 +78,10 @@ def _make_triton_add_kernel_spec(
         KernelSpec configured for the TRITON backend.
 
     Raises:
-        ValueError: If the tensors require broadcasting or are non-contiguous
-            (raised lazily when the returned compile function is invoked).
+        ValueError: If the tensors require broadcasting, are non-contiguous, or
+            the element count is not a multiple of the block size (the kernel is
+            unmasked). All are raised lazily when the returned compile function
+            is invoked.
     """
     n_elements = output_tensor.numel()
 

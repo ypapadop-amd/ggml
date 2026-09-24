@@ -56,6 +56,13 @@ def _make_triton_relu_kernel_spec(
 ) -> KernelSpec:
     """Create a TRITON-backend KernelSpec for RELU.
 
+    ACCURACY: the f32 path is NOT bit-accurate. AIE2 has no legal f32 vector max
+    (aievec.max on vector<16xf32> fails to legalize), so relu_<arch>_f32.mlir
+    keeps @cast_bf16_only_ops and the max is computed in bf16, giving a
+    bf16-rounded f32 result (NMSE ~1.2e-5). The IRON path is exact. This spec is
+    only ever reached when IRON compilation fails, so it trades accuracy for
+    having a kernel at all; do not select it where f32 precision is required.
+
     Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
@@ -65,8 +72,9 @@ def _make_triton_relu_kernel_spec(
         KernelSpec configured for the TRITON backend.
 
     Raises:
-        ValueError: If the tensors are non-contiguous (raised lazily when the
-            returned compile function is invoked).
+        ValueError: If the tensors are non-contiguous, or the element count is
+            not a multiple of the block size (the kernel is unmasked). Both are
+            raised lazily when the returned compile function is invoked.
     """
     n_elements = output_tensor.numel()
 
