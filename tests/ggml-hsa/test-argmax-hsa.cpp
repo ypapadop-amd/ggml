@@ -2,10 +2,10 @@
 
 // Standalone test for GGML_OP_ARGMAX on the HSA backend, over deterministic rows rather than
 // random data: exact ties, NaN in the first lane, NaN elsewhere, an all-NaN row, and rows whose
-// maximum sits in the lane the vector path pads from (lane 0).
+// maximum sits at either end of the row.
 //
 // Random inputs never produce a tie and never produce a NaN, so they exercise none of the cases
-// where a vectorized reduction can legitimately disagree with a scalar scan. Each row below is
+// where an argmax implementation can legitimately disagree with the reference. Each row below is
 // checked against ggml_vec_argmax_f32 (ggml-cpu/vec.h), which is the reference the backend has
 // to match:
 //
@@ -122,7 +122,7 @@ int main() {
         return 0;
     }
 
-    // 10 wide: the MNIST class count, and under the 16-lane f32 vector, so the vector path pads.
+    // 10 wide: the MNIST class count.
     const std::vector<test_row> rows10 = {
         {"plain max at 4", {0.f, 1.f, 2.f, 3.f, 9.f, 3.f, 2.f, 1.f, 0.f, -1.f}},
         {"max at 0", {9.f, 1.f, 2.f, 3.f, 4.f, 3.f, 2.f, 1.f, 0.f, -1.f}},
@@ -140,7 +140,7 @@ int main() {
         {"signed zeros", {-0.f, 0.f, -0.f, 0.f, -0.f, 0.f, -0.f, 0.f, -0.f, 0.f}},
     };
 
-    // 16 wide: exactly one vector, so the vector path pads nothing.
+    // 16 wide: a different row length, to check nothing depends on the MNIST shape.
     const std::vector<test_row> rows16 = {
         {"16-wide max at 11",
          {0.f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f, 9.f, 10.f, 99.f, 10.f, 9.f, 8.f, 7.f}},
@@ -151,9 +151,9 @@ int main() {
     };
 
     bool all_ok = true;
-    printf("ARGMAX 10-wide (vector path pads lanes 10..15 from lane 0):\n");
+    printf("ARGMAX 10-wide:\n");
     all_ok = run_rows(backend, rows10) && all_ok;
-    printf("ARGMAX 16-wide (no padding):\n");
+    printf("ARGMAX 16-wide:\n");
     all_ok = run_rows(backend, rows16) && all_ok;
 
     ggml_backend_free(backend);

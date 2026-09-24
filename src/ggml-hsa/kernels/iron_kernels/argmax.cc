@@ -14,9 +14,16 @@ extern "C" {
 /**
  * @brief Finds the index of the maximum value in an input array.
  *
- * Single-pass algorithm that tracks both the maximum value and its index.
- * If multiple elements have the same maximum value, returns the index of
- * the first occurrence.
+ * Single-pass algorithm that tracks both the maximum value and its index, matching
+ * @c ggml_vec_argmax_f32 (ggml-cpu/vec.h) exactly:
+ *
+ * - If multiple elements hold the maximum, returns the index of the @b last such element.
+ * - A NaN never becomes the running maximum, so a row that is not entirely NaN reports the
+ *   index of its largest non-NaN element; an all-NaN row reports 0.
+ *
+ * Floating-point input only: the running maximum is seeded with -infinity, which an integer
+ * type cannot represent. @c argmax.py rejects any other input dtype, matching ggml, whose CPU
+ * implementation supports @c GGML_TYPE_F32 and aborts on everything else.
  *
  * @param[in]  in  Input array of N elements.
  * @param[out] out Index of the max element, written to out[0].
@@ -40,6 +47,16 @@ void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict
     // false and the result was always 0.
     //
     // See test-argmax-hsa for the rows that pin these down.
+    //
+    // The -inf seed is why this kernel is floating-point only: for an integer INPUT_DTYPE
+    // numeric_limits<T>::infinity() is 0, so an all-negative row would never update the running
+    // maximum and would report index 0. argmax.py rejects non-f32 input, and this catches it at
+    // compile time if that check is ever loosened. numeric_limits<T>::lowest() is not a fix --
+    // it would break the all- -inf row, which the reference resolves to the last index.
+    static_assert(std::numeric_limits<INPUT_DTYPE>::has_infinity,
+                  "ggml_op_argmax seeds its running maximum with -infinity to match "
+                  "ggml_vec_argmax_f32; INPUT_DTYPE must be a floating-point type");
+
     if (N > 0) {
         auto max_val = -std::numeric_limits<INPUT_DTYPE>::infinity();
         int32_t argmax_idx = 0;
