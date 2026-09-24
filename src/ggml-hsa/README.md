@@ -171,10 +171,11 @@ JIT compilation generates kernels on-the-fly. Precompiled kernels in `GGML_HSA_K
 
 ### Environment Variables
 
-| Variable                      | Description                                                     |
-|-------------------------------|-----------------------------------------------------------------|
-| `GGML_HSA_ENABLE_LOG`         | Enable internal logging (`1`, `true`, or `on`)                  |
-| `GGML_HSA_KERNEL_DIR`         | Precompiled kernel directory path                               |
-| `GGML_HSA_KERNEL_CACHE_DIR`   | JIT cache directory                                             |
-| `GGML_HSA_KERNEL_CACHE_CLEAR` | Clear JIT cache on startup (`1`, `true`, or `on`)               |
-| `GGML_HSA_JIT_VERBOSE`        | Verbose JIT output (`1`, `true`, or `on`)                       |
+| Variable                                | Description                                                                                                                                                                                             |
+|-----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `GGML_HSA_ENABLE_LOG`                   | Enable internal logging (`1`, `true`, or `on`)                                                                                                                                                          |
+| `GGML_HSA_KERNEL_DIR`                   | Precompiled kernel directory path                                                                                                                                                                       |
+| `GGML_HSA_KERNEL_CACHE_DIR`             | JIT cache directory                                                                                                                                                                                     |
+| `GGML_HSA_KERNEL_CACHE_CLEAR`           | Clear JIT cache on startup (`1`, `true`, or `on`)                                                                                                                                                       |
+| `GGML_HSA_JIT_VERBOSE`                  | Verbose JIT output (`1`, `true`, or `on`)                                                                                                                                                               |
+| `GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS` | Milliseconds teardown waits for work still in flight when the runtime suspended the queue (default `1000`, `0` disables the wait). On timeout the dispatch signal is leaked instead of destroyed.        |
