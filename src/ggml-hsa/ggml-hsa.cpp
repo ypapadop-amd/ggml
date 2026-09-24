@@ -1070,11 +1070,10 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
 }
 
 ggml_status ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
-    // Never ring a queue the runtime has already suspended. It would not submit anything -- the
-    // runtime drops the doorbell once the queue is down -- and for the hardware-fault case
-    // documented at ggml_backend_hsa_device_supports_op, ringing after the fault is what turns it
-    // into an unrecoverable abort. Checking here, rather than at each call site, is what keeps
-    // that unreachable: every ring in the backend goes through this function.
+    // Never ring a queue the runtime has already suspended: it would not submit anything, since
+    // the runtime drops the doorbell once the queue is down. Checking here, rather than at each
+    // call site, is what keeps that unreachable: every ring in the backend goes through this
+    // function.
     if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
         return GGML_STATUS_FAILED;
     }
@@ -2086,27 +2085,6 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
         case GGML_OP_SCALE:
         case GGML_OP_DIAG_MASK_INF:
         case GGML_OP_SOFT_MAX:
-            // GPT-2 attention block (KQ -> SCALE -> DIAG_MASK_INF -> SOFT_MAX -> KQV, over the 3D
-            // KQ tensor [n_kv, N, n_head]). Each of these IRON kernels is correct in isolation --
-            // the standalone device tests pass, including on GPT-2-shaped inputs -- but when they
-            // run back to back inside the full attention graph they fault the hardware AIE queue
-            // after a number of tokens, which ROCr turns into an abort() at the next doorbell ring
-            // (unrecoverable, not a status we can catch). Until the queue fault is root-caused,
-            // route all three to the CPU fallback so graphs containing them run to completion.
-            //
-            // This alone does not keep the surrounding attention block on the CPU. Declining these
-            // three says nothing about the neighbouring KQ/KQV MUL_MATs, and where those are
-            // supported the scheduler leaves them on this device and their tensors cross the
-            // CPU/HSA boundary around each declined node. It happens that for GPT-2 they are not
-            // supported either -- the GEMM kernel requires tile-aligned shapes and its build
-            // asserts "A/B must be tileable into (m * n_aie_rows, k)-sized blocks" -- so that block
-            // does end up entirely on the CPU, but that is a property of the MUL_MAT shapes, not
-            // something this switch arranges.
-            //
-            // The kernels themselves are still built and still correct, so their standalone device
-            // tests must keep running: reporting "unsupported" to those would make them skip every
-            // case and pass vacuously, leaving the kernels unguarded against regressions. They set
-            // GGML_HSA_ENABLE_FAULTING_OPS to opt back in. Do not set it for whole-graph workloads.
             if (!g_ggml_hsa_enable_faulting_ops) {
                 return false;
             }
