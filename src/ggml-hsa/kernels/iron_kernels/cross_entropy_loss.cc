@@ -6,17 +6,7 @@
 #include <aie_api/aie.hpp>
 
 #include "aie_kernel_math.h"
-#include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
-
-// The three row loops below are all the same fixed trip count. AIE_LOOP_RANGE needs an integral
-// constant expression, so the hint can only be attached on the compile-time-N build; the
-// runtime-N fallback gets a bare loop.
-#ifdef CROSS_ENTROPY_N
-#    define CE_ROW_LOOP_HINT AIE_LOOP_RANGE(CROSS_ENTROPY_N, CROSS_ENTROPY_N)
-#else
-#    define CE_ROW_LOOP_HINT
-#endif
 
 extern "C" {
 
@@ -42,98 +32,59 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
                                 int32_t N) {
     event0();
 
-    // The design streams exactly one row per tile (see cross_entropy_loss.py), so the trip
-    // count is the row length and is fixed per kernel instance -- each shape JITs its own .o.
-    // Take it as a compile-time constant when the caller supplies one: it lets Peano bind the
-    // loop hints below, fold the address arithmetic to immediate offsets, and drop the runtime
-    // bound. The runtime-N path is kept for any caller that does not pass -DCROSS_ENTROPY_N.
-#ifdef CROSS_ENTROPY_N
-    constexpr int32_t Nv = CROSS_ENTROPY_N;
-#else
-    const int32_t Nv = N;
-#endif
-
-    // All three passes run a vector at a time when the row fits one vector.
-    //
-    // NOOP ablation put this kernel at the top of the MNIST graph, and within it the work is
-    // all element-wise: exp was 87% of it before being vectorized, and the remaining scalar
-    // max and dot product measured 2.36 us/image of a 34.67 us baseline (6.8%).
-    //
-    // The row (Nv elements) is shorter than the f32 vector and the ObjectFifo tile is exactly
-    // Nv floats -- see the tile_size == row_length check in cross_entropy_loss.py -- so a
-    // vector load straight off `logits`/`labels` would read past the end of the buffer. Stage
-    // both rows into padded, vector-aligned scratch buffers and work from those.
-    //
-    // The padding lanes are chosen so that no pass has to mask them out:
-    //   logits pad = logits[0] -- a value already in the row, so it cannot change the maximum,
-    //                and stays finite through (x - max - log_sum_exp);
-    //   labels pad = 0         -- contributes exactly 0*finite == 0 to the pass-3 dot product.
-    // Pass 2 is the exception: exp() of a padding lane is a valid non-zero number, so its sum
-    // still runs over the first Nv lanes only.
-#if defined(CROSS_ENTROPY_N) && (CROSS_ENTROPY_N) <= 16
-    constexpr int32_t V = 16;
-    alignas(64) float lg[V];
-    alignas(64) float lb[V];
-    alignas(64) float es[V];
-
-    AIE_LOOP_RANGE(Nv, Nv)
-    for (int32_t i = 0; i < Nv; i++) {
-        lg[i] = logits[i];
-        lb[i] = labels[i];
-    }
-    for (int32_t i = Nv; i < V; i++) {
-        lg[i] = logits[0];
-        lb[i] = 0.0f;
-    }
-
-    const auto lgv = aie::load_v<V>(lg);
-    const auto lbv = aie::load_v<V>(lb);
+    // The three passes below are vectorized over KERN_VEC lanes with a scalar tail. The win is
+    // pass 2: an ablation that removed the transcendentals took this kernel from 4084 us to 594
+    // us, so ~85% of its cost was the per-element scalar_exp. A row is only ~10 elements here
+    // (one per class), which is under the 16-lane f32 vector, so the tail still runs a couple of
+    // scalar iterations -- the vector body is what removes the bulk of the exp calls.
+    constexpr int32_t V = KERN_VEC_SIZE;
+    const int32_t vend = (N / V) * V;
 
     // Pass 1: max(logits), so pass 2's exp() argument (logits - max) stays <= 0 and can't
     // overflow, no matter how large the logits are.
-    const float global_max = aie::reduce_max(lgv);
-
-    // Pass 2: sum(exp(logits - max)), the log-softmax denominator (unnormalized).
-    const auto xv = aie::sub(lgv, aie::broadcast<float, V>(global_max));
-    auto xv_exp = xv;
-    aie::store_v(es, vec_exp<V>(xv_exp));
-
-    float sum_exp = 0.0f;
-    AIE_LOOP_RANGE(Nv, Nv)
-    for (int32_t i = 0; i < Nv; i++) {
-        sum_exp += es[i];
-    }
-
-    // log(sum_exp) computed once and reused for every element in pass 3, instead of computing
-    // softmax probabilities per element (which would need an extra division and a second log).
-    // Stays scalar: it is one value per row, with nothing to vectorize across.
-    const float log_sum_exp = scalar_log(sum_exp);
-
-    // Pass 3: log_softmax(x_i) = (x_i - max) - log_sum_exp; loss = -sum(labels * log_softmax).
-    const auto lsv = aie::sub(xv, aie::broadcast<float, V>(log_sum_exp));
-    const float total_loss = aie::reduce_add(aie::mul(lbv, lsv).template to_vector<float>());
-#else
-    // Runtime-N fallback: row length unknown at compile time, so the vector staging above
-    // cannot be sized. Scalar, one element at a time.
     auto global_max = std::numeric_limits<float>::lowest();
-    for (int32_t i = 0; i < Nv; i++) {
+    if (vend > 0) {
+        aie::vector<float, V> vmax = aie::broadcast<float, V>(global_max);
+        for (int32_t i = 0; i < vend; i += V) {
+            vmax = aie::max(vmax, aie::load_unaligned_v<V>(logits + i));
+        }
+        global_max = aie::reduce_max(vmax);
+    }
+    for (int32_t i = vend; i < N; i++) {
         if (logits[i] > global_max) {
             global_max = logits[i];
         }
     }
 
+    // Pass 2: sum(exp(logits - max)), the log-softmax denominator (unnormalized).
     float sum_exp = 0.0f;
-    for (int32_t i = 0; i < Nv; i++) {
+    const aie::vector<float, V> vmax_b = aie::broadcast<float, V>(global_max);
+    for (int32_t i = 0; i < vend; i += V) {
+        aie::vector<float, V> x = aie::sub(aie::load_unaligned_v<V>(logits + i), vmax_b);
+        sum_exp += aie::reduce_add(vec_exp<V>(x));
+    }
+    for (int32_t i = vend; i < N; i++) {
         sum_exp += scalar_exp(logits[i] - global_max);
     }
 
-    const float log_sum_exp = scalar_log(sum_exp);
+    // log(sum_exp) computed once and reused for every element in pass 3, instead of computing
+    // softmax probabilities per element (which would need an extra division and a second log).
+    const auto log_sum_exp = scalar_log(sum_exp);
 
+    // Pass 3: log_softmax(x_i) = (x_i - max) - log_sum_exp; loss = -sum(labels * log_softmax).
     float total_loss = 0.0f;
-    for (int32_t i = 0; i < Nv; i++) {
-        total_loss += labels[i] * ((logits[i] - global_max) - log_sum_exp);
+    const aie::vector<float, V> vlse_b = aie::broadcast<float, V>(log_sum_exp);
+    for (int32_t i = 0; i < vend; i += V) {
+        aie::vector<float, V> ls =
+            aie::sub(aie::sub(aie::load_unaligned_v<V>(logits + i), vmax_b), vlse_b);
+        aie::vector<float, V> p =
+            aie::mul(aie::load_unaligned_v<V>(labels + i), ls).template to_vector<float>();
+        total_loss += aie::reduce_add(p);
     }
-#endif
+    for (int32_t i = vend; i < N; i++) {
+        float log_softmax = (logits[i] - global_max) - log_sum_exp;
+        total_loss += labels[i] * log_softmax;
+    }
 
     // Store negated loss (cross entropy is -sum)
     loss_out[0] = -total_loss;

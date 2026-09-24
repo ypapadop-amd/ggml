@@ -22,7 +22,6 @@ from aie.iron.controlflow import range_
 
 from .utils import align_to_arch, fill_drain_program, row_dimensions
 
-
 # The core's frame exceeds the AIE core's 1024-byte default stack: aiecc measures 1152 bytes.
 # Without an explicit size the core silently writes past the end of its stack into neighbouring
 # core data memory. Newer mlir-aie turns that into a build error ("stack_size is absent ... but it
@@ -227,9 +226,9 @@ def _create_external_function(
         np.int32,  # tile_size (N)
     ]
 
-    # Row length is fixed per kernel instance (each shape JITs its own .o), so pass it as a
-    # compile-time constant: lets Peano bind the loop hints and fold the address arithmetic.
-    compile_flags = [f"-DCROSS_ENTROPY_N={tile_size}"]
+    # The kernel vectorizes over KERN_VEC_SIZE lanes and the tile size above is aligned to it, so
+    # the two must agree; pass the single definition through rather than duplicating it in the .cc.
+    compile_flags = [f"-DKERN_VEC_SIZE={KERN_VEC_SIZE}"]
 
     current_dir = Path(__file__).resolve().parent
     return ExternalFunction(

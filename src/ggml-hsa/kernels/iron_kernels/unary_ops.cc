@@ -310,8 +310,7 @@ void ggml_unary_op_gelu(const INPUT_DTYPE * __restrict in,
     };
 
     if constexpr (std::is_same_v<INPUT_DTYPE, f32> && std::is_same_v<OUTPUT_DTYPE, f32>) {
-        transform_vector_n(
-            in, out, N, [](auto v) { return vec_gelu(v); }, scalar_gelu);
+        transform_vector_n(in, out, N, [](auto v) { return vec_gelu(v); }, scalar_gelu);
     } else {
         transform_n(in, N, out, scalar_gelu);
     }
