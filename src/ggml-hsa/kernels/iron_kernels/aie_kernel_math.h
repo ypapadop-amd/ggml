@@ -17,75 +17,6 @@
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
-// ---------------------------------------------------------------------------
-// aie2 fp32 vector multiply/MAC compatibility shim
-//
-// Workaround for an upstream mlir-aie regression (present in 1.3.4 and 1.4.0)
-// that breaks every fp32 vector multiply/MAC on aie2 (NPU1 / Phoenix).
-//
-// aie_api's aie2 fp32 path
-// (aie_api/detail/aie2/mul_acc32_fp.hpp, mul_bits_impl<..., float, 32, float>)
-// lowers aie::mul / aie::mac on aie::vector<float, 16> to the intrinsics
-// mul_elem_16_conf / mac_elem_16_conf / msc_elem_16_conf. Peano *declares*
-// those in aiev2/aiev2_aie_api_compat.h but never defines them for aie2, so any
-// such kernel fails at link with "ld.lld: undefined symbol". The equivalent
-// aie2p header guards the same code with #if __AIE_API_FP32_EMULATION__; the
-// aie2 copy is missing that branch even though aie2 sets the macro
-// (aie_api/detail/aie2/config.hpp). aie2p is unaffected.
-//
-// mlir-aie 1.3.3 lowered the same operations to the plain mul_elem_16 /
-// negmul_elem_16 / mac_elem_16 / msc_elem_16 names, which Peano *does* provide
-// for aie2 (as accuracy-tiered fp32 emulation in aiev2/aiev2_core.h; the
-// default tier is _accuracy_safe). The definitions below supply the missing
-// _conf entry points as thin adapters over those same plain names: they restore
-// the 1.3.3 lowering exactly rather than introducing any new fp32 arithmetic,
-// so results are numerically identical to 1.3.3 -- no hand-rolled emulation.
-//
-// Any kernel doing fp32 aie::mul / aie::mac must include this header: the
-// definitions have to be in the translation unit before aie_api's templates are
-// instantiated by kernel code. Omitting it surfaces as
-// "ld.lld: undefined symbol: _Z16mul_elem_16_conf...". Drop this block once a
-// fixed mlir-aie release restores the aie2 fp32 path.
-//
-// Peano *declares* these three with no body, and the preprocessor cannot tell a
-// bodiless declaration from a defined one, so there is nothing to key an automatic
-// guard off. When a fixed release gives them bodies, this block turns into
-// "redefinition of mul_elem_16_conf" in every kernel that includes this header.
-// Build with -DGGML_AIE_NO_FP32_CONF_SHIM=1 to disable it without editing (which is
-// how to check whether an mlir-aie upgrade has landed the fix), then delete the
-// block once the upgrade is permanent.
-//
-// aie2 only: aie2p/aie2ps define these intrinsics natively.
-#if __AIE_ARCH__ == 20 && !defined(GGML_AIE_NO_FP32_CONF_SHIM)
-
-/// a * b, with the product negated when sub_mul is set.
-inline __attribute__((always_inline)) v16accfloat mul_elem_16_conf(v16float a,
-                                                                   v16float b,
-                                                                   int sub_mul) {
-    return sub_mul ? ::negmul_elem_16(a, b) : ::mul_elem_16(a, b);
-}
-
-/// base + product, where
-///   base    = zero_acc ? 0 : (sub_acc ? -acc : acc)
-///   product = sub_mul ? -(a * b) : (a * b)
-inline __attribute__((always_inline)) v16accfloat
-mac_elem_16_conf(v16float a, v16float b, v16accfloat acc, int zero_acc, int sub_mul, int sub_acc) {
-    if (zero_acc)
-        return mul_elem_16_conf(a, b, sub_mul);
-    const v16accfloat base = sub_acc ? ::neg(acc) : acc;
-    return sub_mul ? ::msc_elem_16(a, b, base) : ::mac_elem_16(a, b, base);
-}
-
-/// base - product, with base and product as above. Subtracting a negated
-/// product is an accumulate, hence the flipped sub_mul.
-inline __attribute__((always_inline)) v16accfloat
-msc_elem_16_conf(v16float a, v16float b, v16accfloat acc, int zero_acc, int sub_mul, int sub_acc) {
-    return mac_elem_16_conf(a, b, acc, zero_acc, !sub_mul, sub_acc);
-}
-
-#endif // aie2 fp32 shim
-// ---------------------------------------------------------------------------
-
 /**
  * @brief Computes exp(x) using range reduction.
  *
@@ -461,6 +392,11 @@ inline aie::vector<T, V> vec_abs(const aie::vector<T, V> & v) {
 // such rule. aie2 does legalize it, so it keeps aie::neg -- no behaviour change on an architecture
 // that cannot be tested here, and both forms are bit-exact for negation. Drop the split once the
 // aie2p backend grows the missing rule.
+//
+// Still required as of llvm-aie 22.0.0.2026092301. A narrow probe (aie::neg on a vector straight
+// out of load_v) does compile for aie2p on that version, which is misleading -- building the real
+// GGML_UNARY_OP_NEG kernel through transform_vector_n still fails to legalize. Re-check by
+// compiling unary_ops.cc for aie2p, not by a standalone snippet.
 #if __AIE_ARCH__ != 20
 
 /**

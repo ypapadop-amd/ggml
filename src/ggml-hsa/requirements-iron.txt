@@ -7,4 +7,15 @@
 --extra-index-url https://pypi.org/simple
 
 mlir_aie==1.4.3
-llvm-aie
+
+# Floor, not an exact pin: llvm-aie only publishes rolling nightlies and the index retains
+# roughly the last three months, so an exact pin would stop resolving and break a fresh install.
+#
+# >= 22.0.0 (clang 22) is a hard requirement, not a preference. Peano defines
+# mul_elem_16_conf / mac_elem_16_conf / msc_elem_16_conf for aie2 in aiev2/aiev2_core.h from
+# clang 22 on; before that they were declared with no body and every fp32 aie::mul / aie::mac on
+# aie2 failed to link. aie_kernel_math.h used to carry local definitions to fill that gap, and
+# they are gone -- on clang 21 the kernels would now fail with "undefined symbol:
+# _Z16mul_elem_16_conf...". The aie2p vector G_FNEG gap is NOT fixed in clang 22 -- see the
+# vec_neg split in aie_kernel_math.h, which is still required.
+llvm-aie>=22.0.0
