@@ -17,9 +17,18 @@ extern "C" {
  * Single-pass algorithm that tracks both the maximum value and its index, matching
  * @c ggml_vec_argmax_f32 (ggml-cpu/vec.h) exactly:
  *
- * - If multiple elements hold the maximum, returns the index of the @b last such element.
- * - A NaN never becomes the running maximum, so a row that is not entirely NaN reports the
- *   index of its largest non-NaN element; an all-NaN row reports 0.
+ * The reference is @c max = MAX(max, x[i]) followed by @c if @c (max @c == @c x[i]) @c idx @c =
+ * @c i, where @c MAX(a,b) is @c (a @c > @c b @c ? @c a @c : @c b). Two consequences, both of
+ * which callers have to live with because they are the reference's:
+ *
+ * - On a tie the index is updated on @b equality, not strictly-greater, so the @b last element
+ *   holding the maximum wins.
+ * - A NaN @b does become the running maximum: @c a @c > @c NaN is false, so @c MAX returns the
+ *   NaN. The next element then displaces it the same way. A NaN therefore @b discards whatever
+ *   maximum preceded it, and the result is decided by the elements @b after the last NaN --
+ *   this is not "the largest non-NaN element". @c [1, @c NaN, @c -1] returns 2, not 0. A row
+ *   whose last NaN is also its last element keeps the index last set before it, or 0 if none
+ *   ever was, which is also what an all-NaN row reports.
  *
  * Floating-point input only: the running maximum is seeded with -infinity, which an integer
  * type cannot represent. @c argmax.py rejects any other input dtype, matching ggml, whose CPU
@@ -41,10 +50,12 @@ void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict
     // keeps the LAST index holding the maximum. The previous `if (in[i] > max_val)` kept the
     // first, so a row like [0,1,9,3,4,3,2,9,0,-1] returned 2 where the reference returns 7.
     //
-    // And the running maximum starts at -inf rather than in[0]. Since MAX(a,b) is (a > b ? a : b),
-    // a NaN operand is not propagated -- it is replaced by the next element -- so a leading NaN
-    // does not poison the scan. Seeding with in[0] meant a NaN there made every later comparison
-    // false and the result was always 0.
+    // And the running maximum starts at -inf rather than in[0]. That matters for NaN. Since
+    // MAX(a,b) is (a > b ? a : b) and a > NaN is false, a NaN becomes the running maximum and is
+    // then displaced by the next element -- so a NaN discards the maximum before it, and never
+    // compares equal to itself, so it never sets the index. Seeding with in[0] instead meant a
+    // NaN there made every later comparison false and the answer was always 0, where the
+    // reference goes on to scan the rest of the row.
     //
     // See test-argmax-hsa for the rows that pin these down.
     //

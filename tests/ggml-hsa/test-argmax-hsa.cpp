@@ -14,8 +14,9 @@
 //
 // Two properties of that reference are easy to get wrong and are what most of these rows pin
 // down. It keeps the LAST index equal to the maximum, not the first. And because MAX(a,b) is
-// (a > b ? a : b), a NaN operand is not propagated -- it is replaced by the next element -- so
-// a leading NaN does not poison the scan.
+// (a > b ? a : b) and a > NaN is false, a NaN BECOMES the running maximum and is then displaced
+// by the next element -- so a NaN discards the maximum before it, and the answer is decided by
+// the elements after the last NaN rather than being "the largest non-NaN element".
 
 
 #include <cstddef>
@@ -133,6 +134,12 @@ int main() {
         {"NaN at 0, max at 3", {kNaN, 1.f, 2.f, 7.f, 4.f, 3.f, 2.f, 1.f, 0.f, -1.f}},
         {"NaN at 0, max at 0*", {kNaN, -1.f, -2.f, -3.f, -4.f, -5.f, -6.f, -7.f, -8.f, -9.f}},
         {"NaN in middle", {0.f, 1.f, kNaN, 3.f, 8.f, 3.f, 2.f, 1.f, 0.f, -1.f}},
+        // A NaN discards the maximum before it: MAX(a, NaN) is NaN because a > NaN is
+        // false, and the next element then displaces the NaN. So these do NOT report the
+        // largest non-NaN element -- the answer comes from after the last NaN.
+        {"NaN discards earlier max", {1.f, kNaN, -1.f, -2.f, -3.f, -4.f, -5.f, -6.f, -7.f, -8.f}},
+        {"two NaNs, max before 2nd", {9.f, kNaN, 1.f, 2.f, kNaN, 3.f, 4.f, 5.f, 6.f, 7.f}},
+        {"trailing NaN", {0.f, 1.f, 2.f, 3.f, 9.f, 3.f, 2.f, 1.f, 0.f, kNaN}},
         {"all NaN", {kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN}},
         {"+inf at 6", {0.f, 1.f, 2.f, 3.f, 4.f, 3.f, kInf, 1.f, 0.f, -1.f}},
         {"all -inf", {-kInf, -kInf, -kInf, -kInf, -kInf, -kInf, -kInf, -kInf, -kInf, -kInf}},
