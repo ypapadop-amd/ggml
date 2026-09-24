@@ -926,9 +926,8 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     // The callback receives `this` while the object is still under construction. It only touches
     // queue_error, which its default member initializer has already set, and the runtime cannot
     // invoke it before a packet is submitted -- which cannot happen until construction finishes.
-    if (auto status =
-            hsa_queue_create(agent, min_queue_size, HSA_QUEUE_TYPE_SINGLE,
-                             ggml_hsa_queue_error_callback, this, 0, 0, &queue);
+    if (auto status = hsa_queue_create(agent, min_queue_size, HSA_QUEUE_TYPE_SINGLE,
+                                       ggml_hsa_queue_error_callback, this, 0, 0, &queue);
         status != HSA_STATUS_SUCCESS) {
         throw std::runtime_error{std::string("Could not create hsa_queue (")
                                      .append(ggml_hsa_get_status_string(status))
