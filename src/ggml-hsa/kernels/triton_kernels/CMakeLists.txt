@@ -16,6 +16,7 @@ set(TRITON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/relu_aie2_f32.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/relu_aie2p_f32.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/relu.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/spec_utils.py
     ${CMAKE_CURRENT_SOURCE_DIR}/utils.py
     )
 ggml_hsa_copy_files(ggml_hsa_copy_triton_files

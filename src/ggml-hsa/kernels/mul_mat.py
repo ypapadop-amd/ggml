@@ -8,9 +8,26 @@
 """Top-level entry point for the matrix multiplication operation (GGML_OP_MUL_MAT)."""
 
 from functools import partial
-from pathlib import Path
 
 from .kernel import Backend, KernelSpec
+from .triton_kernels.spec_utils import transform_script
+
+# L3 block sizes for the Triton MUL_MAT, per arch. The transform script tiles
+# each L3 block into 64x64 per-core L1 tiles across the AIE herd, so M/N must be
+# decomposed into fixed blocks: a single whole-matrix block (grid=(1,1),
+# BLOCK=m/n/k) exhausts the shim DMA channels and herd placement fails.
+#
+# The herd forall is tiled [16,16,0] on aie2 (pack=[4,4,8]) and [8,8,0] on aie2p
+# (pack=[8,8,8]); dim0 maps to AIE columns and dim1 to rows. Both archs have 4
+# rows, so N is pinned at 256 (256/pack/tile = 4) and only the column count
+# differs: a 4x4 herd on aie2 (M=256) and an 8-column x 4-row herd on aie2p
+# (M=512). N=512 on aie2p would ask for 8 rows and aircc rejects it ("row index
+# (6) must be less than the number of rows in the device (6)"). This matches the
+# upstream example, which raises only BLOCK_SIZE_M to 512 for aie2p:
+# Triton-XDNA/examples/matmul_bf16_m64_n64_k64/matmul_bf16_m64_n64_k64.py
+_DEFAULT_BLOCK_M = 256
+_BLOCK_M_BY_ARCH = {"aie2p": 512}
+_BLOCK_N = 256
 
 
 def _make_iron_matmul_kernel_spec(
@@ -77,22 +94,8 @@ def _make_triton_matmul_kernel_spec(
         k = input_tensors[0].shape[0]
         n = input_tensors[1].shape[1]
 
-        # The Triton-XDNA transform script tiles each L3 block into 64x64
-        # per-core L1 tiles across the AIE herd, so M/N must be decomposed into
-        # fixed L3 blocks: a single whole-matrix block (grid=(1,1), BLOCK=m/n/k)
-        # exhausts the shim DMA channels and herd placement fails.
-        #
-        # The herd forall is tiled [16,16,0] on aie2 (pack=[4,4,8]) and [8,8,0]
-        # on aie2p (pack=[8,8,8]); dim0 maps to AIE columns and dim1 to rows.
-        # Both archs have 4 rows, so N is pinned at 256 (256/pack/tile = 4);
-        # only the column count differs, giving a 4x4 herd on aie2 (M=256) and
-        # an 8-column x 4-row herd on aie2p (M=512). N=512 on aie2p would ask
-        # for 8 rows and aircc rejects it ("row index (6) must be less than the
-        # number of rows in the device (6)"). This matches the upstream example,
-        # which raises only BLOCK_SIZE_M to 512 for aie2p:
-        # Triton-XDNA/examples/matmul_bf16_m64_n64_k64/matmul_bf16_m64_n64_k64.py
-        block_m = 512 if arch == "aie2p" else 256
-        block_n = 256
+        block_m = _BLOCK_M_BY_ARCH.get(arch, _DEFAULT_BLOCK_M)
+        block_n = _BLOCK_N
         if m % block_m != 0 or n % block_n != 0:
             msg = (
                 f"M={m} not divisible by {block_m} or N={n} not divisible by "
@@ -101,10 +104,12 @@ def _make_triton_matmul_kernel_spec(
             raise ValueError(msg)
 
         device = triton_device(arch)
-        a = torch.randn(
+        # Contents are never read: the kernel is compiled, not launched, so
+        # these exist only to carry dtype/stride metadata to Triton.
+        a = torch.empty(
             (m, k), device=device, dtype=numpy_dtype_to_torch(input_tensors[0].dtype)
         )
-        b = torch.randn(
+        b = torch.empty(
             (k, n), device=device, dtype=numpy_dtype_to_torch(input_tensors[1].dtype)
         )
         c = torch.empty(
@@ -139,9 +144,8 @@ def _make_triton_matmul_kernel_spec(
         output_tensor=output_tensor,
         function=_compile,
         config={
-            "transform_script": str(
-                Path(__file__).parent / "triton_kernels" / f"matmul_{arch}.mlir"
-            ),
+            # No f32 variant exists for matmul, so the dtype is not passed.
+            "transform_script": transform_script("matmul", arch),
         },
     )
 
