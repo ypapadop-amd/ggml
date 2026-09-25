@@ -39,6 +39,44 @@ microkernel_mac_dim_map = {
 }
 
 
+# Per-device, per-dtype (row_expand, col_expand) mmul expansion factors: how many
+# mmul subtiles the vectorized microkernel consumes per loop step in the rowA and
+# colB dimensions. These are the divisibility contracts the mm.cc wrappers document
+# on their rowA/colB template parameters, and they differ per dtype on aie2 because
+# each dtype dispatches to a different wrapper:
+#   npu  bf16 -> matmul_vectorized_4x4      (rowA % 4, colB % 4)
+#   npu  i8   -> matmul_vectorized_4x2_mmul (rowA % 4, colB % 2)
+#   npu  i16  -> matmul_vectorized_2x2_mmul (rowA % 2, colB % 2)
+#   npu2 all  -> matmul_vectorized_2x2_mmul (rowA % 2, colB % 2)
+# Since rowA = m / r and colB = n / t, a tile must satisfy
+# m % (row_expand * r) == 0 and n % (col_expand * t) == 0.
+microkernel_expansion_map = {
+    "npu": {
+        "bf16": (4, 4),
+        "i8": (4, 2),
+        "i16": (2, 2),
+    },
+    "npu2": {
+        "bf16": (2, 2),
+        "i8": (2, 2),
+        "i16": (2, 2),
+    },
+}
+
+
+def resolve_expansion(dev, dtype_in_str):
+    """Return the (row_expand, col_expand) mmul expansion for a device/dtype.
+
+    Args:
+        dev: Target device ("npu" or "npu2").
+        dtype_in_str: Input dtype name (e.g. "bf16", "i8", "i16").
+
+    Returns:
+        The (row_expand, col_expand) tuple from microkernel_expansion_map.
+    """
+    return microkernel_expansion_map[dev][dtype_in_str]
+
+
 def resolve_mac_dims(dev, dtype_in_str, emulate_bf16_mmul_with_bfp16=False):
     """Return the (r, s, t) microkernel MAC-instruction dims for a device/dtype.
 
@@ -80,6 +118,8 @@ def select_gemm_tile(
     r,
     s,
     t,
+    row_expand=2,
+    col_expand=2,
     n_aie_rows=4,
     fifo_depth=2,
     max_tile=256,
@@ -92,8 +132,8 @@ def select_gemm_tile(
     synchronization overhead and improve MAC-array utilization, so we maximize
     the per-core tile volume (m * k * n) subject to:
 
-      * microkernel divisibility for the 2x2 mmul expansion:
-        m % (2*r) == 0, k % s == 0, n % (2*t) == 0;
+      * microkernel divisibility for the wrapper's mmul expansion:
+        m % (row_expand*r) == 0, k % s == 0, n % (col_expand*t) == 0;
       * array tiling: M % (m * n_aie_rows) == 0, K % k == 0,
         N % (n * n_aie_cols) == 0;
       * even work distribution: (M // m) * (N // n) is a multiple of the number
@@ -111,6 +151,8 @@ def select_gemm_tile(
         dtype_in: NumPy input dtype (for element size).
         dtype_out: NumPy output dtype (for element size).
         r, s, t: Microkernel MAC dims for the input dtype.
+        row_expand: mmul subtiles per rowA loop step (see resolve_expansion).
+        col_expand: mmul subtiles per colB loop step (see resolve_expansion).
         n_aie_rows: AIE array rows (4 on both npu and npu2).
         fifo_depth: Object-FIFO depth (double buffering).
         max_tile: Upper bound on any single tile dimension.
@@ -128,8 +170,10 @@ def select_gemm_tile(
     size_in = np.dtype(dtype_in).itemsize
     size_out = np.dtype(dtype_out).itemsize
 
-    # Microkernel-granular step sizes for the 2x2 mmul expansion.
-    gm, gk, gn = 2 * r, s, 2 * t
+    # Microkernel-granular step sizes for this wrapper's mmul expansion. Using a
+    # blanket 2x2 here would under-constrain the aie2 bf16/i8 wrappers, which
+    # consume 4 mmul subtiles per rowA (and, for bf16, per colB) loop step.
+    gm, gk, gn = row_expand * r, s, col_expand * t
 
     def working_set(m, k, n):
         return fifo_depth * (size_in * m * k + size_in * k * n + size_out * m * n)
@@ -853,35 +897,32 @@ def create_mat_mul_external_functions(
     use_scalar = False
     scalar_suffix = "_scalar" if use_scalar else ""
 
-    num_cols = None
-    if arch == "aie2":
-        num_cols = 4
-        # The bf16 4x8x4 microkernel (r,s,t = 4,8,4 with 4x4 expansion) requires the per-core N
-        # tile to cover at least 8 mmul subtiles (colB = n / t >= 8, i.e. n >= 32); smaller tiles
-        # (e.g. 16) miscompute the C01/C02 accumulators. tile 32 also keeps i8/i16 valid.
-        m = 32
-        n = 32
-        k = 32
-    elif arch == "aie2p":
-        num_cols = 8
-        # Pick the largest valid per-core tile for this problem size instead of a
-        # fixed small tile: a 16x16x16 tile leaves the 4x8 herd DMA/sync-bound.
-        # select_gemm_tile honors the microkernel divisibility, array tiling,
-        # even core distribution, the L1 budget and the shim-DMA stride range, so
-        # awkward shapes still get a valid (small) tile while large square GEMMs
-        # get much bigger ones. Shapes with no valid tile at all raise ValueError,
-        # which the JIT reports as an unsupported kernel (CPU fallback).
-        dtype_in = input_tensors[0].dtype
-        dtype_out = output_tensor.dtype
-        r, s, t = resolve_mac_dims("npu2", dtype_to_str(dtype_in))
-        # GGML shape convention (innermost first): A is [K, M], B is [K, N].
-        M = input_tensors[0].shape[1]
-        K = input_tensors[0].shape[0]
-        N = input_tensors[1].shape[1]
-        m, k, n = select_gemm_tile("npu2", M, N, K, dtype_in, dtype_out, r, s, t)
-    else:
+    # Pick the largest valid per-core tile for this problem size instead of a fixed
+    # small tile: the previous fixed tiles (8x8x8 on aie2, 16x16x16 on aie2p) left
+    # the herd DMA/sync-bound, and on aie2 the 8x8x8 tile also violated the bf16 and
+    # i8 wrappers' rowA/colB divisibility contracts. select_gemm_tile honors the
+    # per-dtype microkernel expansion, array tiling, even core distribution, the L1
+    # budget and the shim-DMA stride range, so awkward shapes still get a valid
+    # (small) tile while large GEMMs get much bigger ones. Shapes with no valid tile
+    # raise ValueError, which the JIT reports as an unsupported kernel (CPU fallback).
+    dev = {"aie2": "npu", "aie2p": "npu2"}.get(arch)
+    if dev is None:
         msg = f"Unsupported architecture: {arch}"
         raise ValueError(msg)
+    num_cols = 8 if dev == "npu2" else 4
+
+    dtype_in = input_tensors[0].dtype
+    dtype_out = output_tensor.dtype
+    dtype_in_str = dtype_to_str(dtype_in)
+    r, s, t = resolve_mac_dims(dev, dtype_in_str)
+    row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
+    # GGML shape convention (innermost first): A is [K, M], B is [K, N].
+    M = input_tensors[0].shape[1]
+    K = input_tensors[0].shape[0]
+    N = input_tensors[1].shape[1]
+    m, k, n = select_gemm_tile(
+        dev, M, N, K, dtype_in, dtype_out, r, s, t, row_expand, col_expand
+    )
 
     current_dir = Path(__file__).resolve().parent
     source_file = str(current_dir / arch / "mm.cc")

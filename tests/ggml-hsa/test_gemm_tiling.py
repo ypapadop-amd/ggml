@@ -21,13 +21,22 @@ sys.path.insert(0, str(KERNELS_DIR))
 from iron_kernels.gemm import (  # noqa: E402
     DMA_MAX_STRIDE,
     L1_TILE_BUDGET_BYTES,
+    microkernel_expansion_map,
     microkernel_mac_dim_map,
+    resolve_expansion,
     resolve_mac_dims,
     select_gemm_tile,
 )
 
 BF16 = np.dtype(ml_dtypes.bfloat16)
 F32 = np.dtype(np.float32)
+
+# Input dtype name -> (numpy input dtype, numpy output dtype) as the GEMM uses them.
+DTYPES = {
+    "bf16": (BF16, F32),
+    "i8": (np.dtype(np.int8), np.dtype(np.int8)),
+    "i16": (np.dtype(np.int16), np.dtype(np.int16)),
+}
 
 # GEMM output dtypes. The microkernel always consumes bf16, but the destination
 # varies: ggml's native MUL_MAT output is f32 (what create_mat_mul_external_functions
@@ -57,19 +66,33 @@ SHAPES = [
 ]
 
 
-def _tile(dev, M, N, K, dtype_out=F32):
+def _tile(dev, M, N, K, dtype_out=F32, dtype_in_str="bf16"):
     """Return ``(r, s, t, m, k, n)`` for a device/shape: MAC dims plus selected tile."""
-    r, s, t = resolve_mac_dims(dev, "bf16")
+    r, s, t = resolve_mac_dims(dev, dtype_in_str)
+    row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
+    dtype_in = DTYPES[dtype_in_str][0]
     m, k, n = select_gemm_tile(
-        dev, M, N, K, BF16, dtype_out, r, s, t, max_tile=MAX_TILE
+        dev,
+        M,
+        N,
+        K,
+        dtype_in,
+        dtype_out,
+        r,
+        s,
+        t,
+        row_expand,
+        col_expand,
+        max_tile=MAX_TILE,
     )
     return r, s, t, m, k, n
 
 
-def _granular_minimum(dev):
+def _granular_minimum(dev, dtype_in_str="bf16"):
     """Return the smallest microkernel-granular tile the search can consider."""
-    r, s, t = resolve_mac_dims(dev, "bf16")
-    return 2 * r, s, 2 * t
+    r, s, t = resolve_mac_dims(dev, dtype_in_str)
+    row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
+    return row_expand * r, s, col_expand * t
 
 
 def _working_set(m, k, n, dtype_out=F32, fifo_depth=2):
@@ -222,6 +245,7 @@ def test_raises_past_the_dma_stride_cliff(dev, n_aie_cols):
             BF16,
             F32,
             *resolve_mac_dims(dev, "bf16"),
+            *resolve_expansion(dev, "bf16"),
             max_tile=MAX_TILE,
         )
 
@@ -250,7 +274,15 @@ def test_raises_when_problem_smaller_than_granularity(dev):
     """A problem below the microkernel granularity has no tile and must raise."""
     with pytest.raises(ValueError, match="smaller than the microkernel granularity"):
         select_gemm_tile(
-            dev, 1, 1, 1, BF16, F32, *resolve_mac_dims(dev, "bf16"), max_tile=MAX_TILE
+            dev,
+            1,
+            1,
+            1,
+            BF16,
+            F32,
+            *resolve_mac_dims(dev, "bf16"),
+            *resolve_expansion(dev, "bf16"),
+            max_tile=MAX_TILE,
         )
 
 
@@ -265,3 +297,51 @@ def test_resolve_mac_dims_bf16_emulation_variants():
 def test_resolve_mac_dims_unknown_dtype_raises():
     with pytest.raises(KeyError):
         resolve_mac_dims("npu2", "f64")
+
+
+@pytest.mark.parametrize("dtype_in_str", sorted(DTYPES))
+@pytest.mark.parametrize("dev", DEVICE_NAMES)
+@pytest.mark.parametrize("M,N,K", SHAPES)
+def test_selected_tile_satisfies_wrapper_contract(dev, M, N, K, dtype_in_str):
+    """The tile must satisfy the rowA/colB divisibility its mm.cc wrapper documents.
+
+    rowA = m/r and colB = n/t, and each wrapper steps those loops by its expansion
+    factor. A blanket 2x2 assumption under-constrains the aie2 bf16 (4x4) and i8
+    (4x2) wrappers, which is how the old fixed 8x8x8 aie2 tile came to violate the
+    bf16 contract (colB = 8/4 = 2, but matmul_vectorized_4x4 needs colB % 4 == 0).
+    """
+    row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
+    dtype_out = DTYPES[dtype_in_str][1]
+    r, s, t, m, k, n = _tile(dev, M, N, K, dtype_out, dtype_in_str)
+    assert (m // r) % row_expand == 0, f"rowA={m // r} not divisible by {row_expand}"
+    assert (n // t) % col_expand == 0, f"colB={n // t} not divisible by {col_expand}"
+    assert k % s == 0
+
+
+def test_aie2_i16_small_square_shapes_remain_supported():
+    """aie2 i16 32^3/64^3 tiled with 8s before and must keep working.
+
+    Regression guard: a fixed 32x32x32 aie2 tile silently dropped these, because
+    my_matmul then needs M % (32*4) == 0. i16 uses the 2x2 wrapper, so its minimum
+    tile is 8x4x8 and these shapes are legal.
+    """
+    for S in (32, 64, 128):
+        _, _, _, m, k, n = _tile("npu", S, S, S, DTYPES["i16"][1], "i16")
+        assert S % (m * N_AIE_ROWS) == 0
+        assert S % (n * 4) == 0
+        assert S % k == 0
+
+
+def test_expansion_map_covers_every_mac_dim_entry():
+    """Both per-dtype maps must agree on which (device, dtype) pairs exist."""
+    for dev, dtypes in microkernel_mac_dim_map.items():
+        assert set(microkernel_expansion_map[dev]) == set(dtypes), dev
+
+
+@pytest.mark.parametrize("dev", DEVICE_NAMES)
+@pytest.mark.parametrize("dtype_in_str", sorted(DTYPES))
+def test_expansion_is_at_least_two(dev, dtype_in_str):
+    """Every wrapper consumes at least 2 mmul subtiles per rowA/colB step."""
+    row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
+    assert row_expand >= 2
+    assert col_expand >= 2
