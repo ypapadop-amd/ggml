@@ -89,6 +89,22 @@ def _make_triton_matmul_kernel_spec(
             msg = "Non-contiguous tensors detected."
             raise ValueError(msg)
 
+        # The transform scripts are the bf16 matmul recipe from the upstream
+        # matmul_bf16_m64_n64_k64 example (pack=[4,4,8] / [8,8,8], accum=f32).
+        # Any other input dtype would be lowered with bf16 packing and compute
+        # the wrong result, so restrict to what the script actually implements.
+        # IRON handles the i8/i16 variants.
+        if any(t.dtype.name != "bfloat16" for t in input_tensors):
+            dtypes = tuple(t.dtype.name for t in input_tensors)
+            msg = f"Triton MUL_MAT supports bf16 inputs only, got {dtypes}."
+            raise ValueError(msg)
+        if output_tensor.dtype.name != "float32":
+            msg = (
+                "Triton MUL_MAT supports an f32 output only, got "
+                f"{output_tensor.dtype.name}."
+            )
+            raise ValueError(msg)
+
         # GGML shape convention (innermost first): A is [K, M], B is [K, N],
         # C is [M, N]. The kernel is a plain 2D M x N matmul, so any batch or
         # broadcast dimension would be silently ignored, computing only the

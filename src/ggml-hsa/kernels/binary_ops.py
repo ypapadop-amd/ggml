@@ -107,6 +107,16 @@ def _make_triton_add_kernel_spec(
             msg = "Broadcasting or non-contiguous tensors detected."
             raise ValueError(msg)
 
+        # Every buffer and the unmasked launch are sized from the output element
+        # count, so a src0 of a different shape would be read past its end. IRON
+        # rejects this descriptor too (iron_kernels/binary_ops.py).
+        if input_tensors[0].shape != output_tensor.shape:
+            msg = (
+                f"src0 shape must match output: {tuple(input_tensors[0].shape)} "
+                f"!= {tuple(output_tensor.shape)}"
+            )
+            raise ValueError(msg)
+
         block_size = elementwise_block_size(n_elements)
         grid = (triton.cdiv(n_elements, block_size),)
         device = triton_device(arch)
