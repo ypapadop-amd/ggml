@@ -305,10 +305,9 @@ class ggml_hsa_kernarg_pool {
     /**
      * @brief Abandons the backing buffer instead of freeing it.
      *
-     * Every packet stores a @c kernarg_address pointing into this buffer, so it may only be freed
-     * once no packet can still read it. Teardown after a suspended queue cannot establish that
-     * within a bounded wait, and leaking storage that lives until process exit is the lesser evil
-     * against handing the device freed memory. See the @ref ggml_backend_hsa_context destructor.
+     * Every packet's @c kernarg_address points into this buffer, so it may only be freed once no
+     * packet can read it. Teardown after a suspended queue cannot establish that within a bounded
+     * wait, so it leaks instead. See the @ref ggml_backend_hsa_context destructor.
      */
     void leak() { static_cast<void>(m_buffer.release()); }
 
@@ -372,6 +371,14 @@ struct ggml_hsa_device_info {
         bool substitute_fp16_bf16{false};  ///< Use BF16 when FP16 is requested.
         std::unordered_map<std::string, std::shared_ptr<ggml_hsa_kernel>>
             kernels; ///< Cached device kernels.
+
+        /// @brief Disables eviction from @ref kernels for the rest of the process.
+        ///
+        /// The cache is per-device, not per-context, so any context on this device can evict
+        /// entries another one's packets still point at. Set when a context tears down with work
+        /// that may not have retired. Plain @c bool like the rest of this struct, which is built
+        /// once and not mutated concurrently.
+        bool kernels_pinned{false};
     };
 
     std::array<device_info, GGML_HSA_MAX_DEVICES> devices = {};
@@ -489,11 +496,8 @@ struct ggml_backend_hsa_context {
 
     /// @brief Set when this backend waited on an event whose work will never complete.
     ///
-    /// A cross-queue @c ggml_backend_hsa_event_wait on a context whose queue has been suspended
-    /// has nothing to wait for, and the void event interface gives it no way to say so. Recording
-    /// it here lets @c ggml_backend_hsa_graph_compute fail instead of computing from inputs the
-    /// producer never wrote. Sticky for the same reason @ref queue_error is: the dependency does
-    /// not become satisfied later, so every subsequent graph on this backend is equally unsound.
+    /// The void event interface cannot report that, so @c ggml_backend_hsa_graph_compute reads it
+    /// instead. Sticky like @ref queue_error: the dependency is never satisfied later.
     std::atomic<bool> dependency_failed{false};
 
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
