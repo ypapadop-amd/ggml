@@ -7,6 +7,7 @@
 
 """Top-level entry point for the matrix multiplication operation (GGML_OP_MUL_MAT)."""
 
+import os
 from functools import partial
 
 from .kernel import Backend, KernelSpec
@@ -102,6 +103,20 @@ def _make_triton_matmul_kernel_spec(
                 msg = f"{label} has batch dimensions {tuple(t.shape[2:])}; 2D only."
                 raise ValueError(msg)
 
+        # Same M/N/K compatibility checks the IRON path makes (gemm.py). Without
+        # them a malformed descriptor compiles a kernel that writes an (m, n)
+        # result into a differently shaped C.
+        a, b_desc, c_desc = input_tensors[0], input_tensors[1], output_tensor
+        if a.shape[1] != c_desc.shape[0]:
+            msg = f"Incompatible M for A and C: {a.shape[1]} != {c_desc.shape[0]}"
+            raise ValueError(msg)
+        if b_desc.shape[1] != c_desc.shape[1]:
+            msg = f"Incompatible N for B and C: {b_desc.shape[1]} != {c_desc.shape[1]}"
+            raise ValueError(msg)
+        if a.shape[0] != b_desc.shape[0]:
+            msg = f"Incompatible K for A and B: {a.shape[0]} != {b_desc.shape[0]}"
+            raise ValueError(msg)
+
         m = input_tensors[0].shape[1]
         k = input_tensors[0].shape[0]
         n = input_tensors[1].shape[1]
@@ -194,15 +209,14 @@ def _make_triton_matmul_kernel_spec(
 def ggml_op_mul_mat(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> list[KernelSpec]:
-    """Return KernelSpecs for GGML_OP_MUL_MAT (IRON primary, Triton fallback).
+    """Return KernelSpecs for GGML_OP_MUL_MAT (IRON only unless Triton opted in).
 
-    IRON is the general path and is tried first; the Triton spec is appended so
-    the build system falls back to it only if IRON compilation fails, mirroring
-    the ADD path. The Triton kernel derives its M/N/K from the tensor shapes and
-    validates them lazily at compile time.
-
-    Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the order so Triton is
-    tried first and IRON becomes the fallback (used to benchmark the Triton path).
+    Only the IRON spec is returned by default. The Triton MUL_MAT is measured
+    wrong on device (see _make_triton_matmul_kernel_spec), so offering it as an
+    automatic fallback would turn an IRON compile failure -- the exact case that
+    selects it -- into a silently incorrect result instead of a clean
+    "unsupported". Set ``GGML_HSA_ENABLE_TRITON_MUL_MAT=1`` to append it for
+    benchmarking or for work on the kernel itself.
 
     Args:
         arch: Target architecture.
@@ -211,10 +225,20 @@ def ggml_op_mul_mat(
         op_params: Operation parameters (unused; shape/dtype come from tensors).
 
     Returns:
-        List of KernelSpecs: IRON first, then Triton as a fallback (reordered by
-        CompilerConfig.compilers / ``GGML_HSA_JIT_COMPILER_ORDER``).
+        The IRON KernelSpec, plus the Triton one when it is explicitly enabled.
+        Order within the list is still subject to CompilerConfig.compilers /
+        ``GGML_HSA_JIT_COMPILER_ORDER``.
     """
+    iron_spec = _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor)
+    if os.environ.get("GGML_HSA_ENABLE_TRITON_MUL_MAT", "0").lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return [iron_spec]
+
     return [
-        _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor),
+        iron_spec,
         _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor),
     ]
