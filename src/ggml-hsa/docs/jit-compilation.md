@@ -156,9 +156,8 @@ configuration — tiles, object FIFOs, compute cores, and DMA sequences.
 | Binary | `-D<OP_NAME>=1` or `-D<OP_NAME>_BROADCAST=1 -DINPUT0_DTYPE=... -DINPUT1_DTYPE=... -DOUTPUT_DTYPE=...` |
 | GEMM | `-DDIM_M=N -DDIM_N=N -DDIM_K=N -D<input_dtype>_<output_dtype>_ONLY -DB_COL_MAJ -DC_COL_MAJ` |
 
-The MLIR module is then lowered through MLIR-AIE passes
-(`--alloc-scheme=basic-sequential`) to produce the final `.pdi` and
-`_insts.bin` files.
+The MLIR module is then lowered through MLIR-AIE passes to produce the final
+`.pdi` and `_insts.bin` files, using MLIR-AIE's default buffer allocator.
 
 ### Triton-XDNA
 
