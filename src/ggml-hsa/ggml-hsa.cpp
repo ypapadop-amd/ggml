@@ -81,6 +81,17 @@ static const std::size_t g_ggml_hsa_dispatch_batch_size =
     static_cast<std::size_t>(ggml_hsa_getenv_int(
         "GGML_HSA_DISPATCH_BATCH_SIZE", 0, 1, std::numeric_limits<std::int64_t>::max()));
 
+/// @brief When set, the padded-GEMM convert/pad and de-pad transforms run on the host instead of
+/// as their own AIE dispatches. Read once from @c GGML_HSA_HOST_PAD at startup.
+///
+/// This exists to measure a tradeoff, not because either side is obviously right. On device the
+/// transforms cost no host round-trip but make the queue alternate kernels, and swapping the
+/// whole-array GEMM overlay in and out is expensive (~2.5 ms on aie2p, far more than either
+/// kernel). On the host they cost two queue drains and a CPU copy, but leave the queue dispatching
+/// one kernel. Which wins depends on the shape.
+static const bool g_ggml_hsa_host_pad =
+    ggml_hsa_getenv_int("GGML_HSA_HOST_PAD", 0, 0, 1) != 0;
+
 /// @brief How long teardown waits for packets that were in flight when the queue was suspended,
 /// in milliseconds. Read once from @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS at startup; 0 means
 /// do not wait at all. See @c ggml_hsa_drain_after_queue_error for why the wait is bounded.
@@ -1094,7 +1105,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // selects convert+pad or pad-only from the source dtype).
     // Gated on the padded-GEMM path itself, not on node.depad: an operand can still need
     // convert+pad on a node whose output happens to land at the padded shape already.
-    if (padded_gemm) {
+    if (padded_gemm && !g_ggml_hsa_host_pad) {
         for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
             if (sources[src_idx].buffer_size == 0) {
                 continue;
@@ -1925,9 +1936,13 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
         } else {
             // A padded source has a different shape from its parent, so scatter the logical
             // sub-block into the (pre-zeroed) padded buffer; otherwise the shapes match and a plain
-            // layout/dtype copy suffices.
+            // layout/dtype copy suffices. Decided per source: node.depad describes the *output*,
+            // and the two can disagree -- a GEMM padded only in K has padded operands and an
+            // unpadded result, which a plain copy would get wrong.
+            const bool src_is_padded =
+                !ggml_are_same_shape(node->src[src_idx], internal_node.src[src_idx]);
             status = ggml_hsa_copy_padded_or_plain(node->src[src_idx], internal_node.src[src_idx],
-                                                   tensor_extra.node.depad);
+                                                   src_is_padded);
         }
         if (status != GGML_STATUS_SUCCESS) {
             GGML_HSA_LOG_ERROR("%s: failed to prepare source %i for tensor \"%s (%s)\"", __func__,
