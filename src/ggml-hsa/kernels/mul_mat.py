@@ -18,9 +18,11 @@ from .triton_kernels.spec_utils import transform_script
 # decompose into fixed blocks; a single whole-matrix block exhausts the shim
 # DMA channels. Both archs have 4 herd rows, so N is fixed and only M varies
 # with the column count -- a larger N on aie2p asks for rows it does not have.
-_DEFAULT_BLOCK_M = 256
-_BLOCK_M_BY_ARCH = {"aie2p": 512}
-_BLOCK_N = 256
+# Only these two archs have a matmul transform script.
+_BLOCK_MN_BY_ARCH = {
+    "aie2": (256, 256),  # 4 herd columns
+    "aie2p": (512, 256),  # 8 herd columns, so twice the M
+}
 # K must also be a power of two; see the check below.
 _MIN_BLOCK_K = 128
 
@@ -126,8 +128,13 @@ def _make_triton_matmul_kernel_spec(
         k = input_tensors[0].shape[0]
         n = input_tensors[1].shape[1]
 
-        block_m = _BLOCK_M_BY_ARCH.get(arch, _DEFAULT_BLOCK_M)
-        block_n = _BLOCK_N
+        if arch not in _BLOCK_MN_BY_ARCH:
+            msg = (
+                f"No Triton MUL_MAT transform script for {arch}; "
+                f"supported: {sorted(_BLOCK_MN_BY_ARCH)}."
+            )
+            raise ValueError(msg)
+        block_m, block_n = _BLOCK_MN_BY_ARCH[arch]
         if m % block_m != 0 or n % block_n != 0:
             msg = (
                 f"M={m} not divisible by {block_m} or N={n} not divisible by "
