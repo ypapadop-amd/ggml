@@ -85,7 +85,6 @@ def compile_iron_kernel(
     insts_path = output_directory / f"{exported_name}_insts.bin"
     compile_mlir_module(
         mlir_module=mlir_module,
-        options=["--alloc-scheme=basic-sequential"],
         insts_path=str(insts_path),
         pdi_path=str(pdi_path),
         verbose=verbose,
