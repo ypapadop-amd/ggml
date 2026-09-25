@@ -56,7 +56,7 @@ def compile_iron_kernel(
     #
     # Within a single build that same existence check is load-bearing, so drop each
     # distinct path exactly once, before the loop: several ExternalFunctions may share one
-    # object file (gemm.py registers zero_fn and matmul_fn against matmul_core_functions.o,
+    # object file (gemm.py registers zero_fn and matmul_fn against one matmul_core_functions_*.o,
     # two symbols in one translation unit). Unlinking inside the loop would delete the
     # object the previous iteration just produced and compile the same source again.
     for object_file_name in {
