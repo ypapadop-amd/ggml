@@ -45,8 +45,18 @@ def elementwise_block_size(n_elements: int, max_block: int = 1024) -> int:
     ``cdiv(n_elements, block)``, so unless the block divides n_elements exactly
     the last program runs off the end of the tensor -- e.g. n_elements=1000
     gives one 1024-lane program that touches 24 elements past the allocation.
-    Rather than silently corrupting memory, reject those shapes here: the caller
-    runs inside a KernelSpec compile function, so the ValueError is caught by
+
+    Masking is not an option: Triton-XDNA cannot compile a masked elementwise
+    kernel. Adding ``mask=offsets < n_elements`` to the load and store crashes
+    aircc ("Assertion 'this->_M_is_engaged()' failed" inside the AIR pipeline,
+    no diagnostic), and it does so even when n_elements is an exact multiple of
+    the block and the mask is a semantic no-op -- so it is the construct, not
+    the shape. Upstream agrees: examples/relu/relu.py and examples/gelu/gelu.py
+    are both unmasked with an unused n_elements constexpr, and their benchmarks
+    only ever sweep exact multiples of BLOCK_SIZE.
+
+    Rejecting the shape is therefore the only safe response. The caller runs
+    inside a KernelSpec compile function, so the ValueError is caught by
     build.py and dispatch falls back to IRON, which has no such restriction.
 
     Args:
