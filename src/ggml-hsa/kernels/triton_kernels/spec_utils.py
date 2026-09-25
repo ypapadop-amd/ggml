@@ -40,24 +40,13 @@ def transform_script(stem: str, arch: str, dtype=None) -> str:
 def elementwise_block_size(n_elements: int, max_block: int = 1024) -> int:
     """Round n_elements up to a power of two, capped at max_block.
 
-    The elementwise Triton kernels (vecadd, relu) apply no bounds mask: every
-    lane of every program loads and stores unconditionally. The launch grid is
-    ``cdiv(n_elements, block)``, so unless the block divides n_elements exactly
-    the last program runs off the end of the tensor -- e.g. n_elements=1000
-    gives one 1024-lane program that touches 24 elements past the allocation.
-
-    Masking is not an option: Triton-XDNA cannot compile a masked elementwise
-    kernel. Adding ``mask=offsets < n_elements`` to the load and store crashes
-    aircc ("Assertion 'this->_M_is_engaged()' failed" inside the AIR pipeline,
-    no diagnostic), and it does so even when n_elements is an exact multiple of
-    the block and the mask is a semantic no-op -- so it is the construct, not
-    the shape. Upstream agrees: examples/relu/relu.py and examples/gelu/gelu.py
-    are both unmasked with an unused n_elements constexpr, and their benchmarks
-    only ever sweep exact multiples of BLOCK_SIZE.
-
-    Rejecting the shape is therefore the only safe response. The caller runs
-    inside a KernelSpec compile function, so the ValueError is caught by
-    build.py and dispatch falls back to IRON, which has no such restriction.
+    The elementwise Triton kernels are unmasked, and the grid is
+    ``cdiv(n_elements, block)``, so a block that does not divide n_elements
+    exactly leaves the last program running off the end of the tensor. Masking
+    is not an alternative -- Triton-XDNA cannot compile a masked elementwise
+    kernel, failing even when the mask is a semantic no-op, and upstream's own
+    examples are unmasked over exact multiples of the block. So reject the
+    shape: the ValueError is caught by build.py, which falls back to IRON.
 
     Args:
         n_elements: Number of elements the kernel covers.

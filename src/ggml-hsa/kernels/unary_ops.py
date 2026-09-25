@@ -56,14 +56,11 @@ def _make_triton_relu_kernel_spec(
 ) -> KernelSpec:
     """Create a TRITON-backend KernelSpec for RELU.
 
-    ACCURACY: the f32 path is NOT bit-accurate. AIE2 has no legal f32 vector max
-    (aievec.max on vector<16xf32> fails to legalize), so relu_<arch>_f32.mlir
-    keeps @cast_bf16_only_ops and the max is computed in bf16, giving a
-    bf16-rounded f32 result: measured on device at n=1024 and n=4096, worst
-    relative error vs the CPU backend is 7.5e-03, i.e. bf16 precision (2^-7),
-    while the bf16 path is exact. The IRON path is exact too. This spec is
-    only ever reached when IRON compilation fails, so it trades accuracy for
-    having a kernel at all; do not select it where f32 precision is required.
+    ACCURACY: the f32 path is not bit-accurate. AIE2 has no legal f32 vector max,
+    so relu_<arch>_f32.mlir keeps @cast_bf16_only_ops and computes the max in
+    bf16, leaving the f32 result rounded to bf16 precision; the bf16 path and
+    IRON are exact. Reached only when IRON fails, so it trades accuracy for
+    having a kernel at all -- do not select it where f32 precision matters.
 
     Args:
         arch: Target architecture.
@@ -98,9 +95,8 @@ def _make_triton_relu_kernel_spec(
             msg = "Non-contiguous tensors detected."
             raise ValueError(msg)
 
-        # The kernel sizes both buffers from the output element count, so a
-        # mismatched input would be read past its end. The IRON path makes the
-        # same check (iron_kernels/unary_ops.py).
+        # Both buffers are sized from the output element count, so a
+        # mismatched input would be read past its end.
         if input_tensors[0].shape != output_tensor.shape:
             msg = (
                 f"Input and output shapes differ: {tuple(input_tensors[0].shape)} "
@@ -111,8 +107,7 @@ def _make_triton_relu_kernel_spec(
         block_size = elementwise_block_size(n_elements)
         grid = (triton.cdiv(n_elements, block_size),)
         device = triton_device(arch)
-        # Contents are never read: the kernel is compiled, not launched, so
-        # these exist only to carry dtype/stride metadata to Triton.
+        # Contents are never read; these carry dtype/stride metadata only.
         x = torch.empty(
             n_elements,
             device=device,

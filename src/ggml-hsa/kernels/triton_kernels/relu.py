@@ -16,11 +16,10 @@ def relu(
 ):
     """Compute Y = max(X, 0), BLOCK_SIZE_N elements per block.
 
-    n_elements is unused: callers must size the grid so that BLOCK_SIZE_N evenly
-    covers the vector, since no bounds mask is applied against it here. A mask
-    is not an option -- Triton-XDNA cannot compile one (see
-    triton_kernels/spec_utils.elementwise_block_size), which is why the caller
-    rejects non-divisible sizes instead.
+    n_elements is unused: this kernel applies no bounds mask, so callers must
+    size the grid so BLOCK_SIZE_N covers the vector exactly. A mask is not an
+    option -- Triton-XDNA cannot compile one (see
+    spec_utils.elementwise_block_size), so the caller rejects other sizes.
 
     Args:
         X: Pointer to the input vector.

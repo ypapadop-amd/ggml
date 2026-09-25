@@ -119,18 +119,11 @@ def _get_compiler(backend: Backend, arch: str) -> Callable:
         from triton_kernels.utils import is_npu_arch
 
         if is_npu_arch(arch):
-            # aie.iron must be imported before triton: both load LLVM, and
-            # loading triton first makes a later `import aie.iron` abort with
-            # "LLVM ERROR: inconsistency in registered CommandLine options".
-            # This has to happen here rather than inside build_triton, which
-            # imports triton at module scope and is therefore already too late.
-            #
-            # NPU only: the gfx* path needs no AIE compiler, so a GPU-only
-            # Triton install must not be made to depend on aie being present.
-            #
-            # Today it is a no-op -- dispatch functions build their IRON spec
-            # first, which imports aie -- but it keeps the order from depending
-            # on that.
+            # aie.iron must load before triton or a later import aborts on an
+            # LLVM CommandLine clash; build_triton imports triton at module
+            # scope, so the order has to be set here. NPU only, since the gfx*
+            # path needs no AIE compiler. A no-op today (dispatch builds the
+            # IRON spec first) but it stops that being load-bearing.
             import aie.iron  # noqa: F401
 
         from build_triton import compile_triton_kernel
