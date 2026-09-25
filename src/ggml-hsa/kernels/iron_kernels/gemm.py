@@ -98,12 +98,12 @@ def select_gemm_tile(
         N % (n * n_aie_cols) == 0;
       * even work distribution: (M // m) * (N // n) is a multiple of the number
         of cores, so every core gets the same number of tiles;
-      * the per-core L1 budget for the double-buffered A/B/C tiles.
+      * the per-core L1 budget for the double-buffered A/B/C tiles;
+      * the shim-DMA buffer-descriptor stride range, which the column-major B/C
+        transfers cross for large M/K (a hard aiecc failure, not a miscompute).
 
     Ties are broken toward a larger output tile (m * n, which amortizes the C
-    zero-init and drain), then a larger k. Falls back to the smallest
-    microkernel-granular tile when no candidate satisfies the array constraints
-    (the caller's asserts then apply, mirroring the previous fixed behavior).
+    zero-init and drain), then a larger k.
 
     Args:
         dev: Target device ("npu" or "npu2").
@@ -117,6 +117,10 @@ def select_gemm_tile(
 
     Returns:
         A (m, k, n) tuple of per-core tile dimensions.
+
+    Raises:
+        ValueError: If no tile satisfies every constraint, naming the ones that
+            eliminated even the smallest candidate.
     """
     n_aie_cols = 8 if dev == "npu2" else 4
     n_cores = n_aie_rows * n_aie_cols
@@ -155,9 +159,46 @@ def select_gemm_tile(
     if best_tile is not None:
         return best_tile
 
-    # No array-valid granular tile fit the budget; fall back to the smallest
-    # microkernel-granular tile and let my_matmul's asserts report the mismatch.
-    return (gm, gk, gn)
+    # No candidate satisfied every constraint. Raise rather than returning the
+    # granular minimum: my_matmul only re-checks microkernel granularity and array
+    # tiling, not the L1 budget or the shim-DMA stride, so a minimum tile that
+    # happens to pass those two sails through and fails deep inside aiecc ("Stride
+    # N exceeds the [1:1048576] range") with nothing left to explain why. Callers
+    # treat this as "kernel not supported" and fall back to the CPU.
+    reasons = []
+    if M < gm or K < gk or N < gn:
+        reasons.append(
+            f"problem is smaller than the microkernel granularity: "
+            f"(M,N,K)=({M},{N},{K}) vs minimum (m,k,n)=({gm},{gk},{gn})"
+        )
+    if M % (gm * n_aie_rows) or K % gk or N % (gn * n_aie_cols):
+        reasons.append(
+            f"not tileable across the {n_aie_rows}x{n_aie_cols} herd even at the "
+            f"minimum tile ({gm},{gk},{gn}): need M%{gm * n_aie_rows}==0, "
+            f"K%{gk}==0, N%{gn * n_aie_cols}==0"
+        )
+    if M * gn * n_aie_cols > DMA_MAX_STRIDE or gn * n_aie_cols * K > DMA_MAX_STRIDE:
+        reasons.append(
+            f"column-major shim-DMA stride exceeds {DMA_MAX_STRIDE} even at the "
+            f"minimum n={gn}: M*n*cols={M * gn * n_aie_cols}, "
+            f"n*cols*K={gn * n_aie_cols * K}"
+        )
+    if working_set(gm, gk, gn) > L1_TILE_BUDGET_BYTES:
+        reasons.append(
+            f"minimum-tile working set {working_set(gm, gk, gn)} B exceeds the "
+            f"per-core L1 budget {L1_TILE_BUDGET_BYTES} B"
+        )
+    if not reasons:
+        reasons.append(
+            "no (m,k,n) satisfied every constraint simultaneously, though the "
+            "minimum tile satisfies each one individually"
+        )
+    msg = (
+        f"No valid GEMM tile for {dev} MxNxK={M}x{N}x{K} "
+        f"({np.dtype(dtype_in).name}->{np.dtype(dtype_out).name}): "
+        + "; ".join(reasons)
+    )
+    raise ValueError(msg)
 
 
 def main():
@@ -826,8 +867,10 @@ def create_mat_mul_external_functions(
         # Pick the largest valid per-core tile for this problem size instead of a
         # fixed small tile: a 16x16x16 tile leaves the 4x8 herd DMA/sync-bound.
         # select_gemm_tile honors the microkernel divisibility, array tiling,
-        # even core distribution, and the L1 budget, so awkward shapes still get
-        # a valid (small) tile while large square GEMMs get much bigger ones.
+        # even core distribution, the L1 budget and the shim-DMA stride range, so
+        # awkward shapes still get a valid (small) tile while large square GEMMs
+        # get much bigger ones. Shapes with no valid tile at all raise ValueError,
+        # which the JIT reports as an unsupported kernel (CPU fallback).
         dtype_in = input_tensors[0].dtype
         dtype_out = output_tensor.dtype
         r, s, t = resolve_mac_dims("npu2", dtype_to_str(dtype_in))

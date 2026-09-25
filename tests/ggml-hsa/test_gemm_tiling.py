@@ -7,6 +7,7 @@ whole-array GEMM design relies on, so a bad tile is caught here instead of as a
 miscompute or an ``aiecc`` failure on device.
 """
 
+import math
 import sys
 from pathlib import Path
 
@@ -66,7 +67,7 @@ def _tile(dev, M, N, K, dtype_out=F32):
 
 
 def _granular_minimum(dev):
-    """Return the smallest microkernel-granular tile, i.e. what the fallback returns."""
+    """Return the smallest microkernel-granular tile the search can consider."""
     r, s, t = resolve_mac_dims(dev, "bf16")
     return 2 * r, s, 2 * t
 
@@ -187,33 +188,70 @@ def test_tile_selection_is_deterministic(dev):
         assert _tile(dev, 1024, 1024, 1024) == first
 
 
-@pytest.mark.parametrize("dev,n_aie_cols", DEVICES)
-def test_fallback_past_the_dma_stride_cliff(dev, n_aie_cols):
-    """Past the DMA-stride cliff no valid tile exists and the minimum is returned.
+def _stride_cliff_m(dev, n_aie_cols):
+    """Smallest square M=N=K with no valid tile, where only the stride bound fails.
 
-    This is the *reachable* fallback: the shim stride bound M * n * n_aie_cols
-    caps M once n is at its granular minimum, so a large enough square shape
-    excludes every candidate. Note the returned tile still violates that same
-    bound -- the selector hands back a knowingly-invalid tile and leaves
-    my_matmul's asserts to report it, rather than raising. This test pins the
-    current behaviour; raising a specific error instead would be the better
-    contract, but that is a change to select_gemm_tile, not to this test.
+    Rounded up to the LCM of every array-tiling granularity so M, N and K are all
+    tileable at the minimum tile -- otherwise the shape would be rejected for two
+    reasons at once and the test could not attribute the failure to the stride.
     """
     gm, gk, gn = _granular_minimum(dev)
-    # Smallest M that trips the stride bound even at the minimum n, rounded up to
-    # keep it granular for the array-tiling constraints.
+    step = math.lcm(gm * N_AIE_ROWS, gk, gn * n_aie_cols)
     m_cliff = DMA_MAX_STRIDE // (gn * n_aie_cols) + 1
-    m_cliff = -(-m_cliff // (gm * N_AIE_ROWS)) * (gm * N_AIE_ROWS)
-    assert select_gemm_tile(
-        dev,
-        m_cliff,
-        m_cliff,
-        m_cliff,
-        BF16,
-        BF16,
-        *resolve_mac_dims(dev, "bf16"),
-        max_tile=MAX_TILE,
-    ) == (gm, gk, gn)
+    return -(-m_cliff // step) * step
+
+
+@pytest.mark.parametrize("dev,n_aie_cols", DEVICES)
+def test_raises_past_the_dma_stride_cliff(dev, n_aie_cols):
+    """A shape with no valid tile must raise, not return an invalid one.
+
+    The shim stride bound M * n * n_aie_cols caps M once n is at its granular
+    minimum, so a large enough shape excludes every candidate. Returning the
+    minimum tile anyway would be silently wrong: my_matmul re-checks only
+    microkernel granularity and array tiling -- which that tile satisfies -- so
+    it would reach aiecc and fail there with "Stride N exceeds the [1:1048576]
+    range" instead of here, where the reason is still known.
+    """
+    m_cliff = _stride_cliff_m(dev, n_aie_cols)
+    with pytest.raises(ValueError, match="shim-DMA stride exceeds"):
+        select_gemm_tile(
+            dev,
+            m_cliff,
+            m_cliff,
+            m_cliff,
+            BF16,
+            F32,
+            *resolve_mac_dims(dev, "bf16"),
+            max_tile=MAX_TILE,
+        )
+
+
+@pytest.mark.parametrize("dev,n_aie_cols", DEVICES)
+def test_stride_cliff_minimum_tile_would_pass_my_matmul_asserts(dev, n_aie_cols):
+    """The rejected shape is exactly the dangerous kind: the old fallback was silent.
+
+    Pins the reason the selector must raise. At the stride cliff the granular
+    minimum still satisfies every constraint my_matmul asserts, so the previous
+    behaviour of returning it produced a design that looked valid right up until
+    aiecc rejected the stride.
+    """
+    gm, gk, gn = _granular_minimum(dev)
+    m_cliff = _stride_cliff_m(dev, n_aie_cols)
+    # my_matmul's re-checks: microkernel granularity and array tiling only.
+    assert m_cliff % (gm * N_AIE_ROWS) == 0
+    assert m_cliff % gk == 0
+    assert m_cliff % (gn * n_aie_cols) == 0
+    # ...yet the stride the design would emit is over the hardware limit.
+    assert m_cliff * gn * n_aie_cols > DMA_MAX_STRIDE
+
+
+@pytest.mark.parametrize("dev", DEVICE_NAMES)
+def test_raises_when_problem_smaller_than_granularity(dev):
+    """A problem below the microkernel granularity has no tile and must raise."""
+    with pytest.raises(ValueError, match="smaller than the microkernel granularity"):
+        select_gemm_tile(
+            dev, 1, 1, 1, BF16, F32, *resolve_mac_dims(dev, "bf16"), max_tile=MAX_TILE
+        )
 
 
 def test_resolve_mac_dims_bf16_emulation_variants():
