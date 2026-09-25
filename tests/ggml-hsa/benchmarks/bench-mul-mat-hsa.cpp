@@ -110,11 +110,19 @@ void bench_mul_mat(benchmark::State & state) {
     }
 
     // execute
+    //
+    // ggml_backend_graph_compute only *flushes* on the HSA backend (it rings the doorbell and
+    // returns; see ggml_hsa_flush_dispatches), so without an explicit synchronize the loop times
+    // packet submission plus whatever queue backpressure happens to build up -- not the device
+    // work. That under-reports any shape whose queue never saturates, and it is not comparable to
+    // the CPU backend, which is synchronous. Synchronizing per iteration makes each iteration one
+    // complete graph execution on every backend.
     for (auto _ : state) {
         if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
             state.SkipWithError("Graph compute error.");
             break;
         }
+        ggml_backend_synchronize(backend);
     }
 
     const double flops_per_iter =

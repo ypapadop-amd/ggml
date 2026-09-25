@@ -77,6 +77,10 @@ void bench_depad(benchmark::State & state) {
             state.SkipWithError("Dispatch error.");
             break;
         }
+        // graph_compute only flushes on this backend; without this the loop times submission
+        // rather than the device work (a single-node graph never builds enough queue
+        // backpressure to hide that).
+        ggml_backend_synchronize(backend);
     }
 
     // Elements copied per iteration (the dense, non-padded sub-block).
@@ -93,6 +97,7 @@ void bench_depad(benchmark::State & state) {
 #define DEPAD_ARGS(bench)                                                                          \
     BENCHMARK(bench)                                                                               \
         ->Args({500, 500, 512, 512})   /* mnist C c1 */                                            \
+        ->Args({512, 512, 512, 512})   /* tile-aligned: nothing to de-pad */                                            \
         ->Args({10, 500, 128, 512})    /* mnist C c2 */                                            \
         ->Args({500, 4, 512, 128})     /* few wide rows */                                         \
         ->Args({1024, 1024, 1024, 1024})                                                           \
