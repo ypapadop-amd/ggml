@@ -59,7 +59,9 @@ def _make_triton_relu_kernel_spec(
     ACCURACY: the f32 path is NOT bit-accurate. AIE2 has no legal f32 vector max
     (aievec.max on vector<16xf32> fails to legalize), so relu_<arch>_f32.mlir
     keeps @cast_bf16_only_ops and the max is computed in bf16, giving a
-    bf16-rounded f32 result (NMSE ~1.2e-5). The IRON path is exact. This spec is
+    bf16-rounded f32 result: measured on device at n=1024 and n=4096, worst
+    relative error vs the CPU backend is 7.5e-03, i.e. bf16 precision (2^-7),
+    while the bf16 path is exact. The IRON path is exact too. This spec is
     only ever reached when IRON compilation fails, so it trades accuracy for
     having a kernel at all; do not select it where f32 precision is required.
 
