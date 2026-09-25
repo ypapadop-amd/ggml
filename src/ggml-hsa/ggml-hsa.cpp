@@ -772,6 +772,12 @@ static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
  * The output node keeps f32 but needs its own padded temporary storage plus a de-pad copy back into
  * the (smaller) parent tensor, flagged via @c node_t::depad.
  *
+ * Each of the three rewrites is skipped when the parent tensor already has the target dtype and
+ * shape, which leaves that tensor pointing at the parent buffer (@c buffer_size stays 0) and elides
+ * the corresponding convert/pad/de-pad dispatch. This is the common case for GEMMs whose dimensions
+ * are already tile multiples: without it such a node spends a third of its time copying operands
+ * into identically-shaped, identically-typed buffers.
+ *
  * Only the contiguous, non-batched, non-permuted f32 x f32 case is handled (the shapes exercised by
  * MNIST). Returns @c false for anything else, leaving the node untouched so the caller falls back
  * to the generic path.
@@ -831,34 +837,50 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     const std::int64_t Mpad = GGML_PAD(M, tile * n_aie_rows);
     const std::int64_t Npad = GGML_PAD(N, tile * n_aie_cols);
 
-    // rewrite sources to padded bf16; only sources that arrive as f32 need a dtype conversion,
+    // Rewrite sources to padded bf16; only sources that arrive as f32 need a dtype conversion,
     // bf16 sources are just zero-padded to the tile multiples (handled by the pre-processing
     // kernel below, which is selected from the parent tensor's own dtype).
-    a.type = GGML_TYPE_BF16;
-    a.ne[0] = Kpad;
-    a.ne[1] = Mpad;
-    ggml_hsa_set_contiguous_strides(a);
-    sources[0].tensor.data = nullptr;
-    sources[0].buffer_size = GGML_PAD(ggml_nbytes(&a), dev_info.alignment);
+    //
+    // An operand that is *already* bf16 and already a multiple of the tile factors needs neither,
+    // so it keeps pointing at the parent buffer: leaving buffer_size at 0 skips the internal
+    // allocation, the CONVERT_PAD dispatch, and (when no operand needs one) the whole source
+    // synchronization. Redirecting it anyway would cost a full-size device copy into an
+    // identically-shaped, identically-typed buffer -- measured at ~350 us per 512x512 operand on
+    // aie2p, i.e. a third of a 512^3 bf16 GEMM spent copying data to itself.
+    if (a.type != GGML_TYPE_BF16 || a.ne[0] != Kpad || a.ne[1] != Mpad) {
+        a.type = GGML_TYPE_BF16;
+        a.ne[0] = Kpad;
+        a.ne[1] = Mpad;
+        ggml_hsa_set_contiguous_strides(a);
+        sources[0].tensor.data = nullptr;
+        sources[0].buffer_size = GGML_PAD(ggml_nbytes(&a), dev_info.alignment);
+    }
 
-    b.type = GGML_TYPE_BF16;
-    b.ne[0] = Kpad;
-    b.ne[1] = Npad;
-    ggml_hsa_set_contiguous_strides(b);
-    sources[1].tensor.data = nullptr;
-    sources[1].buffer_size = GGML_PAD(ggml_nbytes(&b), dev_info.alignment);
+    if (b.type != GGML_TYPE_BF16 || b.ne[0] != Kpad || b.ne[1] != Npad) {
+        b.type = GGML_TYPE_BF16;
+        b.ne[0] = Kpad;
+        b.ne[1] = Npad;
+        ggml_hsa_set_contiguous_strides(b);
+        sources[1].tensor.data = nullptr;
+        sources[1].buffer_size = GGML_PAD(ggml_nbytes(&b), dev_info.alignment);
+    }
 
-    // rewrite output to a padded f32 temporary; it must be de-padded back into the parent tensor.
+    // Rewrite the output to a padded f32 temporary that must be de-padded back into the parent.
     // The GEMM microkernel always produces f32, and HSA_DEPAD always consumes an f32 source, so the
     // temporary is f32 even when the parent has been retyped to bf16 by graph_optimize (the de-pad
     // then narrows f32->bf16 into the bf16 parent in one pass).
-    dst.type = GGML_TYPE_F32;
-    dst.ne[0] = Mpad;
-    dst.ne[1] = Npad;
-    ggml_hsa_set_contiguous_strides(dst);
-    node.tensor.data = nullptr;
-    node.buffer_size = GGML_PAD(ggml_nbytes(&dst), dev_info.alignment);
-    node.depad = true;
+    //
+    // When the parent is already f32 at exactly the padded shape there is nothing to de-pad and
+    // nothing to narrow, so the kernel writes straight into it.
+    if (dst.type != GGML_TYPE_F32 || dst.ne[0] != Mpad || dst.ne[1] != Npad) {
+        dst.type = GGML_TYPE_F32;
+        dst.ne[0] = Mpad;
+        dst.ne[1] = Npad;
+        ggml_hsa_set_contiguous_strides(dst);
+        node.tensor.data = nullptr;
+        node.buffer_size = GGML_PAD(ggml_nbytes(&dst), dev_info.alignment);
+        node.depad = true;
+    }
 
     return true;
 }
@@ -944,7 +966,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // F32 MUL_MAT is handled specially: the operands are converted to bf16 and zero-padded to the
     // GEMM tile multiples. This fully sets up the internal nodes (dtype, shape, buffer sizes,
     // depad), so the generic dtype/layout/flatten handling below is skipped.
-    if (ggml_hsa_prepare_mul_mat_f32(dev_info, node, sources)) {
+    const bool padded_gemm = ggml_hsa_prepare_mul_mat_f32(dev_info, node, sources);
+    if (padded_gemm) {
         // A source that is a graph-constant leaf (a weight/bias: op == GGML_OP_NONE, not a graph
         // input) has contents that never change across dispatches, so its converted+padded (or
         // just padded) form can be produced once into the persistent internal buffer and reused.
@@ -1045,7 +1068,9 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // needs no dtype conversion but still needs zero-padding to the tile multiples, so build the
     // pre-processing kernel for every source that has a padded internal buffer (HSA_CONVERT_PAD
     // selects convert+pad or pad-only from the source dtype).
-    if (node.depad) {
+    // Gated on the padded-GEMM path itself, not on node.depad: an operand can still need
+    // convert+pad on a node whose output happens to land at the padded shape already.
+    if (padded_gemm) {
         for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
             if (sources[src_idx].buffer_size == 0) {
                 continue;
@@ -1054,8 +1079,10 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_CONVERT_PAD,
                                                 *parent_tensor.src[src_idx], sources[src_idx].tensor);
         }
-        node.postprocess_kernel = ggml_hsa_build_transform_kernel(
-            dev_info, GGML_HSA_OP_DEPAD, node.tensor, parent_tensor);
+        if (node.depad) {
+            node.postprocess_kernel = ggml_hsa_build_transform_kernel(
+                dev_info, GGML_HSA_OP_DEPAD, node.tensor, parent_tensor);
+        }
     }
 
     // Decide how each group (sources, output) synchronizes its parent<->internal transformations

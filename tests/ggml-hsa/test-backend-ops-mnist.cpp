@@ -2542,6 +2542,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     std::vector<std::unique_ptr<test_case>> test_cases;
     std::default_random_engine rng(0);
 
+    // Tile-aligned GEMMs: every dimension is already a multiple of the aie2p padding factors
+    // (K%16, M%64, N%128), so the padded-GEMM path rewrites neither operand nor the result and the
+    // kernel reads/writes the parent buffers directly. The MNIST shapes below all need padding, so
+    // without these the no-rewrite path has no correctness coverage at all.
+    test_cases.emplace_back(
+        new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 512, 512, 512, {1, 1}, {1, 1}));
+    test_cases.emplace_back(
+        new test_mul_mat(GGML_TYPE_BF16, GGML_TYPE_BF16, 512, 512, 512, {1, 1}, {1, 1}));
+
     // MNIST-MLP layer tests (FP32, batch=500)
     // FC1: images [784, 500] x fc1_weight [784, 500] -> [500, 500]
     test_cases.emplace_back(
