@@ -136,14 +136,17 @@ def _make_triton_matmul_kernel_spec(
         # transform script, not via operand strides.
         #
         # MEASURED ON DEVICE (aie2/NPU1): this kernel does NOT produce correct
-        # results. For bf16 256x256x256 the Triton PDI ran on the NPU and 35086
-        # of 65536 output elements were off by more than 5% (worst relative
-        # error 0.47) against the CPU backend. The output does not match a
-        # simple transpose either, so the layout above is a necessary but not
-        # sufficient explanation. Until that is resolved this spec should be
-        # treated as non-functional: it is reached only when IRON fails, and
-        # when it is reached it turns a clean "unsupported" into a silently
-        # wrong answer.
+        # results. bf16 256x256x256, same test and build tree, only the
+        # dispatch order changed:
+        #   GGML_HSA_JIT_COMPILER_ORDER=iron,triton -> 0/65536 elements off,
+        #                                              worst rel 5.8e-07
+        #   GGML_HSA_JIT_COMPILER_ORDER=triton,iron -> 35086/65536 off,
+        #                                              worst rel 0.47
+        # So the surrounding machinery is fine and this kernel is the fault.
+        # The output does not match a simple transpose either, so the layout
+        # above is necessary but not sufficient to explain it. Treat this spec
+        # as non-functional: when it is reached it turns a clean "unsupported"
+        # into a silently wrong answer.
         a = torch.empty(
             (m, k), device=device, dtype=numpy_dtype_to_torch(input_tensors[0].dtype)
         )

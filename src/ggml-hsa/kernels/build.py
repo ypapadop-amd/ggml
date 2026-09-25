@@ -114,6 +114,15 @@ def _get_compiler(backend: Backend) -> Callable:
 
         return compile_iron_kernel
     if backend.name == Backend.TRITON.name:
+        # aie.iron must be imported before triton: both load LLVM, and loading
+        # triton first makes a later `import aie.iron` abort the process with
+        # "LLVM ERROR: inconsistency in registered CommandLine options". This
+        # has to happen here rather than inside build_triton, which imports
+        # triton at module scope and is therefore already too late.
+        #
+        # Today it is a no-op -- dispatch functions build their IRON spec first,
+        # which imports aie -- but it keeps the order from depending on that.
+        import aie.iron  # noqa: F401
         from build_triton import compile_triton_kernel
 
         return compile_triton_kernel
