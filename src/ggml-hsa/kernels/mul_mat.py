@@ -29,6 +29,8 @@ from .triton_kernels.spec_utils import transform_script
 _DEFAULT_BLOCK_M = 256
 _BLOCK_M_BY_ARCH = {"aie2p": 512}
 _BLOCK_N = 256
+# Smallest K the transform tiling accepts; K must also be a power of two.
+_MIN_BLOCK_K = 128
 
 
 def _make_iron_matmul_kernel_spec(
@@ -143,6 +145,19 @@ def _make_triton_matmul_kernel_spec(
             msg = (
                 f"M={m} not divisible by {block_m} or N={n} not divisible by "
                 f"{block_n} for {arch}."
+            )
+            raise ValueError(msg)
+
+        # K is constrained too: the transform tiles the packed K dim by 8
+        # (= 64 raw elements) and the kernel loads exactly k unmasked. The
+        # usable set is narrower than "divisible by 64" -- swept on aie2 at
+        # M=N=256, K in {128, 256, 512} compiles, while 32 and 64 fail in aircc
+        # and 96, 192, 320 and 384 fail in Triton itself (tl.dot needs a
+        # power-of-two K). So require a power of two, at least 128.
+        if k < _MIN_BLOCK_K or (k & (k - 1)) != 0:
+            msg = (
+                f"K={k} must be a power of two >= {_MIN_BLOCK_K} for the "
+                f"Triton MUL_MAT."
             )
             raise ValueError(msg)
 
