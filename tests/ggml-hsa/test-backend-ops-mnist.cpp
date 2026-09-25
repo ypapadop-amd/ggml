@@ -2643,6 +2643,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                                               GGML_TYPE_F32, {1, 1}, 1.0f, 0.0f));
     // MNIST-MLP: argmax of logits [10, 500]
     test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {10, 500, 1, 1}));
+    // MNIST-MLP: FC1 ReLU [500, 500]
+    test_cases.emplace_back(new test_unary(GGML_UNARY_OP_RELU, GGML_TYPE_F32, {500, 500, 1, 1}));
+    // MNIST-MLP: FC2 bias broadcast add [10, 500] + [10]
+    test_cases.emplace_back(
+        new test_bin_bcast(ggml_add, GGML_TYPE_F32, {10, 1, 1, 1}, {1, 500, 1, 1}));
+    // MNIST-MLP: cross entropy loss on logits [10, 500]
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 500, 1, 1}));
 
     // MNIST-CNN: Conv1 [28, 28, 1, 500] x [3, 3, 1, 8], stride=1, pad=1
     test_cases.emplace_back(
