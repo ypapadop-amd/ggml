@@ -166,18 +166,30 @@ def _make_triton_matmul_kernel_spec(
         # Expressing the GGML layout needs the transpose handled inside the
         # transform script, not via operand strides.
         #
-        # MEASURED ON DEVICE (aie2/NPU1): this kernel does NOT produce correct
-        # results. bf16 256x256x256, same test and build tree, only the
-        # dispatch order changed:
-        #   GGML_HSA_JIT_COMPILER_ORDER=iron,triton -> 0/65536 elements off,
-        #                                              worst rel 5.8e-07
-        #   GGML_HSA_JIT_COMPILER_ORDER=triton,iron -> 35086/65536 off,
-        #                                              worst rel 0.47
-        # So the surrounding machinery is fine and this kernel is the fault.
-        # The output does not match a simple transpose either, so the layout
-        # above is necessary but not sufficient to explain it. Treat this spec
-        # as non-functional: when it is reached it turns a clean "unsupported"
-        # into a silently wrong answer.
+        # MEASURED ON DEVICE (aie2/NPU1), bf16 256x256x256. Against GGML
+        # buffers this spec is wrong -- 35086/65536 elements off, worst rel
+        # 0.47, where IRON on the same test and build tree gives 0/65536 off --
+        # but the arithmetic is sound. Fed operands laid out the way the kernel
+        # actually reads them (A as [M,K], B as [K,N], C as [M,N], all
+        # row-major), the same PDI returns 0/65536 off at worst rel 5.6e-07.
+        # The only defect is the operand layout.
+        #
+        # It cannot be fixed from here. The GGML layout needs a transposed
+        # operand, i.e. a dimension of stride 1 element, and for bf16 that is
+        # 2 bytes while the shim DMA requires strides divisible by 4. Verified
+        # by bisection: the identical design with a 2-element (4-byte) stride
+        # compiles, the 1-element (2-byte) one does not. Upstream's transposed
+        # example avoids this only by being f32, where 1 element is 4 bytes.
+        #
+        # The fix is to hand the kernel contiguous operands. Reassociating as
+        # C_stored[n][m] = sum_k B_stored[n][k] * A_stored[m][k] leaves src1 and
+        # dst contiguous and needs only src0 transposed -- and src0 is the
+        # weight matrix, which is constant, so it can be transposed once in the
+        # backend's pre-processing pass rather than per dispatch. That is a
+        # backend change, not a kernel one.
+        #
+        # Until then treat this spec as non-functional: when it is reached it
+        # turns a clean "unsupported" into a silently wrong answer.
         a = torch.empty(
             (m, k), device=device, dtype=numpy_dtype_to_torch(input_tensors[0].dtype)
         )
