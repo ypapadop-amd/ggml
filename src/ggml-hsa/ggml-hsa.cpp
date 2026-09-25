@@ -1054,8 +1054,18 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
                          ggml_hsa_drain_after_queue_error(*this);
 
     if (!drained) {
+        // The kernarg pool is a member, so it would otherwise be freed when this destructor
+        // returns, while an unretired packet's kernarg_address still points into it. Leak it
+        // alongside the signal and the kernels.
+        //
+        // The queue itself is still destroyed below, and its ring holds those same packets. That
+        // is deliberate but not free: leaking a suspended queue would hold its hardware context
+        // for the life of the process and could starve later queue creation, which is a concrete
+        // cost against a hazard that this backend's synchronous submit path cannot actually
+        // produce (see ggml_hsa_flush_dispatches).
+        kernargs.leak();
         GGML_HSA_LOG_WARN("%s: work still in flight on the suspended queue after %lld ms; leaking "
-                          "the dispatch signal and its kernels",
+                          "the dispatch signal, its kernels and the kernarg pool",
                           __func__,
                           static_cast<long long>(g_ggml_hsa_queue_error_drain_timeout.count()));
     } else {

@@ -302,6 +302,16 @@ class ggml_hsa_kernarg_pool {
         return static_cast<std::byte *>(m_buffer.get()) + index * m_slot_size;
     }
 
+    /**
+     * @brief Abandons the backing buffer instead of freeing it.
+     *
+     * Every packet stores a @c kernarg_address pointing into this buffer, so it may only be freed
+     * once no packet can still read it. Teardown after a suspended queue cannot establish that
+     * within a bounded wait, and leaking storage that lives until process exit is the lesser evil
+     * against handing the device freed memory. See the @ref ggml_backend_hsa_context destructor.
+     */
+    void leak() { static_cast<void>(m_buffer.release()); }
+
   private:
     ggml_hsa_unique_ptr<void> m_buffer; ///< Backing storage.
     std::size_t m_slot_size{};          ///< Size of each slot in bytes (padded to alignment).
