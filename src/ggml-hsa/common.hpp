@@ -129,6 +129,21 @@ void ggml_hsa_error(
     } while (false)
 
 /**
+ * @brief Checks if @p status is an error code and logs a warning.
+ *
+ * For cleanup paths that cannot abort or throw: a destructor, or teardown after the queue was
+ * already suspended, where the release call is expected to be able to fail and a crash would
+ * replace a reportable error with one.
+ */
+#define GGML_HSA_CHECK_WARN(status)                                                                \
+    do {                                                                                           \
+        auto status_ = (status);                                                                   \
+        if (status_ != HSA_STATUS_SUCCESS)                                                         \
+            GGML_HSA_LOG_WARN("%s: %s failed: %s", __func__, #status,                              \
+                              ggml_hsa_get_status_string(status_));                                \
+    } while (false)
+
+/**
  * @brief Checks if @p status is an error code and throws an exception.
  */
 #define GGML_HSA_CHECK_THROW(status)                                                               \
@@ -287,6 +302,15 @@ class ggml_hsa_kernarg_pool {
         return static_cast<std::byte *>(m_buffer.get()) + index * m_slot_size;
     }
 
+    /**
+     * @brief Abandons the backing buffer instead of freeing it.
+     *
+     * Every packet's @c kernarg_address points into this buffer, so it may only be freed once no
+     * packet can read it. Teardown after a suspended queue cannot establish that within a bounded
+     * wait, so it leaks instead. See the @ref ggml_backend_hsa_context destructor.
+     */
+    void leak() { static_cast<void>(m_buffer.release()); }
+
   private:
     ggml_hsa_unique_ptr<void> m_buffer; ///< Backing storage.
     std::size_t m_slot_size{};          ///< Size of each slot in bytes (padded to alignment).
@@ -347,6 +371,14 @@ struct ggml_hsa_device_info {
         bool substitute_fp16_bf16{false};  ///< Use BF16 when FP16 is requested.
         std::unordered_map<std::string, std::shared_ptr<ggml_hsa_kernel>>
             kernels; ///< Cached device kernels.
+
+        /// @brief Disables eviction from @ref kernels for the rest of the process.
+        ///
+        /// The cache is per-device, not per-context, so any context on this device can evict
+        /// entries another one's packets still point at. Set when a context tears down with work
+        /// that may not have retired. Plain @c bool like the rest of this struct, which is built
+        /// once and not mutated concurrently.
+        bool kernels_pinned{false};
     };
 
     std::array<device_info, GGML_HSA_MAX_DEVICES> devices = {};
@@ -462,6 +494,12 @@ struct ggml_backend_hsa_context {
     /// @brief First error reported by the queue's error callback, or @c HSA_STATUS_SUCCESS.
     std::atomic<hsa_status_t> queue_error{HSA_STATUS_SUCCESS};
 
+    /// @brief Set when this backend waited on an event whose work will never complete.
+    ///
+    /// The void event interface cannot report that, so @c ggml_backend_hsa_graph_compute reads it
+    /// instead. Sticky like @ref queue_error: the dependency is never satisfied later.
+    std::atomic<bool> dependency_failed{false};
+
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 
     ggml_backend_hsa_context(const ggml_backend_hsa_context &) = delete;
@@ -477,8 +515,12 @@ struct ggml_backend_hsa_context {
  * @brief Waits for all dispatched kernels to finish.
  *
  * @param[in] ctx backend context
+ * @retval GGML_STATUS_SUCCESS the queue drained; the device is idle and its buffers are safe to
+ *         read on the host
+ * @retval GGML_STATUS_FAILED  the queue is suspended, so the work this waited on did not run and
+ *         never will. Nothing was waited for: callers must propagate rather than read results
  */
-void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
+[[nodiscard]] ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
 
 /**
  * @brief Rings the doorbell for any packets accumulated since the last ring.
@@ -487,6 +529,12 @@ void ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
  * @ref ggml_backend_hsa_context::dispatch_batch_size packets accumulate, or a synchronization
  * point forces a flush. Submits pending packets for processing; does @e not wait for completion.
  *
+ * This is the backend's only doorbell ring, and it refuses to ring a suspended queue, so no caller
+ * can submit to one.
+ *
  * @param[in] ctx backend context
+ * @retval GGML_STATUS_SUCCESS pending packets were submitted
+ * @retval GGML_STATUS_FAILED  the queue is suspended, either from an earlier failure or from this
+ *         submission; the pending packets did not run
  */
-void ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx);
+[[nodiscard]] ggml_status ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx);

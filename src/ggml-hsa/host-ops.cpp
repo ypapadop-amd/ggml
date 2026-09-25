@@ -296,7 +296,9 @@ ggml_status ggml_hsa_compute_dup(ggml_backend_hsa_context & ctx, ggml_tensor * t
         return GGML_STATUS_SUCCESS;
     }
 
-    ggml_hsa_wait_dispatches(ctx);
+    if (const ggml_status status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
 
     if (ggml_is_contiguous(dst)) {
         return ggml_hsa_assign(ggml_hsa_copy_tensor_to_cont_tensor_f{}, src, dst);
@@ -312,7 +314,9 @@ ggml_status ggml_hsa_compute_cpy(ggml_backend_hsa_context & ctx, ggml_tensor * t
     auto * src = t->src[0];
     auto * dst = t->src[1];
 
-    ggml_hsa_wait_dispatches(ctx);
+    if (const ggml_status status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
 
     return ggml_hsa_copy_tensor(src, dst);
 }
@@ -324,7 +328,9 @@ ggml_status ggml_hsa_compute_cont(ggml_backend_hsa_context & ctx, ggml_tensor * 
     auto * src = t->src[0];
     auto * dst = t;
 
-    ggml_hsa_wait_dispatches(ctx);
+    if (const ggml_status status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
 
     return ggml_hsa_assign(ggml_hsa_copy_tensor_to_cont_tensor_f{}, src, dst);
 }
@@ -339,7 +345,9 @@ ggml_status ggml_hsa_compute_get_rows(ggml_backend_hsa_context & ctx, ggml_tenso
     assert(src1->type == GGML_TYPE_I32);
 
     // Indices may be produced by a preceding device op, so drain before reading them on the host.
-    ggml_hsa_wait_dispatches(ctx);
+    if (const ggml_status status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
 
     return ggml_hsa_assign(ggml_hsa_get_rows_f{src1}, src0, dst);
 }
