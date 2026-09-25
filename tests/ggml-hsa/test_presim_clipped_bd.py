@@ -36,8 +36,34 @@ passed as an extra kernel argument, with its own descriptors -- which keeps the
 single dispatch but costs an ABI change and more BD ids. The arithmetic here is
 the part that would be reused.
 
-Kept as a record so the next attempt starts from the invariant rather than
-rediscovering it on hardware.
+SECOND ATTEMPT, ALSO REVERTED: phased de-pad in one dispatch
+------------------------------------------------------------
+The follow-up avoided the drain invariant entirely. The herd still filled the
+padded destination (so the shim drained exactly what the cores produced), and a
+second phase of the *same* runtime sequence copied the real sub-block out of it
+-- a pure strided copy, N_out runs of M_out contiguous elements, needing no
+compute tile. The caller's unpadded buffer was passed as a third kernel source;
+gemm.py grew shim -> memtile -> shim forward fifos per column.
+
+aiecc rejected it:
+
+    'aie.tile' op number of output DMA channel exceeded!
+
+Each shim tile already carries A (columns 0-3), B and C. Two more fifos per
+column exceeds the shim's DMA channel budget, and unlike program memory there
+is no slack to find -- the channels are the resource.
+
+This is why upstream's multi-phase examples (ml/scale_shift,
+ml/mm_activation_epilogue) reuse *the same* ObjectFifos across phases and vary
+only the RTP word and the DMA addressing. Any workable version has to route
+phase 2 over the fifos that already exist rather than adding any, which means
+matching their object types (B carries bf16, C carries f32) or accepting a
+compute tile in the path.
+
+Both attempts were blocked by a resource or invariant that destination-side
+coverage cannot see. That is the durable lesson: for this dataflow, simulate
+what the *hardware* must supply -- drain volume, DMA channels, program memory --
+not just whether the output ends up in the right place.
 """
 
 from __future__ import annotations
