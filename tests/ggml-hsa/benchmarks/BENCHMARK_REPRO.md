@@ -224,12 +224,19 @@ Per-backend reports are generated automatically by `repro-matmul.sh`.
 Explicit `--labels` are used verbatim as the legend entries (when omitted, the
 legend falls back to `<filename-stem>: <backend>`), so use them to distinguish
 two runs of the *same* backend — e.g. an IRON vs. Triton NPU comparison (both
-report backend `HSA`), keeping each in its own result file:
+report backend `HSA`), keeping each in its own result file.
+
+> **Note:** the `-triton` series below is only valid once a Triton run has
+> actually produced one. Any `results-*-triton.json` predating the fix described
+> above is an IRON measurement (see the RELU section) and must be regenerated,
+> or the chart plots IRON against IRON and labels one of them Triton. The repro
+> scripts now refuse to write a report when the requested backend was not the
+> one that ran, so a freshly produced file is trustworthy.
 
 ```bash
 ./plot_benchmarks.py --labels "CPU","GPU (HIP)","NPU (HSA/IRON)","NPU (HSA/Triton)" \
   results-cpu-znver4.json results-gpu-gfx1103.json \
-  results-npu-aie2.json results-npu-aie2-triton.json -o comparison.png
+  results-npu-aie2.json results-npu-aie2-triton.json -o comparison.png   # -triton must be a real Triton run
 ```
 
 By default the y-axis is throughput (GFLOP/s, higher is better). Pass
@@ -239,7 +246,7 @@ better):
 ```bash
 ./plot_benchmarks.py --metric time --labels "CPU","GPU (HIP)","NPU (HSA/IRON)","NPU (HSA/Triton)" \
   results-cpu-znver4.json results-gpu-gfx1103.json \
-  results-npu-aie2.json results-npu-aie2-triton.json -o comparison-time.png
+  results-npu-aie2.json results-npu-aie2-triton.json -o comparison-time.png   # -triton must be a real Triton run
 ```
 
 Pass `--exclude-sizes` (comma-separated square dims M=N=K) to drop shapes from
@@ -248,5 +255,5 @@ the chart — e.g. omit the small 512 case where fixed overhead dominates:
 ```bash
 ./plot_benchmarks.py --exclude-sizes 512 --labels "CPU","GPU (HIP)","NPU (HSA/IRON)","NPU (HSA/Triton)" \
   results-cpu-znver4.json results-gpu-gfx1103.json \
-  results-npu-aie2.json results-npu-aie2-triton.json -o comparison.png
+  results-npu-aie2.json results-npu-aie2-triton.json -o comparison.png   # -triton must be a real Triton run
 ```

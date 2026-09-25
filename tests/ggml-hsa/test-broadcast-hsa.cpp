@@ -10,7 +10,8 @@
 // Covers both dispatch paths in binary_op(): a src1 of exactly one row (src1_nr == 1) takes
 // the vectorized ggml_op_*_row kernels, and a src1 of several rows (src1_nr > 1) falls back
 // to the generic ggml_op_*_broadcast kernels, which recompute the src1 index per element.
-// A dtype-mismatched src1 takes that same generic fallback.
+// (The dtype-mismatched src1 path also lands in that fallback, but is not covered here:
+// every case below builds src1 as F32.)
 
 #include <cmath>
 #include <cstddef>
@@ -51,6 +52,15 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int6
               int64_t src1_nr, const char * name) {
     const int64_t n = nc * nr * nz;
     const int64_t n1 = nc * src1_nr;
+
+    // ggml_add/ggml_mul assert ggml_can_repeat, which needs nr % src1_nr == 0.
+    // Check it here so a malformed table entry names itself instead of aborting
+    // inside GGML before any output.
+    if (src1_nr <= 0 || nr % src1_nr != 0) {
+        printf("  %-22s: bad case: nr=%lld not a multiple of src1_nr=%lld\n", name,
+               (long long)nr, (long long)src1_nr);
+        return false;
+    }
 
     const std::size_t ctx_size = 3 * ggml_tensor_overhead() + ggml_graph_overhead();
     ggml_init_params params{
@@ -95,7 +105,7 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int6
         const uint32_t r = static_cast<uint32_t>(rng >> 32);
         const uint32_t bits = (r & 0x807FFFFFu) | ((110u + (r >> 24) % 34u) << 23);
         float f;
-        std::memcpy(&f, &bits, 4);
+        std::memcpy(&f, &bits, sizeof f);
         return f;
     };
     std::vector<float> a_host(n);
@@ -113,16 +123,22 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int6
     std::vector<float> dst_host(n);
     ggml_backend_tensor_get(dst, dst_host.data(), 0, ggml_nbytes(dst));
 
-    // Error measured against the operand scale, not against the result. ADD and SUB on
-    // random operands cancel, and after cancellation a half-ulp rounding difference in the
-    // sum is an arbitrarily large number of ulp of the (tiny) result -- SUB peaks at 64 ulp
-    // here while being correctly rounded to within half an ulp of its inputs. Dividing by
-    // max(|a|,|b|,|want|) is the metric that separates real drift from cancellation.
+    // The denominator is per-op, because the two families fail differently.
     //
-    // Bound is 2 * 2^-23, i.e. two ulp at the operand scale. Measured on aie2 (NPU1), every
-    // op sits at or below 1.192e-07 == 2^-23: the scalar MUL and DIV paths are exact, and
-    // the vectorized ADD/SUB/MUL paths (and, for ADD/SUB, the scalar ones too) land within
-    // one ulp because aie2 has no native fp32 ALU. The old absolute 1e-4 tolerance was
+    // ADD and SUB on random operands cancel, and after cancellation a half-ulp
+    // rounding difference in the sum is an arbitrarily large number of ulp of the
+    // (tiny) result -- SUB peaks at 64 ulp here while being correctly rounded to
+    // within half an ulp of its inputs. For those, max(|a|,|b|,|want|) is the
+    // denominator that separates real drift from cancellation.
+    //
+    // MUL and DIV do not cancel, so that denominator would be far too generous:
+    // a quotient many binades below max(|a|,|b|) could be wrong by orders of
+    // magnitude and still land inside an operand-scaled bound. Those are gated on
+    // |want| instead, which is a true relative error.
+    //
+    // Bound is 2 * 2^-23 in both cases. Measured on aie2 (NPU1) every op sits at
+    // or below 1.192e-07 == 2^-23, i.e. within one ulp, which is the best aie2 can
+    // do since it has no native fp32 ALU. The old absolute 1e-4 tolerance was
     // ~1000x looser than this at these magnitudes and could not see any of it.
     constexpr float max_rel = 2.0f / 8388608.0f; // 2 * 2^-23
 
@@ -145,11 +161,31 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int6
             }
             const float got = dst_host[idx];
 
+            // A NaN or Inf fails every ordered comparison below, so screen it
+            // explicitly: `NaN > max_rel` is false and would otherwise report
+            // PASSED with a clean 0.000e+00 worst-rel line.
+            if (!std::isfinite(got) && std::isfinite(want)) {
+                if (ok) {
+                    printf("  %-22s: non-finite at row %lld col %lld got %g want %.9g\n",
+                           name, (long long)r, (long long)i, got, want);
+                }
+                ok = false;
+                continue;
+            }
+
             const int64_t ulp = ulp_distance(want, got);
             if (ulp > worst_ulp) { worst_ulp = ulp; }
 
-            const float scale = std::fmax(
-                std::fmax(std::fabs(a_host[idx]), std::fabs(b_host[bidx])), std::fabs(want));
+            // ADD and SUB cancel, so their error is only meaningful against the
+            // operand scale. MUL and DIV do not cancel: their result can sit
+            // many binades below max(|a|,|b|), where an operand-scaled bound is
+            // thousands of ulp of the result and lets grossly wrong values pass.
+            // Gate those on the result instead.
+            const bool cancels = (kind == op_kind::add || kind == op_kind::sub);
+            const float scale =
+                cancels ? std::fmax(std::fmax(std::fabs(a_host[idx]), std::fabs(b_host[bidx])),
+                                    std::fabs(want))
+                        : std::fabs(want);
             const float rel = scale > 0.0f ? std::fabs(got - want) / scale : 0.0f;
             if (rel > worst_rel) { worst_rel = rel; }
 
@@ -160,8 +196,9 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int6
             }
         }
     }
-    printf("  %-22s: worst %lld ulp, %.3e rel-to-operand (allowed %.3e)\n", name,
-           (long long)worst_ulp, worst_rel, max_rel);
+    printf("  %-22s: worst %lld ulp, %.3e rel-to-%s (allowed %.3e)\n", name,
+           (long long)worst_ulp, worst_rel,
+           (kind == op_kind::add || kind == op_kind::sub) ? "operand" : "result", max_rel);
     return ok;
 }
 
