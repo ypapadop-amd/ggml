@@ -147,14 +147,14 @@ def select_gemm_tile(
 
     Args:
         dev: Target device ("npu" or "npu2").
-        M: Full GEMM problem rows.
-        N: Full GEMM problem columns.
-        K: Full GEMM problem reduction depth.
+        M: Full GEMM problem dimension M.
+        N: Full GEMM problem dimension N.
+        K: Full GEMM problem dimension K.
         dtype_in: NumPy input dtype (for element size).
         dtype_out: NumPy output dtype (for element size).
-        r: Microkernel MAC row dim for the input dtype.
-        s: Microkernel MAC reduction dim for the input dtype.
-        t: Microkernel MAC column dim for the input dtype.
+        r: Microkernel MAC dim r for the input dtype.
+        s: Microkernel MAC dim s for the input dtype.
+        t: Microkernel MAC dim t for the input dtype.
         row_expand: mmul subtiles per rowA loop step (see resolve_expansion).
         col_expand: mmul subtiles per colB loop step (see resolve_expansion).
         n_aie_rows: AIE array rows (4 on both npu and npu2).
