@@ -133,9 +133,17 @@ def _make_triton_matmul_kernel_spec(
         # "'aie.dma_bd' op Stride 1 is 1 elements * 2 bytes = 2 bytes, which is
         # not divisible by 4" (measured on aie2 and aie2p, all shapes).
         # Expressing the GGML layout needs the transpose handled inside the
-        # transform script, not via operand strides. Until then the Triton
-        # MUL_MAT is compile-validated only; IRON is the primary path and this
-        # spec is reached only when IRON fails.
+        # transform script, not via operand strides.
+        #
+        # MEASURED ON DEVICE (aie2/NPU1): this kernel does NOT produce correct
+        # results. For bf16 256x256x256 the Triton PDI ran on the NPU and 35086
+        # of 65536 output elements were off by more than 5% (worst relative
+        # error 0.47) against the CPU backend. The output does not match a
+        # simple transpose either, so the layout above is a necessary but not
+        # sufficient explanation. Until that is resolved this spec should be
+        # treated as non-functional: it is reached only when IRON fails, and
+        # when it is reached it turns a clean "unsupported" into a silently
+        # wrong answer.
         a = torch.empty(
             (m, k), device=device, dtype=numpy_dtype_to_torch(input_tensors[0].dtype)
         )
