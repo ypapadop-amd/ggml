@@ -345,3 +345,74 @@ def test_expansion_is_at_least_two(dev, dtype_in_str):
     row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
     assert row_expand >= 2
     assert col_expand >= 2
+
+
+# ---------------------------------------------------------------------------
+# Coupling guard for the host-side padding in ggml-hsa.cpp
+# ---------------------------------------------------------------------------
+#
+# ggml_hsa_prepare_mul_mat_f32 pads a MUL_MAT's operands *before* any of this
+# Python runs, so it cannot call select_gemm_tile and has to carry the
+# granularity itself. These tests pin the C++ literals against the tables here:
+# if a gemm.py change moves the granularity, the C++ is now wrong and this
+# fails, naming the value it has to become.
+#
+# Both operands are converted to bf16 by that function, so only bf16 applies.
+
+# (gm, gk, gn, n_aie_cols) as hardcoded in ggml_hsa_prepare_mul_mat_f32.
+CPP_PADDING_GRANULARITY = {
+    "npu": (16, 8, 16, 4),   # aie2
+    "npu2": (8, 8, 16, 8),   # aie2p
+}
+CPP_N_AIE_ROWS = 4
+
+
+@pytest.mark.parametrize("dev", ["npu", "npu2"])
+def test_cpp_padding_granularity_matches_gemm_py(dev):
+    """The C++ padding granularity must equal (row_expand*r, s, col_expand*t)."""
+    r, s, t = resolve_mac_dims(dev, "bf16")
+    row_expand, col_expand = resolve_expansion(dev, "bf16")
+    expected = (row_expand * r, s, col_expand * t)
+    gm, gk, gn, _ = CPP_PADDING_GRANULARITY[dev]
+    assert (gm, gk, gn) == expected, (
+        f"ggml_hsa_prepare_mul_mat_f32 pads {dev} bf16 to {(gm, gk, gn)}, but "
+        f"gemm.py's microkernel contract now requires {expected}; update the "
+        f"literals in ggml-hsa.cpp"
+    )
+
+
+@pytest.mark.parametrize("dev", ["npu", "npu2"])
+def test_cpp_n_aie_cols_matches_gemm_py(dev):
+    """The C++ column count must match the one select_gemm_tile assumes."""
+    _, _, _, n_aie_cols = CPP_PADDING_GRANULARITY[dev]
+    assert n_aie_cols == (8 if dev == "npu2" else 4)
+
+
+@pytest.mark.parametrize("dev", ["npu", "npu2"])
+@pytest.mark.parametrize("mnk", [(1, 1, 1), (10, 500, 500), (500, 500, 784), (512, 512, 512)])
+def test_cpp_padding_always_admits_a_tile(dev, mnk):
+    """Padding as the C++ does must leave select_gemm_tile a valid tile.
+
+    This is the property that matters: the host pads without consulting the
+    selector, so if the two disagree the kernel build raises and the op
+    silently falls back to the CPU.
+    """
+    M, N, K = mnk
+    gm, gk, gn, n_aie_cols = CPP_PADDING_GRANULARITY[dev]
+
+    def pad(value, multiple):
+        return ((value + multiple - 1) // multiple) * multiple
+
+    m_pad = pad(M, gm * CPP_N_AIE_ROWS)
+    n_pad = pad(N, gn * n_aie_cols)
+    k_pad = pad(K, gk)
+
+    r, s, t = resolve_mac_dims(dev, "bf16")
+    row_expand, col_expand = resolve_expansion(dev, "bf16")
+    tile = select_gemm_tile(
+        dev, m_pad, n_pad, k_pad, BF16, F32, r, s, t, row_expand, col_expand
+    )
+    m, k, n = tile
+    assert m_pad % (m * CPP_N_AIE_ROWS) == 0
+    assert k_pad % k == 0
+    assert n_pad % (n * n_aie_cols) == 0

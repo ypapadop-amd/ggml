@@ -816,16 +816,40 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
         return false;
     }
 
-    // per-architecture GEMM tiling factors (see gemm.py: tile size and n_aie_rows/n_aie_cols).
-    // n_aie_rows is 4 for both architectures.
+    // Pad to the *microkernel granularity*, which is what gemm.py's select_gemm_tile actually
+    // requires -- not to an independent "tile" constant. The granularity is the smallest per-core
+    // tile the vectorized wrapper accepts:
+    //
+    //     (gm, gk, gn) = (row_expand * r, s, col_expand * t)
+    //
+    // with (r, s, t) the mmul MAC dims (gemm.py microkernel_mac_dim_map) and (row_expand,
+    // col_expand) the wrapper's mmul expansion (gemm.py microkernel_expansion_map). Both operands
+    // are converted to bf16 below, so only the bf16 row of those tables applies:
+    //
+    //     aie2  (npu)  bf16: (r,s,t)=(4,8,4), expansion (4,4) -> (gm,gk,gn)=(16,8,16), 4 columns
+    //     aie2p (npu2) bf16: (r,s,t)=(4,8,8), expansion (2,2) -> (gm,gk,gn)=( 8,8,16), 8 columns
+    //
+    // select_gemm_tile then needs M%(gm*n_aie_rows)==0, K%gk==0, N%(gn*n_aie_cols)==0, which is
+    // exactly what the padding below guarantees -- so the minimum tile is always available and a
+    // padded GEMM can never fail tile selection for want of padding.
+    //
+    // The previous constants (tile=16 on aie2p, 32 on aie2, applied to all three dimensions)
+    // over-padded K and M: they were a single number standing in for three different granularities.
+    // tests/ggml-hsa/test_gemm_tiling.py pins these values against gemm.py's own tables.
     constexpr std::int64_t n_aie_rows = 4;
-    std::int64_t tile = 0;
+    std::int64_t gm = 0;
+    std::int64_t gk = 0;
+    std::int64_t gn = 0;
     std::int64_t n_aie_cols = 0;
     if (dev_info.name == "aie2p") {
-        tile = 16;
+        gm = 8;
+        gk = 8;
+        gn = 16;
         n_aie_cols = 8;
     } else { // aie2
-        tile = 32;
+        gm = 16;
+        gk = 8;
+        gn = 16;
         n_aie_cols = 4;
     }
 
@@ -833,9 +857,9 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     const std::int64_t M = a.ne[1];
     const std::int64_t N = b.ne[1];
 
-    const std::int64_t Kpad = GGML_PAD(K, tile);
-    const std::int64_t Mpad = GGML_PAD(M, tile * n_aie_rows);
-    const std::int64_t Npad = GGML_PAD(N, tile * n_aie_cols);
+    const std::int64_t Kpad = GGML_PAD(K, gk);
+    const std::int64_t Mpad = GGML_PAD(M, gm * n_aie_rows);
+    const std::int64_t Npad = GGML_PAD(N, gn * n_aie_cols);
 
     // Rewrite sources to padded bf16; only sources that arrive as f32 need a dtype conversion,
     // bf16 sources are just zero-padded to the tile multiples (handled by the pre-processing
