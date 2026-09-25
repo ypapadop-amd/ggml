@@ -1773,6 +1773,12 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         return flush_status;
     }
 
+    // This queue is fine, but it was told to wait on work that will never run (see
+    // ggml_backend_hsa_event_wait), so anything computed from that producer's output is unsound.
+    if (ctx.dependency_failed.load(std::memory_order_relaxed)) {
+        return GGML_STATUS_FAILED;
+    }
+
     return status;
 }
 
@@ -1901,10 +1907,22 @@ static void ggml_backend_hsa_event_record(ggml_backend_t backend, ggml_backend_e
  */
 static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_event_t event) {
     const auto & ec = *static_cast<ggml_hsa_event_context *>(event->context);
-    const auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
-    if (ec.queue != ctx.queue) {
-        ggml_hsa_event_wait_for_snapshot(ec);
+    auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
+    if (ec.queue == ctx.queue) {
+        // Same in-order queue: already ordered, nothing to wait for.
+        return;
     }
+
+    // A suspended producer never completes the work this event fences, so the wait below returns
+    // without ordering anything. This backend's own queue is healthy, so nothing else would stop
+    // it consuming inputs the producer never wrote; record the broken dependency so its next
+    // graph_compute fails instead. This interface returns void, which is why the failure has to
+    // travel on the context rather than back to the scheduler.
+    if (ec.ctx != nullptr &&
+        ec.ctx->queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
+        ctx.dependency_failed.store(true, std::memory_order_relaxed);
+    }
+    ggml_hsa_event_wait_for_snapshot(ec);
 }
 
 /**

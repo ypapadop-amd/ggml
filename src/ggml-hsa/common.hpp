@@ -487,6 +487,15 @@ struct ggml_backend_hsa_context {
     /// @brief First error reported by the queue's error callback, or @c HSA_STATUS_SUCCESS.
     std::atomic<hsa_status_t> queue_error{HSA_STATUS_SUCCESS};
 
+    /// @brief Set when this backend waited on an event whose work will never complete.
+    ///
+    /// A cross-queue @c ggml_backend_hsa_event_wait on a context whose queue has been suspended
+    /// has nothing to wait for, and the void event interface gives it no way to say so. Recording
+    /// it here lets @c ggml_backend_hsa_graph_compute fail instead of computing from inputs the
+    /// producer never wrote. Sticky for the same reason @ref queue_error is: the dependency does
+    /// not become satisfied later, so every subsequent graph on this backend is equally unsound.
+    std::atomic<bool> dependency_failed{false};
+
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 
     ggml_backend_hsa_context(const ggml_backend_hsa_context &) = delete;
