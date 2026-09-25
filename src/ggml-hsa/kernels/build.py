@@ -94,11 +94,13 @@ def _make_kernel_specs(
     return listed
 
 
-def _get_compiler(backend: Backend) -> Callable:
+def _get_compiler(backend: Backend, arch: str) -> Callable:
     """Return the compiler function for the given backend.
 
     Args:
         backend: The backend whose compiler function to return.
+        arch: Target architecture, used to keep the AIE/LLVM import ordering to
+            the NPU path so a GPU-only Triton install does not need aie.
 
     Raises:
         NotImplementedError: If the backend is not implemented.
@@ -114,15 +116,23 @@ def _get_compiler(backend: Backend) -> Callable:
 
         return compile_iron_kernel
     if backend.name == Backend.TRITON.name:
-        # aie.iron must be imported before triton: both load LLVM, and loading
-        # triton first makes a later `import aie.iron` abort the process with
-        # "LLVM ERROR: inconsistency in registered CommandLine options". This
-        # has to happen here rather than inside build_triton, which imports
-        # triton at module scope and is therefore already too late.
-        #
-        # Today it is a no-op -- dispatch functions build their IRON spec first,
-        # which imports aie -- but it keeps the order from depending on that.
-        import aie.iron  # noqa: F401
+        from triton_kernels.utils import is_npu_arch
+
+        if is_npu_arch(arch):
+            # aie.iron must be imported before triton: both load LLVM, and
+            # loading triton first makes a later `import aie.iron` abort with
+            # "LLVM ERROR: inconsistency in registered CommandLine options".
+            # This has to happen here rather than inside build_triton, which
+            # imports triton at module scope and is therefore already too late.
+            #
+            # NPU only: the gfx* path needs no AIE compiler, so a GPU-only
+            # Triton install must not be made to depend on aie being present.
+            #
+            # Today it is a no-op -- dispatch functions build their IRON spec
+            # first, which imports aie -- but it keeps the order from depending
+            # on that.
+            import aie.iron  # noqa: F401
+
         from build_triton import compile_triton_kernel
 
         return compile_triton_kernel
@@ -355,7 +365,7 @@ def ggml_compile_op(
         )
 
         # Get compiler for the selected backend and compile
-        compile_fn = _get_compiler(kernel_spec.backend)
+        compile_fn = _get_compiler(kernel_spec.backend, kernel_spec.arch)
 
         try:
             compile_fn(
