@@ -187,7 +187,10 @@ def _make_triton_matmul_kernel_spec(
         # but the arithmetic is sound. Fed operands laid out the way the kernel
         # actually reads them (A as [M,K], B as [K,N], C as [M,N], all
         # row-major), the same PDI returns 0/65536 off at worst rel 5.6e-07.
-        # The only defect is the operand layout.
+        # So at that shape and dtype the operand layout accounts for the whole
+        # error, and the compute is sound. That is one shape on one arch, not a
+        # proof for all of them: if a layout fix does not make some other shape
+        # correct, do not assume layout was the only thing wrong there.
         #
         # It cannot be fixed from here. The GGML layout needs a transposed
         # operand, i.e. a dimension of stride 1 element, and for bf16 that is
