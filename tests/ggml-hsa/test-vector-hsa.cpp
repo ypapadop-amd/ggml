@@ -223,7 +223,14 @@ int run(ggml_backend_t backend, std::size_t N, const char * op) {
             want = to_float<T>(from_float<T>(want));
             const float got = to_float<T>(result[i]);
             const float scale = std::fabs(want) > 1.0f ? std::fabs(want) : 1.0f;
-            bad = std::fabs(got - want) > tol * scale;
+            // Every comparison against NaN is false, so a bare tolerance test accepts a NaN
+            // result silently: fabs(NaN - want) > tol is false. Reject non-finite explicitly,
+            // and when the reference itself is non-finite require the same classification.
+            if (!std::isfinite(want)) {
+                bad = std::isnan(want) ? !std::isnan(got) : (got != want);
+            } else {
+                bad = !std::isfinite(got) || std::fabs(got - want) > tol * scale;
+            }
             got_f = got;
             want_f = want;
         }
