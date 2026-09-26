@@ -37,12 +37,21 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
     // us, so ~85% of its cost was the per-element scalar_exp. A row is only ~10 elements here
     // (one per class), which is under the 16-lane f32 vector, so the tail still runs a couple of
     // scalar iterations -- the vector body is what removes the bulk of the exp calls.
+    //
+    // aie2 (__AIE_ARCH__ == 20, AIE-ML) has no fp32 vector multiply: both vec_exp() and pass 3's
+    // aie::mul() lower to mul_elem_16_conf, which only exists on aie2p, so the vector bodies fail
+    // to link there. On aie2, vend stays 0 and the scalar tails cover the whole row.
+#if __AIE_ARCH__ == 20
+    constexpr int32_t vend = 0;
+#else
     constexpr int32_t V = KERN_VEC_SIZE;
     const int32_t vend = (N / V) * V;
+#endif
 
     // Pass 1: max(logits), so pass 2's exp() argument (logits - max) stays <= 0 and can't
     // overflow, no matter how large the logits are.
     auto global_max = std::numeric_limits<float>::lowest();
+#if __AIE_ARCH__ != 20
     if (vend > 0) {
         aie::vector<float, V> vmax = aie::broadcast<float, V>(global_max);
         for (int32_t i = 0; i < vend; i += V) {
@@ -50,6 +59,7 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
         }
         global_max = aie::reduce_max(vmax);
     }
+#endif
     for (int32_t i = vend; i < N; i++) {
         if (logits[i] > global_max) {
             global_max = logits[i];
@@ -58,11 +68,13 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
 
     // Pass 2: sum(exp(logits - max)), the log-softmax denominator (unnormalized).
     float sum_exp = 0.0f;
+#if __AIE_ARCH__ != 20
     const aie::vector<float, V> vmax_b = aie::broadcast<float, V>(global_max);
     for (int32_t i = 0; i < vend; i += V) {
         aie::vector<float, V> x = aie::sub(aie::load_unaligned_v<V>(logits + i), vmax_b);
         sum_exp += aie::reduce_add(vec_exp<V>(x));
     }
+#endif
     for (int32_t i = vend; i < N; i++) {
         sum_exp += scalar_exp(logits[i] - global_max);
     }
@@ -73,6 +85,7 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
 
     // Pass 3: log_softmax(x_i) = (x_i - max) - log_sum_exp; loss = -sum(labels * log_softmax).
     float total_loss = 0.0f;
+#if __AIE_ARCH__ != 20
     const aie::vector<float, V> vlse_b = aie::broadcast<float, V>(log_sum_exp);
     for (int32_t i = 0; i < vend; i += V) {
         aie::vector<float, V> ls =
@@ -81,6 +94,7 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
             aie::mul(aie::load_unaligned_v<V>(labels + i), ls).template to_vector<float>();
         total_loss += aie::reduce_add(p);
     }
+#endif
     for (int32_t i = vend; i < N; i++) {
         float log_softmax = (logits[i] - global_max) - log_sum_exp;
         total_loss += labels[i] * log_softmax;

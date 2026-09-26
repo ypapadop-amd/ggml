@@ -124,9 +124,17 @@ extern "C" {
  * @param[in]  N   Number of elements to process.
  */
 void ggml_op_sqr(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
+    // aie2 (__AIE_ARCH__ == 20, AIE-ML) has no fp32 vector multiply, so the vector body below
+    // fails to link for an f32 INPUT_DTYPE. The guard is arch-wide rather than f32-only because
+    // INPUT_DTYPE is a -D macro, not a template parameter, so it cannot be tested here by the
+    // preprocessor; a non-f32 SQR on aie2 therefore also falls back to the scalar body.
+#if __AIE_ARCH__ != 20
     transform_vector_n(
         in, out, N, [](auto v) { return aie::mul(v, v).template to_vector<OUTPUT_DTYPE>(); },
         [](auto v) { return static_cast<OUTPUT_DTYPE>(v * v); });
+#else
+    transform_n(in, N, out, [](auto v) { return static_cast<OUTPUT_DTYPE>(v * v); });
+#endif
 }
 
 #endif // GGML_OP_SQR
@@ -309,11 +317,20 @@ void ggml_unary_op_gelu(const INPUT_DTYPE * __restrict in,
         return static_cast<OUTPUT_DTYPE>(0.5f * x * (1.0f + tanh_y));
     };
 
+    // aie2 (__AIE_ARCH__ == 20, AIE-ML) has no fp32 vector multiply: vec_gelu() lowers to
+    // mul_elem_16_conf, which only exists on aie2p, so the vector path fails to link there. The
+    // guard has to be a preprocessor one rather than the if constexpr below: INPUT_DTYPE and
+    // OUTPUT_DTYPE are -D macros, not template parameters, so the condition is not dependent and
+    // both branches are compiled.
+#if __AIE_ARCH__ != 20
     if constexpr (std::is_same_v<INPUT_DTYPE, f32> && std::is_same_v<OUTPUT_DTYPE, f32>) {
         transform_vector_n(in, out, N, [](auto v) { return vec_gelu(v); }, scalar_gelu);
     } else {
         transform_n(in, N, out, scalar_gelu);
     }
+#else
+    transform_n(in, N, out, scalar_gelu);
+#endif
 }
 
 #endif // GGML_UNARY_OP_GELU

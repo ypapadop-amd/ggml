@@ -43,11 +43,20 @@ void ggml_op_norm(const float * __restrict in,
     // All three passes are vectorized with a scalar tail. N is the row length, a runtime
     // argument, so the tail covers any row that is not a whole number of vectors. Unaligned
     // load/store because a row base is not guaranteed vector-aligned.
+    //
+    // aie2 (__AIE_ARCH__ == 20, AIE-ML) has no fp32 vector multiply: passes 2 and 3 use aie::mul,
+    // which lowers to mul_elem_16_conf and only exists on aie2p, so the vector bodies fail to link
+    // there. On aie2, vend stays 0 and the scalar tails cover the whole row.
+#if __AIE_ARCH__ == 20
+    constexpr int32_t vend = 0;
+#else
     constexpr int32_t V = 512 / (sizeof(float) * 8);
     const int32_t vend = (N / V) * V;
+#endif
 
     // Pass 1: sum(in).
     float sum = 0.0f;
+#if __AIE_ARCH__ != 20
     if (vend > 0) {
         aie::vector<float, V> vsum = aie::zeros<float, V>();
         for (int32_t i = 0; i < vend; i += V) {
@@ -55,6 +64,7 @@ void ggml_op_norm(const float * __restrict in,
         }
         sum = aie::reduce_add(vsum);
     }
+#endif
     for (int32_t i = vend; i < N; ++i) {
         sum += in[i];
     }
@@ -64,6 +74,7 @@ void ggml_op_norm(const float * __restrict in,
     // memory-bound, so we avoid materializing the centered row into out and reading it
     // back — pass 2 below writes the final normalized value straight from in.
     float variance = 0.0f;
+#if __AIE_ARCH__ != 20
     const aie::vector<float, V> vmean = aie::broadcast<float, V>(mean);
     if (vend > 0) {
         aie::vector<float, V> vvar = aie::zeros<float, V>();
@@ -73,6 +84,7 @@ void ggml_op_norm(const float * __restrict in,
         }
         variance = aie::reduce_add(vvar);
     }
+#endif
     for (int32_t i = vend; i < N; ++i) {
         const float v = in[i] - mean;
         variance += v * v;
@@ -85,11 +97,13 @@ void ggml_op_norm(const float * __restrict in,
     const float scale = scalar_exp(-0.5f * scalar_log(variance + eps));
 
     // Pass 3: out = (in - mean) * scale.
+#if __AIE_ARCH__ != 20
     const aie::vector<float, V> vscale = aie::broadcast<float, V>(scale);
     for (int32_t i = 0; i < vend; i += V) {
         const aie::vector<float, V> c = aie::sub(aie::load_unaligned_v<V>(in + i), vmean);
         aie::store_unaligned_v(out + i, aie::mul(c, vscale).template to_vector<float>());
     }
+#endif
     for (int32_t i = vend; i < N; ++i) {
         out[i] = (in[i] - mean) * scale;
     }
