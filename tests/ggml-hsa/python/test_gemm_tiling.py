@@ -15,7 +15,7 @@ import ml_dtypes
 import numpy as np
 import pytest
 
-KERNELS_DIR = Path(__file__).resolve().parents[2] / "src" / "ggml-hsa" / "kernels"
+KERNELS_DIR = Path(__file__).resolve().parents[3] / "src" / "ggml-hsa" / "kernels"
 sys.path.insert(0, str(KERNELS_DIR))
 
 from iron_kernels.gemm import (  # noqa: E402
