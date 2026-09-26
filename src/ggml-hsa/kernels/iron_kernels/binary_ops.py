@@ -28,6 +28,7 @@ from .utils import (
     fill_drain_program,
     max_tile_size,
     tiled_tile_size,
+    vector_lanes,
 )
 
 
@@ -176,6 +177,11 @@ def _create_external_function(
             # the flag. The generic broadcast path keeps the one-register tile and is
             # deliberately left without it.
             "-DGGML_VECTORIZED_TILING=1",
+            *(
+                ["-DGGML_TILE_VECTOR_ALIGNED=1"]
+                if tile_size % vector_lanes(arch, output_tensor.dtype) == 0
+                else []
+            ),
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
@@ -336,6 +342,11 @@ def _create_row_external_function(
             # then degrades to its scalar tail.) The generic broadcast path keeps the
             # one-register tile and is deliberately left without this flag.
             "-DGGML_VECTORIZED_TILING=1",
+            *(
+                ["-DGGML_TILE_VECTOR_ALIGNED=1"]
+                if tile_size % vector_lanes(arch, output_tensor.dtype) == 0
+                else []
+            ),
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)

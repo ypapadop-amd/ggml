@@ -25,17 +25,21 @@ enum class op_kind { sqr, abs, neg, sgn, step };
 
 float reference(op_kind kind, float x) {
     switch (kind) {
-        case op_kind::sqr: return x * x;
-        case op_kind::abs: return std::fabs(x);
-        case op_kind::neg: return -x;
-        case op_kind::sgn: return (x > 0.0f) ? 1.0f : ((x < 0.0f) ? -1.0f : 0.0f);
-        case op_kind::step: return (x > 0.0f) ? 1.0f : 0.0f;
+        case op_kind::sqr:
+            return x * x;
+        case op_kind::abs:
+            return std::fabs(x);
+        case op_kind::neg:
+            return -x;
+        case op_kind::sgn:
+            return (x > 0.0f) ? 1.0f : ((x < 0.0f) ? -1.0f : 0.0f);
+        case op_kind::step:
+            return (x > 0.0f) ? 1.0f : 0.0f;
     }
     return 0.0f;
 }
 
-bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1,
-              const char * name) {
+bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1, const char * name) {
     const int64_t n = ne0 * ne1;
 
     const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
@@ -51,11 +55,21 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1,
 
     ggml_tensor * dst = nullptr;
     switch (kind) {
-        case op_kind::sqr: dst = ggml_sqr(ctx.get(), src); break;
-        case op_kind::abs: dst = ggml_abs(ctx.get(), src); break;
-        case op_kind::neg: dst = ggml_neg(ctx.get(), src); break;
-        case op_kind::sgn: dst = ggml_sgn(ctx.get(), src); break;
-        case op_kind::step: dst = ggml_step(ctx.get(), src); break;
+        case op_kind::sqr:
+            dst = ggml_sqr(ctx.get(), src);
+            break;
+        case op_kind::abs:
+            dst = ggml_abs(ctx.get(), src);
+            break;
+        case op_kind::neg:
+            dst = ggml_neg(ctx.get(), src);
+            break;
+        case op_kind::sgn:
+            dst = ggml_sgn(ctx.get(), src);
+            break;
+        case op_kind::step:
+            dst = ggml_step(ctx.get(), src);
+            break;
     }
     ggml_set_name(dst, "dst");
 
@@ -102,9 +116,12 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1,
     return true;
 }
 
-// Bit-exact ABS/NEG check over the signed zeros, infinities and NaNs that the value-based
+// Bit-exact ABS/NEG/SGN/STEP check over the signed zeros, infinities and NaNs that the value-based
 // comparison above cannot distinguish (-0.0 == +0.0 numerically, and NaN fails any tolerance
-// test). ABS must match std::fabs and NEG must match -x down to the sign bit.
+// test). ABS must match std::fabs and NEG must match -x down to the sign bit; SGN and STEP are
+// built from aie::lt/aie::gt plus aie::select, whose treatment of NaN (every comparison false)
+// and of -0.0 (not greater than, not less than +0.0) has to agree with the scalar tail, so they
+// are checked here too rather than only through the tolerance-based comparison.
 //
 // The element count selects which code path runs: an f32 tile is a whole 16-lane vector only when
 // the count is a multiple of 16, otherwise the tile shrinks below the vector width and the kernel
@@ -121,7 +138,24 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
 
     ggml_tensor * src = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, ne0);
     ggml_set_name(src, "src");
-    ggml_tensor * dst = (kind == op_kind::abs) ? ggml_abs(ctx.get(), src) : ggml_neg(ctx.get(), src);
+    ggml_tensor * dst = nullptr;
+    switch (kind) {
+        case op_kind::abs:
+            dst = ggml_abs(ctx.get(), src);
+            break;
+        case op_kind::neg:
+            dst = ggml_neg(ctx.get(), src);
+            break;
+        case op_kind::sgn:
+            dst = ggml_sgn(ctx.get(), src);
+            break;
+        case op_kind::step:
+            dst = ggml_step(ctx.get(), src);
+            break;
+        default:
+            printf("  %-22s: unsupported op for sign case\n", name);
+            return false;
+    }
     ggml_set_name(dst, "dst");
 
     if (!ggml_backend_supports_op(backend, dst)) {
@@ -142,8 +176,13 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
     // Leading entries are the interesting bit patterns; the rest are ordinary values so the whole
     // tile is covered.
     const float specials[] = {
-        +0.0f, -0.0f, -1.5f, 2.5f, std::numeric_limits<float>::infinity(),
-        -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN(),
+        +0.0f,
+        -0.0f,
+        -1.5f,
+        2.5f,
+        std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::quiet_NaN(),
         -std::numeric_limits<float>::quiet_NaN(),
     };
     const auto n_specials = static_cast<int64_t>(sizeof(specials) / sizeof(specials[0]));
@@ -163,7 +202,26 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
     ggml_backend_tensor_get(dst, dst_host.data(), 0, ggml_nbytes(dst));
 
     for (int64_t i = 0; i < ne0; ++i) {
-        const float want = (kind == op_kind::abs) ? std::fabs(src_host[i]) : -src_host[i];
+        const float x = src_host[i];
+        float want = 0.0f;
+        switch (kind) {
+            case op_kind::abs:
+                want = std::fabs(x);
+                break;
+            case op_kind::neg:
+                want = -x;
+                break;
+            // Matches the kernel's scalar tail exactly, including NaN (neither comparison
+            // holds, so 0) and -0.0 (likewise 0, with a positive zero's bit pattern).
+            case op_kind::sgn:
+                want = (x > 0.0f) ? 1.0f : ((x < 0.0f) ? -1.0f : 0.0f);
+                break;
+            case op_kind::step:
+                want = (x > 0.0f) ? 1.0f : 0.0f;
+                break;
+            default:
+                break;
+        }
         uint32_t got_bits = 0;
         uint32_t want_bits = 0;
         std::memcpy(&got_bits, &dst_host[i], sizeof(got_bits));
@@ -226,10 +284,10 @@ int main() {
         int64_t ne0;
         const char * name;
     } sign_cases[] = {
-        {op_kind::abs, 32, "abs signbit vector"},
-        {op_kind::neg, 32, "neg signbit vector"},
-        {op_kind::abs, 19, "abs signbit scalar"},
-        {op_kind::neg, 19, "neg signbit scalar"},
+        {op_kind::abs, 32, "abs signbit vector"}, {op_kind::neg, 32, "neg signbit vector"},
+        {op_kind::sgn, 32, "sgn signbit vector"}, {op_kind::step, 32, "step signbit vector"},
+        {op_kind::abs, 19, "abs signbit scalar"}, {op_kind::neg, 19, "neg signbit scalar"},
+        {op_kind::sgn, 19, "sgn signbit scalar"}, {op_kind::step, 19, "step signbit scalar"},
     };
     for (const auto & c : sign_cases) {
         const bool ok = run_sign_case(backend, c.kind, c.ne0, c.name);

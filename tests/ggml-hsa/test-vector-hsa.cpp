@@ -1,5 +1,6 @@
 // Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All Rights Reserved.
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -7,6 +8,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "ggml.h"
@@ -169,6 +171,73 @@ int run(ggml_backend_t backend, std::size_t N, const char * op) {
     std::cout << "A " << op << " B = ";
     print_vec(std::cout, result);
     std::cout << '\n';
+
+    // Compare against the host. Without this the tool printed whatever the backend produced and
+    // always reported success, so it could not detect a wrong kernel. The element-wise binary
+    // kernels are the only device coverage this file provides, so it has to be able to fail.
+    //
+    // bf16 carries 8 mantissa bits and f32 MUL on aie2 goes through a bf16 emulation, so the
+    // check is relative with a per-type tolerance rather than bit-exact; integers must match
+    // exactly.
+    const bool is_int = std::is_same_v<T, int32_t>;
+    // bf16 carries 8 mantissa bits and f32 MUL on aie2 goes through a bf16 emulation, so the
+    // float check is relative with a per-type tolerance. Integers are compared exactly, and in
+    // the integer domain: `/` truncates there, so evaluating the reference in float would make
+    // 11 / 3 read 3.667 against the kernel's 3.
+    const float tol = std::is_same_v<T, ggml_bf16_t> ? 1e-2f : 1e-5f;
+    int mismatches = 0;
+    for (std::size_t i = 0; i < N; ++i) {
+        bool bad = false;
+        float got_f = 0.0f;
+        float want_f = 0.0f;
+        if (is_int) {
+            const auto a = static_cast<int64_t>(to_float<T>(A[i]));
+            const auto b = static_cast<int64_t>(to_float<T>(B[i]));
+            int64_t want = 0;
+            if (std::strcmp(op, "+") == 0) {
+                want = a + b;
+            } else if (std::strcmp(op, "-") == 0) {
+                want = a - b;
+            } else if (std::strcmp(op, "*") == 0) {
+                want = a * b;
+            } else {
+                want = (b != 0) ? a / b : 0;
+            }
+            const auto got = static_cast<int64_t>(to_float<T>(result[i]));
+            bad = (b != 0) && (got != want);
+            got_f = static_cast<float>(got);
+            want_f = static_cast<float>(want);
+        } else {
+            const float a = to_float<T>(A[i]);
+            const float b = to_float<T>(B[i]);
+            float want = 0.0f;
+            if (std::strcmp(op, "+") == 0) {
+                want = a + b;
+            } else if (std::strcmp(op, "-") == 0) {
+                want = a - b;
+            } else if (std::strcmp(op, "*") == 0) {
+                want = a * b;
+            } else {
+                want = a / b;
+            }
+            want = to_float<T>(from_float<T>(want));
+            const float got = to_float<T>(result[i]);
+            const float scale = std::fabs(want) > 1.0f ? std::fabs(want) : 1.0f;
+            bad = std::fabs(got - want) > tol * scale;
+            got_f = got;
+            want_f = want;
+        }
+        if (bad) {
+            if (mismatches < 8) {
+                std::cerr << "mismatch at " << i << ": got " << got_f << " want " << want_f << '\n';
+            }
+            ++mismatches;
+        }
+    }
+    if (mismatches != 0) {
+        std::cerr << mismatches << " mismatch(es) out of " << N << '\n';
+        return EXIT_FAILURE;
+    }
 
     return EXIT_SUCCESS;
 }

@@ -163,6 +163,14 @@ int main() {
         // vend == 0, the case that rules out AIE_LOOP_MIN_ITERATION_COUNT.
         {op_kind::add, 10, 64, 1, "add bias narrow row", true},
         {op_kind::mul, 10, 64, 1, "mul bcast narrow row", true},
+        // ne0 = 100 is neither a multiple of the 16-element f32 vector nor below it, so the row
+        // tile gives 0 < vend < N: the only configuration that runs the vector body and the
+        // scalar tail over the same row. The element-wise cases cannot produce it, because
+        // tiled_tile_size returns either a multiple of V (vend == N) or a tile below V
+        // (vend == 0).
+        {op_kind::add, 100, 33, 1, "add bias partial tail", true},
+        {op_kind::mul, 100, 33, 1, "mul bcast partial tail", true},
+        {op_kind::sub, 100, 33, 1, "sub bcast partial tail", true},
         // Plain element-wise (src1 same shape as src0): a different kernel from the broadcast
         // cases above, and the one the vectorized transform_vector_n body serves. 768*1024
         // matches the shape the ADD benchmark reports.

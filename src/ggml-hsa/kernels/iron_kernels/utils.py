@@ -112,6 +112,23 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
     return align_to_arch(arch, tensor.numel(), tensor.dtype)
 
 
+def vector_lanes(arch: str, dtype: np.dtype) -> int:
+    """Elements of dtype in one vector register on arch.
+
+    A tile that is a whole multiple of this is 512-bit aligned at every tile boundary, which is
+    the precondition for a kernel to use aligned vector loads/stores (transform_vector_n's
+    Aligned=true).
+
+    Args:
+        arch: Target architecture.
+        dtype: Element data type.
+
+    Returns:
+        The number of lanes.
+    """
+    return _arch_params(arch)["vector_reg_bits"] // (8 * dtype.itemsize)
+
+
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """Largest power-of-two tile within a 512-bit vector dividing num_elements.
 

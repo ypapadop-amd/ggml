@@ -24,6 +24,7 @@ from .utils import (
     core_function_object,
     fill_drain_program,
     max_tile_size,
+    vector_lanes,
     tiled_tile_size,
 )
 
@@ -168,6 +169,10 @@ def _create_external_function(
     ]
     if vectorized:
         compile_flags.append("-DGGML_VECTORIZED_TILING=1")
+        # Only promise aligned tile boundaries when the tile really is a whole number of vector
+        # registers; transform_vector_n static_asserts on this before honouring Aligned=true.
+        if tile_size % vector_lanes(arch, output_tensor.dtype) == 0:
+            compile_flags.append("-DGGML_TILE_VECTOR_ALIGNED=1")
 
     current_dir = Path(__file__).resolve().parent
     # Verified to compile with GGML_HSA_KERNEL_INLINE.

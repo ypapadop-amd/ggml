@@ -45,6 +45,24 @@ inline constexpr bool vectorized_tiling_v =
 #endif
 
 /**
+ * @brief Whether the Python builder guaranteed every tile boundary is 512-bit aligned.
+ *
+ * Aligned loads/stores are only safe when the streamed tile is a whole number of vector
+ * registers. A design that streams rows through double-buffered fifos whose per-row object
+ * stride is not a multiple of the vector width would otherwise corrupt alternate (ping-pong)
+ * rows, silently and with no diagnostic. The op builders define GGML_TILE_VECTOR_ALIGNED only
+ * when the tile they chose satisfies that, and @ref transform_vector_n asserts on it whenever
+ * Aligned is requested, so the guarantee cannot be assumed by a call site that does not have it.
+ */
+template <typename>
+inline constexpr bool tile_vector_aligned_v =
+#ifdef GGML_TILE_VECTOR_ALIGNED
+    true;
+#else
+    false;
+#endif
+
+/**
  * @brief Applies an op element-wise over N elements: out[i] = op(in[i]...).
  *
  * Scalar for every element. Use @ref transform_vector_n instead when the op has an aie::
@@ -77,12 +95,9 @@ void transform_n(TOut * __restrict out, Size count, Op op, const TIn * __restric
  * path for the whole range. The tail covers any remainder when N is not a whole number of
  * vectors, and covers everything when there is no vector path.
  *
- * @tparam Aligned  Whether the tile base is 512-bit aligned, so aligned loads/stores are safe.
- *                  False (the default) is always correct. True is only valid when the streamed
- *                  tile is a whole number of vector registers; in particular a design that
- *                  streams rows through double-buffered fifos whose per-row object stride need
- *                  not be vector-aligned must leave this false, or aligned accesses corrupt
- *                  alternate (ping-pong) rows.
+ * @tparam Aligned  Use aligned loads/stores. False (the default) is always correct; true is
+ *                  guarded by a static_assert on @ref tile_vector_aligned_v, so a call site can
+ *                  only request it when its Python builder guaranteed the tile qualifies.
  * @tparam EnableVector Set false to force the scalar path for the whole range. Use it when the
  *                  vector and scalar formulations of an op disagree for some element type --
  *                  aie::mul narrows through an accumulator, which saturates for integers where
@@ -110,6 +125,11 @@ void transform_vector_n(TOut * __restrict out,
                         VecOp vec_op,
                         ScalarOp scalar_op,
                         const TIn * __restrict... in) {
+    static_assert(!Aligned || tile_vector_aligned_v<TOut>,
+                  "Aligned=true needs every tile boundary 512-bit aligned, which only holds when "
+                  "the tile is a whole number of vector registers: the op's Python builder must "
+                  "define GGML_TILE_VECTOR_ALIGNED, and only does so when its tile qualifies");
+
     static_assert(vectorized_tiling_v<TOut>,
                   "this op has a vectorized body but was compiled without "
                   "GGML_VECTORIZED_TILING, so it streams one vector register per object-fifo "
