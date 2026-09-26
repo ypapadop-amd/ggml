@@ -144,9 +144,5 @@ def _create_external_function(
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            # Row length is fixed per kernel instance (each shape JITs its own .o). As a
-            # compile-time constant it lets the kernel take the vector path; without it the
-            # kernel falls back to the scalar scan.
-            f"-DARGMAX_N={row_length}",
         ],
     )
