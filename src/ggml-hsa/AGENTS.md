@@ -708,6 +708,7 @@ distinct cached kernels.
 | `GGML_HSA_KERNEL_CACHE_DIR` | JIT cache directory |
 | `GGML_HSA_KERNEL_CACHE_CLEAR` | Set to `1` to clear the kernel cache (required when testing kernel changes) |
 | `GGML_HSA_JIT_VERBOSE` | Verbose JIT output |
+| `GGML_HSA_KERNEL_INLINE` | Inline supported kernels' core functions into the tile loop instead of linking as a `.o` (`1`, `true`, or `on`); default off. Support varies by kernel; see `core_function_object()` in `kernels/iron_kernels/utils.py` |
 
 ## Agent Rules
 

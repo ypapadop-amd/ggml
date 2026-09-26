@@ -946,6 +946,9 @@ def create_mat_mul_external_functions(
     # when select_gemm_tile started choosing them per shape, so the old fixed name
     # left correctness resting on that directory layout alone. compile_external_kernel
     # caches on object existence without ever comparing against the source or flags.
+    #
+    # Always a .o, not core_function_object(): this path passes the object to the low-level
+    # dialect via link_with, which ld.lld cannot do with textual IR, so this kernel can't inline.
     object_file_name = (
         f"matmul_core_functions_{dtype_in_name}_{dtype_out_name}_{m}x{k}x{n}.o"
     )

@@ -24,6 +24,7 @@ from aie.iron.controlflow import range_
 from .utils import (
     CoreFunctionSpec,
     arch_aligned_num_elements,
+    core_function_object,
     fill_drain_program,
     max_tile_size,
 )
@@ -142,9 +143,10 @@ def _create_external_function(
     tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
 
     current_dir = Path(__file__).resolve().parent
+    # Verified to compile with GGML_HSA_KERNEL_INLINE.
     func = ExternalFunction(
         name=op_name.lower(),
-        object_file_name=f"{op_name.lower()}_core_function.o",
+        **core_function_object(f"{op_name.lower()}_core_function"),
         source_file=str(current_dir / "binary_ops.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
@@ -217,7 +219,7 @@ def _create_broadcast_external_function(
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
         name=f"{op_name.lower()}_broadcast",
-        object_file_name=f"{op_name.lower()}_broadcast_core_function.o",
+        **core_function_object(f"{op_name.lower()}_broadcast_core_function"),
         source_file=str(current_dir / "binary_ops.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],  # src0 tile
@@ -299,7 +301,7 @@ def _create_row_external_function(
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
         name=row_op_name.lower(),
-        object_file_name=f"{row_op_name.lower()}_core_function.o",
+        **core_function_object(f"{row_op_name.lower()}_core_function"),
         source_file=str(current_dir / "binary_ops.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
