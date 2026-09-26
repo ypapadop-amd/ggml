@@ -2,6 +2,7 @@
 
 """Utility functions for IRON kernel implementations."""
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -374,3 +375,36 @@ def batch_slice_tap(num_units, unit_size, start_unit, count):
         [1, count, 1, unit_size],
         [0, unit_size, 0, 1],
     )
+
+
+def core_function_object(base_name):
+    """ExternalFunction kwargs naming the core-function object, honouring kernel inlining.
+
+    mlir-aie's ExternalFunction(inline=True) hands the kernel to aiecc as textual LLVM IR
+    (the object name must end in .ll) and IR-links it into the core module, inlining the call
+    into the tile loop instead of linking a .o with ld.lld.
+
+    Opt-in via GGML_HSA_KERNEL_INLINE=1: IR-link support is toolchain-dependent and not every
+    kernel can pass an object this way, so only call this from kernels verified to compile
+    both ways.
+
+    Args:
+        base_name: Object file name without extension.
+
+    Returns:
+        The kwargs to splat into the ExternalFunction constructor.
+    """
+    if os.environ.get("GGML_HSA_KERNEL_INLINE", "") in (
+        "1",
+        "true",
+        "True",
+        "TRUE",
+        "yes",
+        "Yes",
+        "YES",
+        "on",
+        "On",
+        "ON",
+    ):
+        return {"object_file_name": f"{base_name}.ll", "inline": True}
+    return {"object_file_name": f"{base_name}.o"}

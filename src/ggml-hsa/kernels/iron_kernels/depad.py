@@ -22,7 +22,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_to_device, fan_out_worker_count
+from .utils import arch_to_device, core_function_object, fan_out_worker_count
 
 # Largest hardware wrap for a shim/mem-tile DMA dimension (10-bit field). A DMA
 # dimension whose element count exceeds this is rejected by the aiecc verifier
@@ -309,9 +309,10 @@ def _create_external_function(src, output_tensor, chunk: int) -> ExternalFunctio
     # The kernel selects its mode (plain copy vs. f32 -> bf16 convert) at compile time via
     # `if constexpr` on INPUT_DTYPE/OUTPUT_DTYPE; no extra flag is needed.
 
+    # Verified to compile with GGML_HSA_KERNEL_INLINE.
     return ExternalFunction(
         name="ggml_hsa_depad",
-        object_file_name="ggml_hsa_depad_core_function.o",
+        **core_function_object("ggml_hsa_depad_core_function"),
         source_file=str(current_dir / "depad.cc"),
         arg_types=[
             np.ndarray[(chunk,), np.dtype[src.dtype]],
