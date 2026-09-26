@@ -161,16 +161,23 @@ def _create_external_function(
         The configured CoreFunctionSpec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
-    # Every fifo streams this same element count, so it has to satisfy align_to_arch's 4-byte
-    # rule for each fifo's dtype, not just the output's: an f32 output leaves any count already
-    # aligned, but the same count on a 2-byte src1 need not be. Applying align_to_arch once per
-    # dtype is enough -- the strictest requirement implies the looser ones.
-    for _fifo_dtype in (
+    # One shared element count feeds all three fifos, so it has to satisfy align_to_arch's
+    # 4-byte rule for each fifo's dtype, not just the output's. It cannot be rounded up to suit
+    # a narrower src1: the count is also the length of the output transfer, and the HSA buffer
+    # type allocates exactly ggml_nbytes (ggml-hsa.cpp, get_alloc_size), so a longer drain would
+    # write past the tensor ggml reserved. A shape that cannot satisfy every fifo is therefore
+    # rejected here, and dispatch falls back, rather than being served by a mis-sized kernel.
+    for fifo_dtype in (
         input_tensors[0].dtype,
         input_tensors[1].dtype,
         output_tensor.dtype,
     ):
-        num_elements = align_to_arch(arch, num_elements, _fifo_dtype)
+        if align_to_arch(arch, num_elements, fifo_dtype) != num_elements:
+            msg = (
+                f"Element count ({num_elements}) is not 4-byte aligned for fifo dtype "
+                f"{fifo_dtype}; a single count cannot serve fifos of differing widths here."
+            )
+            raise ValueError(msg)
 
     # Three fifos here (in0, in1, out), not the unary default of two, and GGML does not
     # require src1 to share the output type -- so charge the budget each fifo's own width.

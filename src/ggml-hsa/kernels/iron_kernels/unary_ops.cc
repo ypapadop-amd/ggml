@@ -185,7 +185,13 @@ void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
                         int32_t N) {
     static_assert(std::is_same_v<INPUT_DTYPE, OUTPUT_DTYPE>,
                   "ReLU requires matching input and output types");
-    transform_vector_n<true>(
+    // Aligned accesses only when the builder guaranteed the tile is a whole number of vector
+    // registers. It usually is, but tiled_tile_size falls back below one vector for a count no
+    // multiple of V divides (19 f32 elements gives tile 1), and hardcoding true there asks for
+    // a guarantee that does not hold -- which transform_vector_n's static_assert rejects, so
+    // the kernel fails to compile rather than running unaligned. Deriving it keeps both shapes
+    // working and still leaves the assert to catch a hardcoded true elsewhere.
+    transform_vector_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
         out, N, [](auto v) { return aie::max(v, static_cast<INPUT_DTYPE>(0)); },
         [](auto v) { return std::max<OUTPUT_DTYPE>(v, 0); }, in);
 }
