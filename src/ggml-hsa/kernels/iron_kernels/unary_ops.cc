@@ -56,8 +56,9 @@ void ggml_op_log(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict ou
  * @param[in]  N   Number of elements to process.
  */
 void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
-    transform_n(
-        out, N, [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(aie::sqrt(v)); }, in);
+    transform_vector_n(
+        out, N, [](auto v) { return aie::sqrt(v); },
+        [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(aie::sqrt(v)); }, in);
 }
 
 #endif // GGML_OP_SQRT
@@ -95,8 +96,18 @@ void ggml_unary_op_abs(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_sgn(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
-    transform_n(
+    // Two selects rather than a branch: aie::select(a, b, m) yields b where m holds. The
+    // comparisons and the constants are exact, so the vector body matches the scalar tail bit
+    // for bit.
+    transform_vector_n(
         out, N,
+        [](auto v) {
+            using V = std::decay_t<decltype(v)>;
+            const V zero = aie::zeros<OUTPUT_DTYPE, V::size()>();
+            const V pos = aie::broadcast<OUTPUT_DTYPE, V::size()>(static_cast<OUTPUT_DTYPE>(1));
+            const V neg = aie::broadcast<OUTPUT_DTYPE, V::size()>(static_cast<OUTPUT_DTYPE>(-1));
+            return aie::select(aie::select(zero, neg, aie::lt(v, zero)), pos, aie::gt(v, zero));
+        },
         [](auto v) -> OUTPUT_DTYPE {
             return (v > static_cast<INPUT_DTYPE>(0))
                        ? static_cast<OUTPUT_DTYPE>(1)
@@ -139,8 +150,15 @@ void ggml_unary_op_neg(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_step(const INPUT_DTYPE * __restrict in,
                         OUTPUT_DTYPE * __restrict out,
                         int32_t N) {
-    transform_n(
+    transform_vector_n(
         out, N,
+        [](auto v) {
+            using V = std::decay_t<decltype(v)>;
+            const V zero = aie::zeros<OUTPUT_DTYPE, V::size()>();
+            return aie::select(
+                zero, aie::broadcast<OUTPUT_DTYPE, V::size()>(static_cast<OUTPUT_DTYPE>(1)),
+                aie::gt(v, zero));
+        },
         [](auto v) -> OUTPUT_DTYPE {
             return static_cast<OUTPUT_DTYPE>(v > static_cast<INPUT_DTYPE>(0));
         },
