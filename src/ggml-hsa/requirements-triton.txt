@@ -8,7 +8,10 @@
 
 triton-xdna
 --find-links https://github.com/amd/Triton-XDNA/releases/expanded_assets/latest-wheels
---find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti
+# Must be the "-2" tag: triton-xdna needs mlir-air[aie], which requires the
+# mlir_aie_no_rtti distribution. Only this tag publishes that name; the older
+# latest-wheels-no-rtti publishes mlir_aie (0.0.1.<date>.no.rtti) and is stale.
+--find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2
 --find-links https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 --find-links https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels-no-rtti
 

@@ -94,11 +94,13 @@ def _make_kernel_specs(
     return listed
 
 
-def _get_compiler(backend: Backend) -> Callable:
+def _get_compiler(backend: Backend, arch: str) -> Callable:
     """Return the compiler function for the given backend.
 
     Args:
         backend: The backend whose compiler function to return.
+        arch: Target architecture, used to keep the AIE/LLVM import ordering to
+            the NPU path so a GPU-only Triton install does not need aie.
 
     Raises:
         NotImplementedError: If the backend is not implemented.
@@ -114,6 +116,16 @@ def _get_compiler(backend: Backend) -> Callable:
 
         return compile_iron_kernel
     if backend.name == Backend.TRITON.name:
+        from triton_kernels.utils import is_npu_arch
+
+        if is_npu_arch(arch):
+            # aie.iron must load before triton or a later import aborts on an
+            # LLVM CommandLine clash; build_triton imports triton at module
+            # scope, so the order has to be set here. NPU only, since the gfx*
+            # path needs no AIE compiler. A no-op today (dispatch builds the
+            # IRON spec first) but it stops that being load-bearing.
+            import aie.iron  # noqa: F401
+
         from build_triton import compile_triton_kernel
 
         return compile_triton_kernel
@@ -346,7 +358,7 @@ def ggml_compile_op(
         )
 
         # Get compiler for the selected backend and compile
-        compile_fn = _get_compiler(kernel_spec.backend)
+        compile_fn = _get_compiler(kernel_spec.backend, kernel_spec.arch)
 
         try:
             compile_fn(
