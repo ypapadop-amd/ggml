@@ -23,6 +23,7 @@ from aie.iron.controlflow import range_
 
 from .utils import (
     CoreFunctionSpec,
+    align_to_arch,
     arch_aligned_num_elements,
     core_function_object,
     fill_drain_program,
@@ -142,6 +143,17 @@ def _create_external_function(
         The configured CoreFunctionSpec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
+    # Every fifo streams this same element count, so it has to satisfy align_to_arch's 4-byte
+    # rule for each fifo's dtype, not just the output's: an f32 output leaves any count already
+    # aligned, but the same count on a 2-byte src1 need not be. Applying align_to_arch once per
+    # dtype is enough -- the strictest requirement implies the looser ones.
+    for _fifo_dtype in (
+        input_tensors[0].dtype,
+        input_tensors[1].dtype,
+        output_tensor.dtype,
+    ):
+        num_elements = align_to_arch(arch, num_elements, _fifo_dtype)
+
     # Three fifos here (in0, in1, out), not the unary default of two, and GGML does not
     # require src1 to share the output type -- so charge the budget each fifo's own width.
     tile_size = tiled_tile_size(

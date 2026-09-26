@@ -172,8 +172,8 @@ int main() {
         {op_kind::mul, 100, 33, 1, "mul bcast partial tail", true},
         {op_kind::sub, 100, 33, 1, "sub bcast partial tail", true},
         // Plain element-wise (src1 same shape as src0): a different kernel from the broadcast
-        // cases above, and the one the vectorized transform_vector_n body serves. 768*1024
-        // matches the shape the ADD benchmark reports.
+        // cases above, and the one the vectorized transform_vector_n body serves. 768 x 64 is a
+        // smaller case than the benchmark's largest shape, exercising the same vector path.
         {op_kind::add, 768, 64, 1, "add elementwise", false},
         {op_kind::sub, 768, 64, 1, "sub elementwise", false},
         {op_kind::mul, 768, 64, 1, "mul elementwise", false},
