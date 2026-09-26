@@ -24,6 +24,7 @@ from .utils import (
     core_function_object,
     fill_drain_program,
     max_tile_size,
+    vector_lanes,
     tiled_tile_size,
 )
 
@@ -121,6 +122,8 @@ _VECTORIZED_OPS = frozenset(
         "GGML_UNARY_OP_GELU",
         "GGML_UNARY_OP_NEG",
         "GGML_UNARY_OP_RELU",
+        "GGML_UNARY_OP_SGN",
+        "GGML_UNARY_OP_STEP",
     }
 )
 
@@ -147,8 +150,17 @@ def _create_external_function(
         The core function spec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
-    tile_size_fn = tiled_tile_size if vectorized else max_tile_size
-    tile_size = tile_size_fn(arch, input_tensor.dtype, num_elements)
+    if vectorized:
+        # Two fifos (in, out), whose types need not match: a converting unary op streams
+        # a wider output than input, and the budget has to charge each its own width.
+        tile_size = tiled_tile_size(
+            arch,
+            input_tensor.dtype,
+            num_elements,
+            fifo_dtypes=(input_tensor.dtype, output_tensor.dtype),
+        )
+    else:
+        tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
 
     compile_flags = [
         f"-D{op_name}=1",
@@ -157,6 +169,10 @@ def _create_external_function(
     ]
     if vectorized:
         compile_flags.append("-DGGML_VECTORIZED_TILING=1")
+        # Only promise aligned tile boundaries when the tile really is a whole number of vector
+        # registers; transform_vector_n static_asserts on this before honouring Aligned=true.
+        if tile_size % vector_lanes(arch, output_tensor.dtype) == 0:
+            compile_flags.append("-DGGML_TILE_VECTOR_ALIGNED=1")
 
     current_dir = Path(__file__).resolve().parent
     # Verified to compile with GGML_HSA_KERNEL_INLINE.

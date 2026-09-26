@@ -27,6 +27,8 @@ from .utils import (
     core_function_object,
     fill_drain_program,
     max_tile_size,
+    tiled_tile_size,
+    vector_lanes,
 )
 
 
@@ -140,7 +142,18 @@ def _create_external_function(
         The configured CoreFunctionSpec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
-    tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
+    # Three fifos here (in0, in1, out), not the unary default of two, and GGML does not
+    # require src1 to share the output type -- so charge the budget each fifo's own width.
+    tile_size = tiled_tile_size(
+        arch,
+        output_tensor.dtype,
+        num_elements,
+        fifo_dtypes=(
+            input_tensors[0].dtype,
+            input_tensors[1].dtype,
+            output_tensor.dtype,
+        ),
+    )
 
     current_dir = Path(__file__).resolve().parent
     # Verified to compile with GGML_HSA_KERNEL_INLINE.
@@ -159,6 +172,16 @@ def _create_external_function(
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            # L1-budgeted tile, so the shared transform_vector_n may use its vector body.
+            # This builder serves ADD/SUB/MUL/DIV; DIV has no vector body and simply ignores
+            # the flag. The generic broadcast path keeps the one-register tile and is
+            # deliberately left without it.
+            "-DGGML_VECTORIZED_TILING=1",
+            *(
+                ["-DGGML_TILE_VECTOR_ALIGNED=1"]
+                if tile_size % vector_lanes(arch, output_tensor.dtype) == 0
+                else []
+            ),
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
@@ -314,6 +337,16 @@ def _create_row_external_function(
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            # Tile is one whole dst row, so the shared transform_vector_n may use its vector
+            # body. (For a narrow row that tile is still below one vector register; the body
+            # then degrades to its scalar tail.) The generic broadcast path keeps the
+            # one-register tile and is deliberately left without this flag.
+            "-DGGML_VECTORIZED_TILING=1",
+            *(
+                ["-DGGML_TILE_VECTOR_ALIGNED=1"]
+                if tile_size % vector_lanes(arch, output_tensor.dtype) == 0
+                else []
+            ),
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)

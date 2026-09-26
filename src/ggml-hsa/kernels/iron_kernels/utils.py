@@ -3,6 +3,7 @@
 """Utility functions for IRON kernel implementations."""
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -111,6 +112,23 @@ def arch_aligned_num_elements(arch: str, tensor) -> int:
     return align_to_arch(arch, tensor.numel(), tensor.dtype)
 
 
+def vector_lanes(arch: str, dtype: np.dtype) -> int:
+    """Elements of dtype in one vector register on arch.
+
+    A tile that is a whole multiple of this is 512-bit aligned at every tile boundary, which is
+    the precondition for a kernel to use aligned vector loads/stores (transform_vector_n's
+    Aligned=true).
+
+    Args:
+        arch: Target architecture.
+        dtype: Element data type.
+
+    Returns:
+        The number of lanes.
+    """
+    return _arch_params(arch)["vector_reg_bits"] // (8 * dtype.itemsize)
+
+
 def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     """Largest power-of-two tile within a 512-bit vector dividing num_elements.
 
@@ -136,7 +154,12 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     return tile_size
 
 
-def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
+def tiled_tile_size(
+    arch: str,
+    dtype: np.dtype,
+    num_elements: int,
+    fifo_dtypes: Sequence[np.dtype] | None = None,
+) -> int:
     """Largest tile that divides num_elements and fits half the core data memory.
 
     Where max_tile_size caps the tile at one vector register, this streams the
@@ -152,8 +175,16 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
 
     Args:
         arch: Target architecture.
-        dtype: Element data type.
+        dtype: Element data type, used to size the vector register. This is the type the
+            vector body operates on, which need not be the widest fifo.
         num_elements: Total number of elements to tile.
+        fifo_dtypes: Element type of every object fifo the design streams through this
+            core, one entry per fifo, each double-buffered. Defaults to (dtype, dtype),
+            i.e. one input + one output. Pass the real types rather than a count: the
+            budget must charge each fifo its own element size, since GGML lets a binary
+            op's src1 (and either family's output) differ in width from the type the
+            vector body runs on. Sizing every fifo at the narrowest type under-counts the
+            buffers actually allocated and puts the tile over budget.
 
     Returns:
         The chosen tile size in elements; always divides num_elements.
@@ -162,8 +193,11 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     v = params["vector_reg_bits"] // (8 * dtype.itemsize)
     # Half the data memory, leaving room for stack + locals.
     budget = params["core_data_mem_bytes"] // 2
-    # in + out fifos, each double-buffered (depth 2) => 4 buffers of tile*itemsize bytes.
-    max_by_mem = (budget // (4 * dtype.itemsize) // v) * v
+    if fifo_dtypes is None:
+        fifo_dtypes = (dtype, dtype)
+    # Each fifo is double-buffered (depth 2) => two buffers of tile elements per fifo.
+    bytes_per_tile_element = 2 * sum(d.itemsize for d in fifo_dtypes)
+    max_by_mem = (budget // bytes_per_tile_element // v) * v
     cap = min(max_by_mem, num_elements)
 
     # Largest multiple of V that is <= cap and divides num_elements exactly.
