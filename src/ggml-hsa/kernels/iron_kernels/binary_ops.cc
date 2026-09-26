@@ -31,6 +31,61 @@ void transform_binary_n(const T0 * __restrict in0,
 }
 
 /**
+ * @brief Applies a binary operation to N elements, vectorized when the operand types match.
+ *
+ * Vector counterpart of @c transform_binary_n, mirroring @c transform_vector_n in unary_ops.cc.
+ * The vector path is gated on both operands sharing the output type, because it operates on the
+ * loaded vectors without a per-element cast; a widening or narrowing op keeps the scalar path.
+ *
+ * Unaligned loads/stores: a tile base is not guaranteed vector-aligned.
+ *
+ * @tparam T0       First input element type.
+ * @tparam T1       Second input element type.
+ * @tparam TOut     Output element type.
+ * @tparam VecOp    Callable applied to a pair of vectors.
+ * @tparam ScalarOp Callable applied to one element pair, for the tail and the scalar path.
+ *
+ * @param[in]  in0       First input array of N elements.
+ * @param[in]  in1       Second input array of N elements.
+ * @param[out] out       Output array of N elements.
+ * @param[in]  N         Number of elements to process.
+ * @param[in]  vec_op    Vector operation to apply.
+ * @param[in]  scalar_op Scalar operation to apply.
+ */
+template <typename T0, typename T1, typename TOut, typename VecOp, typename ScalarOp>
+void transform_binary_vector_n(const T0 * __restrict in0,
+                               const T1 * __restrict in1,
+                               int32_t N,
+                               TOut * __restrict out,
+                               VecOp vec_op,
+                               ScalarOp scalar_op) {
+    event0();
+
+    int32_t vend = 0;
+
+    if constexpr (std::is_same_v<T0, TOut> && std::is_same_v<T1, TOut>) {
+        constexpr int32_t V = 512 / (sizeof(TOut) * 8);
+        vend = (N / V) * V;
+
+        // No AIE_LOOP_MIN_ITERATION_COUNT: a tile narrower than V leaves vend 0, and promising
+        // >= 1 iteration would make the pipelined prologue run the body on too few elements.
+        AIE_PREPARE_FOR_PIPELINING
+        for (int32_t i = 0; i < vend; i += V) {
+            aie::store_unaligned_v(out + i,
+                                   vec_op(aie::load_unaligned_v<V>(in0 + i),
+                                          aie::load_unaligned_v<V>(in1 + i)));
+        }
+    }
+
+    // Tail of the vector loop, or the whole range when there is no vector path.
+    for (int32_t i = vend; i < N; ++i) {
+        out[i] = scalar_op(in0[i], in1[i]);
+    }
+
+    event1();
+}
+
+/**
  * @brief Applies a binary operation with NumPy-style broadcasting.
  *
  * Handles broadcasting of src1 (in1) to match the shape of src0/dst (in0/out).
@@ -182,9 +237,9 @@ void ggml_op_add(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
-        return static_cast<OUTPUT_DTYPE>(a + b);
-    });
+    transform_binary_vector_n(
+        in0, in1, N, out, [](auto a, auto b) { return aie::add(a, b); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); });
 }
 
 #endif // GGML_OP_ADD
@@ -203,9 +258,9 @@ void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
-        return static_cast<OUTPUT_DTYPE>(a - b);
-    });
+    transform_binary_vector_n(
+        in0, in1, N, out, [](auto a, auto b) { return aie::sub(a, b); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); });
 }
 
 #endif // GGML_OP_SUB
@@ -224,9 +279,10 @@ void ggml_op_mul(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
-        return static_cast<OUTPUT_DTYPE>(a * b);
-    });
+    transform_binary_vector_n(
+        in0, in1, N, out,
+        [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); });
 }
 
 #endif // GGML_OP_MUL
@@ -466,9 +522,9 @@ void ggml_op_sub_row(const INPUT0_DTYPE * __restrict src0,
  * aie::mul yields an accumulator, so the vector result is narrowed back to the operand
  * type before the store (same shape as the SCALE kernel).
  *
- * On aie2 (NPU1) there is no native fp32 multiplier: aie::mul lowers, via the shim in
- * aie_kernel_math.h, to Peano's bf16 triple-product emulation, so the vector path is not
- * bit-identical to the scalar `a * b` the tail uses. Measured against the CPU it costs one
+ * On aie2 (NPU1) there is no native fp32 multiplier: aie::mul lowers to ::mul_elem_16_conf,
+ * which Peano defines in aiev2/aiev2_core.h (clang 22 and later) as a bf16 triple-product
+ * emulation, so the vector path is not bit-identical to the scalar `a * b` the tail uses. Measured against the CPU it costs one
  * ulp of the operand scale (test-broadcast-hsa reports it), which is the same order as the
  * ADD and SUB row kernels above -- those are within one ulp too, on both their vector and
  * scalar paths. Only DIV below, and this kernel's own scalar tail, come out exact.

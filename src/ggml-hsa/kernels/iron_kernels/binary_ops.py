@@ -26,6 +26,7 @@ from .utils import (
     arch_aligned_num_elements,
     fill_drain_program,
     max_tile_size,
+    tiled_tile_size,
 )
 
 
@@ -139,7 +140,7 @@ def _create_external_function(
         The configured CoreFunctionSpec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
-    tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
+    tile_size = tiled_tile_size(arch, output_tensor.dtype, num_elements)
 
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
