@@ -47,7 +47,13 @@ class ObjectFifo:
     across the columns of a row, and each B tile across the rows of a column.
     """
 
-    def __init__(self, name: str, depth: int, n_consumers: int = 1) -> None:
+    def __init__(
+        self,
+        name: str,
+        depth: int,
+        n_consumers: int = 1,
+        timeout: float = DEFAULT_TIMEOUT_S,
+    ) -> None:
         if depth < 1:
             msg = f"{name}: depth must be >= 1, got {depth}"
             raise ValueError(msg)
@@ -56,6 +62,10 @@ class ObjectFifo:
             raise ValueError(msg)
         self.name = name
         self.depth = depth
+        # Default deadline for this FIFO's blocking operations. A test that
+        # deliberately starves a FIFO sets it low so the expected failure is
+        # fast rather than dominating the suite's wall time.
+        self.timeout = timeout
         self.n_consumers = n_consumers
         self._slots: list[object] = [None] * depth
         self._produced = 0
@@ -80,8 +90,9 @@ class ObjectFifo:
             raise DeadlockError(msg)
 
     # -- producer side -----------------------------------------------------
-    def acquire_produce(self, timeout: float = DEFAULT_TIMEOUT_S) -> int:
+    def acquire_produce(self, timeout: float | None = None) -> int:
         """Block for a free slot; return its index. Does not publish it."""
+        timeout = self.timeout if timeout is None else timeout
         with self._cv:
             self._wait(
                 lambda: self._produced - min(self._consumed) < self.depth,
@@ -98,10 +109,9 @@ class ObjectFifo:
             self._cv.notify_all()
 
     # -- consumer side -----------------------------------------------------
-    def acquire_consume(
-        self, consumer: int = 0, timeout: float = DEFAULT_TIMEOUT_S
-    ) -> object:
+    def acquire_consume(self, consumer: int = 0, timeout: float | None = None) -> object:
         """Block until this consumer's next object exists; return it."""
+        timeout = self.timeout if timeout is None else timeout
         with self._cv:
             self._wait(
                 lambda: self._consumed[consumer] < self._produced,
@@ -114,6 +124,35 @@ class ObjectFifo:
         with self._cv:
             self._consumed[consumer] += 1
             self._cv.notify_all()
+
+
+def pad_to(value: int, multiple: int) -> int:
+    """Round ``value`` up to a multiple of ``multiple`` (the host's GGML_PAD)."""
+    return ((value + multiple - 1) // multiple) * multiple
+
+
+def build_gemm_fifos(
+    n_aie_rows: int, n_aie_cols: int, depth: int, timeout: float = DEFAULT_TIMEOUT_S
+):
+    """The FIFO grid the whole-array GEMM builds, shared by every model of it.
+
+    A is broadcast across the columns of a row and B across the rows of a
+    column, so those FIFOs have several consumers each; every core owns a
+    private C FIFO. Returns ``(a_fifos, b_fifos, c_fifos)``.
+    """
+    a_fifos = [
+        ObjectFifo(f"A_l2l1[{r}]", depth, n_consumers=n_aie_cols, timeout=timeout)
+        for r in range(n_aie_rows)
+    ]
+    b_fifos = [
+        ObjectFifo(f"B_l2l1[{c}]", depth, n_consumers=n_aie_rows, timeout=timeout)
+        for c in range(n_aie_cols)
+    ]
+    c_fifos = [
+        [ObjectFifo(f"C_l1l2[{r}][{c}]", depth, timeout=timeout) for c in range(n_aie_cols)]
+        for r in range(n_aie_rows)
+    ]
+    return a_fifos, b_fifos, c_fifos
 
 
 def run_workers(workers, timeout: float = 30.0) -> None:

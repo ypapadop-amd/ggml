@@ -27,13 +27,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from presim import DeadlockError, ObjectFifo, run_workers
+from presim import DEFAULT_TIMEOUT_S, DeadlockError, build_gemm_fifos, run_workers
 
 N_AIE_ROWS = 4
 N_AIE_COLS = 8
 
 
-def build_gemm_workers(A, B, C_out, m, k, n, fifo_depth, *, starve_a=False):
+def build_gemm_workers(
+    A, B, C_out, m, k, n, fifo_depth, *, starve_a=False, timeout=DEFAULT_TIMEOUT_S
+):
     """Wire the GEMM topology; return the worker callables.
 
     ``starve_a`` deliberately drops the last A tile, to prove the harness
@@ -51,18 +53,9 @@ def build_gemm_workers(A, B, C_out, m, k, n, fifo_depth, *, starve_a=False):
     k_tiles = K // k
     tiles_per_core = row_blocks * col_blocks
 
-    a_fifos = [
-        ObjectFifo(f"A_l2l1[{r}]", fifo_depth, n_consumers=N_AIE_COLS)
-        for r in range(N_AIE_ROWS)
-    ]
-    b_fifos = [
-        ObjectFifo(f"B_l2l1[{c}]", fifo_depth, n_consumers=N_AIE_ROWS)
-        for c in range(N_AIE_COLS)
-    ]
-    c_fifos = [
-        [ObjectFifo(f"C_l1l2[{r}][{c}]", fifo_depth) for c in range(N_AIE_COLS)]
-        for r in range(N_AIE_ROWS)
-    ]
+    a_fifos, b_fifos, c_fifos = build_gemm_fifos(
+        N_AIE_ROWS, N_AIE_COLS, fifo_depth, timeout=timeout
+    )
 
     workers = []
 
@@ -129,8 +122,8 @@ def build_gemm_workers(A, B, C_out, m, k, n, fifo_depth, *, starve_a=False):
     return workers
 
 
-def _problem(M=64, N=128, K=32, seed=0):
-    rng = np.random.default_rng(seed)
+def _problem(M=64, N=128, K=32):
+    rng = np.random.default_rng(0)
     A = rng.integers(-4, 5, size=(M, K), dtype=np.int64)
     B = rng.integers(-4, 5, size=(K, N), dtype=np.int64)
     return A, B
@@ -158,8 +151,10 @@ def test_starved_fifo_is_reported_not_hung():
     """A missing tile must fail fast and name the FIFO, not hang the suite."""
     A, B = _problem()
     C = np.zeros((A.shape[0], B.shape[1]), dtype=np.int64)
+    # Short deadline: the starvation is expected, so waiting the default 5s
+    # would make this one test dominate the suite's runtime.
     workers = build_gemm_workers(
-        A, B, C, m=8, k=8, n=16, fifo_depth=2, starve_a=True
+        A, B, C, m=8, k=8, n=16, fifo_depth=2, starve_a=True, timeout=0.25
     )
     with pytest.raises(DeadlockError) as excinfo:
         run_workers(workers, timeout=15.0)

@@ -30,18 +30,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from presim import ObjectFifo, run_workers
+from presim import build_gemm_fifos, pad_to, run_workers
 
 N_AIE_ROWS = 4
 N_AIE_COLS = 8
 
-# Padding granularity for aie2p bf16, mirroring ggml_hsa_prepare_mul_mat_f32
-# and gemm.py's (row_expand*r, s, col_expand*t).
+# Padding granularity for aie2p bf16 = (row_expand*r, s, col_expand*t). Kept as
+# literals so this harness stays independent of the IRON toolchain that
+# importing gemm.py would pull in; test_gemm_tiling.py is what pins these
+# against gemm.py's own tables and the C++ copy.
 GM, GK, GN = 8, 8, 16
-
-
-def pad_to(value: int, multiple: int) -> int:
-    return ((value + multiple - 1) // multiple) * multiple
 
 
 def padded_dims(M: int, N: int, K: int) -> tuple[int, int, int]:
@@ -78,18 +76,9 @@ def build_fused_workers(
     k_tiles = Kpad // k
     tiles_per_core = row_blocks * col_blocks
 
-    a_fifos = [
-        ObjectFifo(f"A_l2l1[{r}]", fifo_depth, n_consumers=N_AIE_COLS)
-        for r in range(N_AIE_ROWS)
-    ]
-    b_fifos = [
-        ObjectFifo(f"B_l2l1[{c}]", fifo_depth, n_consumers=N_AIE_ROWS)
-        for c in range(N_AIE_COLS)
-    ]
-    c_fifos = [
-        [ObjectFifo(f"C_l1l2[{r}][{c}]", fifo_depth) for c in range(N_AIE_COLS)]
-        for r in range(N_AIE_ROWS)
-    ]
+    a_fifos, b_fifos, c_fifos = build_gemm_fifos(
+        N_AIE_ROWS, N_AIE_COLS, fifo_depth
+    )
 
     def a_feeder(r):
         def run():

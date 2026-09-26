@@ -71,6 +71,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from presim import pad_to
+
 N_AIE_ROWS = 4
 N_AIE_COLS = 8
 DMA_MAX_STRIDE = 1 << 20
@@ -155,10 +157,6 @@ def paint(desc, canvas):
 def drained_elements(descs):
     """Elements a descriptor set transfers -- the source-side quantity."""
     return sum(np.prod(sizes) for _, sizes, _ in descs)
-
-
-def pad_to(v, mult):
-    return ((v + mult - 1) // mult) * mult
 
 
 # (M, N, m, n): M/N real; Mpad/Npad derived with the aie2p bf16 granularity.

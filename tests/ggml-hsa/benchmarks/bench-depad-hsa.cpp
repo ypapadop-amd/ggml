@@ -77,9 +77,9 @@ void bench_depad(benchmark::State & state) {
             state.SkipWithError("Dispatch error.");
             break;
         }
-        // graph_compute only flushes on this backend; without this the loop times submission
-        // rather than the device work (a single-node graph never builds enough queue
-        // backpressure to hide that).
+        // graph_compute only flushes on this backend, so without this the loop
+        // times submission rather than the device work. See bench-mul-mat-hsa.cpp
+        // for the full rationale.
         ggml_backend_synchronize(backend);
     }
 
