@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 //
 // Device tests for the element-wise unary ops: the vectorized SQR, ABS and NEG, plus the
-// still-scalar SGN and STEP. Inputs deliberately straddle zero and include exact zeros, so
-// the sign-dependent ops are checked on all their branches.
+// still-scalar SGN and STEP. Inputs deliberately straddle zero, and element 0 is forced to
+// exactly zero so the sign-dependent ops are checked on that branch too. The signbit cases
+// below are what cover zero/inf/NaN bit patterns for ABS and NEG.
 //
 // One shape has an element count that is not a multiple of the 16-element f32 vector, which
 // is what drives the kernel down the scalar tail. Note it is the *total* count that matters,
@@ -41,9 +42,9 @@ float reference(op_kind kind, float x) {
 
 // Maps a float onto a monotonically increasing integer, so the difference between two keys
 // is a true distance in representable floats. Subtracting the raw int32 bit patterns instead
-// overflows whenever the two values straddle zero -- reference(neg, +0.0f) is -0.0f, i.e.
-// INT32_MIN, so a device result of +0.0f would give 0 - INT32_MIN, wrapping to a negative
-// "ulp" that never exceeds the bound and reports the mismatch as 0 ulp.
+// overflows whenever the two values straddle zero: a device NEG returning +3.0 where -3.0 was
+// wanted would give 0x40400000 - 0xC0400000, wrapping to a negative "ulp" that never exceeds
+// the bound. Under this key that case scores 2155872256 and fails as it should.
 int64_t ulp_key(float f) {
     uint32_t b;
     std::memcpy(&b, &f, sizeof b);
@@ -108,7 +109,7 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1,
         rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
         const uint32_t r = static_cast<uint32_t>(rng >> 32);
         const uint32_t bits = (r & 0x807FFFFFu) | ((110u + (r >> 24) % 34u) << 23);
-        std::memcpy(&src_host[i], &bits, 4);
+        std::memcpy(&src_host[i], &bits, sizeof bits);
     }
     src_host[0] = 0.0f;
     ggml_backend_tensor_set(src, src_host.data(), 0, ggml_nbytes(src));
@@ -126,8 +127,9 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1,
     // Measured on aie2 (NPU1): ABS/NEG/SGN/STEP are exact -- they are sign and comparison
     // work, not arithmetic -- and SQR reaches 3 ulp because aie::mul on fp32 lowers to the
     // emulated bf16 triple-product (see the aie2 shim in aie_kernel_math.h), which costs
-    // about 1 ulp, doubled by squaring. Bounds are per-op so a regression on the exact ops
-    // cannot hide behind SQR's allowance.
+    // about 1 ulp, doubled by squaring. The bound is set one above the measured 3 so a
+    // rounding difference on another input does not flake; anything beyond that is a real
+    // drift. Bounds are per-op so a regression on the exact ops cannot hide behind SQR's.
     const int64_t max_ulp = (kind == op_kind::sqr) ? 4 : 0;
 
     int64_t worst_ulp = 0;

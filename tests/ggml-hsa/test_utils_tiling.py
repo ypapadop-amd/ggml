@@ -32,8 +32,19 @@ def test_max_tile_size_unchanged_f32_250000():
 
 
 def test_max_tile_size_unchanged_pow2():
-    # 512-bit vector / 4-byte f32 = 128 elements/tile; 2048 divides evenly, so 128
-    assert max_tile_size("aie2", np.dtype(np.float32), 2048) == 128
+    # 512-bit vector / 32-bit f32 = 16 elements/tile; 2048 divides evenly, so 16.
+    assert max_tile_size("aie2", np.dtype(np.float32), 2048) == 16
+
+
+def test_max_tile_size_is_one_vector_register_for_every_dtype():
+    # The tile is one 512-bit vector register's worth of elements, whatever the
+    # dtype -- this is the invariant the 8x unit error broke (it divided the bit
+    # count by itemsize in *bytes*, yielding 8 registers' worth). tiled_tile_size
+    # computes the same V as `vector_reg_bits // (8 * itemsize)`; the two must agree.
+    for dtype in (np.float32, np.float16, np.int8, np.int16):
+        d = np.dtype(dtype)
+        tile = max_tile_size("aie2", d, 65536)
+        assert tile * d.itemsize * 8 == _ARCH_PARAMS["aie2"]["vector_reg_bits"]
 
 
 def test_tiled_tile_size_divides_num_elements():

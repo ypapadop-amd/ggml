@@ -35,8 +35,9 @@ case "${TARGET}" in
 esac
 
 # GGML_HSA_PREFER_TRITON was the old boolean; nothing reads it any more, so a
-# stale invocation would silently measure IRON and label it Triton. Fail loudly.
-if [[ -n "${GGML_HSA_PREFER_TRITON:-}" ]]; then
+# stale invocation would silently measure IRON and label it Triton. NPU only --
+# it never affected the cpu/gpu targets, so don't block those.
+if [[ "${TARGET}" == "npu" && -n "${GGML_HSA_PREFER_TRITON:-}" ]]; then
     echo "error: GGML_HSA_PREFER_TRITON is obsolete and is ignored by the backend." >&2
     echo "       use: GGML_HSA_JIT_COMPILER_ORDER=triton,iron $0 ${TARGET}" >&2
     exit 1
@@ -89,7 +90,10 @@ esac
 # exported by the caller and inherited by the benchmark). Tag the output when
 # Triton leads so it doesn't overwrite the default (IRON) NPU results.
 JIT_ORDER="${GGML_HSA_JIT_COMPILER_ORDER:-}"
-if [[ "${TARGET}" == "npu" && "${JIT_ORDER}" == triton* ]]; then
+# The backend matches these names case-insensitively, so lower-case before
+# testing -- "Triton,iron" really does put Triton first.
+JIT_ORDER_LC="${JIT_ORDER,,}"
+if [[ "${TARGET}" == "npu" && "${JIT_ORDER_LC}" == triton* ]]; then
     STEM="${STEM}-triton"
 fi
 
@@ -128,6 +132,49 @@ fi
 if [[ "${rc}" -ne 0 ]]; then
     echo "warning: benchmark exited with code ${rc} (likely HSA teardown crash);" \
          "JSON was written, continuing to report generation" >&2
+fi
+
+# The requested order is only a request: build.py compiles the candidates in
+# order and uses the first that succeeds, so a failing Triton compile silently
+# yields an IRON measurement under a "-triton" filename -- the exact mislabeling
+# this script exists to avoid. Decide from the artifacts which backend actually
+# produced each kernel: Triton leaves the PDI inside <kernel>-triton-artifacts/,
+# IRON writes it to the cache root with an empty <kernel>-iron-artifacts/.
+verify_backend_used() {
+    local want="$1"
+    local cache="${GGML_HSA_KERNEL_CACHE_DIR:-${HOME}/.cache/ggml}/${ARCH}"
+    if [[ ! -d "${cache}" ]]; then
+        echo "warning: no kernel cache at ${cache}; cannot verify which backend ran" >&2
+        return 0
+    fi
+    local triton=0 iron=0 pdi base tart
+    for pdi in "${cache}"/*.pdi; do
+        [[ -e "${pdi}" ]] || continue
+        base="${pdi%.pdi}"
+        tart="$(find "${base}-triton-artifacts" -name '*.pdi' 2>/dev/null | head -1)"
+        if [[ -n "${tart}" ]] && cmp -s "${pdi}" "${tart}"; then
+            triton=$((triton + 1))
+        elif [[ -d "${base}-iron-artifacts" ]]; then
+            iron=$((iron + 1))
+        fi
+    done
+    echo "    backends actually used: triton=${triton} iron=${iron}"
+    if [[ "${want}" == "triton" && "${iron}" -gt 0 ]]; then
+        echo "error: ${iron} kernel(s) fell back to IRON, so ${JSON}" >&2
+        echo "       is an IRON measurement despite its -triton name. Not writing a report." >&2
+        echo "       Check the JIT log (GGML_HSA_ENABLE_LOG=1) for the Triton failure." >&2
+        return 1
+    fi
+    if [[ "${want}" == "iron" && "${triton}" -gt 0 ]]; then
+        echo "error: ${triton} kernel(s) were built by Triton, so ${JSON}" >&2
+        echo "       is not the IRON baseline its name claims. Not writing a report." >&2
+        return 1
+    fi
+    return 0
+}
+
+if [[ "${TARGET}" == "npu" ]]; then
+    verify_backend_used "$([[ "${JIT_ORDER_LC}" == triton* ]] && echo triton || echo iron)" || exit 1
 fi
 
 # generate the markdown report from the JSON

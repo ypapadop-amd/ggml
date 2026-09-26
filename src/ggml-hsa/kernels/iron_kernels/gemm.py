@@ -147,10 +147,14 @@ def select_gemm_tile(
 
     Args:
         dev: Target device ("npu" or "npu2").
-        M, N, K: Full GEMM problem dimensions.
+        M: Full GEMM problem dimension M.
+        N: Full GEMM problem dimension N.
+        K: Full GEMM problem dimension K.
         dtype_in: NumPy input dtype (for element size).
         dtype_out: NumPy output dtype (for element size).
-        r, s, t: Microkernel MAC dims for the input dtype.
+        r: Microkernel MAC dim r for the input dtype.
+        s: Microkernel MAC dim s for the input dtype.
+        t: Microkernel MAC dim t for the input dtype.
         row_expand: mmul subtiles per rowA loop step (see resolve_expansion).
         col_expand: mmul subtiles per colB loop step (see resolve_expansion).
         n_aie_rows: AIE array rows (4 on both npu and npu2).
@@ -210,7 +214,7 @@ def select_gemm_tile(
     # N exceeds the [1:1048576] range") with nothing left to explain why. Callers
     # treat this as "kernel not supported" and fall back to the CPU.
     reasons = []
-    if M < gm or K < gk or N < gn:
+    if gm > M or gk > K or gn > N:
         reasons.append(
             f"problem is smaller than the microkernel granularity: "
             f"(M,N,K)=({M},{N},{K}) vs minimum (m,k,n)=({gm},{gk},{gn})"
