@@ -7,9 +7,8 @@
 
 """Top-level entry points for GGML binary operations."""
 
-from pathlib import Path
-
 from .kernel import Backend, KernelSpec
+from .triton_kernels.spec_utils import elementwise_block_size, transform_script
 
 
 def _validate_binary_inputs(input_tensors: list) -> None:
@@ -79,8 +78,10 @@ def _make_triton_add_kernel_spec(
         KernelSpec configured for the TRITON backend.
 
     Raises:
-        ValueError: If the tensors require broadcasting or are non-contiguous
-            (raised lazily when the returned compile function is invoked).
+        ValueError: If the tensors require broadcasting, are non-contiguous, or
+            the element count is not a multiple of the block size (the kernel is
+            unmasked). All are raised lazily when the returned compile function
+            is invoked.
     """
     n_elements = output_tensor.numel()
 
@@ -106,16 +107,25 @@ def _make_triton_add_kernel_spec(
             msg = "Broadcasting or non-contiguous tensors detected."
             raise ValueError(msg)
 
-        block_size = 1 << (min(1024, n_elements) - 1).bit_length()
-        block_size = min(block_size, 1024)
+        # Buffers and the unmasked launch are sized from the output element
+        # count, so a differently shaped src0 would be read past its end.
+        if input_tensors[0].shape != output_tensor.shape:
+            msg = (
+                f"src0 shape must match output: {tuple(input_tensors[0].shape)} "
+                f"!= {tuple(output_tensor.shape)}"
+            )
+            raise ValueError(msg)
+
+        block_size = elementwise_block_size(n_elements)
         grid = (triton.cdiv(n_elements, block_size),)
         device = triton_device(arch)
-        a = torch.randn(
+        # Contents are never read; these carry dtype/stride metadata only.
+        a = torch.empty(
             n_elements,
             device=device,
             dtype=numpy_dtype_to_torch(input_tensors[0].dtype),
         )
-        b = torch.randn(
+        b = torch.empty(
             n_elements,
             device=device,
             dtype=numpy_dtype_to_torch(input_tensors[1].dtype),
@@ -137,9 +147,7 @@ def _make_triton_add_kernel_spec(
         output_tensor=output_tensor,
         function=_compile,
         config={
-            "transform_script": str(
-                Path(__file__).parent / "triton_kernels" / f"vecadd_{arch}.mlir"
-            ),
+            "transform_script": transform_script("vecadd", arch, output_tensor.dtype),
         },
     )
 
@@ -148,6 +156,10 @@ def ggml_op_add(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> list[KernelSpec]:
     """Return KernelSpecs for GGML_OP_ADD (IRON primary, Triton fallback).
+
+    IRON is tried first; the Triton spec is the fallback, reached only if IRON
+    compilation fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the
+    order so Triton is tried first (see CompilerConfig.compilers).
 
     Args:
         arch: Target architecture.

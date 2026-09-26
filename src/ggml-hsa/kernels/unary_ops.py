@@ -8,6 +8,7 @@
 """Top-level entry points for GGML unary operations."""
 
 from .kernel import Backend, KernelSpec
+from .triton_kernels.spec_utils import elementwise_block_size, transform_script
 
 
 def _make_iron_unary_kernel_spec(
@@ -45,6 +46,93 @@ def _make_iron_unary_kernel_spec(
             input_tensors=input_tensors,
             output_tensor=output_tensor,
         ),
+    )
+
+
+def _make_triton_relu_kernel_spec(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+) -> KernelSpec:
+    """Create a TRITON-backend KernelSpec for RELU.
+
+    ACCURACY: the f32 path is not bit-accurate. AIE2 has no legal f32 vector max,
+    so relu_<arch>_f32.mlir keeps @cast_bf16_only_ops and computes the max in
+    bf16, leaving the f32 result rounded to bf16 precision; the bf16 path and
+    IRON are exact. Reached only when IRON fails, so it trades accuracy for
+    having a kernel at all -- do not select it where f32 precision matters.
+
+    Args:
+        arch: Target architecture.
+        input_tensors: List of one input tensor.
+        output_tensor: Output tensor.
+
+    Returns:
+        KernelSpec configured for the TRITON backend.
+
+    Raises:
+        ValueError: If the tensors are non-contiguous, or the element count is
+            not a multiple of the block size (the kernel is unmasked). Both are
+            raised lazily when the returned compile function is invoked.
+    """
+    n_elements = output_tensor.numel()
+
+    def _compile(
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        n_elements=n_elements,
+    ):
+        # All imports, grid specialisation, and tensor creation are deferred into
+        # _compile so that any failure is caught by the try/except in build.py.
+        import torch
+        import triton
+
+        from .triton_kernels.relu import relu
+        from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
+
+        if len(input_tensors) != 1:
+            msg = f"Operation requires exactly one input tensor, got {len(input_tensors)}."
+            raise ValueError(msg)
+        if any(not t.contiguous for t in (*input_tensors, output_tensor)):
+            msg = "Non-contiguous tensors detected."
+            raise ValueError(msg)
+
+        # Both buffers are sized from the output element count, so a
+        # mismatched input would be read past its end.
+        if input_tensors[0].shape != output_tensor.shape:
+            msg = (
+                f"Input and output shapes differ: {tuple(input_tensors[0].shape)} "
+                f"!= {tuple(output_tensor.shape)}"
+            )
+            raise ValueError(msg)
+
+        block_size = elementwise_block_size(n_elements)
+        grid = (triton.cdiv(n_elements, block_size),)
+        device = triton_device(arch)
+        # Contents are never read; these carry dtype/stride metadata only.
+        x = torch.empty(
+            n_elements,
+            device=device,
+            dtype=numpy_dtype_to_torch(input_tensors[0].dtype),
+        )
+        y = torch.empty(
+            n_elements,
+            device=device,
+            dtype=numpy_dtype_to_torch(output_tensor.dtype),
+        )
+        return relu[grid](X=x, Y=y, n_elements=n_elements, BLOCK_SIZE_N=block_size)
+
+    return KernelSpec(
+        backend=Backend.TRITON,
+        op_name="GGML_UNARY_OP_RELU",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        function=_compile,
+        config={
+            "transform_script": transform_script("relu", arch, output_tensor.dtype),
+        },
     )
 
 
@@ -271,10 +359,14 @@ def ggml_unary_op_elu(
 
 def ggml_unary_op_relu(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
-) -> KernelSpec:
-    """Return the KernelSpec for GGML_UNARY_OP_RELU.
+) -> list[KernelSpec]:
+    """Return KernelSpecs for GGML_UNARY_OP_RELU (IRON primary, Triton fallback).
 
-    Parameters:
+    IRON is tried first; the Triton spec is the fallback, reached only if IRON
+    compilation fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the
+    order so Triton is tried first (used to benchmark or exercise the Triton path).
+
+    Args:
         arch: Target architecture.
         input_tensors: List of one input tensor.
         output_tensor: Output tensor.
@@ -282,12 +374,17 @@ def ggml_unary_op_relu(
             by the dispatch interface).
 
     Returns:
-        KernelSpec for the RELU operation.
+        List of KernelSpecs for the RELU operation: IRON first, then Triton as a
+        fallback (reordered by CompilerConfig.compilers /
+        ``GGML_HSA_JIT_COMPILER_ORDER``).
 
     """
-    return _make_iron_unary_kernel_spec(
-        arch, input_tensors, output_tensor, "GGML_UNARY_OP_RELU"
-    )
+    return [
+        _make_iron_unary_kernel_spec(
+            arch, input_tensors, output_tensor, "GGML_UNARY_OP_RELU"
+        ),
+        _make_triton_relu_kernel_spec(arch, input_tensors, output_tensor),
+    ]
 
 
 def ggml_unary_op_sigmoid(
