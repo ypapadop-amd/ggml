@@ -7,7 +7,6 @@
 
 """Top-level entry point for the matrix multiplication operation (GGML_OP_MUL_MAT)."""
 
-import os
 from functools import partial
 
 from .kernel import Backend, KernelSpec
@@ -211,13 +210,14 @@ def _make_triton_matmul_kernel_spec(
 def ggml_op_mul_mat(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> list[KernelSpec]:
-    """Return KernelSpecs for GGML_OP_MUL_MAT (IRON only unless Triton opted in).
+    """Return KernelSpecs for GGML_OP_MUL_MAT (IRON primary, Triton fallback).
 
-    Only the IRON spec is returned by default: the Triton MUL_MAT is known
-    wrong against GGML buffers (see _make_triton_matmul_kernel_spec), so as an
-    automatic fallback it would turn an IRON compile failure into a silently
-    incorrect result. Set ``GGML_HSA_ENABLE_TRITON_MUL_MAT=1`` to append it for
-    benchmarking or work on the kernel.
+    IRON is tried first; the Triton spec is reached only if IRON compilation
+    fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the order.
+
+    Note the Triton spec is known wrong against GGML buffers -- see
+    _make_triton_matmul_kernel_spec -- so reaching it yields an incorrect
+    result rather than a clean "unsupported".
 
     Args:
         arch: Target architecture.
@@ -226,20 +226,10 @@ def ggml_op_mul_mat(
         op_params: Operation parameters (unused; shape/dtype come from tensors).
 
     Returns:
-        The IRON KernelSpec, plus the Triton one when it is explicitly enabled.
-        Order within the list is still subject to CompilerConfig.compilers /
-        ``GGML_HSA_JIT_COMPILER_ORDER``.
+        List of KernelSpecs: IRON first, then Triton (reordered by
+        CompilerConfig.compilers / ``GGML_HSA_JIT_COMPILER_ORDER``).
     """
-    iron_spec = _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor)
-    if os.environ.get("GGML_HSA_ENABLE_TRITON_MUL_MAT", "0").lower() not in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    ):
-        return [iron_spec]
-
     return [
-        iron_spec,
+        _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor),
         _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor),
     ]
