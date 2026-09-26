@@ -35,10 +35,11 @@ from presim import build_gemm_fifos, pad_to, run_workers
 N_AIE_ROWS = 4
 N_AIE_COLS = 8
 
-# Padding granularity for aie2p bf16 = (row_expand*r, s, col_expand*t). Kept as
-# literals so this harness stays independent of the IRON toolchain that
-# importing gemm.py would pull in; test_gemm_tiling.py is what pins these
-# against gemm.py's own tables and the C++ copy.
+# Padding granularity for aie2p bf16 = (row_expand*r, s, col_expand*t). These are
+# literals so the harness stays independent of the IRON toolchain that importing
+# gemm.py would pull in -- which does mean nothing checks them against gemm.py's
+# tables automatically. test_padding_matches_the_host_rule below pins the padded
+# shapes they produce, so a drift shows up there rather than silently.
 GM, GK, GN = 8, 8, 16
 
 
@@ -153,8 +154,8 @@ def build_fused_workers(
     return workers
 
 
-def _run(M, N, K, m, k, n, fifo_depth=2, seed=0, *, dtype=np.int64, **kw):
-    rng = np.random.default_rng(seed)
+def _run(M, N, K, m, k, n, fifo_depth=2, *, dtype=np.int64, **kw):
+    rng = np.random.default_rng(0)
     A = rng.integers(-4, 5, size=(M, K)).astype(dtype)
     B = rng.integers(-4, 5, size=(K, N)).astype(dtype)
     C = np.zeros((M, N), dtype=dtype)

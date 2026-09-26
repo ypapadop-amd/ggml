@@ -771,6 +771,41 @@ static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
 }
 
 /**
+ * @brief Points a padded-GEMM operand at a bf16 internal buffer, unless it already matches.
+ *
+ * An operand that is already bf16 at exactly the padded shape needs neither conversion nor
+ * padding, so it keeps pointing at the parent buffer: leaving @c buffer_size at 0 skips the
+ * internal allocation, the @c CONVERT_PAD dispatch, and (when no operand needs one) the whole
+ * source synchronization. Redirecting it anyway costs a full-size device copy into an
+ * identically-shaped, identically-typed buffer -- measured at ~350 us per 512x512 operand on
+ * aie2p, a third of a 512^3 bf16 GEMM spent copying data to itself.
+ *
+ * The zero-padding itself is not done here: this only points the internal tensor at a buffer of
+ * the padded shape, which @ref allocate_internal_storage pre-zeroes and the @c CONVERT_PAD
+ * dispatch fills.
+ *
+ * @param[in] dev_info device information (supplies the buffer alignment)
+ * @param[in,out] source internal source node to retype and resize
+ * @param[in] ne0 padded extent of dimension 0 (the K dimension for both operands)
+ * @param[in] ne1 padded extent of dimension 1 (Mpad for A, Npad for B)
+ */
+static void ggml_hsa_pad_gemm_operand(const ggml_hsa_device_info::device_info & dev_info,
+                                      ggml_backend_hsa_tensor_extra::source_node_t & source,
+                                      std::int64_t ne0,
+                                      std::int64_t ne1) {
+    ggml_tensor & operand = source.tensor;
+    if (operand.type == GGML_TYPE_BF16 && operand.ne[0] == ne0 && operand.ne[1] == ne1) {
+        return;
+    }
+    operand.type = GGML_TYPE_BF16;
+    operand.ne[0] = ne0;
+    operand.ne[1] = ne1;
+    ggml_hsa_set_contiguous_strides(operand);
+    operand.data = nullptr;
+    source.buffer_size = GGML_PAD(ggml_nbytes(&operand), dev_info.alignment);
+}
+
+/**
  * @brief Prepares an F32 @c MUL_MAT node for the AIE whole-array GEMM kernel.
  *
  * The GEMM microkernel has no native f32 path and the whole-array tiling requires the matrix
@@ -797,32 +832,6 @@ static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
  * @param[in,out] sources internal source nodes
  * @return @c true if the node was rewritten for the padded bf16 GEMM path
  */
-/**
- * @brief Points a padded-GEMM operand at a bf16 internal buffer, unless it already matches.
- *
- * An operand that is already bf16 at exactly the padded shape needs neither conversion nor
- * padding, so it keeps pointing at the parent buffer: leaving @c buffer_size at 0 skips the
- * internal allocation, the @c CONVERT_PAD dispatch, and (when no operand needs one) the whole
- * source synchronization. Redirecting it anyway costs a full-size device copy into an
- * identically-shaped, identically-typed buffer -- measured at ~350 us per 512x512 operand on
- * aie2p, a third of a 512^3 bf16 GEMM spent copying data to itself.
- */
-static void ggml_hsa_pad_gemm_operand(const ggml_hsa_device_info::device_info & dev_info,
-                                      ggml_backend_hsa_tensor_extra::source_node_t & source,
-                                      std::int64_t ne0,
-                                      std::int64_t ne1) {
-    ggml_tensor & operand = source.tensor;
-    if (operand.type == GGML_TYPE_BF16 && operand.ne[0] == ne0 && operand.ne[1] == ne1) {
-        return;
-    }
-    operand.type = GGML_TYPE_BF16;
-    operand.ne[0] = ne0;
-    operand.ne[1] = ne1;
-    ggml_hsa_set_contiguous_strides(operand);
-    operand.data = nullptr;
-    source.buffer_size = GGML_PAD(ggml_nbytes(&operand), dev_info.alignment);
-}
-
 static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_info,
                                          ggml_backend_hsa_tensor_extra::node_t & node,
                                          ggml_backend_hsa_tensor_extra::sources_t & sources) {

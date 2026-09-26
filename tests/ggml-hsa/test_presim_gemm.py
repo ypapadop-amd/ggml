@@ -27,15 +27,22 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from presim import DEFAULT_TIMEOUT_S, DeadlockError, build_gemm_fifos, run_workers
+from presim import DeadlockError, build_gemm_fifos, run_workers
 
 N_AIE_ROWS = 4
 N_AIE_COLS = 8
 
+# Deadlines used when a test deliberately starves a FIFO. Nothing in the graph
+# is healthy once A stops feeding -- the cores block on A, the B feeders back up
+# behind them, the drains wait on C -- so every deadline has to be short or
+# run_workers spends the default 5s joining threads that will never finish.
+# A is given the shortest one so it always reports first and the diagnosis names
+# the FIFO that actually starved rather than one stalled behind it.
+STARVED_FIFO_TIMEOUT_S = 0.1
+DOWNSTREAM_FIFO_TIMEOUT_S = 0.5
 
-def build_gemm_workers(
-    A, B, C_out, m, k, n, fifo_depth, *, starve_a=False, timeout=DEFAULT_TIMEOUT_S
-):
+
+def build_gemm_workers(A, B, C_out, m, k, n, fifo_depth, *, starve_a=False):
     """Wire the GEMM topology; return the worker callables.
 
     ``starve_a`` deliberately drops the last A tile, to prove the harness
@@ -53,9 +60,12 @@ def build_gemm_workers(
     k_tiles = K // k
     tiles_per_core = row_blocks * col_blocks
 
-    a_fifos, b_fifos, c_fifos = build_gemm_fifos(
-        N_AIE_ROWS, N_AIE_COLS, fifo_depth, timeout=timeout
-    )
+    a_fifos, b_fifos, c_fifos = build_gemm_fifos(N_AIE_ROWS, N_AIE_COLS, fifo_depth)
+    if starve_a:
+        for fifo in a_fifos:
+            fifo.timeout = STARVED_FIFO_TIMEOUT_S
+        for fifo in [*b_fifos, *(f for row in c_fifos for f in row)]:
+            fifo.timeout = DOWNSTREAM_FIFO_TIMEOUT_S
 
     workers = []
 
@@ -151,11 +161,9 @@ def test_starved_fifo_is_reported_not_hung():
     """A missing tile must fail fast and name the FIFO, not hang the suite."""
     A, B = _problem()
     C = np.zeros((A.shape[0], B.shape[1]), dtype=np.int64)
-    # Short deadline: the starvation is expected, so waiting the default 5s
-    # would make this one test dominate the suite's runtime.
-    workers = build_gemm_workers(
-        A, B, C, m=8, k=8, n=16, fifo_depth=2, starve_a=True, timeout=0.25
-    )
+    workers = build_gemm_workers(A, B, C, m=8, k=8, n=16, fifo_depth=2, starve_a=True)
     with pytest.raises(DeadlockError) as excinfo:
         run_workers(workers, timeout=15.0)
-    assert "A_l2l1" in str(excinfo.value) or "C_l1l2" in str(excinfo.value)
+    # A carries the shortest deadline, so it reports first: the diagnosis names
+    # the FIFO that starved, not one stalled behind it.
+    assert "A_l2l1" in str(excinfo.value)
