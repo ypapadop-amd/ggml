@@ -29,6 +29,23 @@ from .utils import (
     max_tile_size,
 )
 
+# These cores' frames exceed the AIE core's 1024-byte default stack once the kernel is IR-linked
+# into them rather than linked as a .o -- i.e. under GGML_HSA_KERNEL_INLINE=1. Without an explicit
+# size the core would write past the end of its own stack into neighbouring core data memory,
+# which is why newer mlir-aie makes this a build error rather than a warning.
+#
+# Measured by aiecc on aie2p, f32, with inlining on:
+#   element-wise (_binary_op)      2368 bytes
+#   row          (_binary_op_row)  1088 bytes for ADD; MUL still fits under 1024
+# 4096 is the next power of two above the largest, leaving headroom so a small codegen change
+# does not re-break the build. It is charged per core against 64 KB of core data memory, against
+# a tile budget that already intends to use only half, so the cost is not material.
+#
+# Declared for every worker in this file, not just the paths measured over: the margin is
+# op-dependent and small, so sizing only what trips today leaves the same trap for the next op or
+# shape. Same pattern as unary_ops.py, softmax.py, cross_entropy_loss.py and gemm.py.
+_STACK_SIZE_BYTES = 4096
+
 
 def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
     """Whether t0 can be repeated to fill t1 (GGML broadcast: t1[i] % t0[i] == 0).
@@ -102,6 +119,7 @@ def _binary_op(
     worker = Worker(
         ext_core_fn,
         fn_args=[x.cons() for x in of_ins] + [of_out.prod(), function],
+        stack_size=_STACK_SIZE_BYTES,
     )
 
     # Runtime operations to move data to/from the AIE-array
@@ -364,6 +382,7 @@ def _binary_op_row(
     worker = Worker(
         ext_core_fn,
         fn_args=[of_src0.cons(), of_src1.cons(), of_out.prod(), function],
+        stack_size=_STACK_SIZE_BYTES,
     )
 
     # Buffers in src order then dst (kernarg layout contract).
@@ -456,6 +475,7 @@ def _binary_op_broadcast(
     worker = Worker(
         ext_core_fn,
         fn_args=[of_src0.cons(), of_src1.cons(), of_out.prod(), function],
+        stack_size=_STACK_SIZE_BYTES,
     )
 
     # Runtime operations to move data to/from the AIE-array
