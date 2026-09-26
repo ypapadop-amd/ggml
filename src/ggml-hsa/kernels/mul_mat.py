@@ -80,6 +80,9 @@ def _make_triton_matmul_kernel_spec(
         from .triton_kernels.matmul import bare_matmul
         from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
 
+        if len(input_tensors) != 2:
+            msg = f"Requires two input tensors, got {len(input_tensors)}."
+            raise ValueError(msg)
         if any(not t.contiguous for t in (*input_tensors, output_tensor)):
             msg = "Non-contiguous tensors detected."
             raise ValueError(msg)
