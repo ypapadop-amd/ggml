@@ -1,0 +1,43 @@
+# Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+"""Dispatch-selection tests for GGML_OP_MUL_MAT (IRON primary, Triton fallback).
+
+Dispatch always returns [IRON, Triton]; whether Triton can actually handle a
+given node is decided lazily at compile time (build.py falls back to IRON if the
+Triton compile raises), not by a shape/dtype gate here.
+"""
+
+import pytest
+
+
+@pytest.fixture(scope="module")
+def dispatch(import_kernel_module):
+    """Load the dispatch entry point and the types the assertions need."""
+    Backend = import_kernel_module("kernel").Backend
+    ggml_op_mul_mat = import_kernel_module("mul_mat").ggml_op_mul_mat
+    TensorDesc = import_kernel_module("tensor_desc").TensorDesc
+
+    def _td(dtype, dim=256):
+        return TensorDesc(dtype=dtype, shape=(dim, dim, 1, 1))
+
+    return Backend, ggml_op_mul_mat, _td
+
+
+def test_iron_first_triton_fallback_bf16(dispatch):
+    Backend, ggml_op_mul_mat, _td = dispatch
+    specs = ggml_op_mul_mat(
+        "aie2", [_td("bf16"), _td("bf16")], _td("f32"), bytearray()
+    )
+    assert isinstance(specs, list)
+    assert [s.backend for s in specs] == [Backend.IRON, Backend.TRITON]
+    assert specs[1].config["transform_script"].endswith("matmul_aie2.mlir")
+
+
+def test_iron_first_triton_fallback_regardless_of_shape_dtype(dispatch):
+    Backend, ggml_op_mul_mat, _td = dispatch
+    # A non-256 f32 node still returns both specs; Triton eligibility is decided
+    # lazily at compile time, not gated in the dispatch function.
+    specs = ggml_op_mul_mat(
+        "aie2", [_td("f32", 128), _td("f32", 128)], _td("f32", 128), bytearray()
+    )
+    assert [s.backend for s in specs] == [Backend.IRON, Backend.TRITON]
