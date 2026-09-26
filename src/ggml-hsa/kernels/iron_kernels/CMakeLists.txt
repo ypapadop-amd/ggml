@@ -36,8 +36,8 @@ set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/scale.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/scale.py
     ${CMAKE_CURRENT_SOURCE_DIR}/softmax.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/transform.h
     ${CMAKE_CURRENT_SOURCE_DIR}/softmax.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/transform.h
     ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/unary_ops.py
     ${CMAKE_CURRENT_SOURCE_DIR}/utils.py

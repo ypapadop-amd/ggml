@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 //
-// Device tests for the element-wise unary ops: the vectorized SQR, ABS and NEG, plus the
-// still-scalar SGN and STEP. Inputs deliberately straddle zero and include exact zeros, so
-// the sign-dependent ops are checked on all their branches, and one shape is narrower than
-// the 16-element f32 vector so the scalar tail runs with vend == 0.
+// Device tests for the element-wise unary ops: the vectorized SQR, ABS, NEG, SGN and STEP.
+// Inputs deliberately straddle zero and include exact zeros, so the sign-dependent ops are
+// checked on all their branches, and one shape is narrower than the 16-element f32 vector so
+// the scalar tail runs with vend == 0.
 
 #include <cmath>
 #include <cstddef>

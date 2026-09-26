@@ -116,7 +116,6 @@ def _unary_op(
 _VECTORIZED_OPS = frozenset(
     {
         "GGML_OP_SQR",
-        "GGML_OP_SQRT",
         "GGML_UNARY_OP_ABS",
         "GGML_UNARY_OP_GELU",
         "GGML_UNARY_OP_NEG",

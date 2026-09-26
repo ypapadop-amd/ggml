@@ -103,7 +103,7 @@ void ggml_op_add(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_vector_n(
+    transform_vector_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::add(a, b); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); }, in0, in1);
 }
@@ -124,7 +124,7 @@ void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_vector_n(
+    transform_vector_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::sub(a, b); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); }, in0, in1);
 }
@@ -136,6 +136,11 @@ void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
 /**
  * @brief Element-wise multiplication: out[i] = in0[i] * in1[i].
  *
+ * Same accuracy caveat as ggml_op_mul_row: on aie2 (NPU1) there is no native fp32 multiplier,
+ * so the vector body's aie::mul lowers to Peano's bf16 triple-product emulation and is not
+ * bit-identical to the scalar `a * b` the tail uses -- about one ulp of the operand scale. The
+ * scalar path (integers, and any type mismatch) stays exact.
+ *
  * @param[in]  in0 First input array of N elements.
  * @param[in]  in1 Second input array of N elements.
  * @param[out] out Output array of N elements.
@@ -145,7 +150,7 @@ void ggml_op_mul(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_vector_n(
+    transform_vector_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); }, in0, in1);
 }

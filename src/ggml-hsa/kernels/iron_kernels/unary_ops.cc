@@ -56,9 +56,13 @@ void ggml_op_log(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict ou
  * @param[in]  N   Number of elements to process.
  */
 void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
-    transform_vector_n(
-        out, N, [](auto v) { return aie::sqrt(v); },
-        [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(aie::sqrt(v)); }, in);
+    // Deliberately scalar. aie::sqrt has a vector overload, but aie.hpp documents it as "a
+    // scalar operation ... applied to each element individually", and aie2's elementary.hpp
+    // specializes only Fix/Float/Inv/InvSqrt -- not Sqrt -- so it falls through to a generic
+    // per-element extract/insert loop. Routing it through transform_vector_n would wrap a
+    // vector load/store and N insert/extract pairs around a loop that is scalar either way.
+    transform_n(
+        out, N, [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(aie::sqrt(v)); }, in);
 }
 
 #endif // GGML_OP_SQRT

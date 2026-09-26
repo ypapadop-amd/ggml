@@ -20,13 +20,18 @@
 #include "aie_kernel_utils.h"
 
 /**
- * @brief Whether the Python side selected the large L1-budgeted tile for this kernel.
+ * @brief Whether the Python builder opted this kernel in to a vector body.
  *
- * A vector body is only worth having if the kernel also streams a large tile: with the
- * one-vector-register tile it pays an object-fifo acquire/release per vector, which dominates
- * the compute it just saved. The Python op builders define GGML_VECTORIZED_TILING exactly when
- * they hand the kernel the large tile, and @ref transform_vector_n asserts on it, so the two
- * halves of that decision cannot drift apart silently.
+ * A vector body is only worth having if the kernel streams more than one vector register per
+ * object-fifo round trip; with the one-register tile it pays an acquire/release per vector,
+ * which dominates the compute it just saved. The Python op builders define
+ * GGML_VECTORIZED_TILING on the paths whose tile is chosen for that (the L1-budgeted tile, or a
+ * whole row), and @ref transform_vector_n asserts on it, so a vector body can never be paired
+ * with the one-register tile by accident.
+ *
+ * Note this is permission, not a measurement of the tile: the row path's tile is ne0, which for
+ * a narrow row can still be below one vector register. That is intended -- the row kernels were
+ * measured as a win at those widths -- and the vector body degrades to its scalar tail there.
  *
  * Templated so the static_assert below is dependent, and therefore checked per instantiation
  * rather than when the template is defined.
@@ -78,6 +83,11 @@ void transform_n(TOut * __restrict out, Size count, Op op, const TIn * __restric
  *                  streams rows through double-buffered fifos whose per-row object stride need
  *                  not be vector-aligned must leave this false, or aligned accesses corrupt
  *                  alternate (ping-pong) rows.
+ * @tparam EnableVector Set false to force the scalar path for the whole range. Use it when the
+ *                  vector and scalar formulations of an op disagree for some element type --
+ *                  aie::mul narrows through an accumulator, which saturates for integers where
+ *                  the scalar `a * b` wraps -- so the op can keep its vector body for the types
+ *                  where the two agree without changing results for the types where they do not.
  * @tparam TOut     Output element type.
  * @tparam VecOp    Callable taking one vector per input.
  * @tparam ScalarOp Callable taking one element per input, for the tail and the scalar path.
@@ -89,7 +99,12 @@ void transform_n(TOut * __restrict out, Size count, Op op, const TIn * __restric
  * @param[in]  scalar_op Scalar operation to apply.
  * @param[in]  in        One input array of N elements per operand.
  */
-template <bool Aligned = false, typename TOut, typename VecOp, typename ScalarOp, typename... TIn>
+template <bool Aligned = false,
+          bool EnableVector = true,
+          typename TOut,
+          typename VecOp,
+          typename ScalarOp,
+          typename... TIn>
 void transform_vector_n(TOut * __restrict out,
                         int32_t N,
                         VecOp vec_op,
@@ -104,7 +119,7 @@ void transform_vector_n(TOut * __restrict out,
 
     int32_t vend = 0;
 
-    if constexpr ((std::is_same_v<TIn, TOut> && ...)) {
+    if constexpr (EnableVector && (std::is_same_v<TIn, TOut> && ...)) {
         constexpr int32_t V = 512 / (sizeof(TOut) * 8);
         vend = (N / V) * V; // division by constexpr V -> inline shift, once
 

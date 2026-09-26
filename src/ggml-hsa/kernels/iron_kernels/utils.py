@@ -135,7 +135,9 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     return tile_size
 
 
-def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
+def tiled_tile_size(
+    arch: str, dtype: np.dtype, num_elements: int, num_fifos: int = 2
+) -> int:
     """Largest tile that divides num_elements and fits half the core data memory.
 
     Where max_tile_size caps the tile at one vector register, this streams the
@@ -153,6 +155,10 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
         arch: Target architecture.
         dtype: Element data type.
         num_elements: Total number of elements to tile.
+        num_fifos: Number of object fifos the design streams through this core, each
+            double-buffered. Defaults to 2 (one input + one output), i.e. a unary op; a
+            binary op streams three (two inputs + one output) and must say so, or the tile
+            is sized against a budget 1.5x smaller than the buffers actually allocated.
 
     Returns:
         The chosen tile size in elements; always divides num_elements.
@@ -161,8 +167,8 @@ def tiled_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
     v = params["vector_reg_bits"] // (8 * dtype.itemsize)
     # Half the data memory, leaving room for stack + locals.
     budget = params["core_data_mem_bytes"] // 2
-    # in + out fifos, each double-buffered (depth 2) => 4 buffers of tile*itemsize bytes.
-    max_by_mem = (budget // (4 * dtype.itemsize) // v) * v
+    # Each fifo is double-buffered (depth 2) => 2*num_fifos buffers of tile*itemsize bytes.
+    max_by_mem = (budget // (2 * num_fifos * dtype.itemsize) // v) * v
     cap = min(max_by_mem, num_elements)
 
     # Largest multiple of V that is <= cap and divides num_elements exactly.
