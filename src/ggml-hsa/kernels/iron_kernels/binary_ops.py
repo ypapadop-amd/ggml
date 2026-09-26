@@ -140,8 +140,18 @@ def _create_external_function(
         The configured CoreFunctionSpec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
-    # Three fifos here (in0, in1, out), not the unary default of two.
-    tile_size = tiled_tile_size(arch, output_tensor.dtype, num_elements, num_fifos=3)
+    # Three fifos here (in0, in1, out), not the unary default of two, and GGML does not
+    # require src1 to share the output type -- so charge the budget each fifo's own width.
+    tile_size = tiled_tile_size(
+        arch,
+        output_tensor.dtype,
+        num_elements,
+        fifo_dtypes=(
+            input_tensors[0].dtype,
+            input_tensors[1].dtype,
+            output_tensor.dtype,
+        ),
+    )
 
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(

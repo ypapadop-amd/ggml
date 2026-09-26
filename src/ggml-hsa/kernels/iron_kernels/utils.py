@@ -2,6 +2,7 @@
 
 """Utility functions for IRON kernel implementations."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -136,7 +137,10 @@ def max_tile_size(arch: str, dtype: np.dtype, num_elements: int) -> int:
 
 
 def tiled_tile_size(
-    arch: str, dtype: np.dtype, num_elements: int, num_fifos: int = 2
+    arch: str,
+    dtype: np.dtype,
+    num_elements: int,
+    fifo_dtypes: Sequence[np.dtype] | None = None,
 ) -> int:
     """Largest tile that divides num_elements and fits half the core data memory.
 
@@ -153,12 +157,16 @@ def tiled_tile_size(
 
     Args:
         arch: Target architecture.
-        dtype: Element data type.
+        dtype: Element data type, used to size the vector register. This is the type the
+            vector body operates on, which need not be the widest fifo.
         num_elements: Total number of elements to tile.
-        num_fifos: Number of object fifos the design streams through this core, each
-            double-buffered. Defaults to 2 (one input + one output), i.e. a unary op; a
-            binary op streams three (two inputs + one output) and must say so, or the tile
-            is sized against a budget 1.5x smaller than the buffers actually allocated.
+        fifo_dtypes: Element type of every object fifo the design streams through this
+            core, one entry per fifo, each double-buffered. Defaults to (dtype, dtype),
+            i.e. one input + one output. Pass the real types rather than a count: the
+            budget must charge each fifo its own element size, since GGML lets a binary
+            op's src1 (and either family's output) differ in width from the type the
+            vector body runs on. Sizing every fifo at the narrowest type under-counts the
+            buffers actually allocated and puts the tile over budget.
 
     Returns:
         The chosen tile size in elements; always divides num_elements.
@@ -167,8 +175,11 @@ def tiled_tile_size(
     v = params["vector_reg_bits"] // (8 * dtype.itemsize)
     # Half the data memory, leaving room for stack + locals.
     budget = params["core_data_mem_bytes"] // 2
-    # Each fifo is double-buffered (depth 2) => 2*num_fifos buffers of tile*itemsize bytes.
-    max_by_mem = (budget // (2 * num_fifos * dtype.itemsize) // v) * v
+    if fifo_dtypes is None:
+        fifo_dtypes = (dtype, dtype)
+    # Each fifo is double-buffered (depth 2) => two buffers of tile elements per fifo.
+    bytes_per_tile_element = 2 * sum(d.itemsize for d in fifo_dtypes)
+    max_by_mem = (budget // bytes_per_tile_element // v) * v
     cap = min(max_by_mem, num_elements)
 
     # Largest multiple of V that is <= cap and divides num_elements exactly.

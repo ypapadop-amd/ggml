@@ -148,8 +148,17 @@ def _create_external_function(
         The core function spec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
-    tile_size_fn = tiled_tile_size if vectorized else max_tile_size
-    tile_size = tile_size_fn(arch, input_tensor.dtype, num_elements)
+    if vectorized:
+        # Two fifos (in, out), whose types need not match: a converting unary op streams
+        # a wider output than input, and the budget has to charge each its own width.
+        tile_size = tiled_tile_size(
+            arch,
+            input_tensor.dtype,
+            num_elements,
+            fifo_dtypes=(input_tensor.dtype, output_tensor.dtype),
+        )
+    else:
+        tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
 
     compile_flags = [
         f"-D{op_name}=1",
