@@ -91,6 +91,9 @@ def _make_triton_relu_kernel_spec(
         from .triton_kernels.relu import relu
         from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
 
+        if len(input_tensors) != 1:
+            msg = f"Operation requires exactly one input tensor, got {len(input_tensors)}."
+            raise ValueError(msg)
         if any(not t.contiguous for t in (*input_tensors, output_tensor)):
             msg = "Non-contiguous tensors detected."
             raise ValueError(msg)
