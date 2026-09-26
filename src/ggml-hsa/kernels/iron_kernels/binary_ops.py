@@ -158,6 +158,10 @@ def _create_external_function(
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            # Large (L1-budgeted / whole-row) tile, so the shared transform_vector_n may
+            # use its vector body. The generic broadcast path below keeps the one-register
+            # tile and is deliberately left without this flag.
+            "-DGGML_VECTORIZED_TILING=1",
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
@@ -313,6 +317,10 @@ def _create_row_external_function(
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            # Large (L1-budgeted / whole-row) tile, so the shared transform_vector_n may
+            # use its vector body. The generic broadcast path below keeps the one-register
+            # tile and is deliberately left without this flag.
+            "-DGGML_VECTORIZED_TILING=1",
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
