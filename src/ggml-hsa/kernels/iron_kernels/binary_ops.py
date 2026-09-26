@@ -160,13 +160,21 @@ def _create_external_function(
     Returns:
         The configured CoreFunctionSpec.
     """
-    num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
-    # One shared element count feeds all three fifos, so it has to satisfy align_to_arch's
-    # 4-byte rule for each fifo's dtype, not just the output's. It cannot be rounded up to suit
-    # a narrower src1: the count is also the length of the output transfer, and the HSA buffer
-    # type allocates exactly ggml_nbytes (ggml-hsa.cpp, get_alloc_size), so a longer drain would
-    # write past the tensor ggml reserved. A shape that cannot satisfy every fifo is therefore
-    # rejected here, and dispatch falls back, rather than being served by a mis-sized kernel.
+    # One shared element count feeds all three fifos, and it is also the exact length of the
+    # output transfer: the HSA buffer type allocates precisely ggml_nbytes for a non-quantized
+    # tensor (ggml-hsa.cpp, get_alloc_size), so streaming more than the output holds writes past
+    # what ggml reserved.
+    #
+    # That rules out rounding the count up to satisfy align_to_arch's 4-byte rule -- including
+    # the rounding arch_aligned_num_elements would do on the output itself, which is why the
+    # logical count is validated here rather than an already-rounded one. A 1-element bf16
+    # output rounds to 2 and would then pass any check made after the fact, while the kernel
+    # still transfers two elements from a one-element tensor.
+    #
+    # A shape whose logical count does not already satisfy every fifo's dtype is therefore
+    # rejected, and dispatch falls back, rather than being served by a mis-sized kernel. f32 is
+    # unaffected: a 4-byte element type never needs rounding.
+    num_elements = output_tensor.numel()
     for fifo_dtype in (
         input_tensors[0].dtype,
         input_tensors[1].dtype,
@@ -175,7 +183,7 @@ def _create_external_function(
         if align_to_arch(arch, num_elements, fifo_dtype) != num_elements:
             msg = (
                 f"Element count ({num_elements}) is not 4-byte aligned for fifo dtype "
-                f"{fifo_dtype}; a single count cannot serve fifos of differing widths here."
+                f"{fifo_dtype}; rounding it up would transfer more than the output holds."
             )
             raise ValueError(msg)
 
