@@ -2499,6 +2499,35 @@ struct test_cross_entropy_loss : public test_case {
     bool grad_precise() override { return true; }
 };
 
+// GGML_OP_CONT
+// Reproduces the ggml_cont(ggml_permute(...)) pattern used by the MNIST-CNN graph:
+// once inside ggml_conv_2d (permute 0,1,3,2) and once in the pre-dense flatten (permute 1,2,0,3).
+struct test_cont : public test_case {
+    const ggml_type type;
+    const std::array<int64_t, 4> ne;
+    const std::array<int, 4> permute;
+
+    std::string vars() override { return VARS_TO_STR3(type, ne, permute); }
+
+    test_cont(ggml_type type = GGML_TYPE_F32,
+              std::array<int64_t, 4> ne = {10, 10, 10, 1},
+              std::array<int, 4> permute = {0, 1, 2, 3}) :
+        type(type), ne(ne), permute(permute) {}
+
+    double max_nmse_err() override { return 0.0; }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * a = ggml_new_tensor(ctx, type, 4, ne.data());
+        ggml_set_name(a, "a");
+
+        ggml_tensor * out =
+            ggml_cont(ctx, ggml_permute(ctx, a, permute[0], permute[1], permute[2], permute[3]));
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+};
+
 // ## Section 3: GGML Op Test Instantiation ##
 // ###########################################
 
@@ -2566,6 +2595,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // MaxPool2: [14, 14, 16, 500] with 2x2 kernel, stride=2, pad=0 -> [7, 7, 16, 500]
     test_cases.emplace_back(
         new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {14, 14, 16, 500}, 2, 2, 2, 2, 0, 0));
+    // Conv1 CONT: ggml_conv_2d permutes result [28,28,500,8] with (0,1,3,2) -> cont [28,28,8,500]
+    test_cases.emplace_back(new test_cont(GGML_TYPE_F32, {28, 28, 500, 8}, {0, 1, 3, 2}));
+    // Conv2 CONT: ggml_conv_2d permutes result [14,14,500,16] with (0,1,3,2) -> cont [14,14,16,500]
+    test_cases.emplace_back(new test_cont(GGML_TYPE_F32, {14, 14, 500, 16}, {0, 1, 3, 2}));
+    // Pre-dense flatten CONT: permute [7,7,16,500] with (1,2,0,3) -> cont [16,7,7,500]
+    test_cases.emplace_back(new test_cont(GGML_TYPE_F32, {7, 7, 16, 500}, {1, 2, 0, 3}));
     // Dense: flattened [784, 500] x dense_weight [784, 10] -> [10, 500]  (784 = 7*7*16)
     test_cases.emplace_back(
         new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 10, 500, 784, {1, 1}, {1, 1}));
@@ -2599,6 +2634,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                                               GGML_TYPE_F32, {1, 1}, 1.0f, 0.0f));
     // MNIST-MLP: argmax of logits [10, 500]
     test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {10, 500, 1, 1}));
+    // MNIST-MLP: FC1 ReLU [500, 500]
+    test_cases.emplace_back(new test_unary(GGML_UNARY_OP_RELU, GGML_TYPE_F32, {500, 500, 1, 1}));
+    // MNIST-MLP: FC2 bias broadcast add [10, 500] + [10]
+    test_cases.emplace_back(
+        new test_bin_bcast(ggml_add, GGML_TYPE_F32, {10, 1, 1, 1}, {1, 500, 1, 1}));
+    // MNIST-MLP: cross entropy loss on logits [10, 500]
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 500, 1, 1}));
 
     // MNIST-CNN: Conv1 [28, 28, 1, 500] x [3, 3, 1, 8], stride=1, pad=1
     test_cases.emplace_back(
