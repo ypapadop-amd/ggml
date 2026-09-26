@@ -250,6 +250,7 @@ Payload memory is allocated from the `kernarg_memory` pool and tracked in
 | `GGML_HSA_JIT_VERBOSE` | Verbose Python compiler output |
 | `GGML_HSA_JIT_COMPILER_ORDER` | Comma-separated backend order (e.g. `iron,triton`, case-insensitive); reorders candidate specs and drops backends not listed. Unset/empty keeps the dispatch order. |
 | `GGML_HSA_ENABLE_LOG` | Verbose C++ logging (defaults ON in debug builds) |
+| `GGML_HSA_KERNEL_INLINE` | Have IRON kernels hand their core function to `aiecc` as textual LLVM IR (`ExternalFunction(inline=True)`) instead of a `.o`, so it inlines into the tile loop instead of being linked with `ld.lld` (`1`, `true`, or `on`). Not usable on every kernel; each kernel opts in only once verified to compile both ways. Default off. |
 | `GGML_HSA_JIT_COMPILE` | CMake option (default ON): enable JIT compilation |
 
 ---

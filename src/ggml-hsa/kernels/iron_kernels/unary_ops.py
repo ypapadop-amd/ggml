@@ -159,6 +159,7 @@ def _create_external_function(
         compile_flags.append("-DGGML_VECTORIZED_TILING=1")
 
     current_dir = Path(__file__).resolve().parent
+    # Verified to compile with GGML_HSA_KERNEL_INLINE.
     func = ExternalFunction(
         name=op_name.lower(),
         **core_function_object(f"{op_name.lower()}_core_function"),

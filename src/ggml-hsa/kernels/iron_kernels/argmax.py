@@ -131,6 +131,7 @@ def _create_external_function(
         The configured ExternalFunction.
     """
     current_dir = Path(__file__).resolve().parent
+    # Verified to compile with GGML_HSA_KERNEL_INLINE.
     return ExternalFunction(
         name=f"{op_name.lower()}",
         **core_function_object(f"{op_name.lower()}_core_function"),

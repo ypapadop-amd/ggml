@@ -309,6 +309,7 @@ def _create_external_function(src, output_tensor, chunk: int) -> ExternalFunctio
     # The kernel selects its mode (plain copy vs. f32 -> bf16 convert) at compile time via
     # `if constexpr` on INPUT_DTYPE/OUTPUT_DTYPE; no extra flag is needed.
 
+    # Verified to compile with GGML_HSA_KERNEL_INLINE.
     return ExternalFunction(
         name="ggml_hsa_depad",
         **core_function_object("ggml_hsa_depad_core_function"),

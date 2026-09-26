@@ -143,6 +143,7 @@ def _create_external_function(
     tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
 
     current_dir = Path(__file__).resolve().parent
+    # Verified to compile with GGML_HSA_KERNEL_INLINE.
     func = ExternalFunction(
         name=op_name.lower(),
         **core_function_object(f"{op_name.lower()}_core_function"),
