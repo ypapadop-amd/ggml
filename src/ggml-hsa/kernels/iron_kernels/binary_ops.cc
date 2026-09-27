@@ -8,27 +8,7 @@
 #include "aie_kernel_math.h"
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
-
-/**
- * @brief out[i] = op(in0[i], in1[i]) for count elements.
- * @param[in]  in0   First input array of count elements.
- * @param[in]  in1   Second input array of count elements.
- * @param[in]  count Number of elements to process.
- * @param[out] out   Output array of count elements.
- * @param[in]  op    Binary operation to apply.
- */
-template <typename T0, typename T1, typename TOut, typename Size, typename BinaryOp>
-void transform_binary_n(const T0 * __restrict in0,
-                        const T1 * __restrict in1,
-                        Size count,
-                        TOut * __restrict out,
-                        BinaryOp op) {
-    event0();
-    for (Size i = 0; i < count; ++i) {
-        out[i] = op(in0[i], in1[i]);
-    }
-    event1();
-}
+#include "transform.h"
 
 /**
  * @brief Applies a binary operation with NumPy-style broadcasting.
@@ -107,65 +87,6 @@ void transform_binary_broadcast_n(const T0 * __restrict in0,
     event1();
 }
 
-/**
- * @brief Applies a binary operation between one dst row and a single src1 row that is
- * reused across every dst row.
- *
- * Row-tiled counterpart of @c transform_binary_broadcast_n for the case where src1 is a
- * single row (src1_ne0 == dst_ne0, all higher dims 1). Because the tile is exactly one
- * dst row, the src1 index equals the src0 index, so none of that function's coordinate
- * decomposition or broadcast modulo is needed: seven runtime divisions per element (each
- * a __divsi3 call) collapse to none, and the body vectorizes.
- *
- * @tparam T0        Element type of the first input.
- * @tparam T1        Element type of the second input.
- * @tparam TOut      Element type of the output.
- * @tparam VecOp     Callable applied to a pair of vectors.
- * @tparam ScalarOp  Callable applied to a pair of elements, for the tail.
- *
- * @param[in]  src0      First input row of N elements.
- * @param[in]  src1      Reused row of N elements.
- * @param[out] out       Output row of N elements.
- * @param[in]  N         Elements per row (== ne0).
- * @param[in]  vec_op    Vector operation to apply.
- * @param[in]  scalar_op Scalar operation to apply to the tail.
- */
-template <typename T0, typename T1, typename TOut, typename VecOp, typename ScalarOp>
-void transform_binary_row_n(const T0 * __restrict src0,
-                            const T1 * __restrict src1,
-                            TOut * __restrict out,
-                            int32_t N,
-                            VecOp vec_op,
-                            ScalarOp scalar_op) {
-    static_assert(std::is_same_v<T0, T1> && std::is_same_v<T0, TOut>,
-                  "the vector body operates on the operands directly, with no per-element "
-                  "cast, so all three types must match");
-
-    event0();
-
-    constexpr int32_t V = 512 / (sizeof(TOut) * 8);
-    const int32_t vend = (N / V) * V; // division by constexpr V → inline shift, once
-
-    // Unaligned loads/stores: the IRON design streams rows through double-buffered
-    // fifos whose per-row object stride (N elements) need not be vector-aligned, so
-    // aligned load_v/store_v would corrupt alternate (ping-pong) rows.
-    // No AIE_LOOP_MIN_ITERATION_COUNT: when N < V (e.g. a 10-wide row) vend is 0,
-    // and promising >=1 iteration makes the pipelined prologue run the body on too few
-    // elements. AIE_PREPARE_FOR_PIPELINING alone suffices for the N >> V rows.
-    AIE_PREPARE_FOR_PIPELINING
-    for (int32_t i = 0; i < vend; i += V) {
-        aie::vector<T0, V> a = aie::load_unaligned_v<V>(src0 + i);
-        aie::vector<T1, V> b = aie::load_unaligned_v<V>(src1 + i);
-        aie::store_unaligned_v(out + i, vec_op(a, b));
-    }
-
-    for (int32_t i = vend; i < N; ++i) {
-        out[i] = scalar_op(src0[i], src1[i]);
-    }
-
-    event1();
-}
-
 extern "C" {
 
 #ifdef GGML_OP_ADD
@@ -182,9 +103,9 @@ void ggml_op_add(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
-        return static_cast<OUTPUT_DTYPE>(a + b);
-    });
+    transform_vector_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+        out, N, [](auto a, auto b) { return aie::add(a, b); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); }, in0, in1);
 }
 
 #endif // GGML_OP_ADD
@@ -203,9 +124,9 @@ void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
-        return static_cast<OUTPUT_DTYPE>(a - b);
-    });
+    transform_vector_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+        out, N, [](auto a, auto b) { return aie::sub(a, b); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); }, in0, in1);
 }
 
 #endif // GGML_OP_SUB
@@ -214,6 +135,11 @@ void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
 
 /**
  * @brief Element-wise multiplication: out[i] = in0[i] * in1[i].
+ *
+ * Same accuracy caveat as ggml_op_mul_row: on aie2 (NPU1) there is no native fp32 multiplier,
+ * so the vector body's aie::mul lowers to Peano's bf16 triple-product emulation and is not
+ * bit-identical to the scalar `a * b` the tail uses -- about one ulp of the operand scale. The
+ * scalar path (integers, and any type mismatch) stays exact.
  *
  * @param[in]  in0 First input array of N elements.
  * @param[in]  in1 Second input array of N elements.
@@ -224,9 +150,9 @@ void ggml_op_mul(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
-        return static_cast<OUTPUT_DTYPE>(a * b);
-    });
+    transform_vector_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+        out, N, [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); }, in0, in1);
 }
 
 #endif // GGML_OP_MUL
@@ -245,9 +171,9 @@ void ggml_op_div(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_binary_n(in0, in1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
-        return static_cast<OUTPUT_DTYPE>(a / b);
-    });
+    transform_n(
+        out, N, [](auto a, auto b) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(a / b); },
+        in0, in1);
 }
 
 #endif // GGML_OP_DIV
@@ -414,7 +340,7 @@ void ggml_op_div_broadcast(const INPUT0_DTYPE * __restrict in0,
 
 // Row-broadcast fast paths: src1 is a single row (ne0 elements) reused across every dst
 // row. The Python dispatch gates all four on matching input/output types (see
-// transform_binary_row_n) and falls back to the generic broadcast kernels otherwise.
+// the shared transform_vector_n) and falls back to the generic broadcast kernels otherwise.
 
 #ifdef GGML_OP_ADD_ROW
 
@@ -430,9 +356,9 @@ void ggml_op_add_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    transform_binary_row_n(
-        src0, src1, out, N, [](auto a, auto b) { return aie::add(a, b); },
-        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); });
+    transform_vector_n(
+        out, N, [](auto a, auto b) { return aie::add(a, b); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); }, src0, src1);
 }
 
 #endif // GGML_OP_ADD_ROW
@@ -451,9 +377,9 @@ void ggml_op_sub_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    transform_binary_row_n(
-        src0, src1, out, N, [](auto a, auto b) { return aie::sub(a, b); },
-        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); });
+    transform_vector_n(
+        out, N, [](auto a, auto b) { return aie::sub(a, b); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); }, src0, src1);
 }
 
 #endif // GGML_OP_SUB_ROW
@@ -466,12 +392,12 @@ void ggml_op_sub_row(const INPUT0_DTYPE * __restrict src0,
  * aie::mul yields an accumulator, so the vector result is narrowed back to the operand
  * type before the store (same shape as the SCALE kernel).
  *
- * On aie2 (NPU1) there is no native fp32 multiplier: aie::mul lowers, via the shim in
- * aie_kernel_math.h, to Peano's bf16 triple-product emulation, so the vector path is not
- * bit-identical to the scalar `a * b` the tail uses. Measured against the CPU it costs one
- * ulp of the operand scale (test-broadcast-hsa reports it), which is the same order as the
- * ADD and SUB row kernels above -- those are within one ulp too, on both their vector and
- * scalar paths. Only DIV below, and this kernel's own scalar tail, come out exact.
+ * On aie2 (NPU1) there is no native fp32 multiplier: aie::mul lowers to ::mul_elem_16_conf,
+ * which Peano defines in aiev2/aiev2_core.h (clang 22 and later) as a bf16 triple-product
+ * emulation, so the vector path is not bit-identical to the scalar `a * b` the tail uses. Measured
+ * against the CPU it costs one ulp of the operand scale (test-broadcast-hsa reports it), which is
+ * the same order as the ADD and SUB row kernels above -- those are within one ulp too, on both
+ * their vector and scalar paths. Only DIV below, and this kernel's own scalar tail, come out exact.
  *
  * @param[in]  src0 First input row of N elements.
  * @param[in]  src1 Reused row of N elements.
@@ -482,10 +408,9 @@ void ggml_op_mul_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    transform_binary_row_n(
-        src0, src1, out, N,
-        [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
-        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); });
+    transform_vector_n(
+        out, N, [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); }, src0, src1);
 }
 
 #endif // GGML_OP_MUL_ROW
@@ -513,9 +438,9 @@ void ggml_op_div_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    transform_binary_n(src0, src1, N, out, [](auto a, auto b) -> OUTPUT_DTYPE {
-        return static_cast<OUTPUT_DTYPE>(a / b);
-    });
+    transform_n(
+        out, N, [](auto a, auto b) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(a / b); },
+        src0, src1);
 }
 
 #endif // GGML_OP_DIV_ROW
