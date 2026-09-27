@@ -105,6 +105,12 @@ int main() {
         {500, 10, 512, 128, "mnist A c2"},
         {500, 500, 512, 512, "mnist B c2"},
         {784, 10, 800, 128, "mnist A c3"},
+        // the im2col GEMM operands behind MNIST-CNN's two CONV_2D layers: the A operand's
+        // d1 is the whole batch*OH*OW extent, orders of magnitude past every case above.
+        {9, 392000, 16, 392000, "mnist-cnn conv1 A"},
+        {9, 8, 16, 64, "mnist-cnn conv1 B"},
+        {72, 98000, 72, 98048, "mnist-cnn conv2 A"},
+        {72, 16, 72, 64, "mnist-cnn conv2 B"},
     };
 
     bool all_ok = true;

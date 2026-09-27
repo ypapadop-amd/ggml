@@ -108,7 +108,9 @@ def _is_valid(n_aie_cols, M, N, K, m, k, n, dtype_out=F32):
         return False
     if ((M // m) * (N // n)) % (N_AIE_ROWS * n_aie_cols):
         return False
-    if M * n * n_aie_cols > DMA_MAX_STRIDE or n * n_aie_cols * K > DMA_MAX_STRIDE:
+    if N // (n * n_aie_cols) > 1 and (
+        M * n * n_aie_cols > DMA_MAX_STRIDE or n * n_aie_cols * K > DMA_MAX_STRIDE
+    ):
         return False
     return _working_set(m, k, n, dtype_out) <= L1_TILE_BUDGET_BYTES
 
@@ -153,10 +155,13 @@ def test_tile_respects_dma_stride_limit(dev, n_aie_cols, M, N, K):
 
     Exceeding it is not a miscompute but a hard aiecc failure
     ("Stride N exceeds the [1:1048576] range"), so the selector must exclude it.
+    Both strides step the column-group dimension, so the bound only binds while
+    that dimension has size > 1; see test_single_column_group_ignores_the_stride_bound.
     """
     _, _, _, m, k, n = _tile(dev, M, N, K)
-    assert M * n * n_aie_cols <= DMA_MAX_STRIDE
-    assert n * n_aie_cols * K <= DMA_MAX_STRIDE
+    if N // (n * n_aie_cols) > 1:
+        assert M * n * n_aie_cols <= DMA_MAX_STRIDE
+        assert n * n_aie_cols * K <= DMA_MAX_STRIDE
 
 
 @pytest.mark.parametrize("dtype_out", OUT_DTYPES, ids=["out_bf16", "out_f32"])
@@ -389,7 +394,19 @@ def test_cpp_n_aie_cols_matches_gemm_py(dev):
 
 
 @pytest.mark.parametrize("dev", ["npu", "npu2"])
-@pytest.mark.parametrize("mnk", [(1, 1, 1), (10, 500, 500), (500, 500, 784), (512, 512, 512)])
+@pytest.mark.parametrize(
+    "mnk",
+    [
+        (1, 1, 1),
+        (10, 500, 500),
+        (500, 500, 784),
+        (512, 512, 512),
+        # The im2col GEMMs behind MNIST-CNN's two CONV_2D layers: M is the whole
+        # batch*OH*OW extent, N is a single column group wide.
+        (392000, 8, 9),
+        (98000, 16, 72),
+    ],
+)
 def test_cpp_padding_always_admits_a_tile(dev, mnk):
     """Padding as the C++ does must leave select_gemm_tile a valid tile.
 
@@ -416,3 +433,35 @@ def test_cpp_padding_always_admits_a_tile(dev, mnk):
     assert m_pad % (m * CPP_N_AIE_ROWS) == 0
     assert k_pad % k == 0
     assert n_pad % (n * n_aie_cols) == 0
+
+
+@pytest.mark.parametrize("dev", ["npu", "npu2"])
+@pytest.mark.parametrize("mnk", [(392000, 8, 9), (98000, 16, 72)])
+def test_single_column_group_ignores_the_stride_bound(dev, mnk):
+    """A one-column-group GEMM is supportable only because the bound is size-aware.
+
+    The im2col GEMMs behind CONV_2D pad to a single column group, so the
+    outermost B/C dimension has size 1 and its stride is never applied. Pins
+    both halves: the dimension really is size 1, and the stride it carries
+    really would be over the limit -- so dropping the size guard would put these
+    shapes back on the CPU, and dropping the bound entirely would let a
+    multi-group shape reach aiecc and fail there.
+    """
+    M, N, K = mnk
+    gm, gk, gn, n_aie_cols = CPP_PADDING_GRANULARITY[dev]
+
+    def pad(value, multiple):
+        return ((value + multiple - 1) // multiple) * multiple
+
+    m_pad = pad(M, gm * CPP_N_AIE_ROWS)
+    n_pad = pad(N, gn * n_aie_cols)
+    k_pad = pad(K, gk)
+
+    r, s, t = resolve_mac_dims(dev, "bf16")
+    row_expand, col_expand = resolve_expansion(dev, "bf16")
+    _, _, n = select_gemm_tile(
+        dev, m_pad, n_pad, k_pad, BF16, F32, r, s, t, row_expand, col_expand
+    )
+
+    assert n_pad // (n * n_aie_cols) == 1
+    assert m_pad * n * n_aie_cols > DMA_MAX_STRIDE
