@@ -2459,12 +2459,17 @@ struct test_conv_2d : public test_case {
 struct test_cross_entropy_loss : public test_case {
     const ggml_type type;
     const std::array<int64_t, 4> ne;
+    // Skips the label-normalizing softmax node. Used by the perf case: eval_perf only
+    // checks support for the final graph node, so a backend that reports SOFT_MAX
+    // unsupported (e.g. HSA by default) would otherwise hit that node mid-graph.
+    const bool pre_normalized_labels;
 
     std::string vars() override { return VARS_TO_STR2(type, ne); }
 
     test_cross_entropy_loss(ggml_type type = GGML_TYPE_F32,
-                            std::array<int64_t, 4> ne = {10, 5, 4, 3}) :
-        type(type), ne(ne) {}
+                            std::array<int64_t, 4> ne = {10, 5, 4, 3},
+                            bool pre_normalized_labels = false) :
+        type(type), ne(ne), pre_normalized_labels(pre_normalized_labels) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * logits = ggml_new_tensor(ctx, type, 4, ne.data());
@@ -2475,9 +2480,11 @@ struct test_cross_entropy_loss : public test_case {
         // The labels are assumed to be constant -> no gradients.
         ggml_set_name(labels, "labels");
 
-        // Ensure labels add up to 1:
-        labels = ggml_soft_max(ctx, labels);
-        ggml_set_name(labels, "labels_normalized");
+        if (!pre_normalized_labels) {
+            // Ensure labels add up to 1:
+            labels = ggml_soft_max(ctx, labels);
+            ggml_set_name(labels, "labels_normalized");
+        }
 
         ggml_tensor * out = ggml_cross_entropy_loss(ctx, logits, labels);
         ggml_set_name(out, "out");
@@ -2657,8 +2664,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     // MNIST-MLP: FC2 bias broadcast add [10, 500] + [10]
     test_cases.emplace_back(
         new test_bin_bcast(ggml_add, GGML_TYPE_F32, {10, 1, 1, 1}, {1, 500, 1, 1}));
-    // MNIST-MLP: cross entropy loss on logits [10, 500]
-    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 500, 1, 1}));
+    // MNIST-MLP: cross entropy loss on logits [10, 500]; pre-normalized labels so the
+    // graph has no internal SOFT_MAX node (see test_cross_entropy_loss).
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 500, 1, 1}, true));
 
     // MNIST-CNN: Conv1 [28, 28, 1, 500] x [3, 3, 1, 8], stride=1, pad=1
     test_cases.emplace_back(
