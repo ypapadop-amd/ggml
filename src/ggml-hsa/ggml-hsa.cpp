@@ -1262,8 +1262,7 @@ static void ggml_backend_hsa_buffer_get_tensor(ggml_backend_buffer_t /* buffer *
 static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t /* buffer */,
                                                const ggml_tensor * src,
                                                ggml_tensor * dst) {
-    if (ggml_backend_buffer_is_hsa(src->buffer) && ggml_is_contiguous(src) &&
-        ggml_is_contiguous(dst)) {
+    if (ggml_backend_buffer_is_hsa(src->buffer)) {
         std::memcpy(dst->data, src->data, ggml_nbytes(src));
         return true;
     }
