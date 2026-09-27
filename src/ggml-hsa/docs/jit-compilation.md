@@ -204,6 +204,14 @@ directory.
 destructor. It removes in-memory entries where `use_count() == 1` (no tensor
 still holds a reference).
 
+If a context is destroyed while work is still in flight on a suspended queue,
+the destructor leaks the unretired packet's kernarg slot and sets the
+per-device `kernels_pinned` flag instead of draining. Purging is skipped
+entirely while `kernels_pinned` is set (checked at the top of
+`ggml_hsa_purge_unused_cached_kernels()`), so that device's kernel cache is
+never evicted from again for the life of the process — a leaked reference
+into the cache from the unretired packet is what makes eviction unsafe there.
+
 ---
 
 ## HSA Dispatch

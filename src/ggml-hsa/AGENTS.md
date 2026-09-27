@@ -62,7 +62,7 @@ src/ggml-hsa/
 │   │   ├── vecadd.py            # Vector addition Triton kernel
 │   │   ├── vecadd_aie2.mlir     # MLIR transform/tiling script for AIE2
 │   │   └── vecadd_aie2p.mlir    # MLIR transform/tiling script for AIE2P
-│   └── iron/                    # IRON kernel implementations
+│   └── iron_kernels/            # IRON kernel implementations
 │       ├── __init__.py          # Subpackage init
 │       ├── utils.py             # Shared utilities (alignment, device mapping)
 │       ├── binary_ops.py/cc     # Binary ops (ADD, SUB, MUL, DIV) with broadcast support
@@ -90,7 +90,7 @@ src/ggml-hsa/
 **Note:** Related operations are grouped in the same file (e.g., all unary ops in `unary_ops.py/cc`,
 all binary ops in `binary_ops.py/cc`). Architecture-specific directories (`aie2/`, `aie2p/`) contain
 kernels that require different implementations per architecture (e.g., matrix multiply uses
-architecture-specific intrinsics). Prefer shared implementations in the parent `iron/` directory
+architecture-specific intrinsics). Prefer shared implementations in the parent `iron_kernels/` directory
 when possible.
 
 ### Two-Layer Dispatch Architecture
@@ -123,7 +123,7 @@ Dispatch functions examine tensor parameters and return a `KernelSpec`:
 ```python
 from functools import partial
 from kernel import Backend, KernelSpec
-from .iron.scale import scale
+from .iron_kernels.scale import scale
 
 
 def ggml_op_scale(arch, input_tensors, output_tensor, op_params) -> KernelSpec:
@@ -246,14 +246,14 @@ identity.
 
 ### IRON Kernel Implementations
 
-IRON kernels (`kernels/iron/*.py`) define:
+IRON kernels (`kernels/iron_kernels/*.py`) define:
 
 - Data movement via ObjectFifos (input/output streaming)
 - Worker placement on AIE tiles
 - Runtime sequences for DMA transfers
 - External function declarations for C++ core functions
 
-These are paired with C++ core functions (`kernels/iron/*.cc`) that implement
+These are paired with C++ core functions (`kernels/iron_kernels/*.cc`) that implement
 the actual vectorized computations using the AIE API.
 
 ### Matrix Multiplication (`MUL_MAT`)
@@ -363,7 +363,7 @@ Returns a `KernelSpec` (or `list[KernelSpec]` for multi-backend fallback) specif
 - Uses `functools.partial` to bind all arguments to the kernel function at dispatch time
 - `op_params` and `config` are optional (included only when the operation requires them)
 
-### 2. IRON Design (e.g., `kernels/iron/unary_ops.py`)
+### 2. IRON Design (e.g., `kernels/iron_kernels/unary_ops.py`)
 
 Defines the IRON program structure:
 
@@ -373,7 +373,7 @@ Defines the IRON program structure:
 - External function declarations for C++ core functions
 - Tiling and alignment calculations
 
-### 3. C++ Core Function (e.g., `kernels/iron/unary_ops.cc`)
+### 3. C++ Core Function (e.g., `kernels/iron_kernels/unary_ops.cc`)
 
 Implements the core computation using the AIE API:
 
@@ -409,7 +409,7 @@ Implements the core computation using the AIE API:
    ) -> KernelSpec:
        """GGML_OP_NEW_OP implementation."""
        from functools import partial
-       from .iron.new_op import new_op
+       from .iron_kernels.new_op import new_op
 
        return KernelSpec(
            backend=Backend.IRON,
@@ -426,14 +426,14 @@ Implements the core computation using the AIE API:
        )
    ```
 
-3. **Create the IRON design** (`kernels/iron/new_op.py`):
+3. **Create the IRON design** (`kernels/iron_kernels/new_op.py`):
    - Import from `aie.iron` (ObjectFifo, Program, Runtime, Worker, etc.)
    - Import utilities from `.utils` (arch_to_device, align_to_arch, etc.)
    - Define the data flow and compute structure
    - Create external function specs for the C++ core function
    - Function signature: `def new_op(arch, input_tensors, output_tensor, op_params)`
 
-4. **Create the C++ core function** (`kernels/iron/new_op.cc`):
+4. **Create the C++ core function** (`kernels/iron_kernels/new_op.cc`):
    - Use compile guards: `#ifdef GGML_OP_NEW_OP`
    - Implement: `void ggml_op_new_op(const INPUT_DTYPE*, OUTPUT_DTYPE*, int32_t N)`
    - Use `extern "C"` linkage
@@ -533,14 +533,14 @@ To add a new backend, follow the pattern used for the Triton backend. This examp
 
 ### Python
 
-- Follow existing patterns in `iron/unary_ops.py` / `iron/binary_ops.py`
+- Follow existing patterns in `iron_kernels/unary_ops.py` / `iron_kernels/binary_ops.py`
 - Use `CoreFunctionSpec` dataclass for external function specifications
-- Import utilities from `iron/utils.py`:
+- Import utilities from `iron_kernels/utils.py`:
   - `arch_to_device()` - Convert arch string to IRON device object (`"aie2"` → `NPU1()`, `"aie2p"` → `NPU2()`)
   - `arch_aligned_num_elements()` - Align tensor sizes to architecture requirements
   - `align_to_arch()` - Align arbitrary sizes to byte boundaries (default 4-byte alignment)
   - `max_tile_size()` - Calculate optimal tile size based on 512-bit vector register width
-- Top-level wrappers import from `.iron.<module>` subpackage
+- Top-level wrappers import from `.iron_kernels.<module>` subpackage
 - Follow existing formatting using `ruff` (see `kernels/ruff.toml`)
 - Use Google-style docstrings (`Parameters:`, `Returns:`, `Raises:`) — not numpy-style
 - Do not duplicate type annotations in docstrings; types belong in function signatures
