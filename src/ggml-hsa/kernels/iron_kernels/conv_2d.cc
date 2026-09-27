@@ -13,6 +13,22 @@
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
+// Fully unrolling the kernel-window loops is the single biggest win on a 3x3
+// convolution, but the tap body is replicated across four loops (left border,
+// the two interior vector widths, and the tail), so the unrolled code grows as
+// 4 * KW * KH and the AIE core only has 16 KB of program memory. At 3x3 it
+// fits; at 5x5 and above it does not, and the link fails with ".text will not
+// fit in region 'program'" (by 35520 bytes at 11x11). That failure is caught by
+// ggml_backend_hsa_device_supports_op and quietly routes the op to the CPU, so
+// unrolling unconditionally does not corrupt anything -- it just silently drops
+// NPU support for every window larger than 3x3, which previously worked. Gate
+// the unroll on the tap count so those shapes keep their (unroll-free) kernel.
+#if (GGML_CONV2D_KW * GGML_CONV2D_KH) <= 9
+#    define GGML_CONV2D_UNROLL_TAPS AIE_LOOP_UNROLL_FULL
+#else
+#    define GGML_CONV2D_UNROLL_TAPS
+#endif
+
 namespace {
 
 /**
@@ -179,7 +195,7 @@ void conv_2d_impl(const T_in * __restrict in,
         aie::accum<accfloat, W> acc;
         acc.from_vector(accumulate ? aie::load_unaligned_v<W>(out_row + ox)
                                    : aie::zeros<T_out, W>());
-        AIE_LOOP_UNROLL_FULL
+        GGML_CONV2D_UNROLL_TAPS
         for (int32_t ikh = 0; ikh < kh; ++ikh) {
             const int32_t iih = oy * s1 + ikh * d1 - p1;
             if (iih < 0 || iih >= ih) {
@@ -187,7 +203,7 @@ void conv_2d_impl(const T_in * __restrict in,
             }
             const T_in * __restrict srow = src_plane + iih * iw;
             const T_in * __restrict wrow = wt_base + ikh * kw;
-            AIE_LOOP_UNROLL_FULL
+            GGML_CONV2D_UNROLL_TAPS
             for (int32_t ikw = 0; ikw < kw; ++ikw) {
                 const int32_t iiw = ox + ikw * d0 - p0; // s0 == 1
                 const aie::vector<T_in, W> wvec = aie::broadcast<T_in, W>(wrow[ikw]);
@@ -224,13 +240,13 @@ void conv_2d_impl(const T_in * __restrict in,
             // element keeps its bounds check.
             for (int32_t ox = 0; ox < ox_lo; ++ox) {
                 float acc = 0.0f;
-                AIE_LOOP_UNROLL_FULL
+                GGML_CONV2D_UNROLL_TAPS
                 for (int32_t ikh = 0; ikh < kh; ++ikh) {
                     const int32_t iih = oy * s1 + ikh * d1 - p1;
                     if (iih < 0 || iih >= ih) {
                         continue;
                     }
-                    AIE_LOOP_UNROLL_FULL
+                    GGML_CONV2D_UNROLL_TAPS
                     for (int32_t ikw = 0; ikw < kw; ++ikw) {
                         const int32_t iiw = ox * s0 + ikw * d0 - p0;
                         if (iiw >= 0 && iiw < iw) {
@@ -276,13 +292,13 @@ void conv_2d_impl(const T_in * __restrict in,
             // remainder plus the true right border, all bounds-checked.
             for (; ox < ow; ++ox) {
                 float acc = 0.0f;
-                AIE_LOOP_UNROLL_FULL
+                GGML_CONV2D_UNROLL_TAPS
                 for (int32_t ikh = 0; ikh < kh; ++ikh) {
                     const int32_t iih = oy * s1 + ikh * d1 - p1;
                     if (iih < 0 || iih >= ih) {
                         continue;
                     }
-                    AIE_LOOP_UNROLL_FULL
+                    GGML_CONV2D_UNROLL_TAPS
                     for (int32_t ikw = 0; ikw < kw; ++ikw) {
                         const int32_t iiw = ox * s0 + ikw * d0 - p0;
                         if (iiw >= 0 && iiw < iw) {
