@@ -195,7 +195,19 @@ void conv_2d_impl(const T_in * __restrict in,
                         acc = aie::mac(acc, wvec, ivec);
                     }
                 }
-                aie::store_unaligned_v(out_row + ox, acc.template to_vector<T_out>());
+                // Store the V lanes through an aligned temporary. out_row + ox
+                // is only element-aligned in general (ox_lo is ceil(p0/s0), and
+                // out_row advances by ow), and an unaligned 512-bit
+                // aie::store_unaligned_v() is a read-modify-write over the whole
+                // 64-byte window around the target whose preserved neighbour
+                // bytes come back displaced by 32 bytes. That corrupts memory
+                // outside the V lanes, which here holds the already-computed
+                // scalar border columns.
+                alignas(64) T_out chunk[V];
+                aie::store_v(chunk, acc.template to_vector<T_out>());
+                for (int32_t l = 0; l < V; ++l) {
+                    out_row[ox + l] = chunk[l];
+                }
             }
         }
     }
