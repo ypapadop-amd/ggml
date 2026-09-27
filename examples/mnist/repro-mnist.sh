@@ -21,6 +21,9 @@
 #               NPU where the first run may JIT-compile kernels)
 #   REGEN=1     regenerate model + download data before running
 #   OUTDIR      where result JSON + markdown files are written (default: script dir)
+#   GGML_HSA_KERNEL_CACHE_CLEAR=1   clear the HSA kernel JIT cache once before
+#               the first run, then reuse it for the rest (does not force a
+#               cold recompile on every run)
 #
 # Targets / primary backend device:
 #   npu -> HSA0    cpu -> CPU    gpu -> ROCm0 (HIP)
@@ -81,6 +84,19 @@ fi
 # Activate the IRON/HSA JIT env for the NPU path.
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/.venv/bin/activate"
+
+# Optionally clear the persistent HSA kernel JIT cache exactly once, up front,
+# then let every eval run reuse it. mnist-eval itself also reads
+# GGML_HSA_KERNEL_CACHE_CLEAR at process start (kernel-discovery.cpp), so if it
+# stayed in the environment each of the RUNS sub-processes would re-clear the
+# cache and cold-compile again. Honor it here once, then unset it so it never
+# reaches run_once.
+if [[ "${GGML_HSA_KERNEL_CACHE_CLEAR:-0}" != "0" && -n "${GGML_HSA_KERNEL_CACHE_CLEAR:-}" ]]; then
+    cache_dir="${GGML_HSA_KERNEL_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME}/.cache}/ggml}"
+    echo ">>> Clearing HSA kernel cache: ${cache_dir}"
+    rm -rf "${cache_dir}"
+    unset GGML_HSA_KERNEL_CACHE_CLEAR
+fi
 
 # Run one eval invocation; echo the filtered summary lines so the caller can
 # aggregate. For non-GPU targets the iGPU is hidden from the ROCm backend to
