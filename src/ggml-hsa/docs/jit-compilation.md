@@ -128,15 +128,21 @@ cache key encoding:
 - Operation name (lowercased): `add`, `mul_mat`, `soft_max`, ...
 - Output tensor: shape + dtype + non-contiguous flag (e.g. `1024f32`, `3x3x4f32n`)
 - Each source tensor in the same format, or `null`
-- For non-unary ops with non-zero `op_params`: hex hash of the param bytes
+- For non-unary ops with non-zero `op_params`: the 32-bit words in hex,
+  dot-separated, leading zeros stripped and trailing zero words dropped
+  (e.g. `1.1.1.1.1.1` for a stride-1 pad-1 dilation-1 convolution)
 
-> **Note:** the `op_params` field is a *hash*, so it is not injective. That is
-> safe only as long as kernels read their `op_params` at dispatch time, where a
-> collision just means two configurations share a cached kernel and both still
-> compute correctly. A kernel that compiles its `op_params` in as constants
-> would turn the same collision into a silently wrong result, so specialize on
-> tensor shapes (encoded losslessly above) rather than on `op_params`.
-> `conv_2d` follows this rule: it bakes in extents, not strides or padding.
+> **Note:** this field is injective, and deliberately so. A kernel may compile
+> its `op_params` in as constants (`conv_2d` does, which is most of its
+> speed-up). It was previously a hash of the param bytes; under a hash, two
+> tensors with identical shapes but different `op_params` can collide and share
+> a cached kernel. That is harmless while `op_params` are read at dispatch time,
+> but for a kernel that compiled them in it silently computes the wrong result.
+> Encoding the words means a mismatch can only ever be a cache miss.
+>
+> The encoding is shorter than the 16-character hash it replaced for every op in
+> the tree, but it is not bounded in principle: an op using all 16 words with
+> large values would reach ~143 characters.
 
 **Flattening optimization:** Contiguous element-wise ops (ADD, SUB, MUL, DIV,
 SCALE, all unary ops) are collapsed to 1D before naming, maximizing cache hits

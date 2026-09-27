@@ -164,6 +164,12 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
             "KH": kh,
             "OW": ow,
             "OH": oh,
+            "S0": s0,
+            "S1": s1,
+            "P0": p0,
+            "P1": p1,
+            "D0": d0,
+            "D1": d1,
         },
     )
 
@@ -199,9 +205,9 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
                 img = of_in.acquire(1)
                 for oc_idx in range(oc):
                     plane = of_out.acquire(1)
-                    # The extents reach the core function as -DGGML_CONV2D_*
-                    # literals; op_params stay runtime arguments.
-                    function(img, wts, plane, oc_idx, s0, s1, p0, p1, d0, d1)
+                    # The shape and op_params reach the core function as
+                    # -DGGML_CONV2D_* literals, so only oc_idx is passed.
+                    function(img, wts, plane, oc_idx)
                     of_out.release(1)
                 of_in.release(1)
             of_wts.release(1)
@@ -269,12 +275,9 @@ def _create_external_function(
         image_size: Elements in one input image (IC * IH * IW).
         wts_size: Elements in the full weight tensor (KW * KH * IC * OC).
         plane_size: Elements in one output plane (OW * OH).
-        shape: Extents to bake in as -DGGML_CONV2D_* literals, so the core
-            function compiles with constant loop bounds instead of runtime
-            arguments. Only tensor extents are specialized on: the JIT cache key
-            encodes those losslessly, whereas op_params are hashed into it, so
-            baking op_params in would turn a hash collision into a silently
-            wrong result. They stay runtime arguments.
+        shape: Extents and op_params to bake in as -DGGML_CONV2D_* literals, so
+            the core function compiles with constant loop bounds and strides
+            instead of runtime arguments.
 
     Returns:
         The configured ExternalFunction.
@@ -291,12 +294,6 @@ def _create_external_function(
             np.ndarray[(wts_size,), np.dtype[image_tensor.dtype]],  # wts
             np.ndarray[(plane_size,), np.dtype[output_tensor.dtype]],  # out
             np.int32,  # oc_idx
-            np.int32,  # s0
-            np.int32,  # s1
-            np.int32,  # p0
-            np.int32,  # p1
-            np.int32,  # d0
-            np.int32,  # d1
         ],
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(image_tensor.dtype)}",

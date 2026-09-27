@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
@@ -216,16 +217,49 @@ void ggml_hsa_output_tensor(const ggml_tensor & tensor, OutputStream & os) {
 }
 
 /**
- * @brief Creates a string representation of the tensor's op_params using a hash.
+ * @brief Creates a string representation of the tensor's op_params.
+ *
+ * `op_params` is a fixed 64-byte buffer that ggml fills as 32-bit words, of which each op uses only
+ * a short prefix. The words are emitted in hex, dot-separated, with leading zeros stripped and
+ * trailing zero words dropped, e.g. `1.1.1.1.1.1` for a stride-1 pad-1 dilation-1 convolution.
+ *
+ * This is injective, which a hash of the same bytes is not, and that matters: the kernel name is
+ * the JIT cache key, and a kernel may compile its op_params in as constants (conv_2d does). Under
+ * a hash, two tensors with identical shapes but different op_params can collide and share a cached
+ * kernel; while op_params are read at dispatch time that is harmless, but for a kernel that
+ * compiled them in it would silently compute the wrong result. Encoding them means a mismatch can
+ * only ever be a cache miss.
+ *
+ * The encoding is also shorter than the 16-character hash it replaced for every op in the tree
+ * (6 words -> 11 characters for the convolution above), though it is not bounded in principle: an
+ * op using all 16 words with large values would reach ~143 characters.
  *
  * @param[in] tensor tensor to output
  * @param[out] os output stream
  */
 template <typename OutputStream>
 void ggml_hsa_encode_op_params(const ggml_tensor & tensor, OutputStream & os) {
-    std::string_view bytes(reinterpret_cast<const char *>(tensor.op_params), GGML_MAX_OP_PARAMS);
-    std::size_t hash_value = std::hash<std::string_view>{}(bytes);
-    os << std::hex << hash_value;
+    static_assert(GGML_MAX_OP_PARAMS % sizeof(std::int32_t) == 0,
+                  "op_params must be a whole number of 32-bit words");
+    constexpr std::size_t num_words = GGML_MAX_OP_PARAMS / sizeof(std::int32_t);
+
+    std::array<std::int32_t, num_words> words{};
+    std::memcpy(words.data(), tensor.op_params, GGML_MAX_OP_PARAMS);
+
+    // Trailing zero words carry no information: every op uses a prefix of the buffer.
+    std::size_t len = num_words;
+    while ((len > 0) && (words[len - 1] == 0)) {
+        --len;
+    }
+
+    for (std::size_t i = 0; i < len; ++i) {
+        if (i != 0) {
+            os << '.';
+        }
+        // Print unsigned so a negative parameter round-trips as its two's-complement bit pattern.
+        os << std::hex << static_cast<std::uint32_t>(words[i]);
+    }
+    os << std::dec;
 }
 
 /**
