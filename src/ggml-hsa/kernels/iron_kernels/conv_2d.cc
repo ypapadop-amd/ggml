@@ -239,8 +239,8 @@ void conv_2d_impl(const T_in * __restrict in,
                         }
                     }
                 }
-                out_row[ox] = static_cast<T_out>(
-                    accumulate ? static_cast<float>(out_row[ox]) + acc : acc);
+                out_row[ox] =
+                    static_cast<T_out>(accumulate ? static_cast<float>(out_row[ox]) + acc : acc);
             }
 
             // Interior columns [ox_lo, ox_hi), widest vector first. Stepping
@@ -291,8 +291,8 @@ void conv_2d_impl(const T_in * __restrict in,
                         }
                     }
                 }
-                out_row[ox] = static_cast<T_out>(
-                    accumulate ? static_cast<float>(out_row[ox]) + acc : acc);
+                out_row[ox] =
+                    static_cast<T_out>(accumulate ? static_cast<float>(out_row[ox]) + acc : acc);
             }
         }
     }
