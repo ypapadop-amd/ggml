@@ -766,8 +766,14 @@ static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
     const ggml_tensor & a = *mm.src[0]; // [K, M]
     const ggml_tensor & b = *mm.src[1]; // [K, N]
 
-    const bool a_ok = a.type == GGML_TYPE_F32 || a.type == GGML_TYPE_BF16;
-    const bool b_ok = b.type == GGML_TYPE_F32 || b.type == GGML_TYPE_BF16;
+    // f16 is accepted alongside f32/bf16: ggml_conv_2d's im2col emits f16 whenever the conv kernel
+    // itself is not bf16 (see ggml_conv_2d in ggml.c), so the MUL_MAT it feeds would otherwise
+    // never qualify for the padded path. ggml_hsa_pad_gemm_operand retypes the operand to bf16
+    // unconditionally regardless of its original type, and the source pre-processing (on-device
+    // CONVERT_PAD, or its host fallback via ggml_hsa_assign) both support an f16 source, so f16
+    // operands convert+pad exactly like f32 ones.
+    const bool a_ok = a.type == GGML_TYPE_F32 || a.type == GGML_TYPE_BF16 || a.type == GGML_TYPE_F16;
+    const bool b_ok = b.type == GGML_TYPE_F32 || b.type == GGML_TYPE_BF16 || b.type == GGML_TYPE_F16;
     if (!a_ok || !b_ok) {
         return false;
     }
