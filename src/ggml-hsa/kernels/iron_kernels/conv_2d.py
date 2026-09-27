@@ -32,6 +32,14 @@ _CONV2D_PARAMS_SIZE = 6 * 4
 # (aie2), so 2*W + 1 (weights) <= 16 gives W <= 7.
 _MAX_WORKERS = 7
 
+# The core's frame exceeds the AIE core's 1024-byte default stack once the 3x3 tap loops are fully
+# unrolled: aiecc measures 2752 bytes for the MNIST conv1 shape, and the figure is shape-dependent.
+# Without an explicit size the core silently writes past the end of its stack into neighbouring core
+# data memory. Newer mlir-aie turns that into a build error ("stack_size = N is insufficient: this
+# core needs M bytes"), which is the signal to raise this constant. Same pattern as
+# cross_entropy_loss.py, softmax.py and gemm.py.
+_STACK_SIZE_BYTES = 4096
+
 
 def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     """Build the CONV_2D IRON program.
@@ -136,6 +144,21 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         image_size=image_size,
         wts_size=wts_size,
         plane_size=plane_size,
+        shape={
+            "IW": iw,
+            "IH": ih,
+            "IC": ic,
+            "KW": kw,
+            "KH": kh,
+            "OW": ow,
+            "OH": oh,
+            "S0": s0,
+            "S1": s1,
+            "P0": p0,
+            "P1": p1,
+            "D0": d0,
+            "D1": d1,
+        },
     )
 
     # Distribute the N images across compute tiles. Each worker owns independent
@@ -199,6 +222,7 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         Worker(
             make_core_fn(images_per_worker[w]),
             fn_args=[wts_conss[w], of_ins[w].cons(), of_outs[w].prod(), function],
+            stack_size=_STACK_SIZE_BYTES,
         )
         for w in range(num_workers)
     ]
@@ -244,6 +268,7 @@ def _create_external_function(
     image_size: int,
     wts_size: int,
     plane_size: int,
+    shape: dict,
 ) -> ExternalFunction:
     """Create the ExternalFunction for the conv_2d core function.
 
@@ -254,6 +279,9 @@ def _create_external_function(
         image_size: Elements in one input image (IC * IH * IW).
         wts_size: Elements in the full weight tensor (KW * KH * IC * OC).
         plane_size: Elements in one output plane (OW * OH).
+        shape: Extents and op_params to bake in as -DGGML_CONV2D_* literals, so
+            the core function compiles with constant loop bounds and strides
+            instead of runtime arguments.
 
     Returns:
         The configured ExternalFunction.
@@ -287,5 +315,6 @@ def _create_external_function(
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(image_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            *(f"-DGGML_CONV2D_{name}={value}" for name, value in shape.items()),
         ],
     )

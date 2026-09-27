@@ -66,21 +66,65 @@ void conv_2d_impl(const T_in * __restrict in,
                   const T_in * __restrict wts,
                   T_out * __restrict out,
                   int32_t oc_idx,
-                  int32_t iw,
-                  int32_t ih,
-                  int32_t ic,
-                  int32_t kw,
-                  int32_t kh,
-                  int32_t ow,
-                  int32_t oh,
-                  int32_t s0,
-                  int32_t s1,
-                  int32_t p0,
-                  int32_t p1,
-                  int32_t d0,
-                  int32_t d1) {
+                  [[maybe_unused]] int32_t iw_rt,
+                  [[maybe_unused]] int32_t ih_rt,
+                  [[maybe_unused]] int32_t ic_rt,
+                  [[maybe_unused]] int32_t kw_rt,
+                  [[maybe_unused]] int32_t kh_rt,
+                  [[maybe_unused]] int32_t ow_rt,
+                  [[maybe_unused]] int32_t oh_rt,
+                  [[maybe_unused]] int32_t s0_rt,
+                  [[maybe_unused]] int32_t s1_rt,
+                  [[maybe_unused]] int32_t p0_rt,
+                  [[maybe_unused]] int32_t p1_rt,
+                  [[maybe_unused]] int32_t d0_rt,
+                  [[maybe_unused]] int32_t d1_rt) {
     static_assert(is_floating_point_v<T_in>, "T_in must be a floating-point type");
     static_assert(is_floating_point_v<T_out>, "T_out must be a floating-point type");
+
+    // Shape binding. conv_2d.py knows every extent and op_param at build time
+    // and emits them as -DGGML_CONV2D_*, so Peano sees literals here instead of
+    // runtime arguments: the tap loops get a constant trip count (which is what
+    // lets them unroll), and the address arithmetic folds to immediates. This
+    // is safe to specialize on because the JIT cache key already encodes the
+    // tensor shapes and the op_params, so a kernel built for one configuration
+    // is never reused for another. Kernels built without the defines fall back
+    // to the runtime arguments.
+#ifdef GGML_CONV2D_IW
+    constexpr int32_t iw = GGML_CONV2D_IW;
+    constexpr int32_t ih = GGML_CONV2D_IH;
+    constexpr int32_t ic = GGML_CONV2D_IC;
+    constexpr int32_t kw = GGML_CONV2D_KW;
+    constexpr int32_t kh = GGML_CONV2D_KH;
+    constexpr int32_t ow = GGML_CONV2D_OW;
+    constexpr int32_t oh = GGML_CONV2D_OH;
+    constexpr int32_t s0 = GGML_CONV2D_S0;
+    constexpr int32_t s1 = GGML_CONV2D_S1;
+    constexpr int32_t p0 = GGML_CONV2D_P0;
+    constexpr int32_t p1 = GGML_CONV2D_P1;
+    constexpr int32_t d0 = GGML_CONV2D_D0;
+    constexpr int32_t d1 = GGML_CONV2D_D1;
+    // With a single input channel each output element is written exactly once,
+    // so there is nothing to accumulate across: the plane needs no zeroing and
+    // each chunk can start from a zero accumulator instead of reloading what
+    // the zero-init just wrote.
+    constexpr bool accumulate = (ic > 1);
+#else
+    const int32_t iw = iw_rt;
+    const int32_t ih = ih_rt;
+    const int32_t ic = ic_rt;
+    const int32_t kw = kw_rt;
+    const int32_t kh = kh_rt;
+    const int32_t ow = ow_rt;
+    const int32_t oh = oh_rt;
+    const int32_t s0 = s0_rt;
+    const int32_t s1 = s1_rt;
+    const int32_t p0 = p0_rt;
+    const int32_t p1 = p1_rt;
+    const int32_t d0 = d0_rt;
+    const int32_t d1 = d1_rt;
+    const bool accumulate = (ic > 1);
+#endif
 
     // 512-bit-register lane count: 16 for f32, 32 for bf16.
     constexpr int32_t V = 512 / (8 * sizeof(T_in));
@@ -91,9 +135,11 @@ void conv_2d_impl(const T_in * __restrict in,
     const int32_t knl_plane = kh * kw;
     const int32_t knl_vol = ic * knl_plane; // KH*KW*IC per output channel
 
-    const int32_t n_out = oh * ow;
-    for (int32_t i = 0; i < n_out; ++i) {
-        out[i] = static_cast<T_out>(0.0f);
+    if (accumulate) {
+        const int32_t n_out = oh * ow;
+        for (int32_t i = 0; i < n_out; ++i) {
+            out[i] = static_cast<T_out>(0.0f);
+        }
     }
 
     // Interior output-column range [ox_lo, ox_hi) where every kernel tap lands
@@ -123,8 +169,45 @@ void conv_2d_impl(const T_in * __restrict in,
 
     // Vector chunks only when the input window is contiguous along ox (s0 == 1).
     const bool vectorize = (s0 == 1);
-    const int32_t interior = ox_hi - ox_lo;
-    const int32_t ox_vec_end = vectorize ? (ox_lo + (interior / V) * V) : ox_lo;
+
+    // One interior chunk of W output columns, every tap in bounds, computed with
+    // a broadcast-weight FMA. W is a template parameter so the interior can step
+    // down through the vector widths below.
+    auto vec_chunk = [&]<int32_t W>(int32_t ox, int32_t oy, T_out * __restrict out_row,
+                                    const T_in * __restrict src_plane,
+                                    const T_in * __restrict wt_base) {
+        aie::accum<accfloat, W> acc;
+        acc.from_vector(accumulate ? aie::load_unaligned_v<W>(out_row + ox)
+                                   : aie::zeros<T_out, W>());
+        AIE_LOOP_UNROLL_FULL
+        for (int32_t ikh = 0; ikh < kh; ++ikh) {
+            const int32_t iih = oy * s1 + ikh * d1 - p1;
+            if (iih < 0 || iih >= ih) {
+                continue;
+            }
+            const T_in * __restrict srow = src_plane + iih * iw;
+            const T_in * __restrict wrow = wt_base + ikh * kw;
+            AIE_LOOP_UNROLL_FULL
+            for (int32_t ikw = 0; ikw < kw; ++ikw) {
+                const int32_t iiw = ox + ikw * d0 - p0; // s0 == 1
+                const aie::vector<T_in, W> wvec = aie::broadcast<T_in, W>(wrow[ikw]);
+                const aie::vector<T_in, W> ivec = aie::load_unaligned_v<W>(srow + iiw);
+                acc = aie::mac(acc, wvec, ivec);
+            }
+        }
+        // Store the W lanes through an aligned temporary. out_row + ox is only
+        // element-aligned in general (ox_lo is ceil(p0/s0), and out_row advances
+        // by ow), and an unaligned 512-bit aie::store_unaligned_v() is a
+        // read-modify-write over the whole 64-byte window around the target
+        // whose preserved neighbour bytes come back displaced by 32 bytes. That
+        // corrupts memory outside the W lanes, which here holds the
+        // already-computed scalar border columns.
+        alignas(64) T_out chunk[W];
+        aie::store_v(chunk, acc.template to_vector<T_out>());
+        for (int32_t l = 0; l < W; ++l) {
+            out_row[ox + l] = chunk[l];
+        }
+    };
 
     // Channel reduction stays the outermost loop, accumulating into the output
     // plane, to avoid a Peano miscompile that dropped the iic>=1 contribution
@@ -137,15 +220,17 @@ void conv_2d_impl(const T_in * __restrict in,
         for (int32_t oy = 0; oy < oh; ++oy) {
             T_out * __restrict out_row = out + oy * ow;
 
-            // Left / right border columns: some taps fall in the padding, so
-            // each element keeps its bounds check.
+            // Left border columns: some taps fall in the padding, so each
+            // element keeps its bounds check.
             for (int32_t ox = 0; ox < ox_lo; ++ox) {
                 float acc = 0.0f;
+                AIE_LOOP_UNROLL_FULL
                 for (int32_t ikh = 0; ikh < kh; ++ikh) {
                     const int32_t iih = oy * s1 + ikh * d1 - p1;
                     if (iih < 0 || iih >= ih) {
                         continue;
                     }
+                    AIE_LOOP_UNROLL_FULL
                     for (int32_t ikw = 0; ikw < kw; ++ikw) {
                         const int32_t iiw = ox * s0 + ikw * d0 - p0;
                         if (iiw >= 0 && iiw < iw) {
@@ -154,60 +239,60 @@ void conv_2d_impl(const T_in * __restrict in,
                         }
                     }
                 }
-                out_row[ox] = static_cast<T_out>(static_cast<float>(out_row[ox]) + acc);
-            }
-            for (int32_t ox = ox_vec_end; ox < ow; ++ox) {
-                float acc = 0.0f;
-                for (int32_t ikh = 0; ikh < kh; ++ikh) {
-                    const int32_t iih = oy * s1 + ikh * d1 - p1;
-                    if (iih < 0 || iih >= ih) {
-                        continue;
-                    }
-                    for (int32_t ikw = 0; ikw < kw; ++ikw) {
-                        const int32_t iiw = ox * s0 + ikw * d0 - p0;
-                        if (iiw >= 0 && iiw < iw) {
-                            acc += static_cast<float>(src_plane[iih * iw + iiw]) *
-                                   static_cast<float>(wt_base[ikh * kw + ikw]);
-                        }
-                    }
-                }
-                out_row[ox] = static_cast<T_out>(static_cast<float>(out_row[ox]) + acc);
+                out_row[ox] = static_cast<T_out>(
+                    accumulate ? static_cast<float>(out_row[ox]) + acc : acc);
             }
 
-            // Interior vector chunks (s0 == 1 only): every tap is in-bounds, so
-            // V output columns are computed at once with a broadcast-weight FMA.
-            // Columns past ox_vec_end (the interior remainder and the true right
-            // border) are handled by the bounds-checked right-border loop above.
-            for (int32_t ox = ox_lo; ox < ox_vec_end; ox += V) {
-                aie::accum<accfloat, V> acc;
-                acc.from_vector(aie::load_unaligned_v<V>(out_row + ox));
+            // Interior columns [ox_lo, ox_hi), widest vector first. Stepping
+            // 16 -> 8 -> 4 lanes matters because the interior is not a multiple
+            // of V: at OW=28 it is 26 columns, so a V-only loop leaves ten of
+            // them to the scalar tail below, and that tail then costs more than
+            // the vectorized part it was supposed to trim.
+            //
+            // Peeling the padded top/bottom rows out of these loops (the
+            // vertical counterpart of the ox_lo/ox_hi split, so interior rows
+            // drop the iih bounds check) was tried and reverted: it outlined the
+            // border row body into a separate call with a ~4.5 KB frame and
+            // measured 116.9 -> 122.5 ms on the MNIST conv1 shape.
+            int32_t ox = ox_lo;
+            if (vectorize) {
+                for (; ox + V <= ox_hi; ox += V) {
+                    vec_chunk.template operator()<V>(ox, oy, out_row, src_plane, wt_base);
+                }
+                for (; ox + V / 2 <= ox_hi; ox += V / 2) {
+                    vec_chunk.template operator()<V / 2>(ox, oy, out_row, src_plane, wt_base);
+                }
+                // No V/4 step: a 128-bit chunk returns wrong results here. With
+                // IW=IH=14, IC=8 (MNIST conv2) the interior is 12 columns, so
+                // the widths in use are V/2 then V/4, and that configuration
+                // mismatches the CPU reference on 1174 elements; dropping the
+                // V/4 step makes the same shape exact. V and V/2 (512- and
+                // 256-bit) are correct on every shape tested. Not diagnosed
+                // further -- it is the same family as the 512-bit
+                // store_unaligned_v defect worked around below.
+            }
+
+            // Whatever the vector widths could not cover: the sub-V/4 interior
+            // remainder plus the true right border, all bounds-checked.
+            for (; ox < ow; ++ox) {
+                float acc = 0.0f;
+                AIE_LOOP_UNROLL_FULL
                 for (int32_t ikh = 0; ikh < kh; ++ikh) {
                     const int32_t iih = oy * s1 + ikh * d1 - p1;
                     if (iih < 0 || iih >= ih) {
                         continue;
                     }
-                    const T_in * __restrict srow = src_plane + iih * iw;
-                    const T_in * __restrict wrow = wt_base + ikh * kw;
+                    AIE_LOOP_UNROLL_FULL
                     for (int32_t ikw = 0; ikw < kw; ++ikw) {
-                        const int32_t iiw = ox + ikw * d0 - p0; // s0 == 1
-                        const aie::vector<T_in, V> wvec = aie::broadcast<T_in, V>(wrow[ikw]);
-                        const aie::vector<T_in, V> ivec = aie::load_unaligned_v<V>(srow + iiw);
-                        acc = aie::mac(acc, wvec, ivec);
+                        const int32_t iiw = ox * s0 + ikw * d0 - p0;
+                        if (iiw >= 0 && iiw < iw) {
+                            acc += static_cast<float>(src_plane[iih * iw + iiw]) *
+                                   static_cast<float>(wt_base[ikh * kw + ikw]);
+                        }
                     }
                 }
-                // Store the V lanes through an aligned temporary. out_row + ox
-                // is only element-aligned in general (ox_lo is ceil(p0/s0), and
-                // out_row advances by ow), and an unaligned 512-bit
-                // aie::store_unaligned_v() is a read-modify-write over the whole
-                // 64-byte window around the target whose preserved neighbour
-                // bytes come back displaced by 32 bytes. That corrupts memory
-                // outside the V lanes, which here holds the already-computed
-                // scalar border columns.
-                alignas(64) T_out chunk[V];
-                aie::store_v(chunk, acc.template to_vector<T_out>());
-                for (int32_t l = 0; l < V; ++l) {
-                    out_row[ox + l] = chunk[l];
-                }
+                out_row[ox] = static_cast<T_out>(
+                    accumulate ? static_cast<float>(out_row[ox]) + acc : acc);
             }
         }
     }
