@@ -166,6 +166,14 @@ add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
 set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
 
 #
+# bench-add-f16-hsa
+#
+# Timing harness for the f16 pre/post-processing paths; built but not registered as a test, since
+# it reports numbers rather than passing or failing.
+add_executable(bench-add-f16-hsa bench-add-f16-hsa.cpp)
+target_link_libraries(bench-add-f16-hsa PRIVATE ggml ggml-hsa)
+
+#
 # Kernel-inlining variants
 #
 # GGML_HSA_KERNEL_INLINE=1 hands each kernel to aiecc as textual LLVM IR and IR-links it into the

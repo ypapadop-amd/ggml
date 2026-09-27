@@ -169,6 +169,133 @@ inline f32 convert_f16_bits_to_f32(std::uint16_t h) {
 }
 
 /**
+ * @brief Narrows one f32 element to f16 bits (round-to-nearest-even, NaN -> quiet).
+ *
+ * Integer-only replica of the host @c ggml_compute_fp32_to_fp16: overflow (and infinity) saturates
+ * to inf, an out-of-range small magnitude falls through the f16 subnormal range to a signed zero,
+ * and a NaN keeps its sign but is quieted to 0x7e00 with its payload dropped -- exactly what the
+ * host reference does. Returns the raw 16-bit pattern; the caller stores it into the i16 the f16
+ * tensor is streamed as (IRON has no f16 element type).
+ *
+ * Deliberately integer-only rather than a transcription of the host reference, which reaches its
+ * result through float multiplies and an add whose rounding would be the AIE's rather than x86's.
+ * The two were checked to agree on all 2^32 f32 bit patterns; see also test-convert-hsa, which
+ * checks all 65536 bf16 patterns through this on the device.
+ *
+ * @param[in] v The f32 value to convert.
+ * @return The f16 bit pattern as a uint16_t.
+ */
+inline std::uint16_t convert_f32_to_f16_scalar(f32 v) {
+    union {
+        f32 f;
+        std::uint32_t u;
+    } bits;
+    bits.f = v;
+
+    const std::uint32_t sign = (bits.u >> 16) & 0x8000u;
+    const std::uint32_t mag = bits.u & 0x7fffffffu;
+
+    if (mag > 0x7f800000u) {
+        return static_cast<std::uint16_t>(sign | 0x7e00u);
+    }
+
+    const std::int32_t exponent = static_cast<std::int32_t>(mag >> 23) - 127;
+    const std::uint32_t mantissa = mag & 0x7fffffu;
+
+    if (exponent >= 16) {
+        // above the largest f16 magnitude, and infinity itself
+        return static_cast<std::uint16_t>(sign | 0x7c00u);
+    }
+    if (exponent >= -14) {
+        // normal f16: keep 10 mantissa bits, round the dropped 13 to nearest-even. A carry out of
+        // the mantissa walks into the exponent field on its own, and at the top of the range that
+        // is exactly the 0x7bff -> 0x7c00 (inf) rounding the host produces.
+        std::uint32_t h = (static_cast<std::uint32_t>(exponent + 15) << 10) | (mantissa >> 13);
+        const std::uint32_t rem = mantissa & 0x1fffu;
+        if (rem > 0x1000u || (rem == 0x1000u && (h & 1u) != 0u)) {
+            ++h;
+        }
+        return static_cast<std::uint16_t>(sign | h);
+    }
+    if (mag < 0x00800000u) {
+        // f32 subnormal, i.e. below 2^-126: far under the smallest f16 subnormal, so a signed zero
+        return static_cast<std::uint16_t>(sign);
+    }
+
+    // f16 subnormal: the result is |v| / 2^-24 rounded to nearest-even, so shift the 24-bit
+    // significand down by shift and round on the discarded bits. shift >= 25 cannot round up to
+    // the smallest subnormal, and would be an out-of-range shift below, so it leaves a signed zero.
+    const std::uint32_t shift = static_cast<std::uint32_t>(-exponent - 1);
+    if (shift >= 25) {
+        return static_cast<std::uint16_t>(sign);
+    }
+    const std::uint32_t significand = 0x800000u | mantissa;
+    std::uint32_t h = significand >> shift;
+    const std::uint32_t rem = significand & ((1u << shift) - 1u);
+    const std::uint32_t half = 1u << (shift - 1);
+    if (rem > half || (rem == half && (h & 1u) != 0u)) {
+        ++h;
+    }
+    return static_cast<std::uint16_t>(sign | h);
+}
+
+/**
+ * @brief Lanes that @ref convert_bf16_to_f16_vector converts correctly.
+ *
+ * The vector bf16 -> f16 path covers the two cases that need no rounding and no range handling: a
+ * result that is a normal f16 (biased bf16 exponent in [113, 142], i.e. an unbiased exponent in
+ * [-14, 15]), and a signed zero. Everything else -- an f16 subnormal, an overflow to infinity, an
+ * infinity, or a NaN -- is left to the scalar path, which is the reference for those. Separating
+ * the predicate from the conversion lets the caller check a whole block at once and only fall back
+ * where it must.
+ *
+ * @tparam V Vector width (number of 16-bit lanes).
+ * @param[in] b The raw bf16 bit patterns.
+ * @return Mask of the lanes the vector path handles.
+ */
+template <int V>
+inline aie::mask<V> convert_bf16_to_f16_vector_covers(const aie::vector<std::uint16_t, V> & b) {
+    const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, b);
+    const aie::vector<std::uint16_t, V> exponent = aie::logical_downshift(mag, 7);
+    return (aie::ge(exponent, std::uint16_t{113}) & aie::le(exponent, std::uint16_t{142})) |
+           aie::eq(mag, std::uint16_t{0});
+}
+
+/**
+ * @brief Converts a vector of @p V bf16 lanes to f16 bits, for the lanes the predicate covers.
+ *
+ * bf16 keeps 7 stored mantissa bits and f16 keeps 10, so a result that lands in the normal f16
+ * range loses nothing: the conversion is a pure re-pack of the sign, a rebiased exponent and a
+ * left-shifted mantissa, with no rounding to get wrong. That is what makes this direction
+ * vectorizable with uniform shifts alone, unlike the general f32 -> f16 narrowing, whose subnormal
+ * case needs a per-lane variable shift that aie_api cannot express.
+ *
+ * Lanes outside @ref convert_bf16_to_f16_vector_covers get a meaningless value here; the caller
+ * must not use the result unless the mask is full.
+ *
+ * @tparam V Vector width (number of 16-bit lanes).
+ * @param[in] b The raw bf16 bit patterns.
+ * @return The f16 bit patterns.
+ */
+template <int V>
+inline aie::vector<std::uint16_t, V>
+convert_bf16_to_f16_vector(const aie::vector<std::uint16_t, V> & b) {
+    const aie::vector<std::uint16_t, V> sign = aie::bit_and(std::uint16_t{0x8000}, b);
+    const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, b);
+    const aie::vector<std::uint16_t, V> exponent = aie::logical_downshift(mag, 7);
+    const aie::vector<std::uint16_t, V> mantissa = aie::bit_and(std::uint16_t{0x7f}, mag);
+
+    // rebias 127 -> 15, and move the 7 mantissa bits up to the top of the f16 field
+    const aie::vector<std::uint16_t, V> packed =
+        aie::bit_or(aie::upshift(aie::sub(exponent, std::uint16_t{112}), 10),
+                    aie::upshift(mantissa, 3));
+
+    // select(v, a, m) yields a where m holds: a zero magnitude keeps only its sign
+    return aie::bit_or(sign,
+                       aie::select(packed, std::uint16_t{0}, aie::eq(mag, std::uint16_t{0})));
+}
+
+/**
  * @brief Converts a vector of @p V f32 lanes to bf16 (round-to-nearest-even, NaN -> quiet).
  *
  * Lane-wise replica of @c convert_f32_to_bf16_scalar: applies the exact RNE integer arithmetic of
