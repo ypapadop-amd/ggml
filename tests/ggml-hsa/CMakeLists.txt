@@ -168,3 +168,39 @@ add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml ggml-hsa)
 add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
 set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
+
+#
+# Kernel-inlining variants
+#
+# GGML_HSA_KERNEL_INLINE=1 hands each kernel to aiecc as textual LLVM IR and IR-links it into the
+# core module, instead of linking a .o with ld.lld. That changes code generation -- notably it
+# moves the kernel's frame onto the core's stack -- so a kernel that builds one way can fail to
+# build the other. Nothing else in the build or in CI sets the variable, so without these entries
+# the flag ships untested: it was added broken for every binary element-wise kernel and no test
+# went red.
+#
+# These reuse the existing executables; only the environment differs. One entry per IRON kernel
+# module that opts in to inlining.
+#
+# GGML_HSA_KERNEL_CACHE_DIR is not optional here. The kernel cache is keyed by op, shapes and
+# dtypes -- it does not record whether a kernel was inlined -- so the two modes alias. Sharing the
+# default cache would let whichever variant ran first serve its artifacts to the other, and the
+# inline variants would silently test nothing. A separate directory also keeps these independent
+# of test execution order, rather than having them clear a cache the other tests are using.
+set(GGML_HSA_INLINE_TESTS
+    test-argmax-hsa     # argmax.py
+    test-broadcast-hsa  # binary_ops.py, broadcast and row paths
+    test-depad-hsa      # depad.py
+    test-gelu-hsa       # unary_ops.py, the largest unary frame
+    test-mul-mat-hsa    # gemm.py
+    test-unary-hsa      # unary_ops.py
+    test-vector-hsa     # binary_ops.py, element-wise path
+)
+
+foreach(TEST_TARGET IN LISTS GGML_HSA_INLINE_TESTS)
+    add_test(NAME ${TEST_TARGET}-inline COMMAND $<TARGET_FILE:${TEST_TARGET}>)
+    set_property(TEST ${TEST_TARGET}-inline PROPERTY ENVIRONMENT
+                 "LLVM_PROFILE_FILE=${TEST_TARGET}-inline.profraw"
+                 "GGML_HSA_KERNEL_INLINE=1"
+                 "GGML_HSA_KERNEL_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/inline-kernel-cache")
+endforeach()
