@@ -286,13 +286,11 @@ convert_bf16_to_f16_vector(const aie::vector<std::uint16_t, V> & b) {
     const aie::vector<std::uint16_t, V> mantissa = aie::bit_and(std::uint16_t{0x7f}, mag);
 
     // rebias 127 -> 15, and move the 7 mantissa bits up to the top of the f16 field
-    const aie::vector<std::uint16_t, V> packed =
-        aie::bit_or(aie::upshift(aie::sub(exponent, std::uint16_t{112}), 10),
-                    aie::upshift(mantissa, 3));
+    const aie::vector<std::uint16_t, V> packed = aie::bit_or(
+        aie::upshift(aie::sub(exponent, std::uint16_t{112}), 10), aie::upshift(mantissa, 3));
 
     // select(v, a, m) yields a where m holds: a zero magnitude keeps only its sign
-    return aie::bit_or(sign,
-                       aie::select(packed, std::uint16_t{0}, aie::eq(mag, std::uint16_t{0})));
+    return aie::bit_or(sign, aie::select(packed, std::uint16_t{0}, aie::eq(mag, std::uint16_t{0})));
 }
 
 /**
