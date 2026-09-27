@@ -13,6 +13,19 @@
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
+// This kernel is always built through conv_2d.py, which emits one
+// specialization per configuration and passes every extent and op_param as a
+// -DGGML_CONV2D_* literal. Fail with a readable message rather than a cascade
+// of undefined-identifier errors (and an #if that would silently read a missing
+// tap count as zero) if it is compiled without them.
+#if !defined(GGML_CONV2D_IW) || !defined(GGML_CONV2D_IH) || !defined(GGML_CONV2D_IC) ||            \
+    !defined(GGML_CONV2D_KW) || !defined(GGML_CONV2D_KH) || !defined(GGML_CONV2D_OW) ||            \
+    !defined(GGML_CONV2D_OH) || !defined(GGML_CONV2D_S0) || !defined(GGML_CONV2D_S1) ||            \
+    !defined(GGML_CONV2D_P0) || !defined(GGML_CONV2D_P1) || !defined(GGML_CONV2D_D0) ||            \
+    !defined(GGML_CONV2D_D1)
+#error "conv_2d.cc requires the -DGGML_CONV2D_* shape defines emitted by conv_2d.py"
+#endif
+
 // Fully unrolling the kernel-window loops is the single biggest win on a 3x3
 // convolution, but the tap body is replicated across four loops (left border,
 // the two interior vector widths, and the tail), so the unrolled code grows as

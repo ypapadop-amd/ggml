@@ -128,7 +128,20 @@ cache key encoding:
 - Operation name (lowercased): `add`, `mul_mat`, `soft_max`, ...
 - Output tensor: shape + dtype + non-contiguous flag (e.g. `1024f32`, `3x3x4f32n`)
 - Each source tensor in the same format, or `null`
-- For non-unary ops with non-zero `op_params`: hex hash of the param bytes
+- For non-unary ops with non-zero `op_params`: the param bytes, hex-encoded,
+  with trailing zeros dropped
+
+> **Note:** `op_params` were previously encoded as a *hash* of the bytes. A
+> kernel may compile its `op_params` in as constants (`conv_2d` does), which
+> makes a hash collision a silently wrong result rather than harmless cache
+> reuse, so the bytes are now encoded literally. Kernel names for non-unary ops
+> with non-zero `op_params` therefore changed: JIT caches re-populate
+> themselves on the next run, but a **precompiled `$GGML_HSA_KERNEL_DIR` must be
+> regenerated**. Its artifacts are looked up by exact name, so stale ones are
+> simply not found — with `GGML_HSA_JIT_COMPILE` disabled the affected ops then
+> report unsupported and fall back to another backend. No compatibility lookup
+> is provided on purpose: falling back to the old name would reinstate exactly
+> the collision the change removes.
 
 **Flattening optimization:** Contiguous element-wise ops (ADD, SUB, MUL, DIV,
 SCALE, all unary ops) are collapsed to 1D before naming, maximizing cache hits

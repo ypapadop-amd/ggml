@@ -32,12 +32,16 @@ _CONV2D_PARAMS_SIZE = 6 * 4
 # (aie2), so 2*W + 1 (weights) <= 16 gives W <= 7.
 _MAX_WORKERS = 7
 
-# The core's frame exceeds the AIE core's 1024-byte default stack once the 3x3 tap loops are fully
-# unrolled: aiecc measures 2752 bytes for the MNIST conv1 shape, and the figure is shape-dependent.
+# The core's frame exceeds the AIE core's 1024-byte default stack once the tap loops are unrolled.
 # Without an explicit size the core silently writes past the end of its stack into neighbouring core
-# data memory. Newer mlir-aie turns that into a build error ("stack_size = N is insufficient: this
-# core needs M bytes"), which is the signal to raise this constant. Same pattern as
-# cross_entropy_loss.py, softmax.py and gemm.py.
+# data memory. Same pattern as cross_entropy_loss.py, softmax.py and gemm.py.
+#
+# The frame is shape-dependent, but bounded: conv_2d.cc only unrolls the tap loops when
+# KW * KH <= 9 (see GGML_CONV2D_UNROLL_TAPS), so the worst case is a 3x3 window, for which aiecc
+# measures 2752 bytes. Larger windows compile without the unroll and need far less. Verified at
+# 3x3, 5x5, 7x7 and 11x11. If a future change raises the unroll bound, mlir-aie fails the build
+# with "stack_size = N is insufficient: this core needs M bytes", which is the signal to raise this
+# constant rather than a silent overrun.
 _STACK_SIZE_BYTES = 4096
 
 
