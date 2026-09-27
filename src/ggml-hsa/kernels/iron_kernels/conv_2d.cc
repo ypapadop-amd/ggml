@@ -20,9 +20,7 @@
 // tap count as zero) if it is compiled without them.
 #if !defined(GGML_CONV2D_IW) || !defined(GGML_CONV2D_IH) || !defined(GGML_CONV2D_IC) ||            \
     !defined(GGML_CONV2D_KW) || !defined(GGML_CONV2D_KH) || !defined(GGML_CONV2D_OW) ||            \
-    !defined(GGML_CONV2D_OH) || !defined(GGML_CONV2D_S0) || !defined(GGML_CONV2D_S1) ||            \
-    !defined(GGML_CONV2D_P0) || !defined(GGML_CONV2D_P1) || !defined(GGML_CONV2D_D0) ||            \
-    !defined(GGML_CONV2D_D1)
+    !defined(GGML_CONV2D_OH)
 #error "conv_2d.cc requires the -DGGML_CONV2D_* shape defines emitted by conv_2d.py"
 #endif
 
@@ -77,20 +75,32 @@ namespace {
  * @param[out] out     Output plane: OW * OH elements, layout [OW, OH] (row-major).
  * @param[in]  oc_idx  Output channel index.
  *
- * Every extent and op_param (IW, IH, IC, KW, KH, OW, OH, S0, S1, P0, P1, D0,
- * D1) arrives as a -DGGML_CONV2D_* compile definition rather than an argument.
- * conv_2d.py knows them all at build time and emits one specialization per
- * configuration, which is what lets the tap loops take a constant trip count
- * and the address arithmetic fold to immediates. This is safe because the JIT
- * cache key encodes the tensor shapes and the op_params losslessly (see
- * ggml_hsa_encode_op_params), so a specialization is never handed to a tensor
- * it was not built for.
+ * @param[in]  s0      Stride along width.
+ * @param[in]  s1      Stride along height.
+ * @param[in]  p0      Padding along width.
+ * @param[in]  p1      Padding along height.
+ * @param[in]  d0      Dilation along width.
+ * @param[in]  d1      Dilation along height.
+ *
+ * The extents (IW, IH, IC, KW, KH, OW, OH) arrive as -DGGML_CONV2D_* compile
+ * definitions rather than arguments: conv_2d.py knows them at build time and
+ * emits one specialization per shape, which is what lets the tap loops take a
+ * constant trip count. Only tensor shapes are specialized on, because the JIT
+ * cache key encodes them losslessly; op_params are hashed into that key, so
+ * baking them in would turn a hash collision into a silently wrong result
+ * rather than harmless cache reuse. They stay runtime arguments.
  */
 template <typename T_in, typename T_out>
 void conv_2d_impl(const T_in * __restrict in,
                   const T_in * __restrict wts,
                   T_out * __restrict out,
-                  int32_t oc_idx) {
+                  int32_t oc_idx,
+                  int32_t s0,
+                  int32_t s1,
+                  int32_t p0,
+                  int32_t p1,
+                  int32_t d0,
+                  int32_t d1) {
     static_assert(is_floating_point_v<T_in>, "T_in must be a floating-point type");
     static_assert(is_floating_point_v<T_out>, "T_out must be a floating-point type");
 
@@ -101,12 +111,6 @@ void conv_2d_impl(const T_in * __restrict in,
     constexpr int32_t kh = GGML_CONV2D_KH;
     constexpr int32_t ow = GGML_CONV2D_OW;
     constexpr int32_t oh = GGML_CONV2D_OH;
-    constexpr int32_t s0 = GGML_CONV2D_S0;
-    constexpr int32_t s1 = GGML_CONV2D_S1;
-    constexpr int32_t p0 = GGML_CONV2D_P0;
-    constexpr int32_t p1 = GGML_CONV2D_P1;
-    constexpr int32_t d0 = GGML_CONV2D_D0;
-    constexpr int32_t d1 = GGML_CONV2D_D1;
 
     static_assert(ic > 0, "GGML_CONV2D_IC must be positive");
     static_assert(oh > 0 && ow > 0, "GGML_CONV2D_OH/OW must be positive");
@@ -315,15 +319,27 @@ extern "C" {
  * @param[in]  wts     Weight tensor: KW*KH*IC*OC elements, layout [KW,KH,IC,OC].
  * @param[out] out     Output plane: OW * OH elements, layout [OW, OH] (row-major).
  * @param[in]  oc_idx  Output channel index.
+ * @param[in]  s0      Stride along width.
+ * @param[in]  s1      Stride along height.
+ * @param[in]  p0      Padding along width.
+ * @param[in]  p1      Padding along height.
+ * @param[in]  d0      Dilation along width.
+ * @param[in]  d1      Dilation along height.
  *
- * The shape and op_params come from the -DGGML_CONV2D_* compile definitions
- * conv_2d.py emits for this specialization; see conv_2d_impl.
+ * The extents come from the -DGGML_CONV2D_* compile definitions conv_2d.py
+ * emits for this specialization; see conv_2d_impl.
  */
 void ggml_op_conv_2d(const INPUT_DTYPE * __restrict in,
                      const INPUT_DTYPE * __restrict wts,
                      OUTPUT_DTYPE * __restrict out,
-                     int32_t oc_idx) {
-    conv_2d_impl<INPUT_DTYPE, OUTPUT_DTYPE>(in, wts, out, oc_idx);
+                     int32_t oc_idx,
+                     int32_t s0,
+                     int32_t s1,
+                     int32_t p0,
+                     int32_t p1,
+                     int32_t d0,
+                     int32_t d1) {
+    conv_2d_impl<INPUT_DTYPE, OUTPUT_DTYPE>(in, wts, out, oc_idx, s0, s1, p0, p1, d0, d1);
 }
 
 } // extern "C"
