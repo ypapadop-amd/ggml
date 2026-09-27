@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <iomanip>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -216,16 +217,31 @@ void ggml_hsa_output_tensor(const ggml_tensor & tensor, OutputStream & os) {
 }
 
 /**
- * @brief Creates a string representation of the tensor's op_params using a hash.
+ * @brief Creates a string representation of the tensor's op_params.
+ *
+ * The bytes are encoded literally rather than hashed. This string is part of the
+ * kernel name, which is the JIT cache key, and a kernel may compile its
+ * op_params in as constants (conv_2d does). A hash collision would then hand a
+ * tensor a cached kernel built for different op_params and silently compute the
+ * wrong result, where with a lossless key it can only ever miss.
+ *
+ * Trailing zero bytes are dropped: op_params is a fixed 64-byte buffer and every
+ * op uses only a short prefix of it, so encoding all of it would bloat the name
+ * for no gain.
  *
  * @param[in] tensor tensor to output
  * @param[out] os output stream
  */
 template <typename OutputStream>
 void ggml_hsa_encode_op_params(const ggml_tensor & tensor, OutputStream & os) {
-    std::string_view bytes(reinterpret_cast<const char *>(tensor.op_params), GGML_MAX_OP_PARAMS);
-    std::size_t hash_value = std::hash<std::string_view>{}(bytes);
-    os << std::hex << hash_value;
+    const auto * bytes = reinterpret_cast<const unsigned char *>(tensor.op_params);
+    std::size_t len = GGML_MAX_OP_PARAMS;
+    while ((len > 0) && (bytes[len - 1] == 0)) {
+        --len;
+    }
+    for (std::size_t i = 0; i < len; ++i) {
+        os << std::hex << std::setw(2) << std::setfill('0') << static_cast<unsigned>(bytes[i]);
+    }
 }
 
 /**
