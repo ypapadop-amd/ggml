@@ -133,6 +133,14 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         msg = f"Batch size must be positive; got N={n}."
         raise ValueError(msg)
 
+    if ic <= 0 or oc <= 0:
+        msg = f"Channel counts must be positive; got IC={ic}, OC={oc}."
+        raise ValueError(msg)
+
+    if ow <= 0 or oh <= 0:
+        msg = f"Output extents must be positive; got OW={ow}, OH={oh}."
+        raise ValueError(msg)
+
     # Element counts per tile
     image_size = ic * ih * iw  # one full image (all channels)
     wts_size = kw * kh * ic * oc  # full weight tensor (same for all images)
@@ -193,25 +201,9 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
                 img = of_in.acquire(1)
                 for oc_idx in range(oc):
                     plane = of_out.acquire(1)
-                    function(
-                        img,
-                        wts,
-                        plane,
-                        oc_idx,
-                        iw,
-                        ih,
-                        ic,
-                        kw,
-                        kh,
-                        ow,
-                        oh,
-                        s0,
-                        s1,
-                        p0,
-                        p1,
-                        d0,
-                        d1,
-                    )
+                    # The shape and op_params reach the core function as
+                    # -DGGML_CONV2D_* literals, so only oc_idx is passed.
+                    function(img, wts, plane, oc_idx)
                     of_out.release(1)
                 of_in.release(1)
             of_wts.release(1)
@@ -298,19 +290,6 @@ def _create_external_function(
             np.ndarray[(wts_size,), np.dtype[image_tensor.dtype]],  # wts
             np.ndarray[(plane_size,), np.dtype[output_tensor.dtype]],  # out
             np.int32,  # oc_idx
-            np.int32,  # iw
-            np.int32,  # ih
-            np.int32,  # ic
-            np.int32,  # kw
-            np.int32,  # kh
-            np.int32,  # ow
-            np.int32,  # oh
-            np.int32,  # s0
-            np.int32,  # s1
-            np.int32,  # p0
-            np.int32,  # p1
-            np.int32,  # d0
-            np.int32,  # d1
         ],
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(image_tensor.dtype)}",

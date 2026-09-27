@@ -22,7 +22,7 @@
 // ggml_backend_hsa_device_supports_op and quietly routes the op to the CPU, so
 // unrolling unconditionally does not corrupt anything -- it just silently drops
 // NPU support for every window larger than 3x3, which previously worked. Gate
-// the unroll on the tap count so those shapes keep their (unroll-free) kernel.
+// the unroll on the tap count so those shapes keep their (unrolled-free) kernel.
 #if (GGML_CONV2D_KW * GGML_CONV2D_KH) <= 9
 #    define GGML_CONV2D_UNROLL_TAPS AIE_LOOP_UNROLL_FULL
 #else
@@ -63,50 +63,24 @@ namespace {
  * @param[in]  wts     Weight tensor: KW*KH*IC*OC elements, layout [KW,KH,IC,OC].
  * @param[out] out     Output plane: OW * OH elements, layout [OW, OH] (row-major).
  * @param[in]  oc_idx  Output channel index.
- * @param[in]  iw      Input width.
- * @param[in]  ih      Input height.
- * @param[in]  ic      Input channels.
- * @param[in]  kw      Kernel width.
- * @param[in]  kh      Kernel height.
- * @param[in]  ow      Output width.
- * @param[in]  oh      Output height.
- * @param[in]  s0      Stride along width.
- * @param[in]  s1      Stride along height.
- * @param[in]  p0      Padding along width.
- * @param[in]  p1      Padding along height.
- * @param[in]  d0      Dilation along width.
- * @param[in]  d1      Dilation along height.
+ *
+ * Every extent and op_param (IW, IH, IC, KW, KH, OW, OH, S0, S1, P0, P1, D0,
+ * D1) arrives as a -DGGML_CONV2D_* compile definition rather than an argument.
+ * conv_2d.py knows them all at build time and emits one specialization per
+ * configuration, which is what lets the tap loops take a constant trip count
+ * and the address arithmetic fold to immediates. This is safe because the JIT
+ * cache key encodes the tensor shapes and the op_params losslessly (see
+ * ggml_hsa_encode_op_params), so a specialization is never handed to a tensor
+ * it was not built for.
  */
 template <typename T_in, typename T_out>
 void conv_2d_impl(const T_in * __restrict in,
                   const T_in * __restrict wts,
                   T_out * __restrict out,
-                  int32_t oc_idx,
-                  [[maybe_unused]] int32_t iw_rt,
-                  [[maybe_unused]] int32_t ih_rt,
-                  [[maybe_unused]] int32_t ic_rt,
-                  [[maybe_unused]] int32_t kw_rt,
-                  [[maybe_unused]] int32_t kh_rt,
-                  [[maybe_unused]] int32_t ow_rt,
-                  [[maybe_unused]] int32_t oh_rt,
-                  [[maybe_unused]] int32_t s0_rt,
-                  [[maybe_unused]] int32_t s1_rt,
-                  [[maybe_unused]] int32_t p0_rt,
-                  [[maybe_unused]] int32_t p1_rt,
-                  [[maybe_unused]] int32_t d0_rt,
-                  [[maybe_unused]] int32_t d1_rt) {
+                  int32_t oc_idx) {
     static_assert(is_floating_point_v<T_in>, "T_in must be a floating-point type");
     static_assert(is_floating_point_v<T_out>, "T_out must be a floating-point type");
 
-    // Shape binding. conv_2d.py knows every extent and op_param at build time
-    // and emits them as -DGGML_CONV2D_*, so Peano sees literals here instead of
-    // runtime arguments: the tap loops get a constant trip count (which is what
-    // lets them unroll), and the address arithmetic folds to immediates. This
-    // is safe to specialize on because the JIT cache key already encodes the
-    // tensor shapes and the op_params, so a kernel built for one configuration
-    // is never reused for another. Kernels built without the defines fall back
-    // to the runtime arguments.
-#ifdef GGML_CONV2D_IW
     constexpr int32_t iw = GGML_CONV2D_IW;
     constexpr int32_t ih = GGML_CONV2D_IH;
     constexpr int32_t ic = GGML_CONV2D_IC;
@@ -120,27 +94,15 @@ void conv_2d_impl(const T_in * __restrict in,
     constexpr int32_t p1 = GGML_CONV2D_P1;
     constexpr int32_t d0 = GGML_CONV2D_D0;
     constexpr int32_t d1 = GGML_CONV2D_D1;
+
+    static_assert(ic > 0, "GGML_CONV2D_IC must be positive");
+    static_assert(oh > 0 && ow > 0, "GGML_CONV2D_OH/OW must be positive");
+
     // With a single input channel each output element is written exactly once,
     // so there is nothing to accumulate across: the plane needs no zeroing and
     // each chunk can start from a zero accumulator instead of reloading what
     // the zero-init just wrote.
     constexpr bool accumulate = (ic > 1);
-#else
-    const int32_t iw = iw_rt;
-    const int32_t ih = ih_rt;
-    const int32_t ic = ic_rt;
-    const int32_t kw = kw_rt;
-    const int32_t kh = kh_rt;
-    const int32_t ow = ow_rt;
-    const int32_t oh = oh_rt;
-    const int32_t s0 = s0_rt;
-    const int32_t s1 = s1_rt;
-    const int32_t p0 = p0_rt;
-    const int32_t p1 = p1_rt;
-    const int32_t d0 = d0_rt;
-    const int32_t d1 = d1_rt;
-    const bool accumulate = (ic > 1);
-#endif
 
     // 512-bit-register lane count: 16 for f32, 32 for bf16.
     constexpr int32_t V = 512 / (8 * sizeof(T_in));
@@ -166,21 +128,28 @@ void conv_2d_impl(const T_in * __restrict in,
     // The divisors below are the (positive) strides; the numerators are
     // non-negative here (p0 >= 0, and the upper bound is clamped to 0), so the
     // unsigned divides fold to plain operations instead of a signed __divsi3.
-    const int32_t ox_lo =
+    int32_t ox_lo =
         (p0 > 0)
             ? static_cast<int32_t>((static_cast<uint32_t>(p0) + static_cast<uint32_t>(s0) - 1u) /
                                    static_cast<uint32_t>(s0))
             : 0;
+    // ceil(p0/s0) can exceed ow when the padding is large relative to the
+    // output width: iw=1, kw=5, d0=2, p0=5, s0=1 gives ow=3 but ox_lo=5. Left
+    // unclamped, the border loop below runs past the end of the row, and on the
+    // last row past the end of the output plane buffer entirely.
+    if (ox_lo > ow) {
+        ox_lo = ow;
+    }
     const int32_t hi_num = iw - 1 + p0 - (kw - 1) * d0;
     int32_t ox_hi =
         (hi_num < 0)
             ? 0
             : static_cast<int32_t>(static_cast<uint32_t>(hi_num) / static_cast<uint32_t>(s0)) + 1;
-    if (ox_hi > ow) {
-        ox_hi = ow;
-    }
     if (ox_hi < ox_lo) {
         ox_hi = ox_lo;
+    }
+    if (ox_hi > ow) {
+        ox_hi = ow;
     }
 
     // Vector chunks only when the input window is contiguous along ox (s0 == 1).
@@ -218,7 +187,7 @@ void conv_2d_impl(const T_in * __restrict in,
         // whose preserved neighbour bytes come back displaced by 32 bytes. That
         // corrupts memory outside the W lanes, which here holds the
         // already-computed scalar border columns.
-        alignas(64) T_out chunk[W];
+        alignas(W * sizeof(T_out)) T_out chunk[W];
         aie::store_v(chunk, acc.template to_vector<T_out>());
         for (int32_t l = 0; l < W; ++l) {
             out_row[ox + l] = chunk[l];
@@ -268,15 +237,21 @@ void conv_2d_impl(const T_in * __restrict in,
             // Peeling the padded top/bottom rows out of these loops (the
             // vertical counterpart of the ox_lo/ox_hi split, so interior rows
             // drop the iih bounds check) was tried and reverted: it outlined the
-            // border row body into a separate call with a ~4.5 KB frame and
-            // measured 116.9 -> 122.5 ms on the MNIST conv1 shape.
+            // border row body into a separate call with a ~4.5 KB frame. On the
+            // MNIST conv1 shape it measured 122.50/122.51/122.67 ms against
+            // 116.88/116.89/116.90 for the code below (three runs each, median
+            // of 25 iterations, per-run sd 0.02-0.18%), so the regression is
+            // well outside the run-to-run noise.
             int32_t ox = ox_lo;
             if (vectorize) {
                 for (; ox + V <= ox_hi; ox += V) {
                     vec_chunk.template operator()<V>(ox, oy, out_row, src_plane, wt_base);
                 }
-                for (; ox + V / 2 <= ox_hi; ox += V / 2) {
+                // At most one V/2 chunk can follow: the loop above leaves
+                // fewer than V columns. An `if` states that invariant.
+                if (ox + V / 2 <= ox_hi) {
                     vec_chunk.template operator()<V / 2>(ox, oy, out_row, src_plane, wt_base);
+                    ox += V / 2;
                 }
                 // No V/4 step: a 128-bit chunk returns wrong results here. With
                 // IW=IH=14, IC=8 (MNIST conv2) the interior is 12 columns, so
@@ -327,39 +302,15 @@ extern "C" {
  * @param[in]  wts     Weight tensor: KW*KH*IC*OC elements, layout [KW,KH,IC,OC].
  * @param[out] out     Output plane: OW * OH elements, layout [OW, OH] (row-major).
  * @param[in]  oc_idx  Output channel index.
- * @param[in]  iw      Input width.
- * @param[in]  ih      Input height.
- * @param[in]  ic      Input channels.
- * @param[in]  kw      Kernel width.
- * @param[in]  kh      Kernel height.
- * @param[in]  ow      Output width.
- * @param[in]  oh      Output height.
- * @param[in]  s0      Stride along width.
- * @param[in]  s1      Stride along height.
- * @param[in]  p0      Padding along width.
- * @param[in]  p1      Padding along height.
- * @param[in]  d0      Dilation along width.
- * @param[in]  d1      Dilation along height.
+ *
+ * The shape and op_params come from the -DGGML_CONV2D_* compile definitions
+ * conv_2d.py emits for this specialization; see conv_2d_impl.
  */
 void ggml_op_conv_2d(const INPUT_DTYPE * __restrict in,
                      const INPUT_DTYPE * __restrict wts,
                      OUTPUT_DTYPE * __restrict out,
-                     int32_t oc_idx,
-                     int32_t iw,
-                     int32_t ih,
-                     int32_t ic,
-                     int32_t kw,
-                     int32_t kh,
-                     int32_t ow,
-                     int32_t oh,
-                     int32_t s0,
-                     int32_t s1,
-                     int32_t p0,
-                     int32_t p1,
-                     int32_t d0,
-                     int32_t d1) {
-    conv_2d_impl<INPUT_DTYPE, OUTPUT_DTYPE>(in, wts, out, oc_idx, iw, ih, ic, kw, kh, ow, oh, s0,
-                                            s1, p0, p1, d0, d1);
+                     int32_t oc_idx) {
+    conv_2d_impl<INPUT_DTYPE, OUTPUT_DTYPE>(in, wts, out, oc_idx);
 }
 
 } // extern "C"
