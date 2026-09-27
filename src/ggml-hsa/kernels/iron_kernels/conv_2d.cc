@@ -24,9 +24,9 @@
 // NPU support for every window larger than 3x3, which previously worked. Gate
 // the unroll on the tap count so those shapes keep their (unrolled-free) kernel.
 #if (GGML_CONV2D_KW * GGML_CONV2D_KH) <= 9
-#    define GGML_CONV2D_UNROLL_TAPS AIE_LOOP_UNROLL_FULL
+#define GGML_CONV2D_UNROLL_TAPS AIE_LOOP_UNROLL_FULL
 #else
-#    define GGML_CONV2D_UNROLL_TAPS
+#define GGML_CONV2D_UNROLL_TAPS
 #endif
 
 namespace {
