@@ -241,6 +241,27 @@ int main() {
         {op_kind::sub, 64, 8, 2, 4, "sub bcast rows"},
         {op_kind::mul, 64, 8, 2, 4, "mul bcast rows"},
         {op_kind::div, 64, 8, 2, 4, "div bcast rows"},
+        // src1_nr == nr with nz == 1 makes src1 the same shape as src0, so no broadcast is
+        // involved at all and dispatch lands on the plain ggml_op_add/sub/mul/div kernels --
+        // a different body from every case above, and the one the shared vectorized
+        // transform_vector_n serves. Only these four ops have a vector body there; DIV stays
+        // scalar deliberately.
+        {op_kind::add, 768, 64, 1, 64, "add elementwise"},
+        {op_kind::sub, 768, 64, 1, 64, "sub elementwise"},
+        {op_kind::mul, 768, 64, 1, 64, "mul elementwise"},
+        {op_kind::div, 768, 64, 1, 64, "div elementwise"},
+        // 700 elements: no multiple of the 16-element f32 vector divides it, so
+        // tiled_tile_size falls back to max_tile_size and the tile lands below V. vend is
+        // then 0 and the whole range takes the scalar path.
+        {op_kind::add, 100, 7, 1, 7, "add elementwise ragged"},
+        // ne0 = 100 is neither a multiple of the vector width nor below it, so the row tile
+        // gives 0 < vend < N: the only configuration that runs the vector body and the
+        // scalar tail over the same row. The element-wise cases cannot produce it, because
+        // tiled_tile_size returns either a multiple of V (vend == N) or a tile below V
+        // (vend == 0).
+        {op_kind::add, 100, 33, 1, 1, "add bias partial tail"},
+        {op_kind::sub, 100, 33, 1, 1, "sub bcast partial tail"},
+        {op_kind::mul, 100, 33, 1, 1, "mul bcast partial tail"},
     };
 
     bool all_ok = true;

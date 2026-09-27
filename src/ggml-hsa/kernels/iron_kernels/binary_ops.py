@@ -23,10 +23,13 @@ from aie.iron.controlflow import range_
 
 from .utils import (
     CoreFunctionSpec,
+    align_to_arch,
     arch_aligned_num_elements,
     core_function_object,
     fill_drain_program,
     max_tile_size,
+    tiled_tile_size,
+    vector_lanes,
 )
 
 # These cores' frames exceed the AIE core's 1024-byte default stack once the kernel is IR-linked
@@ -157,8 +160,45 @@ def _create_external_function(
     Returns:
         The configured CoreFunctionSpec.
     """
-    num_elements = arch_aligned_num_elements(arch=arch, tensor=output_tensor)
-    tile_size = max_tile_size(arch, output_tensor.dtype, num_elements)
+    # One shared element count feeds all three fifos, and it is also the exact length of the
+    # output transfer: the HSA buffer type allocates precisely ggml_nbytes for a non-quantized
+    # tensor (ggml-hsa.cpp, get_alloc_size), so streaming more than the output holds writes past
+    # what ggml reserved.
+    #
+    # That rules out rounding the count up to satisfy align_to_arch's 4-byte rule -- including
+    # the rounding arch_aligned_num_elements would do on the output itself, which is why the
+    # logical count is validated here rather than an already-rounded one. A 1-element bf16
+    # output rounds to 2 and would then pass any check made after the fact, while the kernel
+    # still transfers two elements from a one-element tensor.
+    #
+    # A shape whose logical count does not already satisfy every fifo's dtype is therefore
+    # rejected, and dispatch falls back, rather than being served by a mis-sized kernel. f32 is
+    # unaffected: a 4-byte element type never needs rounding.
+    num_elements = output_tensor.numel()
+    for fifo_dtype in (
+        input_tensors[0].dtype,
+        input_tensors[1].dtype,
+        output_tensor.dtype,
+    ):
+        if align_to_arch(arch, num_elements, fifo_dtype) != num_elements:
+            msg = (
+                f"Element count ({num_elements}) is not 4-byte aligned for fifo dtype "
+                f"{fifo_dtype}; rounding it up would transfer more than the output holds."
+            )
+            raise ValueError(msg)
+
+    # Three fifos here (in0, in1, out), not the unary default of two, and GGML does not
+    # require src1 to share the output type -- so charge the budget each fifo's own width.
+    tile_size = tiled_tile_size(
+        arch,
+        output_tensor.dtype,
+        num_elements,
+        fifo_dtypes=(
+            input_tensors[0].dtype,
+            input_tensors[1].dtype,
+            output_tensor.dtype,
+        ),
+    )
 
     current_dir = Path(__file__).resolve().parent
     # Verified to compile with GGML_HSA_KERNEL_INLINE.
@@ -177,6 +217,16 @@ def _create_external_function(
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            # L1-budgeted tile, so the shared transform_vector_n may use its vector body.
+            # This builder serves ADD/SUB/MUL/DIV; DIV has no vector body and simply ignores
+            # the flag. The generic broadcast path keeps the one-register tile and is
+            # deliberately left without it.
+            "-DGGML_VECTORIZED_TILING=1",
+            *(
+                ["-DGGML_TILE_VECTOR_ALIGNED=1"]
+                if tile_size % vector_lanes(arch, output_tensor.dtype) == 0
+                else []
+            ),
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
@@ -332,6 +382,16 @@ def _create_row_external_function(
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            # Tile is one whole dst row, so the shared transform_vector_n may use its vector
+            # body. (For a narrow row that tile is still below one vector register; the body
+            # then degrades to its scalar tail.) The generic broadcast path keeps the
+            # one-register tile and is deliberately left without this flag.
+            "-DGGML_VECTORIZED_TILING=1",
+            *(
+                ["-DGGML_TILE_VECTOR_ALIGNED=1"]
+                if tile_size % vector_lanes(arch, output_tensor.dtype) == 0
+                else []
+            ),
         ],
     )
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
