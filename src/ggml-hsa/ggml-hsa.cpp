@@ -505,18 +505,18 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     // find dev memory pool (only for AIE agents)
     if (type == HSA_DEVICE_TYPE_AIE) {
         // XDNA dev heap is coarse-grained with alloc_rec_granule == 0
-        if (auto status = ggml_hsa_find_required_pool(
-                agent, HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
-                /*allocatable=*/false, dev_info.dev_memory);
+        if (auto status =
+                ggml_hsa_find_required_pool(agent, HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
+                                            /*allocatable=*/false, dev_info.dev_memory);
             status != HSA_STATUS_SUCCESS) {
             return status;
         }
     }
 
     // find data pool
-    if (auto status = ggml_hsa_find_required_pool(
-            agent, HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
-            /*allocatable=*/true, dev_info.data_memory);
+    if (auto status =
+            ggml_hsa_find_required_pool(agent, HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED,
+                                        /*allocatable=*/true, dev_info.data_memory);
         status != HSA_STATUS_SUCCESS) {
         return status;
     }
