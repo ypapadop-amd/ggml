@@ -35,17 +35,6 @@ bool g_ggml_hsa_verbose = [] {
 #endif
 }();
 
-/// @brief Whether to report SCALE / DIAG_MASK_INF / SOFT_MAX as supported despite the in-graph AIE
-/// queue fault that otherwise routes them to the CPU (see ggml_backend_hsa_device_supports_op).
-/// Read once from @c GGML_HSA_ENABLE_FAULTING_OPS at startup. Intended for the standalone device
-/// tests of those kernels, which dispatch one op at a time and so do not trigger the fault.
-bool g_ggml_hsa_enable_faulting_ops = [] {
-    if (const char * enable = std::getenv("GGML_HSA_ENABLE_FAULTING_OPS"); enable != nullptr) {
-        return ggml_hsa_string_to_bool(enable);
-    }
-    return false;
-}();
-
 /**
  * @brief Reads integer environment variable @p name, restricted to an accepted range.
  *
@@ -2602,10 +2591,10 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
                    ((op->src[0]->type == GGML_TYPE_F32) || (op->src[0]->type == GGML_TYPE_F16) ||
                     (op->src[0]->type == GGML_TYPE_BF16)) &&
                    (op->type == GGML_TYPE_F32);
-        case GGML_OP_SCALE:
-        case GGML_OP_DIAG_MASK_INF:
         case GGML_OP_SOFT_MAX:
-            if (!g_ggml_hsa_enable_faulting_ops) {
+            // The ALiBi path (masked, max_bias != 0) gives wrong results on the AIE. Checked here
+            // rather than in the kernel builder so a cached or precompiled kernel cannot bypass it.
+            if ((op->src[1] != nullptr) && (ggml_get_op_params_f32(op, 1) != 0.0f)) {
                 return false;
             }
             break;
