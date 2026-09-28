@@ -1,7 +1,3 @@
-# NOTE: the benchmarks/ subdirectory is added from ../CMakeLists.txt so that the
-# matmul benchmark can be built without the HSA backend (e.g. for CPU-only or
-# HIP-only configurations). Do not add it here.
-
 #
 # test-mul-mat-hsa
 
