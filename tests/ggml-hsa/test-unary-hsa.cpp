@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 //
-// Device tests for the element-wise unary ops: the vectorized SQR, ABS and NEG, plus the
+// Device tests for the element-wise unary ops: the vectorized SQR, SQRT, ABS and NEG, plus the
 // now-vectorized SGN and STEP. Inputs deliberately straddle zero, and element 0 is forced to
 // exactly zero so the sign-dependent ops are checked on that branch too. The signbit cases
 // below are what cover zero/inf/NaN bit patterns for ABS and NEG.
@@ -27,12 +27,14 @@
 
 namespace {
 
-enum class op_kind { sqr, abs, neg, sgn, step, relu };
+enum class op_kind { sqr, sqrt, abs, neg, sgn, step, relu };
 
 float reference(op_kind kind, float x) {
     switch (kind) {
         case op_kind::sqr:
             return x * x;
+        case op_kind::sqrt:
+            return std::sqrt(x);
         case op_kind::abs:
             return std::fabs(x);
         case op_kind::neg:
@@ -66,6 +68,20 @@ int64_t ulp_distance(float want, float got) {
     return d < 0 ? -d : d;
 }
 
+// Per-op ulp bounds. SQRT is 1: an exhaustive host sweep of its arithmetic over every normal
+// float peaks at 1 ulp from sqrtf, and aie2p (NPU2) measures the same. Not yet measured on aie2,
+// whose emulated fp32 multiply may add drift as it does for SQR (see run_case).
+int64_t max_ulp_for(op_kind kind) {
+    switch (kind) {
+        case op_kind::sqr:
+            return 4;
+        case op_kind::sqrt:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1, const char * name) {
     const int64_t n = ne0 * ne1;
 
@@ -84,6 +100,9 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1, co
     switch (kind) {
         case op_kind::sqr:
             dst = ggml_sqr(ctx.get(), src);
+            break;
+        case op_kind::sqrt:
+            dst = ggml_sqrt(ctx.get(), src);
             break;
         case op_kind::abs:
             dst = ggml_abs(ctx.get(), src);
@@ -121,13 +140,15 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1, co
     // Random sign, exponent and mantissa. Covering the full 23-bit mantissa is what makes
     // this able to see the aie2 fp32 emulation drift: a low-entropy input (a handful of
     // distinct mantissas scaled by powers of two) measures 0 ulp on every op and hides it.
-    // Element 0 is forced to exactly zero so the sign-dependent ops keep that branch.
+    // Element 0 is forced to exactly zero so the sign-dependent ops keep that branch. SQRT gets
+    // magnitudes only; its negative inputs are covered by the special-value cases below.
     std::vector<float> src_host(n);
     uint64_t rng = 0x243F6A8885A308D3ULL;
     for (int64_t i = 0; i < n; ++i) {
         rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
         const uint32_t r = static_cast<uint32_t>(rng >> 32);
-        const uint32_t bits = (r & 0x807FFFFFu) | ((110u + (r >> 24) % 34u) << 23);
+        const uint32_t sign_mask = (kind == op_kind::sqrt) ? 0x007FFFFFu : 0x807FFFFFu;
+        const uint32_t bits = (r & sign_mask) | ((110u + (r >> 24) % 34u) << 23);
         std::memcpy(&src_host[i], &bits, sizeof bits);
     }
     src_host[0] = 0.0f;
@@ -149,7 +170,7 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1, co
     // about 1 ulp, doubled by squaring. The bound is set one above the measured 3 so a
     // rounding difference on another input does not flake; anything beyond that is a real
     // drift. Bounds are per-op so a regression on the exact ops cannot hide behind SQR's.
-    const int64_t max_ulp = (kind == op_kind::sqr) ? 4 : 0;
+    const int64_t max_ulp = max_ulp_for(kind);
 
     int64_t worst_ulp = 0;
     int64_t worst_i = -1;
@@ -207,6 +228,9 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
         case op_kind::step:
             dst = ggml_step(ctx.get(), src);
             break;
+        case op_kind::sqrt:
+            dst = ggml_sqrt(ctx.get(), src);
+            break;
         default:
             printf("  %-22s: unsupported op for sign case\n", name);
             return false;
@@ -230,7 +254,7 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
 
     // Leading entries are the interesting bit patterns; the rest are ordinary values so the whole
     // tile is covered.
-    const float specials[] = {
+    std::vector<float> specials = {
         +0.0f,
         -0.0f,
         -1.5f,
@@ -240,7 +264,16 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
         std::numeric_limits<float>::quiet_NaN(),
         -std::numeric_limits<float>::quiet_NaN(),
     };
-    const auto n_specials = static_cast<int64_t>(sizeof(specials) / sizeof(specials[0]));
+    if (kind == op_kind::sqrt) {
+        // Subnormals, whose zero exponent field defeats a bit-pattern seed and which the AIE vector
+        // unit flushes to zero; then tiny normals, where it flushes the kernel's intermediates
+        // instead, up to and across the 2^-64 bound below which the kernel rescales.
+        specials.insert(specials.end(),
+                        {0x1p-149f, 0x1p-140f, 0x1p-127f, 0x1.fffffcp-127f,
+                         std::numeric_limits<float>::min(), 0x1.000002p-126f, 0x1p-100f,
+                         0x1.fffffep-65f, 0x1p-64f});
+    }
+    const auto n_specials = static_cast<int64_t>(specials.size());
 
     std::vector<float> src_host(ne0);
     for (int64_t i = 0; i < ne0; ++i) {
@@ -274,8 +307,26 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
             case op_kind::step:
                 want = (x > 0.0f) ? 1.0f : 0.0f;
                 break;
+            case op_kind::sqrt:
+                want = std::sqrt(x);
+                break;
             default:
                 break;
+        }
+        // SQRT is not bit-exact on ordinary values, and the host's NaN payload for sqrt(-x) is
+        // not the kernel's: accept any NaN where one is wanted, keep the sign of zero exact, and
+        // hold the rest to the ulp bound.
+        if (kind == op_kind::sqrt) {
+            const float got = dst_host[i];
+            const bool ok = std::isnan(want) ? std::isnan(got)
+                                             : (std::signbit(got) == std::signbit(want) &&
+                                                ulp_distance(want, got) <= max_ulp_for(kind));
+            if (!ok) {
+                printf("  %-22s: mismatch at %lld (x=%.9g) got %.9g want %.9g\n", name,
+                       (long long)i, x, got, want);
+                return false;
+            }
+            continue;
         }
         uint32_t got_bits = 0;
         uint32_t want_bits = 0;
@@ -307,6 +358,7 @@ int main() {
         const char * name;
     } cases[] = {
         {op_kind::sqr, 256, 4, "sqr 2d"},
+        {op_kind::sqrt, 256, 4, "sqrt 2d"},
         {op_kind::abs, 256, 4, "abs 2d"},
         {op_kind::neg, 256, 4, "neg 2d"},
         {op_kind::sgn, 256, 4, "sgn 2d"},
@@ -333,12 +385,17 @@ int main() {
         // (vend == 0) -- the case that rules out AIE_LOOP_MIN_ITERATION_COUNT. The signbit
         // cases below cover the scalar path for ABS/NEG bit patterns as well.
         {op_kind::sqr, 10, 3, "sqr tail"},
+        {op_kind::sqrt, 10, 3, "sqrt tail"},
         {op_kind::abs, 10, 3, "abs tail"},
         {op_kind::neg, 10, 3, "neg tail"},
         {op_kind::sgn, 10, 3, "sgn tail"},
         {op_kind::step, 10, 3, "step tail"},
     };
 
+    // The PDI dispatch path holds at most 32 distinct kernels per process (one compute-unit slot
+    // each); the 33rd and every later dispatch fail. This suite loads exactly 32, which is why the
+    // SQRT special cases below reuse the "sqrt 2d" and "sqrt tail" shapes. A new shape needs a
+    // new test binary, not another case here.
     bool all_ok = true;
     for (const auto & c : cases) {
         const bool ok = run_case(backend, c.kind, c.ne0, c.ne1, c.name);
@@ -357,6 +414,7 @@ int main() {
         {op_kind::sgn, 32, "sgn signbit vector"}, {op_kind::step, 32, "step signbit vector"},
         {op_kind::abs, 19, "abs signbit scalar"}, {op_kind::neg, 19, "neg signbit scalar"},
         {op_kind::sgn, 19, "sgn signbit scalar"}, {op_kind::step, 19, "step signbit scalar"},
+        {op_kind::sqrt, 1024, "sqrt special vector"}, {op_kind::sqrt, 30, "sqrt special scalar"},
     };
     for (const auto & c : sign_cases) {
         const bool ok = run_sign_case(backend, c.kind, c.ne0, c.name);

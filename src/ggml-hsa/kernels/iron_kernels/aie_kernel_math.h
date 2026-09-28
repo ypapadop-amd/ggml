@@ -386,6 +386,136 @@ inline aie::vector<T, V> vec_abs(const aie::vector<T, V> & v) {
     return aie::vector_cast<T>(aie::bit_and(magnitude_mask, aie::vector_cast<U>(v)));
 }
 
+// Constants of the inverse square root seed and first refinement step, from
+// http://rrrola.wz.cz/inv_sqrt.html, as used by aie_api's aie2 InvSqrt (mlir-aie). The seed plus
+// this step is accurate to ~6.5e-4 relative. The sqrt helpers below add a Newton step on the
+// inverse and then correct the result, r + y/2 * (x - r^2): within 1 ulp of the correctly rounded
+// sqrt for every non-negative float, subnormals included, with or without flush-to-zero (85%
+// exact), where the Newton step alone leaves up to 12 ulp.
+inline constexpr uint32_t kInvSqrtMagic = 0x5F1FFFF9u;
+inline constexpr float kInvSqrtC2 = 0.703952253f;
+inline constexpr float kInvSqrtC3 = 2.38924456f;
+
+// The AIE vector unit flushes subnormal inputs *and* intermediates to zero, and its float path
+// does not carry -0.0 through. So special values are classified on the bit pattern, and every
+// x < 2^-64 is first scaled by 2^150 (result by 2^-75) so no intermediate goes subnormal: below
+// that, 0.5 * x or the residual x - r^2 would, losing the Newton step or the final correction.
+inline constexpr uint32_t kSqrtSignBit = 0x80000000u;
+inline constexpr uint32_t kSqrtMinNormalBits = 0x00800000u;
+inline constexpr uint32_t kSqrtScaleBelowBits = 0x1F800000u; // 2^-64
+inline constexpr uint32_t kSqrtInfBits = 0x7F800000u;
+// A normal is scaled by adding 150 to its exponent field. A subnormal is m * 2^-149 with m < 2^23,
+// so x * 2^150 = 2m, built exactly from normal floats as the bit pattern of 2^24 + 2m minus 2^24.
+inline constexpr uint32_t kSqrtScaleExponentBits = 150u << 23;
+inline constexpr uint32_t kSqrtTwo24Bits = 0x4B800000u;
+inline constexpr float kSqrtTwo24 = 0x1p24f;
+inline constexpr float kSqrtUnscale = 0x1p-75f;
+
+/**
+ * @brief Computes sqrt(x) for 2^-64 <= x <= FLT_MAX from its approximate inverse square root.
+ */
+inline float scalar_sqrt_in_range(float x) {
+    uint32_t bits;
+    std::memcpy(&bits, &x, sizeof(bits));
+    bits = kInvSqrtMagic - (bits >> 1);
+    float y;
+    std::memcpy(&y, &bits, sizeof(y));
+    // (x * y) * y rather than x * (y * y): y * y underflows for x near FLT_MAX.
+    y = y * (kInvSqrtC2 * (kInvSqrtC3 - (x * y) * y));
+    y = y * (1.5f - ((x * y) * y) * 0.5f);
+    const float r = x * y;
+    return r + (0.5f * y) * (x - r * r);
+}
+
+/**
+ * @brief Computes sqrt(x) from invsqrt(x), within 1 ulp of the correctly rounded result.
+ *
+ * Scalar counterpart of @ref vec_sqrt, using the same arithmetic so a tile's scalar tail agrees
+ * with its vector body. aie::sqrt is not usable: aie2 has no implementation of it at all.
+ *
+ * @param[in] x The input value.
+ * @return sqrt(x); x for +/-0, NaN for any other negative input, and x for +inf and NaN.
+ */
+inline float scalar_sqrt(float x) {
+    uint32_t bits;
+    std::memcpy(&bits, &x, sizeof(bits));
+    if ((bits & ~kSqrtSignBit) == 0) {
+        return x;
+    }
+    if ((bits & kSqrtSignBit) != 0) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    if (bits >= kSqrtInfBits) {
+        return x;
+    }
+    if (bits < kSqrtScaleBelowBits) {
+        float scaled;
+        if (bits < kSqrtMinNormalBits) {
+            const uint32_t two_m_bits = kSqrtTwo24Bits + bits;
+            std::memcpy(&scaled, &two_m_bits, sizeof(scaled));
+            scaled -= kSqrtTwo24;
+        } else {
+            const uint32_t scaled_bits = bits + kSqrtScaleExponentBits;
+            std::memcpy(&scaled, &scaled_bits, sizeof(scaled));
+        }
+        return scalar_sqrt_in_range(scaled) * kSqrtUnscale;
+    }
+    return scalar_sqrt_in_range(x);
+}
+
+/**
+ * @brief Computes sqrt(x) for every lane from invsqrt(x); see @ref scalar_sqrt.
+ *
+ * Vectorized on both aie2 and aie2p, where aie::sqrt is scalar (aie2p) or missing (aie2). Special
+ * values match @ref scalar_sqrt.
+ *
+ * @tparam V Vector width.
+ * @param[in] x The input vector.
+ * @return The element-wise square root.
+ */
+template <unsigned V>
+inline aie::vector<float, V> vec_sqrt(const aie::vector<float, V> & x) {
+    using ivec = aie::vector<int32_t, V>;
+    auto mul = [](const aie::vector<float, V> & a, const auto & b) {
+        return aie::mul(a, b).template to_vector<float>();
+    };
+    auto ibroadcast = [](uint32_t v) {
+        return aie::broadcast<int32_t, V>(static_cast<int32_t>(v));
+    };
+
+    const ivec bits = aie::vector_cast<int32_t>(x);
+    const ivec abs_bits = aie::bit_and(static_cast<int32_t>(~kSqrtSignBit), bits);
+
+    // Zero lanes land in both masks; they are replaced at the end. An add builds 2^24 + 2m rather
+    // than a bit_or (equal here, as m < 2^23), because aie2p cannot legalize the vector OR.
+    const auto scale = aie::lt(abs_bits, ibroadcast(kSqrtScaleBelowBits));
+    const auto subnormal = aie::lt(abs_bits, ibroadcast(kSqrtMinNormalBits));
+    const aie::vector<float, V> two_m =
+        aie::sub(aie::vector_cast<float>(aie::add(ibroadcast(kSqrtTwo24Bits), abs_bits)),
+                 aie::broadcast<float, V>(kSqrtTwo24));
+    const aie::vector<float, V> tiny_scaled =
+        aie::vector_cast<float>(aie::add(abs_bits, ibroadcast(kSqrtScaleExponentBits)));
+    // Negative lanes are computed on |x| (keeping the seed's shift logical) and replaced below.
+    aie::vector<float, V> xn = aie::select(aie::vector_cast<float>(abs_bits), tiny_scaled, scale);
+    xn = aie::select(xn, two_m, subnormal);
+
+    aie::vector<float, V> y = aie::vector_cast<float>(
+        aie::sub(ibroadcast(kInvSqrtMagic), aie::downshift(aie::vector_cast<int32_t>(xn), 1)));
+    y = mul(y, mul(aie::sub(aie::broadcast<float, V>(kInvSqrtC3), mul(mul(xn, y), y)), kInvSqrtC2));
+    y = mul(y, aie::sub(aie::broadcast<float, V>(1.5f), mul(mul(mul(xn, y), y), 0.5f)));
+
+    aie::vector<float, V> r = mul(xn, y);
+    r = aie::add(r, mul(mul(y, 0.5f), aie::sub(xn, mul(r, r))));
+    r = aie::select(r, mul(r, kSqrtUnscale), scale);
+
+    const ivec zero = aie::zeros<int32_t, V>();
+    r = aie::select(r, x, aie::ge(abs_bits, ibroadcast(kSqrtInfBits)));
+    r = aie::select(r, aie::broadcast<float, V>(std::numeric_limits<float>::quiet_NaN()),
+                    aie::lt(bits, zero));
+    r = aie::select(r, x, aie::eq(abs_bits, zero));
+    return r;
+}
+
 // aie2p has no legalization rule for G_FNEG on vector types, so aie::neg on a float vector fails to
 // compile there ("unable to legalize instruction: G_FNEG <16 x s32>" for f32, "<32 x s16>" for
 // bf16). Flipping the sign bit with integer operations is exactly IEEE-754 negation and needs no

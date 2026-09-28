@@ -32,8 +32,10 @@ from .utils import (
 # 1600 bytes for the f32 path). Without an explicit size the core writes past the end of its own
 # stack into neighbouring core data memory; newer mlir-aie turns that into a build error. Shared by
 # every unary op built here -- the others need less, but the allocation is per-core and cheap.
-# Same pattern as softmax.py, cross_entropy_loss.py and gemm.py.
-_STACK_SIZE_BYTES = 2048
+# Same pattern as softmax.py, cross_entropy_loss.py and gemm.py. The vectorized SQRT core needs
+# at least 2432 bytes on aie2 (aiecc's lower bound: it has no stack information for the soft-float
+# libcalls the scalar tail reaches), so this matches binary_ops.py's 4096.
+_STACK_SIZE_BYTES = 4096
 
 
 def _unary_op(
@@ -118,6 +120,7 @@ def _unary_op(
 _VECTORIZED_OPS = frozenset(
     {
         "GGML_OP_SQR",
+        "GGML_OP_SQRT",
         "GGML_UNARY_OP_ABS",
         "GGML_UNARY_OP_GELU",
         "GGML_UNARY_OP_NEG",
