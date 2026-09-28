@@ -583,7 +583,7 @@ Supported GGML types and their mappings:
 | `GGML_TYPE_I16` | Yes | Native AIE type |
 | `GGML_TYPE_I32` | Yes | Native AIE type |
 | `GGML_TYPE_BF16` | Yes | Native AIE type (preferred for float ops) |
-| `GGML_TYPE_F16` | Via BF16 | Reinterpreted as BF16 by host; no conversion |
+| `GGML_TYPE_F16` | Via BF16 | Converted, not reinterpreted: sources f16 -> bf16 before the dispatch, results bf16 -> f16 after it. Both directions have an `HSA_CONVERT` kernel and run on the device queue; either falls back to a host copy (which drains the queue) when its kernel cannot be built. |
 | `GGML_TYPE_F32` | Emulated | Software emulation on AIE; slower than native |
 
 ## Environment Setup
