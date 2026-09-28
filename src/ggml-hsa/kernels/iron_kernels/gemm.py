@@ -105,6 +105,13 @@ L1_TILE_BUDGET_BYTES = 48 * 1024
 # n * n_aie_cols * K and M * n * n_aie_cols respectively; these grow with the
 # N tile and cross the limit for large M/K, so the tile search must exclude
 # them (otherwise aiecc fails with "Stride N exceeds the [1:1048576] range").
+#
+# Both of those strides belong to the same outermost dimension, whose size is
+# N // (n * n_aie_cols) -- the number of column groups the herd sweeps. When
+# that size is 1 the dimension is never stepped, so the stride is dead and the
+# bound does not apply. That is the common case for the im2col GEMMs behind
+# CONV_2D, where N is one column group wide but M is the whole batch*OH*OW
+# extent and no tile could otherwise keep M * n * n_aie_cols in range.
 DMA_MAX_STRIDE = 1 << 20
 
 
@@ -140,7 +147,8 @@ def select_gemm_tile(
         of cores, so every core gets the same number of tiles;
       * the per-core L1 budget for the double-buffered A/B/C tiles;
       * the shim-DMA buffer-descriptor stride range, which the column-major B/C
-        transfers cross for large M/K (a hard aiecc failure, not a miscompute).
+        transfers cross for large M/K (a hard aiecc failure, not a miscompute) --
+        but only when the dimension those strides step actually has size > 1.
 
     Ties are broken toward a larger output tile (m * n, which amortizes the C
     zero-init and drain), then a larger k.
@@ -187,8 +195,11 @@ def select_gemm_tile(
             return False
         if ((M // m) * (N // n)) % n_cores:
             return False
-        # Column-major B/C shim-DMA outer strides must fit the BD stride range.
-        if M * n * n_aie_cols > DMA_MAX_STRIDE or n * n_aie_cols * K > DMA_MAX_STRIDE:
+        # Column-major B/C shim-DMA outer strides must fit the BD stride range,
+        # unless the dimension they step has size 1 and never applies them.
+        if N // (n * n_aie_cols) > 1 and (
+            M * n * n_aie_cols > DMA_MAX_STRIDE or n * n_aie_cols * K > DMA_MAX_STRIDE
+        ):
             return False
         return working_set(m, k, n) <= L1_TILE_BUDGET_BYTES
 
@@ -225,7 +236,9 @@ def select_gemm_tile(
             f"minimum tile ({gm},{gk},{gn}): need M%{gm * n_aie_rows}==0, "
             f"K%{gk}==0, N%{gn * n_aie_cols}==0"
         )
-    if M * gn * n_aie_cols > DMA_MAX_STRIDE or gn * n_aie_cols * K > DMA_MAX_STRIDE:
+    if N // (gn * n_aie_cols) > 1 and (
+        M * gn * n_aie_cols > DMA_MAX_STRIDE or gn * n_aie_cols * K > DMA_MAX_STRIDE
+    ):
         reasons.append(
             f"column-major shim-DMA stride exceeds {DMA_MAX_STRIDE} even at the "
             f"minimum n={gn}: M*n*cols={M * gn * n_aie_cols}, "
