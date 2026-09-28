@@ -2,7 +2,7 @@
 
 // Standalone test for the HSA-only ggml_hsa_convert op: an element-wise dtype cast with no shape
 // change (the on-device GGML_OP_CPY cast). Builds a real single-node op graph and computes it on the
-// device. Covers f32->bf16 and f32/bf16->f16 (round-to-nearest-even, bit-identical to the host
+// device. Covers f32->bf16 and bf16->f16 (round-to-nearest-even, bit-identical to the host
 // reference), bf16->f32 (exact widening), the same-dtype plain copy, and f16->bf16 (exact widening
 // then the same RNE). The two 16-bit-to-16-bit narrowing/widening pairs, f16->bf16 and bf16->f16,
 // are additionally checked over every one of their 65536 input bit patterns.
@@ -211,7 +211,6 @@ int main() {
         {GGML_TYPE_F32, GGML_TYPE_F32, "HSA_CONVERT f32->f32"},
         {GGML_TYPE_F16, GGML_TYPE_BF16, "HSA_CONVERT f16->bf16"},
         {GGML_TYPE_BF16, GGML_TYPE_F16, "HSA_CONVERT bf16->f16"},
-        {GGML_TYPE_F32, GGML_TYPE_F16, "HSA_CONVERT f32->f16"},
     };
 
     bool any_fail = false;

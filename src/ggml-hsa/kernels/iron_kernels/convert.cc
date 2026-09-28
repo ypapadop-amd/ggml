@@ -13,9 +13,8 @@
  * (round-to-nearest-even, NaN -> quiet) bit-for-bit, matching convert_pad. The bf16 -> f32
  * direction is an exact widening. f32 -> f32 (or bf16 -> bf16) is a plain copy. The f16 -> bf16
  * direction widens the raw f16 bits to f32 (exact) and then reuses the same bit-exact RNE
- * narrowing. The f32 -> f16 and bf16 -> f16 directions narrow with the bit-exact replica of the
- * host ggml_compute_fp32_to_fp16 instead; bf16 -> f16 additionally has a vector fast path for the
- * lanes that need no rounding. f16 arrives (and leaves) as i16 because IRON has no f16 element
+ * narrowing. The bf16 -> f16 direction narrows with the bit-exact replica of the host
+ * ggml_compute_fp32_to_fp16 instead, with a vector fast path for the lanes that need no rounding. f16 arrives (and leaves) as i16 because IRON has no f16 element
  * type.
  */
 
@@ -97,17 +96,6 @@ void ggml_hsa_convert(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restri
 
         for (int32_t i = vend; i < Nv; ++i) {
             const uint16_t h = ::convert_f32_to_f16_scalar(static_cast<f32>(in[i]));
-            std::memcpy(&out[i], &h, sizeof(OUTPUT_DTYPE));
-        }
-    }
-#elif defined(CONVERT_F32_TO_F16)
-    {
-        // f32 -> f16, the bit-exact RNE replica of the host ggml_compute_fp32_to_fp16. Scalar: the
-        // f16 subnormal range needs a per-lane variable shift, which aie_api has no vector form of
-        // (only a uniform `unsigned shift`), and unlike bf16 -> f16 the normal range rounds too, so
-        // there is no re-pack shortcut to vectorize instead.
-        for (int32_t i = 0; i < Nv; ++i) {
-            const uint16_t h = ::convert_f32_to_f16_scalar(in[i]);
             std::memcpy(&out[i], &h, sizeof(OUTPUT_DTYPE));
         }
     }

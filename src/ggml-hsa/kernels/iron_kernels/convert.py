@@ -8,7 +8,7 @@
 """IRON design for an element-wise dtype conversion (GGML_OP_CPY cast, no shape change).
 
 Both tensors are dense and contiguous with the same number of elements; only the dtype differs
-(f32 <-> bf16, f16 -> bf16, or f32/bf16 -> f16). The tensor is flattened to 1D and streamed in
+(f32 <-> bf16, f16 -> bf16, or bf16 -> f16). The tensor is flattened to 1D and streamed in
 tiles,
 so the same design serves any shape. This runs a pure cast on the device queue instead of the host copy
 path (which drains the queue), letting the cast batch with surrounding dispatches.
@@ -58,14 +58,13 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     src = input_tensors[0]
 
-    # convert.cc implements the narrowings f32 -> bf16 and f32/bf16 -> f16 (all replicating the
+    # convert.cc implements the narrowings f32 -> bf16 and bf16 -> f16 (both replicating the
     # host integer RNE bit-for-bit), the widening bf16 -> f32, f16 -> bf16 (exact widening then the
     # same host-identical RNE), and the same-dtype copy. Any other pair would silently fall into
     # its static_cast branch, whose rounding is Peano's rather than the host reference's, so reject
     # it here.
     supported_pairs = (
         (np.float32, bfloat16),
-        (np.float32, np.float16),
         (np.float32, np.float32),
         (bfloat16, np.float32),
         (bfloat16, np.float16),
@@ -77,7 +76,7 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         for src_dt, dst_dt in supported_pairs
     ):
         msg = (
-            f"convert supports float32 <-> bfloat16, float16 -> bfloat16, and float32/bfloat16 "
+            f"convert supports float32 <-> bfloat16, float16 -> bfloat16, and bfloat16 "
             f"-> float16; got src {src.dtype}, dst {output_tensor.dtype}."
         )
         raise ValueError(msg)
@@ -187,12 +186,10 @@ def _create_external_function(
     ]
     # Select the kernel body by preprocessor (not if constexpr): the dtype macros expand to concrete
     # types, so both branches of an if constexpr would still be compiled and the unused one fails to
-    # type-check. f32 -> bf16 and bf16 -> f16 get vectorized bit-exact paths; f32 -> f16 and
-    # f16 -> bf16 get scalar bit-exact paths.
+    # type-check. f32 -> bf16 and bf16 -> f16 get vectorized bit-exact paths; f16 -> bf16 gets a
+    # scalar bit-exact path.
     if src.dtype == bfloat16 and output_tensor.dtype == np.float16:
         compile_flags.append("-DCONVERT_BF16_TO_F16=1")
-    elif src.dtype == np.float32 and output_tensor.dtype == np.float16:
-        compile_flags.append("-DCONVERT_F32_TO_F16=1")
     elif src.dtype == np.float16 and output_tensor.dtype == bfloat16:
         compile_flags.append("-DCONVERT_F16_TO_BF16=1")
     elif src.dtype == np.float32 and output_tensor.dtype == bfloat16:
