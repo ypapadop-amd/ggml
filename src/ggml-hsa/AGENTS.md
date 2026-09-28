@@ -556,7 +556,7 @@ These operations have complete AIE kernel implementations:
 | -------- | ---------- |
 | Binary | `ADD`, `SUB`, `MUL`, `DIV` (with broadcast support) |
 | Unary (GGML_UNARY_OP) | `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` |
-| Unary (GGML_OP) | `SQR`, `LOG` |
+| Unary (GGML_OP) | `SQR`, `SQRT`, `LOG` |
 | Pooling | `POOL_2D` (`MAX` and `AVG`, with padding) |
 | Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
 | Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE) |
@@ -565,7 +565,7 @@ These operations have complete AIE kernel implementations:
 
 These operations are registered in `build.py` but raise `NotImplementedError`:
 
-- `SQRT`, `SIN`, `COS` (require math library functions)
+- `SIN`, `COS` (require math library functions)
 - `TANH`, `ELU`, `SIGMOID`, `SILU`, `EXP` (require exp/transcendental functions)
 - `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` (require erf or approximations)
 

@@ -56,13 +56,19 @@ void ggml_op_log(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict ou
  * @param[in]  N   Number of elements to process.
  */
 void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
-    // Deliberately scalar. aie::sqrt has a vector overload, but aie.hpp documents it as "a
-    // scalar operation ... applied to each element individually", and aie2's elementary.hpp
-    // specializes only Fix/Float/Inv/InvSqrt -- not Sqrt -- so it falls through to a generic
-    // per-element extract/insert loop. Routing it through transform_vector_n would wrap a
-    // vector load/store and N insert/extract pairs around a loop that is scalar either way.
-    transform_n(
-        out, N, [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(aie::sqrt(v)); }, in);
+    static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
+    static_assert(is_floating_point_v<OUTPUT_DTYPE>, "Output type must be a floating point type");
+
+    auto scalar_op = [](auto v) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(scalar_sqrt(static_cast<float>(v)));
+    };
+
+    // vec_sqrt is f32-only; other element types are promoted per element by the scalar path.
+    if constexpr (std::is_same_v<INPUT_DTYPE, f32> && std::is_same_v<OUTPUT_DTYPE, f32>) {
+        transform_vector_n(out, N, [](auto v) { return vec_sqrt(v); }, scalar_op, in);
+    } else {
+        transform_n(out, N, scalar_op, in);
+    }
 }
 
 #endif // GGML_OP_SQRT
