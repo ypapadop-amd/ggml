@@ -13,10 +13,6 @@
 // other tile, which is what produced the odd-row pattern. Newer toolchains measure the
 // frame and refuse to build; older ones compiled it and corrupted memory at run time.
 // softmax.py now sets an explicit stack_size, and the device result is asserted.
-//
-// Note SOFT_MAX is reported unsupported by default -- it faults the AIE queue when run back to
-// back inside a full attention graph -- so every case here skips unless
-// GGML_HSA_ENABLE_FAULTING_OPS is set. ctest sets it; a bare run of the binary will skip.
 
 #include <cmath>
 #include <cstddef>
@@ -177,9 +173,7 @@ int main() {
         return 1;
     }
     if ((passed == 0) && (skipped > 0)) {
-        // Nothing actually ran, so say so rather than reporting a green result. The kernel builds
-        // now, so the remaining reason to skip is that SOFT_MAX is reported unsupported unless
-        // GGML_HSA_ENABLE_FAULTING_OPS is set (ctest sets it for this suite).
+        // Nothing actually ran, so say so rather than reporting a green result.
         printf("ALL SKIPPED (no case ran; see the per-case reasons above)\n");
         return 0;
     }
