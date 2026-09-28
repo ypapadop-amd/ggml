@@ -386,6 +386,78 @@ inline aie::vector<T, V> vec_abs(const aie::vector<T, V> & v) {
     return aie::vector_cast<T>(aie::bit_and(magnitude_mask, aie::vector_cast<U>(v)));
 }
 
+// Constants of the inverse square root seed and first refinement step, from
+// http://rrrola.wz.cz/inv_sqrt.html, as used by aie_api's aie2 InvSqrt (mlir-aie). The seed plus
+// this step is accurate to ~6.5e-4 relative. The sqrt helpers below add a Newton step on the
+// inverse and then correct the result, r + y/2 * (x - r^2): within 1 ulp of sqrtf for every normal
+// float (86% exact), where the Newton step alone leaves up to 12 ulp.
+inline constexpr uint32_t kInvSqrtMagic = 0x5F1FFFF9u;
+inline constexpr float kInvSqrtC2 = 0.703952253f;
+inline constexpr float kInvSqrtC3 = 2.38924456f;
+
+/**
+ * @brief Computes sqrt(x) from invsqrt(x), within 1 ulp of @c sqrtf.
+ *
+ * Scalar counterpart of @ref vec_sqrt, using the same arithmetic so a tile's scalar tail agrees
+ * with its vector body. aie::sqrt is not usable: aie2 has no implementation of it at all.
+ *
+ * @param[in] x The input value.
+ * @return sqrt(x); NaN for x < 0, +inf for +inf, and x for +/-0.
+ */
+inline float scalar_sqrt(float x) {
+    if (x < 0.0f) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    // Returned as-is: the AIE float path does not carry -0.0 through the arithmetic below.
+    if (x == 0.0f || is_infinite(x)) {
+        return x;
+    }
+    uint32_t bits;
+    std::memcpy(&bits, &x, sizeof(bits));
+    bits = kInvSqrtMagic - (bits >> 1);
+    float y;
+    std::memcpy(&y, &bits, sizeof(y));
+    // (x * y) * y rather than x * (y * y): y * y underflows for x near FLT_MAX.
+    y = y * (kInvSqrtC2 * (kInvSqrtC3 - (x * y) * y));
+    y = y * (1.5f - (0.5f * x * y) * y);
+    const float r = x * y;
+    return r + (0.5f * y) * (x - r * r);
+}
+
+/**
+ * @brief Computes sqrt(x) for every lane from invsqrt(x); see @ref scalar_sqrt.
+ *
+ * Vectorized on both aie2 and aie2p, where aie::sqrt is scalar (aie2p) or missing (aie2). Special
+ * values match @ref scalar_sqrt.
+ *
+ * @tparam V Vector width.
+ * @param[in] x The input vector.
+ * @return The element-wise square root.
+ */
+template <unsigned V>
+inline aie::vector<float, V> vec_sqrt(const aie::vector<float, V> & x) {
+    auto mul = [](const aie::vector<float, V> & a, const auto & b) {
+        return aie::mul(a, b).template to_vector<float>();
+    };
+
+    // The sign bit is cleared so the shift is logical; negative inputs are replaced below.
+    const aie::vector<int32_t, V> bits = aie::vector_cast<int32_t>(vec_abs(x));
+    aie::vector<float, V> y = aie::vector_cast<float>(aie::sub(
+        aie::broadcast<int32_t, V>(static_cast<int32_t>(kInvSqrtMagic)), aie::downshift(bits, 1)));
+
+    y = mul(y, mul(aie::sub(aie::broadcast<float, V>(kInvSqrtC3), mul(mul(x, y), y)), kInvSqrtC2));
+    const aie::vector<float, V> half_x = mul(x, 0.5f);
+    y = mul(y, aie::sub(aie::broadcast<float, V>(1.5f), mul(mul(half_x, y), y)));
+
+    aie::vector<float, V> r = mul(x, y);
+    r = aie::add(r, mul(mul(y, 0.5f), aie::sub(x, mul(r, r))));
+    r = aie::select(r, x, aie::gt(x, aie::broadcast<float, V>(std::numeric_limits<float>::max())));
+    r = aie::select(r, x, aie::eq(x, aie::zeros<float, V>()));
+    r = aie::select(r, aie::broadcast<float, V>(std::numeric_limits<float>::quiet_NaN()),
+                    aie::lt(x, aie::zeros<float, V>()));
+    return r;
+}
+
 // aie2p has no legalization rule for G_FNEG on vector types, so aie::neg on a float vector fails to
 // compile there ("unable to legalize instruction: G_FNEG <16 x s32>" for f32, "<32 x s16>" for
 // bf16). Flipping the sign bit with integer operations is exactly IEEE-754 negation and needs no

@@ -169,11 +169,13 @@ def ggml_op_sqrt(
         op_params: Operation parameters (unused for elementwise ops but required
             by the dispatch interface).
 
-    Raises:
-        NotImplementedError: SQRT is not yet implemented.
+    Returns:
+        KernelSpec for the SQRT operation.
 
     """
-    raise NotImplementedError
+    return _make_iron_unary_kernel_spec(
+        arch, input_tensors, output_tensor, "GGML_OP_SQRT"
+    )
 
 
 def ggml_op_log(
