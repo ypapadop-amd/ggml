@@ -14,8 +14,8 @@
  * direction is an exact widening. f32 -> f32 (or bf16 -> bf16) is a plain copy. The f16 -> bf16
  * direction widens the raw f16 bits to f32 (exact) and then reuses the same bit-exact RNE
  * narrowing. The bf16 -> f16 direction narrows with the bit-exact replica of the host
- * ggml_compute_fp32_to_fp16 instead, with a vector fast path for the lanes that need no rounding. f16 arrives (and leaves) as i16 because IRON has no f16 element
- * type.
+ * ggml_compute_fp32_to_fp16 instead, with a vector fast path for the lanes that need no rounding.
+ * f16 arrives (and leaves) as i16 because IRON has no f16 element type.
  */
 
 #include <aie_api/aie.hpp>
