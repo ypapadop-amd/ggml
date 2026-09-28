@@ -102,8 +102,13 @@ uint16_t host_convert_bits(ggml_type src_type, ggml_type dst_type, uint16_t bits
 // both directions are hand-written integer arithmetic on the device (convert_f16_bits_to_f32,
 // convert_f32_to_f16_scalar), so those are exactly the patterns worth pinning down. 65536 elements
 // is even, so neither side trips the DMA-word check.
-case_result run_exhaustive(ggml_backend_t backend, ggml_type src_type, ggml_type dst_type) {
-    constexpr int64_t n = 1 << 16;
+//
+// The pattern set is repeated @p reps times. With @p in_place the destination aliases the source
+// buffer, which is how the backend post-processes an f16 result: the bf16 result is narrowed over
+// itself. Many repetitions span many streamed tiles, so a write landing before its read would show.
+case_result run_exhaustive(ggml_backend_t backend, ggml_type src_type, ggml_type dst_type,
+                           int64_t reps = 1, bool in_place = false) {
+    const int64_t n = (int64_t{1} << 16) * reps;
 
     const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
     ggml_init_params params{
@@ -113,7 +118,7 @@ case_result run_exhaustive(ggml_backend_t backend, ggml_type src_type, ggml_type
     };
     std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx{ggml_init(params), ggml_free};
 
-    ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), src_type, 256, 256);
+    ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), src_type, 256, 256 * reps);
     ggml_set_name(src, "src");
     ggml_tensor * dst = ggml_hsa_convert(ctx.get(), src, dst_type);
     ggml_set_name(dst, "dst");
@@ -128,7 +133,25 @@ case_result run_exhaustive(ggml_backend_t backend, ggml_type src_type, ggml_type
 
     std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)> galloc{
         ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
-    if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
+    std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)> buffer{
+        nullptr, ggml_backend_buffer_free};
+    if (in_place) {
+        if (ggml_nbytes(src) != ggml_nbytes(dst)) {
+            printf("  in-place needs equal byte sizes\n");
+            return case_result::fail;
+        }
+        buffer.reset(ggml_backend_alloc_buffer(backend, ggml_nbytes(src)));
+        if (buffer == nullptr) {
+            printf("  buffer allocation failed\n");
+            return case_result::fail;
+        }
+        void * base = ggml_backend_buffer_get_base(buffer.get());
+        if (ggml_backend_tensor_alloc(buffer.get(), src, base) != GGML_STATUS_SUCCESS ||
+            ggml_backend_tensor_alloc(buffer.get(), dst, base) != GGML_STATUS_SUCCESS) {
+            printf("  tensor allocation failed\n");
+            return case_result::fail;
+        }
+    } else if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
         printf("  graph allocation failed\n");
         return case_result::fail;
     }
@@ -233,14 +256,18 @@ int main() {
 
     struct {
         ggml_type src_type, dst_type;
+        int64_t reps;
+        bool in_place;
         const char * label;
     } exhaustive[] = {
-        {GGML_TYPE_F16, GGML_TYPE_BF16, "HSA_CONVERT f16->bf16"},
-        {GGML_TYPE_BF16, GGML_TYPE_F16, "HSA_CONVERT bf16->f16"},
+        {GGML_TYPE_F16, GGML_TYPE_BF16, 1, false, "HSA_CONVERT f16->bf16"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, 1, false, "HSA_CONVERT bf16->f16"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, 1, true, "HSA_CONVERT bf16->f16 in place"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, 256, true, "HSA_CONVERT bf16->f16 in place x256"},
     };
     for (const auto & e : exhaustive) {
         ggml_backend_t backend = ggml_backend_hsa_init(0);
-        const case_result r = run_exhaustive(backend, e.src_type, e.dst_type);
+        const case_result r = run_exhaustive(backend, e.src_type, e.dst_type, e.reps, e.in_place);
         const char * label = r == case_result::pass   ? "PASSED"
                              : r == case_result::skip ? "SKIPPED"
                                                       : "FAILED";

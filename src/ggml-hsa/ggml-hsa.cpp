@@ -776,8 +776,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
 
     // convert tensor data types if needed
     if (dev_info.substitute_fp16_bf16) {
-        // output tensor needs no temporary storage yet: the host converts it in place, and the
-        // on-device path below claims a buffer for itself if its kernel builds
+        // output tensor can be converted in-place
         if (node.tensor.type == GGML_TYPE_F16) {
             node.tensor.type = GGML_TYPE_BF16;
             node.convert_dtype = true;
@@ -839,17 +838,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
 
     // Same for the dtype-converted output, in the other direction: the kernel narrows the internal
     // result back into the parent on the device queue instead of the host copy that would drain it.
-    // This one needs its own temporary storage -- the transform streams tiles through independent
-    // shim DMAs, so it cannot convert in place over the parent's buffer the way the host copy does.
-    // Only claim the buffer once the kernel exists, so a failed build leaves the in-place host path
-    // exactly as it was. The output's layout was already required to be trivial above.
+    // Like the host copy it converts in place over the parent's buffer: bf16 and f16 are the same
+    // width and the output layout is trivial, so element i sits at the same offset on both sides,
+    // and the transform only writes a tile back after its input DMA has finished reading it.
     if (node.convert_dtype) {
         node.postprocess_kernel = ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_CONVERT,
                                                                   node.tensor, parent_tensor);
-        if (node.postprocess_kernel != nullptr) {
-            node.tensor.data = nullptr;
-            node.buffer_size = GGML_PAD(ggml_nbytes(&node.tensor), dev_info.alignment);
-        }
     }
 
     // Decide how each group (sources, output) synchronizes its parent<->internal transformations
@@ -911,7 +905,7 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
         return GGML_STATUS_ABORTED;
     }
 
-    std::size_t buffer_size = node.buffer_size;
+    std::size_t buffer_size = 0;
     for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
         buffer_size += sources[src_idx].buffer_size;
     }
@@ -941,14 +935,6 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
             src_node.tensor.data = buffer_ptr;
             buffer_ptr += src_node.buffer_size;
         }
-    }
-
-    // the output node needs its own storage when its result is converted back into the parent
-    // on-device, since that transform cannot run in place over the parent's buffer
-    if (node.buffer_size > 0) {
-        assert(node.tensor.data == nullptr);
-        node.tensor.data = buffer_ptr;
-        buffer_ptr += node.buffer_size;
     }
 
     GGML_HSA_LOG_INFO("%s: created temporary storage for tensor %s (%s)", __func__,
@@ -1688,8 +1674,7 @@ static ggml_status ggml_hsa_dispatch_postprocess(ggml_backend_hsa_context & ctx,
     using sync_mode_t = ggml_backend_hsa_tensor_extra::sync_mode_t;
 
     if (tensor_extra.node.sync_mode == sync_mode_t::device) {
-        // on-device result post-processing: convert the internal buffer back into the parent
-        // on-queue, no drain
+        // on-device result post-processing: convert the result in place on-queue, no drain
         ggml_tensor * postprocess_src = &tensor_extra.node.tensor;
         const ggml_status status =
             tensor_extra.node.postprocess_kernel->dispatch(ctx, &postprocess_src, 1, *node);
