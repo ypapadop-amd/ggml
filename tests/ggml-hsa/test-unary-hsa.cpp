@@ -254,7 +254,7 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
 
     // Leading entries are the interesting bit patterns; the rest are ordinary values so the whole
     // tile is covered.
-    const float specials[] = {
+    std::vector<float> specials = {
         +0.0f,
         -0.0f,
         -1.5f,
@@ -264,7 +264,16 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
         std::numeric_limits<float>::quiet_NaN(),
         -std::numeric_limits<float>::quiet_NaN(),
     };
-    const auto n_specials = static_cast<int64_t>(sizeof(specials) / sizeof(specials[0]));
+    if (kind == op_kind::sqrt) {
+        // Subnormals, whose zero exponent field defeats a bit-pattern seed and which the AIE vector
+        // unit flushes to zero; then tiny normals, where it flushes the kernel's intermediates
+        // instead, up to and across the 2^-64 bound below which the kernel rescales.
+        specials.insert(specials.end(),
+                        {0x1p-149f, 0x1p-140f, 0x1p-127f, 0x1.fffffcp-127f,
+                         std::numeric_limits<float>::min(), 0x1.000002p-126f, 0x1p-100f,
+                         0x1.fffffep-65f, 0x1p-64f});
+    }
+    const auto n_specials = static_cast<int64_t>(specials.size());
 
     std::vector<float> src_host(ne0);
     for (int64_t i = 0; i < ne0; ++i) {
