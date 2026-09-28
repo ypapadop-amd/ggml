@@ -45,7 +45,7 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 | `GGML_TYPE_I16`  | Native `aie2` / `aie2p` datatype       |
 | `GGML_TYPE_I32`  | Native `aie2` / `aie2p` datatype       |
 | `GGML_TYPE_BF16` | Native `aie2` / `aie2p` datatype       |
-| `GGML_TYPE_F16`  | Supported via conversion to `BF16`     |
+| `GGML_TYPE_F16`  | Supported via conversion to/from `BF16` |
 | `GGML_TYPE_F32`  | Emulated (slower than native types)    |
 
 ## Prerequisites

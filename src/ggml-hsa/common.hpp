@@ -443,14 +443,18 @@ struct ggml_backend_hsa_tensor_extra {
         none,   ///< No pre/post-processing is required for the group.
         host,   ///< Pre/post-processing runs on the host; requires a queue drain (before the
                 ///< dispatch for sources, after it for the output).
-        device, ///< Pre/post-processing runs on the device queue via `preprocess_kernel`; no queue
-                ///< drain needed.
+        device, ///< Pre/post-processing runs on the device queue via `preprocess_kernel` /
+                ///< `postprocess_kernel`; no queue drain needed.
     };
 
     /// @brief Internal output graph node.
     struct node_t {
         ggml_tensor tensor{};      ///< Transformed tensor.
         std::size_t buffer_size{}; ///< Temporary storage size in bytes.
+        /// @brief Optional on-device post-processing kernel: converts the result to the parent
+        /// tensor's dtype, in place, on the device queue instead of on the host. Null when the
+        /// output needs no on-device post-processing.
+        std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
         /// @brief Synchronization mode for the output post-processing after the main kernel
         /// dispatch.
         sync_mode_t sync_mode{sync_mode_t::none};

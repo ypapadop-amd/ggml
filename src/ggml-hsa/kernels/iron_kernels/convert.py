@@ -8,7 +8,8 @@
 """IRON design for an element-wise dtype conversion (GGML_OP_CPY cast, no shape change).
 
 Both tensors are dense and contiguous with the same number of elements; only the dtype differs
-(f32 -> bf16, bf16 -> f32, or f16 -> bf16). The tensor is flattened to 1D and streamed in tiles,
+(f32 <-> bf16, f16 -> bf16, or bf16 -> f16). The tensor is flattened to 1D and streamed in
+tiles,
 so the same design serves any shape. This runs a pure cast on the device queue instead of the host copy
 path (which drains the queue), letting the cast batch with surrounding dispatches.
 """
@@ -57,19 +58,26 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     src = input_tensors[0]
 
-    # convert.cc implements f32 -> bf16 (host-identical RNE), bf16 -> f32 (exact widening), the
-    # same-dtype copy, and f16 -> bf16 (exact widening then the same host-identical RNE). Any other
-    # pair would silently fall into its static_cast branch, whose rounding is Peano's rather than
-    # the host reference's, so reject it here.
-    supported = (np.float32, bfloat16)
-    is_f16_to_bf16 = src.dtype == np.float16 and output_tensor.dtype == bfloat16
-    if not is_f16_to_bf16 and (
-        src.dtype not in supported or output_tensor.dtype not in supported
+    # convert.cc implements the narrowings f32 -> bf16 and bf16 -> f16 (both replicating the
+    # host integer RNE bit-for-bit), the widening bf16 -> f32, f16 -> bf16 (exact widening then the
+    # same host-identical RNE), and the same-dtype copy. Any other pair would silently fall into
+    # its static_cast branch, whose rounding is Peano's rather than the host reference's, so reject
+    # it here.
+    supported_pairs = (
+        (np.float32, bfloat16),
+        (np.float32, np.float32),
+        (bfloat16, np.float32),
+        (bfloat16, np.float16),
+        (bfloat16, bfloat16),
+        (np.float16, bfloat16),
+    )
+    if not any(
+        src.dtype == src_dt and output_tensor.dtype == dst_dt
+        for src_dt, dst_dt in supported_pairs
     ):
         msg = (
-            f"convert supports float32 <-> bfloat16 and float16 -> bfloat16; got src "
-            f"{src.dtype}, dst {output_tensor.dtype}. (There is no f32 -> f16 narrowing "
-            f"kernel, so the reverse direction must stay on the host copy path.)"
+            f"convert supports float32 <-> bfloat16, float16 -> bfloat16, and bfloat16 "
+            f"-> float16; got src {src.dtype}, dst {output_tensor.dtype}."
         )
         raise ValueError(msg)
     if not src.contiguous or not output_tensor.contiguous:
@@ -102,6 +110,9 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     # np.dtype, not the bare scalar type: TensorDesc guarantees src.dtype is an np.dtype, and the
     # two are not interchangeable at every use site below.
     src_iron_dtype = np.dtype(np.int16) if src.dtype == np.float16 else src.dtype
+    dst_iron_dtype = (
+        np.dtype(np.int16) if output_tensor.dtype == np.float16 else output_tensor.dtype
+    )
 
     # Flatten to 1D: a cast is element-wise, so any shape streams as one contiguous run.
     num_elements = src.numel()
@@ -112,11 +123,12 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         src=src,
         src_iron_dtype=src_iron_dtype,
         output_tensor=output_tensor,
+        dst_iron_dtype=dst_iron_dtype,
         tile_size=tile_size,
     )
 
     in_tile_ty = np.ndarray[(tile_size,), np.dtype[src_iron_dtype]]
-    out_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
+    out_tile_ty = np.ndarray[(tile_size,), np.dtype[dst_iron_dtype]]
 
     of_in = ObjectFifo(in_tile_ty, name="in")
     of_out = ObjectFifo(out_tile_ty, name="out")
@@ -132,7 +144,7 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
 
     src_ty = np.ndarray[(num_elements,), np.dtype[src_iron_dtype]]
-    dst_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
+    dst_ty = np.ndarray[(num_elements,), np.dtype[dst_iron_dtype]]
 
     return fill_drain_program(
         arch,
@@ -145,7 +157,7 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
 
 def _create_external_function(
-    src, src_iron_dtype, output_tensor, tile_size: int
+    src, src_iron_dtype, output_tensor, dst_iron_dtype, tile_size: int
 ) -> ExternalFunction:
     """Create the ExternalFunction for the convert core function.
 
@@ -154,6 +166,8 @@ def _create_external_function(
         src_iron_dtype: Element type the source is streamed as. Equal to ``src.dtype``
             except for f16, which IRON cannot express and which rides as ``np.int16``.
         output_tensor: Destination tensor (different dtype).
+        dst_iron_dtype: Element type the destination is streamed as. Equal to
+            ``output_tensor.dtype`` except for f16, which rides as ``np.int16``.
         tile_size: Number of elements per streamed tile.
 
     Returns:
@@ -162,19 +176,21 @@ def _create_external_function(
     """
     current_dir = Path(__file__).resolve().parent
     compile_flags = [
-        # The C signature follows the streamed element type, so an f16 source is declared i16 and
-        # reinterpreted inside the kernel.
+        # The C signature follows the streamed element type, so an f16 source or destination is
+        # declared i16 and reinterpreted inside the kernel.
         f"-DINPUT_DTYPE={dtype_to_str(src_iron_dtype)}",
-        f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        f"-DOUTPUT_DTYPE={dtype_to_str(dst_iron_dtype)}",
         # Tile length is fixed per kernel instance (each shape JITs its own .o), so pass it as a
         # compile-time constant: lets Peano fold the trip count and pipeline the hot loop.
         f"-DCONVERT_N={tile_size}",
     ]
     # Select the kernel body by preprocessor (not if constexpr): the dtype macros expand to concrete
     # types, so both branches of an if constexpr would still be compiled and the unused one fails to
-    # type-check. The f32 -> bf16 direction gets the vectorized bit-exact RNE path; f16 -> bf16 gets
-    # the scalar widen-then-RNE path.
-    if src.dtype == np.float16 and output_tensor.dtype == bfloat16:
+    # type-check. f32 -> bf16 and bf16 -> f16 get vectorized bit-exact paths; f16 -> bf16 gets a
+    # scalar bit-exact path.
+    if src.dtype == bfloat16 and output_tensor.dtype == np.float16:
+        compile_flags.append("-DCONVERT_BF16_TO_F16=1")
+    elif src.dtype == np.float16 and output_tensor.dtype == bfloat16:
         compile_flags.append("-DCONVERT_F16_TO_BF16=1")
     elif src.dtype == np.float32 and output_tensor.dtype == bfloat16:
         compile_flags.append("-DCONVERT_F32_TO_BF16=1")
@@ -185,7 +201,7 @@ def _create_external_function(
         source_file=str(current_dir / "convert.cc"),
         arg_types=[
             np.ndarray[(tile_size,), np.dtype[src_iron_dtype]],
-            np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
+            np.ndarray[(tile_size,), np.dtype[dst_iron_dtype]],
             np.int32,  # N
         ],
         compile_flags=compile_flags,
