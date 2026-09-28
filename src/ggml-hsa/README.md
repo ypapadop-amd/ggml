@@ -71,6 +71,8 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 
 Due to ongoing NPU support work in [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime), it is recommended to compile the latest ROCR from source. Commit [`bd52f48`](https://github.com/ROCm/rocm-systems/commit/bd52f48dd397bc8a18f60bdea3310ce922b956b8) is confirmed working.
 
+`ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API.
+
 ### AMD XDNA Driver
 
 `ggml-hsa` depends on the [AMD XDNA Driver](https://github.com/amd/xdna-driver). Installation instructions:
@@ -146,6 +148,112 @@ cmake -S . -B build \
 
 cmake --build build --config Release -j
 ```
+
+### Running HIP and HSA in the Same Process
+
+Using both backends in one process (e.g., HIP output feeding an NPU op) has two requirements that a
+combined build alone does not meet.
+
+#### One ROCR for both backends
+
+A process loads only one `libhsa-runtime64.so.1`, and HIP and `ggml-hsa` must share it. It must be a
+ROCR with NPU support, which a system ROCm usually does not provide: for example, ROCm 7.2.4's
+`libamdhip64` links its own `libhsa-runtime64` without AIE support.
+
+One way to get a matching HIP is [TheRock](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)'s
+nightly pip wheels, run against a ROCR built from source:
+
+```bash
+python3 -m venv build/.venv-rocm
+source build/.venv-rocm/bin/activate
+pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+  "rocm[devel,libraries]" rocm-sdk-device-gfx1103   # device package for your GPU
+rocm-sdk init                                       # expands the devel tree (~3 GB)
+ROCM_SDK="$(rocm-sdk path --root)"
+
+HIPCXX="$ROCM_SDK/lib/llvm/bin/clang++" HIP_PATH="$ROCM_SDK" \
+cmake -S . -B build \
+  -DGGML_HSA=ON \
+  -DGGML_HSA_JIT_COMPILE=ON \
+  -DGGML_HIP=ON \
+  -DGPU_TARGETS=gfx1103 \
+  -Dhsa-runtime64_DIR=/path/to/rocr/lib/cmake/hsa-runtime64 \
+  -DCMAKE_PREFIX_PATH="$ROCM_SDK" \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j
+```
+
+`hsa-runtime64_DIR` points at the ROCR built from source, not at the one inside the wheel. At run
+time, put that ROCR first so it is the one loaded, and activate the IRON environment for the JIT:
+
+```bash
+source /path/to/iron/venv/bin/activate
+LD_LIBRARY_PATH=/path/to/rocr/lib ./build/bin/<program>
+```
+
+To check which libraries were loaded, run the program with `LD_DEBUG=libs` and look for
+`libhsa-runtime64.so.1` and `libamdhip64.so` in the `calling init` lines.
+
+#### Avoiding the LLVM clash with the JIT compiler
+
+With HIP loaded, the first JIT compilation aborts the process:
+
+```text
+: CommandLine Error: Option 'print-inst-addrs' registered more than once!
+LLVM ERROR: inconsistency in registered CommandLine options
+```
+
+HIP loads its own `libLLVM.so`. The JIT compiler runs in an embedded Python interpreter and imports
+MLIR-AIE, whose native modules also contain LLVM. Both copies register their command-line options in
+the same registry.
+
+The interpreter only starts when a kernel is missing from the cache, so the clash is avoided as long
+as no kernel needs to be compiled in the HIP process:
+
+- **Warm the kernel cache first.** Run the same operations, with the same shapes and types, once from
+  a process that does not load HIP (e.g., an HSA-only build) with the same kernel cache directory.
+  The HIP process then finds every kernel in the cache.
+- **Use precompiled kernels.** Build with `-DGGML_HSA_JIT_COMPILE=OFF` and point
+  `GGML_HSA_KERNEL_DIR` at precompiled kernels. No interpreter is ever started.
+
+Do not set `GGML_HSA_KERNEL_CACHE_CLEAR=1` in the HIP process: it empties the cache and forces a compilation.
+
+#### Sharing tensors with HIP
+
+A HIP tensor can be used by the NPU in place, in either direction, without copies. HIP owns the
+memory; the HSA backend imports the HIP buffer and places HSA tensors on the same memory:
+
+```c
+// HIP produces x; the NPU reads it and writes its result into the HIP tensor y
+ggml_backend_buffer_t imported = ggml_backend_hsa_buffer_import(0, hip_buffer);
+
+ggml_tensor * x_npu = ggml_new_tensor(hsa_ctx, x->type, GGML_MAX_DIMS, x->ne);
+ggml_backend_hsa_tensor_alloc_alias(imported, x_npu, x);   // NPU input
+
+ggml_tensor * r = ggml_sub(hsa_ctx, x_npu, c);
+ggml_backend_hsa_tensor_alloc_alias(imported, r, y);       // NPU output, before allocating
+ggml_backend_alloc_ctx_tensors(hsa_ctx, hsa_backend);
+```
+
+| Function | Purpose |
+|----------|---------|
+| `ggml_backend_hsa_buffer_import(device, buffer)` | Maps another ROCm backend's buffer for the NPU. The result is an HSA buffer over the same memory, at the same offsets. |
+| `ggml_backend_hsa_tensor_alloc_alias(imported, tensor, src)` | Places an unallocated HSA tensor on the memory of `src`. `tensor` must have the type, shape and strides of `src` (copy `src->nb` when `src` is a view). For an NPU input, pass a new tensor; for an NPU output, pass the op's result, before the graph is allocated. |
+
+The caller is responsible for:
+
+- **Ordering.** Nothing synchronizes the two backends. Finish the producer before the consumer runs:
+  `ggml_backend_graph_compute` waits for completion; after `ggml_backend_graph_compute_async`, call
+  `ggml_backend_synchronize`.
+- **Lifetime.** Free the imported buffer before the buffer it maps.
+
+Only buffers of other ROCm backends in the same process can be imported, not host memory or HSA
+buffers. The import maps the whole dma-buf the HIP buffer lives in (HIP places small buffers in a
+shared block), but only the HIP buffer's range is reachable through the imported buffer.
+
+`tests/ggml-hsa/test-vector-pipeline-hsa.cpp` runs HIP → NPU → HIP this way, and
+`tests/ggml-hsa/test-hip-zero-copy-hsa.cpp` shows that the two backends see the same memory. Both
+are built only with `GGML_HIP=ON`.
 
 ## JIT Compilation
 

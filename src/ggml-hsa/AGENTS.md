@@ -28,6 +28,24 @@ Some operations run on the host CPU rather than the AIE:
 Host operations are handled separately in `ggml_backend_hsa_device_supports_op()` and bypass
 the kernel compilation pipeline.
 
+### Memory Sharing with HIP
+
+HSA backend buffers are allocated with the HSA vmem API (`ggml_hsa_vmem_allocation` in
+`ggml-hsa.cpp`). The same class imports another ROCm backend's buffer from a dma-buf:
+`ggml_backend_hsa_buffer_import` wraps the mapping in an ordinary HSA buffer whose base is offset
+into the mapping so offsets match the source buffer, and `ggml_backend_hsa_tensor_alloc_alias`
+places an HSA tensor (an NPU input or an op result) on a source tensor's memory.
+
+The vmem API needs a ROCR with the XDNA vmem unmap fix (otherwise freeing any HSA buffer aborts)
+and a KFD with interface version 1.15 or newer (otherwise ROCR disables vmem and every HSA buffer
+allocation fails); see the ROCm section of `README.md`.
+
+Place tensors through `ggml_backend_tensor_alloc` (which runs `init_tensor`), never by assigning
+`tensor->data`: the tensor extra copies the tensor at `init_tensor` time and dispatch uses the copy.
+
+Running HIP and the HSA JIT in one process aborts on a kernel-cache miss (LLVM option clash); see
+"Running HIP and HSA in the Same Process" in `README.md`.
+
 ## Codebase Structure
 
 ```text
@@ -616,7 +634,7 @@ matches this version to avoid compatibility issues with:
 
 - Ensure that an IRON environment is present and active
 - Build with `GGML_HSA=ON` and optionally `GGML_HSA_JIT_COMPILE=ON`
-- Test files are in `tests/test-backend-ops.cpp` (shared) and `tests/ggml-hsa/` (HSA-specific: `test-mul-mat-hsa.cpp`, `test-vector-hsa.cpp`, `test-backend-ops-mnist.cpp`)
+- Test files are in `tests/test-backend-ops.cpp` (shared) and `tests/ggml-hsa/` (HSA-specific: `test-mul-mat-hsa.cpp`, `test-vector-hsa.cpp`, `test-backend-ops-mnist.cpp`, and `test-hip-zero-copy-hsa.cpp` / `test-vector-pipeline-hsa.cpp`, built only with `GGML_HIP=ON`)
 - Ensure kernels work for both `aie2` and `aie2p` architectures
 - **Success:** Look for `<N>/<N> tests passed`.
 - **Failure:** Look for `0/0 tests passed` or `Could not create kernel for tensor`.
