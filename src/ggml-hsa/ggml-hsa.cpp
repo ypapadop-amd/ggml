@@ -2092,6 +2092,13 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
                    ((op->src[0]->type == GGML_TYPE_F32) || (op->src[0]->type == GGML_TYPE_F16) ||
                     (op->src[0]->type == GGML_TYPE_BF16)) &&
                    (op->type == GGML_TYPE_F32);
+        case GGML_OP_SOFT_MAX:
+            // The ALiBi path (masked, max_bias != 0) gives wrong results on the AIE. Checked here
+            // rather than in the kernel builder so a cached or precompiled kernel cannot bypass it.
+            if ((op->src[1] != nullptr) && (ggml_get_op_params_f32(op, 1) != 0.0f)) {
+                return false;
+            }
+            break;
         default:
             break;
     }
