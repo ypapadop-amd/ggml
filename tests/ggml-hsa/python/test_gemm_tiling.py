@@ -65,6 +65,16 @@ SHAPES = [
     (2048, 512, 1024),
 ]
 
+# im2col-shaped GEMMs (M = batch*OH*OW, N = out channels, K = IC*KH*KW) that the
+# herd covers in a single column group. Their M * n * n_aie_cols is far past
+# DMA_MAX_STRIDE, but the dimension that stride steps has size 1, so it is never
+# applied. Both are rejected outright on both devices by a bound that ignores
+# the dimension size.
+ONE_COLUMN_GROUP_SHAPES = [
+    (32768, 128, 288),
+    (65536, 256, 64),
+]
+
 
 def _tile(dev, M, N, K, dtype_out=F32, dtype_in_str="bf16"):
     """Return ``(r, s, t, m, k, n)`` for a device/shape: MAC dims plus selected tile."""
@@ -155,13 +165,32 @@ def test_tile_respects_dma_stride_limit(dev, n_aie_cols, M, N, K):
 
     Exceeding it is not a miscompute but a hard aiecc failure
     ("Stride N exceeds the [1:1048576] range"), so the selector must exclude it.
+
     Both strides step the column-group dimension, so the bound only binds while
-    that dimension has size > 1; see test_single_column_group_ignores_the_stride_bound.
+    that dimension has size > 1; see test_single_column_group_ignores_the_bound
+    and test_single_column_group_ignores_the_stride_bound.
     """
     _, _, _, m, k, n = _tile(dev, M, N, K)
     if N // (n * n_aie_cols) > 1:
         assert M * n * n_aie_cols <= DMA_MAX_STRIDE
         assert n * n_aie_cols * K <= DMA_MAX_STRIDE
+
+
+@pytest.mark.parametrize("dev,n_aie_cols", DEVICES)
+@pytest.mark.parametrize("M,N,K", ONE_COLUMN_GROUP_SHAPES)
+def test_single_column_group_ignores_the_bound(dev, n_aie_cols, M, N, K):
+    """A one-column-group GEMM is supportable only because the bound is size-aware.
+
+    The im2col GEMMs behind CONV_2D are one column group wide, so the outermost
+    B/C dimension has size 1 and its stride is never applied. Pins both halves:
+    the dimension really is size 1, and the stride it carries really would be
+    over the limit -- so dropping the size guard puts these shapes back on the
+    CPU, and dropping the bound entirely lets a multi-group shape reach aiecc
+    and fail there (covered by test_tile_respects_dma_stride_limit).
+    """
+    *_, n = _tile(dev, M, N, K)
+    assert N // (n * n_aie_cols) == 1
+    assert M * n * n_aie_cols > DMA_MAX_STRIDE
 
 
 @pytest.mark.parametrize("dtype_out", OUT_DTYPES, ids=["out_bf16", "out_f32"])

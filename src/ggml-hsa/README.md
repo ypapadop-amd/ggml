@@ -17,7 +17,7 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 | Category  | Operations                                                     |
 |-----------|----------------------------------------------------------------|
 | Binary    | `ADD`, `SUB`, `MUL`, `DIV` (with multi-dimensional broadcast)  |
-| Unary     | `SQR`, `LOG`, `ABS`, `SGN`, `NEG`, `STEP`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `RELU`, `HARDSWISH`, `HARDSIGMOID` |
+| Unary     | `SQR`, `SQRT`, `LOG`, `ABS`, `SGN`, `NEG`, `STEP`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `RELU`, `HARDSWISH`, `HARDSIGMOID` |
 | Matrix    | `MUL_MAT`                                                      |
 | Pooling   | `POOL_2D` (`MAX` and `AVG`, with padding)                     |
 | Convolution | `IM2COL` (2D, `f32` image, `f32`/`bf16` output)             |
@@ -26,7 +26,7 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 | Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                   |
 | Host-only | `DUP`, `CPY`, `CONT` (CPU execution)                           |
 
-> **Note:** Operations like `SQRT`, `SIN`, `COS`, `EXP`, `TANH`, `ELU`, `SIGMOID`, `SILU`,
+> **Note:** Operations like `SIN`, `COS`, `EXP`, `TANH`, `ELU`, `SIGMOID`, `SILU`,
 > `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` are registered but not yet implemented.
 
 ### Broadcasting
@@ -45,7 +45,7 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 | `GGML_TYPE_I16`  | Native `aie2` / `aie2p` datatype       |
 | `GGML_TYPE_I32`  | Native `aie2` / `aie2p` datatype       |
 | `GGML_TYPE_BF16` | Native `aie2` / `aie2p` datatype       |
-| `GGML_TYPE_F16`  | Supported via conversion to `BF16`     |
+| `GGML_TYPE_F16`  | Supported via conversion to/from `BF16` |
 | `GGML_TYPE_F32`  | Emulated (slower than native types)    |
 
 ## Prerequisites

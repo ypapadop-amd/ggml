@@ -453,7 +453,8 @@ struct ggml_backend_hsa_tensor_extra {
         std::size_t buffer_size{}; ///< Temporary storage size in bytes.
         /// @brief Optional on-device post-processing kernel for the result: transforms the internal
         /// output buffer back into the parent tensor (e.g., de-padding and/or dtype conversion) on
-        /// the device queue. Null when the output needs no on-device post-processing.
+        /// the device queue instead of on the host. Null when the output needs no on-device
+        /// post-processing.
         std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
         /// @brief Synchronization mode for the output post-processing after the main kernel
         /// dispatch.

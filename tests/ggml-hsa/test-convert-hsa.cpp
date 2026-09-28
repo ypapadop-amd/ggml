@@ -2,9 +2,10 @@
 
 // Standalone test for the HSA-only ggml_hsa_convert op: an element-wise dtype cast with no shape
 // change (the on-device GGML_OP_CPY cast). Builds a real single-node op graph and computes it on the
-// device. Covers f32->bf16 (round-to-nearest-even, bit-identical to the host reference), bf16->f32
-// (exact widening), the same-dtype plain copy, and f16->bf16 (exact widening then the same RNE),
-// the last additionally checked over every one of the 65536 f16 bit patterns.
+// device. Covers f32->bf16 and bf16->f16 (round-to-nearest-even, bit-identical to the host
+// reference), bf16->f32 (exact widening), the same-dtype plain copy, and f16->bf16 (exact widening
+// then the same RNE). The two 16-bit-to-16-bit narrowing/widening pairs, f16->bf16 and bf16->f16,
+// are additionally checked over every one of their 65536 input bit patterns.
 
 #include <cstdint>
 #include <cstdio>
@@ -88,13 +89,26 @@ case_result run_case(ggml_backend_t backend, ggml_type src_type, ggml_type dst_t
     return ok ? case_result::pass : case_result::fail;
 }
 
-// Exhaustive f16 -> bf16 check: feeds all 65536 f16 bit patterns through the device kernel and
-// compares the raw bf16 bits against the host reference. The generic run_case above compares
-// decoded floats, which cannot check NaN or distinguish signed zeros -- and the device widening is
-// hand-written integer arithmetic (convert_f16_bits_to_f32), so those are exactly the patterns
-// worth pinning down. 65536 elements is even, so neither side trips the DMA-word check.
-case_result run_f16_exhaustive(ggml_backend_t backend) {
-    constexpr int64_t n = 1 << 16;
+// Host reference for a 16-bit -> 16-bit conversion, on raw bit patterns.
+uint16_t host_convert_bits(ggml_type src_type, ggml_type dst_type, uint16_t bits) {
+    const float f = src_type == GGML_TYPE_F16 ? ggml_fp16_to_fp32(bits)
+                                              : ggml_bf16_to_fp32(ggml_bf16_t{bits});
+    return dst_type == GGML_TYPE_F16 ? ggml_fp32_to_fp16(f) : ggml_fp32_to_bf16(f).bits;
+}
+
+// Exhaustive check for a 16-bit -> 16-bit direction: feeds all 65536 source bit patterns through
+// the device kernel and compares the raw result bits against the host reference. The generic
+// run_case above compares decoded floats, which cannot check NaN or distinguish signed zeros -- and
+// both directions are hand-written integer arithmetic on the device (convert_f16_bits_to_f32,
+// convert_f32_to_f16_scalar), so those are exactly the patterns worth pinning down. 65536 elements
+// is even, so neither side trips the DMA-word check.
+//
+// The pattern set is repeated @p reps times. With @p in_place the destination aliases the source
+// buffer, which is how the backend post-processes an f16 result: the bf16 result is narrowed over
+// itself. Many repetitions span many streamed tiles, so a write landing before its read would show.
+case_result run_exhaustive(ggml_backend_t backend, ggml_type src_type, ggml_type dst_type,
+                           int64_t reps = 1, bool in_place = false) {
+    const int64_t n = (int64_t{1} << 16) * reps;
 
     const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
     ggml_init_params params{
@@ -104,9 +118,9 @@ case_result run_f16_exhaustive(ggml_backend_t backend) {
     };
     std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx{ggml_init(params), ggml_free};
 
-    ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, 256, 256);
+    ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), src_type, 256, 256 * reps);
     ggml_set_name(src, "src");
-    ggml_tensor * dst = ggml_hsa_convert(ctx.get(), src, GGML_TYPE_BF16);
+    ggml_tensor * dst = ggml_hsa_convert(ctx.get(), src, dst_type);
     ggml_set_name(dst, "dst");
 
     if (!ggml_backend_supports_op(backend, dst)) {
@@ -119,7 +133,25 @@ case_result run_f16_exhaustive(ggml_backend_t backend) {
 
     std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)> galloc{
         ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
-    if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
+    std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)> buffer{
+        nullptr, ggml_backend_buffer_free};
+    if (in_place) {
+        if (ggml_nbytes(src) != ggml_nbytes(dst)) {
+            printf("  in-place needs equal byte sizes\n");
+            return case_result::fail;
+        }
+        buffer.reset(ggml_backend_alloc_buffer(backend, ggml_nbytes(src)));
+        if (buffer == nullptr) {
+            printf("  buffer allocation failed\n");
+            return case_result::fail;
+        }
+        void * base = ggml_backend_buffer_get_base(buffer.get());
+        if (ggml_backend_tensor_alloc(buffer.get(), src, base) != GGML_STATUS_SUCCESS ||
+            ggml_backend_tensor_alloc(buffer.get(), dst, base) != GGML_STATUS_SUCCESS) {
+            printf("  tensor allocation failed\n");
+            return case_result::fail;
+        }
+    } else if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
         printf("  graph allocation failed\n");
         return case_result::fail;
     }
@@ -140,10 +172,10 @@ case_result run_f16_exhaustive(ggml_backend_t backend) {
 
     int mismatches = 0;
     for (int64_t i = 0; i < n; ++i) {
-        const uint16_t want = ggml_fp32_to_bf16(ggml_fp16_to_fp32(src_bits[i])).bits;
+        const uint16_t want = host_convert_bits(src_type, dst_type, src_bits[i]);
         if (dst_bits[i] != want) {
             if (mismatches < 8) {
-                printf("  mismatch: f16 bits 0x%04x -> got 0x%04x want 0x%04x\n", src_bits[i],
+                printf("  mismatch: src bits 0x%04x -> got 0x%04x want 0x%04x\n", src_bits[i],
                        dst_bits[i], want);
             }
             ++mismatches;
@@ -160,10 +192,18 @@ case_result run_f16_exhaustive(ggml_backend_t backend) {
 } // namespace
 
 int main() {
-    ggml_backend_t backend = ggml_backend_hsa_init(0);
-    if (backend == nullptr) {
-        printf("HSA backend unavailable; skipping.\n");
-        return 0;
+    {
+        // A queue can hold at most 32 kernels; the 33rd dispatch fails with
+        // HSA_STATUS_ERROR_OUT_OF_RESOURCES and suspends the queue, failing everything after it.
+        // Every (direction, shape) pair below JITs its own kernel and there are more than 32 of
+        // them, so each direction runs on a queue of its own (see the loops below) rather than
+        // sharing one. This probe just reports an unavailable backend before any of that.
+        ggml_backend_t backend = ggml_backend_hsa_init(0);
+        if (backend == nullptr) {
+            printf("HSA backend unavailable; skipping.\n");
+            return 0;
+        }
+        ggml_backend_free(backend);
     }
 
     struct {
@@ -193,12 +233,14 @@ int main() {
         {GGML_TYPE_BF16, GGML_TYPE_F32, "HSA_CONVERT bf16->f32"},
         {GGML_TYPE_F32, GGML_TYPE_F32, "HSA_CONVERT f32->f32"},
         {GGML_TYPE_F16, GGML_TYPE_BF16, "HSA_CONVERT f16->bf16"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, "HSA_CONVERT bf16->f16"},
     };
 
     bool any_fail = false;
     int passed = 0;
     int skipped = 0;
     for (const auto & v : variants) {
+        ggml_backend_t backend = ggml_backend_hsa_init(0);
         for (const auto & c : cases) {
             const case_result r = run_case(backend, v.src_type, v.dst_type, c.d0, c.d1);
             const char * label = r == case_result::pass   ? "PASSED"
@@ -209,20 +251,33 @@ int main() {
             passed += (r == case_result::pass);
             skipped += (r == case_result::skip);
         }
+        ggml_backend_free(backend);
     }
 
-    {
-        const case_result r = run_f16_exhaustive(backend);
+    struct {
+        ggml_type src_type, dst_type;
+        int64_t reps;
+        bool in_place;
+        const char * label;
+    } exhaustive[] = {
+        {GGML_TYPE_F16, GGML_TYPE_BF16, 1, false, "HSA_CONVERT f16->bf16"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, 1, false, "HSA_CONVERT bf16->f16"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, 1, true, "HSA_CONVERT bf16->f16 in place"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, 256, true, "HSA_CONVERT bf16->f16 in place x256"},
+    };
+    for (const auto & e : exhaustive) {
+        ggml_backend_t backend = ggml_backend_hsa_init(0);
+        const case_result r = run_exhaustive(backend, e.src_type, e.dst_type, e.reps, e.in_place);
         const char * label = r == case_result::pass   ? "PASSED"
                              : r == case_result::skip ? "SKIPPED"
                                                       : "FAILED";
-        printf("HSA_CONVERT f16->bf16 all 65536 bit patterns: %s\n", label);
+        printf("%s all 65536 bit patterns: %s\n", e.label, label);
         any_fail = any_fail || (r == case_result::fail);
         passed += (r == case_result::pass);
         skipped += (r == case_result::skip);
+        ggml_backend_free(backend);
     }
 
-    ggml_backend_free(backend);
     if (any_fail) {
         printf("FAILURES\n");
         return 1;

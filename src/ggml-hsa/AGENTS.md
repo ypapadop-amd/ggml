@@ -556,7 +556,7 @@ These operations have complete AIE kernel implementations:
 | -------- | ---------- |
 | Binary | `ADD`, `SUB`, `MUL`, `DIV` (with broadcast support) |
 | Unary (GGML_UNARY_OP) | `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` |
-| Unary (GGML_OP) | `SQR`, `LOG` |
+| Unary (GGML_OP) | `SQR`, `SQRT`, `LOG` |
 | Pooling | `POOL_2D` (`MAX` and `AVG`, with padding) |
 | Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
 | Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE) |
@@ -565,7 +565,7 @@ These operations have complete AIE kernel implementations:
 
 These operations are registered in `build.py` but raise `NotImplementedError`:
 
-- `SQRT`, `SIN`, `COS` (require math library functions)
+- `SIN`, `COS` (require math library functions)
 - `TANH`, `ELU`, `SIGMOID`, `SILU`, `EXP` (require exp/transcendental functions)
 - `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` (require erf or approximations)
 
@@ -583,7 +583,7 @@ Supported GGML types and their mappings:
 | `GGML_TYPE_I16` | Yes | Native AIE type |
 | `GGML_TYPE_I32` | Yes | Native AIE type |
 | `GGML_TYPE_BF16` | Yes | Native AIE type (preferred for float ops) |
-| `GGML_TYPE_F16` | Via BF16 | Reinterpreted as BF16 by host; no conversion |
+| `GGML_TYPE_F16` | Via BF16 | Converted, not reinterpreted: sources f16 -> bf16 before the dispatch, results bf16 -> f16 after it. Both directions have an `HSA_CONVERT` kernel and run on the device queue; either falls back to a host copy (which drains the queue) when its kernel cannot be built. |
 | `GGML_TYPE_F32` | Emulated | Software emulation on AIE; slower than native |
 
 ## Environment Setup

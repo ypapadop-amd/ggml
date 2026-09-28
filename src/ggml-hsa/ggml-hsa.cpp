@@ -1140,6 +1140,17 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         }
     }
 
+    // Same for the dtype-converted output, in the other direction: the kernel narrows the internal
+    // result back into the parent on the device queue instead of the host copy that would drain it.
+    // Like the host copy it converts in place over the parent's buffer: bf16 and f16 are the same
+    // width and the output layout is trivial, so element i sits at the same offset on both sides,
+    // and the transform only writes a tile back after its input DMA has finished reading it.
+    // Skipped when the padded path already built a de-pad kernel, which narrows in the same pass.
+    if (node.convert_dtype && node.postprocess_kernel == nullptr) {
+        node.postprocess_kernel = ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_CONVERT,
+                                                                  node.tensor, parent_tensor);
+    }
+
     // Decide how each group (sources, output) synchronizes its parent<->internal transformations
     // independently. On-device transformations run on the same in-order queue as the main kernel,
     // so no host queue drain is needed and the packets batch with surrounding work; the host
