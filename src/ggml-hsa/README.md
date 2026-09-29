@@ -251,9 +251,8 @@ Only buffers of other ROCm backends in the same process can be imported, not hos
 buffers. The import maps the whole dma-buf the HIP buffer lives in (HIP places small buffers in a
 shared block), but only the HIP buffer's range is reachable through the imported buffer.
 
-`tests/ggml-hsa/test-vector-pipeline-hsa.cpp` runs HIP → NPU → HIP this way, and
-`tests/ggml-hsa/test-hip-zero-copy-hsa.cpp` shows that the two backends see the same memory. Both
-are built only with `GGML_HIP=ON`.
+`tests/ggml-hsa/test-hip-zero-copy-hsa.cpp` runs HIP → NPU → HIP this way and shows that the two
+backends see the same memory. It is built only with `GGML_HIP=ON`.
 
 ## JIT Compilation
 

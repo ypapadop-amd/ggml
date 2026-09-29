@@ -634,7 +634,7 @@ matches this version to avoid compatibility issues with:
 
 - Ensure that an IRON environment is present and active
 - Build with `GGML_HSA=ON` and optionally `GGML_HSA_JIT_COMPILE=ON`
-- Test files are in `tests/test-backend-ops.cpp` (shared) and `tests/ggml-hsa/` (HSA-specific: `test-mul-mat-hsa.cpp`, `test-vector-hsa.cpp`, `test-backend-ops-mnist.cpp`, and `test-hip-zero-copy-hsa.cpp` / `test-vector-pipeline-hsa.cpp`, built only with `GGML_HIP=ON`)
+- Test files are in `tests/test-backend-ops.cpp` (shared) and `tests/ggml-hsa/` (HSA-specific: `test-mul-mat-hsa.cpp`, `test-vector-hsa.cpp`, `test-backend-ops-mnist.cpp`, and `test-hip-zero-copy-hsa.cpp`, built only with `GGML_HIP=ON`)
 - Ensure kernels work for both `aie2` and `aie2p` architectures
 - **Success:** Look for `<N>/<N> tests passed`.
 - **Failure:** Look for `0/0 tests passed` or `Could not create kernel for tensor`.

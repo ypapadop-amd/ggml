@@ -204,13 +204,12 @@ foreach(TEST_TARGET IN LISTS GGML_HSA_INLINE_TESTS)
 endforeach()
 
 #
-# tests that need the HIP backend too
+# test-hip-zero-copy-hsa (needs the HIP backend too)
 
 if (GGML_HIP)
-    foreach (TEST_TARGET test-hip-zero-copy-hsa test-vector-pipeline-hsa)
-        add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
-        target_link_libraries(${TEST_TARGET} PRIVATE ggml)
-        add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
-        set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
-    endforeach()
+    set(TEST_TARGET test-hip-zero-copy-hsa)
+    add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
+    target_link_libraries(${TEST_TARGET} PRIVATE ggml)
+    add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
+    set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
 endif()

@@ -227,6 +227,14 @@ void test_pipeline(ggml_backend_t hip, ggml_backend_t hsa) {
     ggml_cgraph * hsa_graph = ggml_new_graph(hsa_ctx);
     ggml_build_forward_expand(hsa_graph, r);
 
+    // the graph allocator must leave the aliased tensors on HIP memory
+    void * const s_npu_data = s_npu->data;
+    void * const r_data = r->data;
+    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(hsa));
+    check(ggml_gallocr_alloc_graph(galloc, hsa_graph) && s_npu->data == s_npu_data &&
+              r->data == r_data && r->buffer == imported,
+          "graph allocator keeps aliased tensors in place");
+
     const auto va = pattern(11);
     const auto vc = pattern(10);
     ggml_backend_tensor_set(a, va.data(), 0, ggml_nbytes(a));
@@ -258,6 +266,7 @@ void test_pipeline(ggml_backend_t hip, ggml_backend_t hsa) {
     check(bad_iterations == 0, "HIP -> NPU -> HIP on one import, 5 iterations");
     check(bad_consumer_iterations == 0, "a HIP op consumes the NPU result, 5 iterations");
 
+    ggml_gallocr_free(galloc);
     ggml_backend_buffer_free(hsa_buffer);
     ggml_free(hsa_ctx);
     ggml_backend_buffer_free(imported);
