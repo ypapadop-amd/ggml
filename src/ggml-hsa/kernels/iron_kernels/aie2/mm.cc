@@ -922,6 +922,43 @@ static inline void matmul_vectorized_4x4x4_i16_i32(const int16 * __restrict pA,
 }
 
 /**
+ * @brief Runs a bf16 tile through matmul_vectorized_4x4, or matmul_vectorized_2x2_mmul for a 16x16
+ * C tile.
+ *
+ * Works around a Peano miscompile (seen with llvm-aie 22.0.0.2026092301, and in upstream mlir-aie's
+ * copy of this kernel). When the C tile is exactly one 4x4 group of mmul blocks (rowA == colB == 4)
+ * both loops of matmul_vectorized_4x4 run once, and the resulting straight-line code loads the C01
+ * and C02 accumulators from C00's address. C starts at zero on the first call, so the error only
+ * shows up once C is accumulated over more than one K tile. The 2x2 expansion computes the same
+ * result for this size and is compiled correctly.
+ *
+ * @tparam T_out Output element type.
+ * @tparam m     Tile M dimension (must be divisible by 16).
+ * @tparam k     Tile K dimension (must be divisible by 8).
+ * @tparam n     Tile N dimension (must be divisible by 16).
+ *
+ * @param[in]     pA Input matrix A.
+ * @param[in]     pB Input matrix B.
+ * @param[in,out] pC Output matrix C (accumulated).
+ */
+template <typename T_out, uint32_t m, uint32_t k, uint32_t n>
+static inline void matmul_vectorized_bf16(const bfloat16 * __restrict pA,
+                                          const bfloat16 * __restrict pB,
+                                          T_out * __restrict pC) {
+    constexpr int32_t r = 4;
+    constexpr int32_t s = 8;
+    constexpr int32_t t = 4;
+
+    if constexpr (m / r == 4 && n / t == 4) {
+        matmul_vectorized_2x2_mmul<bfloat16, T_out, (m / r), (k / s), (n / t), r, s, t,
+                                   is_b_row_maj, is_c_row_maj>(pA, pB, pC);
+    } else {
+        matmul_vectorized_4x4<bfloat16, T_out, (m / r), (k / s), (n / t), r, s, t, is_b_row_maj,
+                              is_c_row_maj>(pA, pB, pC);
+    }
+}
+
+/**
  * @brief bfloat16 -> bfloat16 matrix multiply using 4x8x4 mmul shape with 4x4 expansion.
  *
  * @tparam m Tile M dimension (must be divisible by 16).
@@ -946,8 +983,7 @@ static inline void matmul_vectorized_4x8x4_bf16_bf16(const bfloat16 * __restrict
 
     ::aie::set_rounding(round_mode);
 
-    return matmul_vectorized_4x4<bfloat16, bfloat16, (m / r), (k / s), (n / t), r, s, t,
-                                 is_b_row_maj, is_c_row_maj>(pA, pB, pC);
+    return matmul_vectorized_bf16<bfloat16, m, k, n>(pA, pB, pC);
 }
 
 /**
@@ -975,8 +1011,7 @@ static inline void matmul_vectorized_4x8x4_bf16_f32(const bfloat16 * __restrict 
 
     ::aie::set_rounding(round_mode);
 
-    return matmul_vectorized_4x4<bfloat16, float, (m / r), (k / s), (n / t), r, s, t, is_b_row_maj,
-                                 is_c_row_maj>(pA, pB, pC);
+    return matmul_vectorized_bf16<float, m, k, n>(pA, pB, pC);
 }
 
 /**
