@@ -114,9 +114,9 @@ int main() {
         return 0;
     }
 
-    // On aie2 the tile selector gives M=N=64 a 16x16 C tile per core (k = 256 at most), so K picks
-    // the number of accumulating calls. The 32-wide cases keep the regular 4x4-expansion path
-    // covered alongside the 16x16 one.
+    // On aie2 the tile selector gives M=N=64 a 16x16 C tile per core with k = 256, so K picks the
+    // number of accumulating calls. The 32-wide cases keep the regular 4x4-expansion path covered
+    // alongside the 16x16 one. The labels follow select_gemm_tile's choices for these shapes.
     struct {
         int64_t M, N, K;
         const char * name;
@@ -126,9 +126,10 @@ int main() {
         // the 16x16 C tile, accumulated across K tiles
         {64, 64, 512, "16x16 tile, 2 K tiles"},
         {64, 64, 1024, "16x16 tile, 4 K tiles"},
-        // wider tiles, which stay on the 4x4-expansion path
-        {128, 64, 512, "32x16 tile, 2 K tiles"},
-        {64, 128, 512, "16x32 tile, 2 K tiles"},
+        // wider tiles, which stay on the 4x4-expansion path; the larger C tile leaves L1 room for
+        // k = 128 only, so K = 512 takes four calls
+        {128, 64, 512, "32x16 tile, 4 K tiles"},
+        {64, 128, 512, "16x32 tile, 4 K tiles"},
     };
 
     bool any_fail = false;
