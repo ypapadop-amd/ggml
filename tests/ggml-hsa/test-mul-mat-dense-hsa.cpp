@@ -203,6 +203,8 @@ int main() {
         {1000, 260, 512, false, "3 column groups, straddling column 0"},
         {1000, 260, 512, true, "3 column groups, bf16 destination"},
         {1000, 2000, 1000, false, "8 column groups, straddling column per row block"},
+        {300, 16384, 64, false, "row-clipped last row block in 11 shim chunks"},
+        {1500, 12000, 64, false, "uniform column issued per row block"},
     };
 
     int failed = 0;
