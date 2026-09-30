@@ -83,7 +83,7 @@ def _mem_stream(g, col):
         for _ in range(task.repeat):
             for buf, obj_bds in zip(task.buffers, task.bds):
                 o = produced[i]
-                assert buf == i % 2, f"object {i} uses buffer {buf}"
+                assert buf == i % P.mem_buffers(g, col), f"object {i} uses buffer {buf}"
                 assert tuple(obj_bds) == tuple(P.mem_read_bds(o, g)), (
                     f"object {i} geometry"
                 )
@@ -157,6 +157,50 @@ def test_every_core_in_a_column_sends_once_per_produced_object(dev, shape):
             ]
             assert len(kinds) == g.RB * g.CG
             assert sum(k != "consume" for k in kinds) == produced
+
+
+def _mem_buffer_sequence(g, col):
+    """Mem-tile buffer each object of one dispatch is read from, in order."""
+    return [
+        buf
+        for task in P.mem_tasks(g, col)
+        for _ in range(task.repeat)
+        for buf in task.buffers
+    ]
+
+
+def _parity_grids():
+    for dev in DEVS:
+        for shape in SHAPES:
+            try:
+                yield f"{dev}-{shape}", _grid(dev, *shape)
+            except ValueError:
+                continue
+    # dense == padded (Task 2's C shape): conv2 produces an odd 1021 objects per column,
+    # M=32 x N=512 one object per column.
+    yield "conv2-padded", P.make_grid(98016, 128, 98016, 128, 24, 16, 4, 8)
+    yield "m32-padded", P.make_grid(32, 512, 32, 512, 8, 64, 4, 8)
+
+
+@pytest.mark.parametrize(("name", "g"), list(_parity_grids()))
+def test_mem_buffers_agree_across_dispatches(name, g):
+    # The static join fills buffer j % nbuf for the column's j-th object ever received, across
+    # dispatches (every core sends each produced object once per dispatch). Each dispatch's
+    # runtime sequence is identical, so its reads must match the join in both dispatches.
+    for col in range(g.n_aie_cols):
+        count = sum(1 for o in P.column_objects(g, col) if o.cols)
+        nbuf = P.mem_buffers(g, col)
+        for row in range(g.n_aie_rows):
+            sends = sum(
+                rep * P.sends(runs) for rep, runs in P.core_schedule(g, row, col)
+            )
+            assert sends == count
+        join = [j % nbuf for j in range(2 * count)]
+        reads = _mem_buffer_sequence(g, col)
+        for d in range(2):
+            assert reads == join[d * count : (d + 1) * count], (
+                f"{name} column {col}: dispatch {d} reads buffers out of step with the join"
+            )
 
 
 def test_fc1_geometry():

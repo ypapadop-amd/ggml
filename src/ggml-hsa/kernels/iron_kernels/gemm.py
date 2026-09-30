@@ -22,6 +22,7 @@ from .gemm_c_plan import (
     SHIM_C_BD_IDS,
     core_schedule,
     make_grid,
+    mem_buffers,
     mem_tasks,
     sends,
     shim_rb_chunks,
@@ -383,8 +384,9 @@ def _mem_c_join(mem_tile, bufs, locks, m, n, r, t, n_aie_rows):
     jb*t*m + z*r*t + tj*r + ri. This writes it as plain column-major m x n (element (i, j) at
     j*m + i), core `row` at offset row*m*n, so every read the runtime sequence issues is a <=3-D
     slice (gemm_c_plan.mem_read_bds). Runtime-task mem-tile BDs have only 3 real dims; this
-    static BD may use 4.
+    static BD may use 4. Each channel cycles over all of `bufs` (gemm_c_plan.mem_buffers).
     """
+    nbuf = len(bufs)
 
     @memtile_dma(mem_tile)
     def _(block):
@@ -393,14 +395,17 @@ def _mem_c_join(mem_tile, bufs, locks, m, n, r, t, n_aie_rows):
             channel = C_MEM_S2MM_CHANNEL_BASE + row
             if row == 0:
                 dma_start(
-                    DMAChannelDir.S2MM, channel, dest=block[nb], chain=block[nb + 2]
+                    DMAChannelDir.S2MM, channel, dest=block[nb], chain=block[nb + nbuf]
                 )
             else:
                 with block[nb - 1]:
                     dma_start(
-                        DMAChannelDir.S2MM, channel, dest=block[nb], chain=block[nb + 2]
+                        DMAChannelDir.S2MM,
+                        channel,
+                        dest=block[nb],
+                        chain=block[nb + nbuf],
                     )
-            for b in range(2):
+            for b in range(nbuf):
                 with block[nb + b]:
                     use_lock(locks[b][0], LockAction.AcquireGreaterEqual, value=1)
                     dma_bd(
@@ -411,8 +416,8 @@ def _mem_c_join(mem_tile, bufs, locks, m, n, r, t, n_aie_rows):
                         strides=[t * m, r, m, 1],
                     )
                     use_lock(locks[b][1], LockAction.Release, value=1)
-                    next_bd(block[nb + 1 - b])
-            nb += 3
+                    next_bd(block[nb + (b + 1) % nbuf])
+            nb += nbuf + 1
         with block[nb - 1]:
             EndOp()
 
@@ -810,15 +815,18 @@ def my_matmul(
         c_mem_buf, c_mem_lk, c_mem_tok = {}, {}, {}
         for col in range(n_aie_cols):
             mt = mem_tiles[col]
+            # One buffer when the column fills an odd number per dispatch, so the static join
+            # and the runtime sequence stay in step across dispatches (gemm_c_plan.mem_buffers).
+            nbuf = mem_buffers(grid, col)
             c_mem_buf[col] = [
-                buffer(mt, C_l2_ty, name=f"C_mem_{col}_{b}") for b in range(2)
+                buffer(mt, C_l2_ty, name=f"C_mem_{col}_{b}") for b in range(nbuf)
             ]
             c_mem_lk[col] = [
                 (
                     lock(mt, init=n_aie_rows, sym_name=f"C_mem_prod_{col}_{b}"),
                     lock(mt, init=0, sym_name=f"C_mem_cons_{col}_{b}"),
                 )
-                for b in range(2)
+                for b in range(nbuf)
             ]
             c_mem_tok[col] = lock(mt, init=0, sym_name=f"C_mem_tok_{col}")
             flow(
@@ -964,15 +972,18 @@ def my_matmul(
                         task,
                         n_aie_rows,
                     )
-            outstanding = [
-                [] for _ in range(n_aie_cols)
-            ]  # started shim C tasks, oldest first
+            # Per column, oldest first: started shim C tasks, or -- for a row block in which the
+            # column writes no C -- the A/B fifos whose transfers were issued with a token.
+            outstanding = [[] for _ in range(n_aie_cols)]
 
             def await_all(col, keep=0):
-                # Await all but the newest `keep` started tasks.
+                # Await all but the newest `keep` entries.
                 n_wait = len(outstanding[col]) - keep
-                for task_op in outstanding[col][:n_wait]:
-                    dma_await_task(task_op)
+                for entry in outstanding[col][:n_wait]:
+                    if isinstance(entry, list):
+                        dma_wait(*entry)
+                    else:
+                        dma_await_task(entry)
                 del outstanding[col][:n_wait]
 
             # We are limited in the number of BDs. After synchronizing, we can reuse BDs.
@@ -1025,6 +1036,16 @@ def my_matmul(
                                 )
                             )
                         rest_chunks[col] = chunks[1:]
+                        # A column that writes no C in this row block has no C task whose
+                        # completion proves its A/B transfers done before their BD ids are
+                        # reused, so those transfers carry a token and are awaited directly.
+                        ab_token = True if not chunks else None
+                        if not chunks:
+                            outstanding[col].append(
+                                [A_l3l2_fifos[col], B_l3l2_fifos[col]]
+                                if col < n_aie_rows
+                                else [B_l3l2_fifos[col]]
+                            )
                         if generate_taps:
                             C_taps.extend(
                                 TensorAccessPattern(
@@ -1080,6 +1101,7 @@ def my_matmul(
                                     offsets=[0, 0, 0, A_offset],
                                     sizes=A_sizes,
                                     strides=A_strides,
+                                    issue_token=ab_token,
                                 )
                             # # Use the calculated sizes/strides/offsets to record the data movement
                             # # caused by the above call to npu_dma_memcpy_nd.
@@ -1127,6 +1149,7 @@ def my_matmul(
                                 offsets=[0, 0, 0, B_col_offset],
                                 sizes=B_sizes,
                                 strides=B_strides,
+                                issue_token=ab_token,
                             )
                             # # Use the calculated sizes/strides/offsets to record the data movement
                             # # caused by the above call to npu_dma_memcpy_nd.

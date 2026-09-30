@@ -286,9 +286,23 @@ class MemTask:
     repeat: int  # executions of the whole chain, 1..MAX_TASK_REPEAT
 
 
-def _mem_task(objs: list[CObject], first_buf: int, repeat: int, g: Grid) -> MemTask:
+def mem_buffers(g: Grid, col: int) -> int:
+    """Number of mem-tile C buffers of AIE column `col`: 2 (ping/pong) or 1.
+
+    The static S2MM join alternates over the buffers without end, across dispatches, while every
+    dispatch's runtime sequence reads the same buffer sequence starting at buffer 0. That only
+    agrees if each dispatch fills an even number of buffers, so a column producing an odd number
+    of objects per dispatch gets a single buffer.
+    """
+    n_objs = sum(1 for o in column_objects(g, col) if o.cols)
+    return 1 if n_objs % 2 else 2
+
+
+def _mem_task(
+    objs: list[CObject], first_buf: int, repeat: int, g: Grid, nbuf: int
+) -> MemTask:
     return MemTask(
-        tuple((first_buf + i) % 2 for i in range(len(objs))),
+        tuple((first_buf + i) % nbuf for i in range(len(objs))),
         tuple(tuple(mem_read_bds(o, g)) for o in objs),
         repeat,
     )
@@ -299,9 +313,11 @@ def mem_tasks(g: Grid, col: int) -> list[MemTask]:
 
     Row blocks before the last are identical, so one chain (one row block's produced objects,
     doubled when that count is odd so the chain returns to the same ping/pong buffer) repeats
-    across them. The last row block is its own task.
+    across them. The last row block is its own task. Object i of the dispatch is read from buffer
+    i % mem_buffers(g, col).
     """
     objs = column_objects(g, col)
+    nbuf = mem_buffers(g, col)
 
     def produced(rb):
         return [o for o in objs[rb * g.CG : (rb + 1) * g.CG] if o.cols]
@@ -316,14 +332,14 @@ def mem_tasks(g: Grid, col: int) -> list[MemTask]:
             runs = (g.RB - 1) // 2 if odd else g.RB - 1
             while runs:
                 r = min(runs, MAX_TASK_REPEAT)
-                tasks.append(_mem_task(chain, buf, r, g))
+                tasks.append(_mem_task(chain, buf, r, g, nbuf))
                 runs -= r
             if odd and (g.RB - 1) % 2:
-                tasks.append(_mem_task(period, buf, 1, g))
-                buf ^= 1
+                tasks.append(_mem_task(period, buf, 1, g, nbuf))
+                buf = (buf + 1) % nbuf
     last = produced(g.RB - 1)
     if last:
-        tasks.append(_mem_task(last, buf, 1, g))
+        tasks.append(_mem_task(last, buf, 1, g, nbuf))
 
     if len(tasks) > MAX_QUEUED_TASKS:
         msg = f"column {col} needs {len(tasks)} mem-tile C tasks; the queue holds {MAX_QUEUED_TASKS}"
