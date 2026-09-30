@@ -519,6 +519,28 @@ def _f32_b_tile(M, N, K, n_limit=None, m_limit=None):
     )
 
 
+# Shapes whose f32-B tile was timed on aie2 over every equal-volume candidate (and, for the
+# last, the six leading candidates of any volume), with the fastest balanced tile.
+@pytest.mark.parametrize(
+    "M,N,K,n_limit,m_limit,expected",
+    [
+        (4096, 512, 4096, None, None, (64, 64, 16)),
+        (4096, 128, 4096, None, None, (64, 64, 16)),
+        (2048, 512, 2048, None, None, (64, 64, 16)),
+        # 4000x500x4000 as the backend pads it: M 4032, N 512, K 4000.
+        (4032, 512, 4000, 500, 4000, (48, 80, 16)),
+    ],
+)
+def test_f32_b_tile_balances_m_and_k(M, N, K, n_limit, m_limit, expected):
+    """An f32 B ranks tiles by min(m, k) before volume.
+
+    Each K-tile call reloads the f32 C tile (cost falling with k) and streams and converts
+    the B tile (cost falling with m). The volume-first rule picked 64x16x64 or 128x16x32 on
+    the first three shapes and 144x40x16 on the last, up to 1.9x slower than these.
+    """
+    assert _f32_b_tile(M, N, K, n_limit, m_limit) == expected
+
+
 @pytest.mark.parametrize(
     "M,N,K,n_limit,m_limit",
     [

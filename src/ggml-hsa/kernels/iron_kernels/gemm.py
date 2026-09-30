@@ -156,6 +156,18 @@ def select_gemm_tile(
     Ties are broken toward a larger output tile (m * n, which amortizes the C
     zero-init and drain), then a larger k.
 
+    A B streamed in another dtype (dtype_b, converted on the core) ranks tiles
+    differently: by the larger min(m, k) first, then volume, then the larger m. Every
+    K-tile call reloads and re-stores the f32 C tile, a cost per unit of work that
+    falls with k, and streams and converts the B tile, one that falls with m; n only
+    sets how far A's broadcast is shared, so a balanced m and k beats a larger volume.
+    Measured on aie2: over the equal-volume tiles of 4096x512x4096, 2048x512x2048 and
+    4096x128x4096 the volume/output-tile rule picked the slowest or second-slowest
+    tile (64x16x64, 128x16x32), and this rule one within 14% of the fastest on each
+    (64x64x16), up to 1.9x faster than the old pick. On 4000x500x4000, whose M only
+    allows m in {16, 48, 112, 144}, the largest-volume tile 144x40x16 takes 40.9 ms
+    and this rule's 48x80x16 25.6 ms, the fastest of the six candidates timed.
+
     Args:
         dev: Target device ("npu" or "npu2").
         M: Full GEMM problem dimension M.
@@ -232,7 +244,11 @@ def select_gemm_tile(
             for n in range(gn, min(N, max_tile) + 1, gn):
                 if not valid(m, k, n):
                     continue
-                key = (m * k * n, m * n, k)
+                key = (
+                    (min(m, k), m * k * n, m)
+                    if size_b_scratch
+                    else (m * k * n, m * n, k)
+                )
                 if best_key is None or key > best_key:
                     best_key = key
                     best_tile = (m, k, n)

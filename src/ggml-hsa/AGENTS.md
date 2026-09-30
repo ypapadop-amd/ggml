@@ -291,6 +291,7 @@ place ("ragged" mode, `b_ld`/`n_valid`/`m_valid` in `my_matmul`):
   read never leaves the allocation.
 - Each C drain issues a completion token and each `dma_wait` consumes one, so a transfer block
   that drains C in two runs (normal plus shifted group) needs two waits.
+- The tile selector ranks f32-B tiles by `min(m, k)` before volume (see `select_gemm_tile`).
 
 ### Broadcasting Support
 
