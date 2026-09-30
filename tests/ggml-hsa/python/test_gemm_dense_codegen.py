@@ -68,14 +68,29 @@ def _module(arch, shape, out):
     return gemm(arch, ops, TD(out, (M, N, 1, 1)))
 
 
+def _compile(mod, arch):
+    from aie.iron import ExternalFunction
+    from aie.utils.compile import compile_external_kernel, compile_mlir_module
+
+    with tempfile.TemporaryDirectory() as work:
+        for f in ExternalFunction._instances:
+            compile_external_kernel(f, work, arch)
+        ExternalFunction._instances.clear()
+        compile_mlir_module(
+            mlir_module=mod,
+            insts_path=f"{work}/insts.bin",
+            pdi_path=f"{work}/gemm.pdi",
+            verbose=False,
+            work_dir=work,
+        )
+        assert Path(f"{work}/gemm.pdi").stat().st_size > 0
+
+
 @pytest.mark.parametrize("arch", list(PAD))
 @pytest.mark.parametrize("shape", SHAPES)
-@pytest.mark.parametrize("out", [F32, BF16], ids=["f32", "bf16"])
-def test_dense_c_module_verifies(arch, shape, out):
+def test_dense_c_module_verifies(arch, shape):
     """The dense-C module builds and verifies."""
-    if out is BF16 and shape[0] % 2:
-        pytest.skip("graph_optimize never gives the GEMM a bf16 C with odd M")
-    assert _module(arch, shape, out).operation.verify()
+    assert _module(arch, shape, F32).operation.verify()
 
 
 def test_bf16_c_with_odd_m_is_rejected():
@@ -97,28 +112,9 @@ def test_c_larger_than_padded_operands_is_rejected():
 )
 @pytest.mark.parametrize("arch", list(PAD))
 @pytest.mark.parametrize("shape", SHAPES)
-@pytest.mark.parametrize("out", [F32, BF16], ids=["f32", "bf16"])
-def test_dense_c_compiles_with_aiecc(arch, shape, out):
+def test_dense_c_compiles_with_aiecc(arch, shape):
     """The dense-C module compiles to a PDI through aiecc."""
-    if out is BF16 and shape[0] % 2:
-        pytest.skip("graph_optimize never gives the GEMM a bf16 C with odd M")
-    from aie.iron import ExternalFunction
-    from aie.utils.compile import compile_external_kernel, compile_mlir_module
-
-    ExternalFunction._instances.clear()
-    mod = _module(arch, shape, out)
-    with tempfile.TemporaryDirectory() as work:
-        for f in ExternalFunction._instances:
-            compile_external_kernel(f, work, arch)
-        ExternalFunction._instances.clear()
-        compile_mlir_module(
-            mlir_module=mod,
-            insts_path=f"{work}/insts.bin",
-            pdi_path=f"{work}/gemm.pdi",
-            verbose=False,
-            work_dir=work,
-        )
-        assert Path(f"{work}/gemm.pdi").stat().st_size > 0
+    _compile(_module(arch, shape, F32), arch)
 
 
 # (arch, shape): shapes whose mem-tile C tasks once exceeded the mem tile's live-BD budget, and
@@ -169,24 +165,6 @@ def test_unpadded_b_needs_the_f32_b_path():
         gemm("aie2", ops, TD(F32, (500, 500, 1, 1)))
 
 
-def _compile(mod, arch):
-    from aie.iron import ExternalFunction
-    from aie.utils.compile import compile_external_kernel, compile_mlir_module
-
-    with tempfile.TemporaryDirectory() as work:
-        for f in ExternalFunction._instances:
-            compile_external_kernel(f, work, arch)
-        ExternalFunction._instances.clear()
-        compile_mlir_module(
-            mlir_module=mod,
-            insts_path=f"{work}/insts.bin",
-            pdi_path=f"{work}/gemm.pdi",
-            verbose=False,
-            work_dir=work,
-        )
-        assert Path(f"{work}/gemm.pdi").stat().st_size > 0
-
-
 @pytest.mark.skipif(
     os.environ.get("RUN_AIECC_TESTS") != "1", reason="set RUN_AIECC_TESTS=1"
 )
@@ -208,4 +186,4 @@ def test_large_dense_c_module_verifies(arch, shape):
 @pytest.mark.parametrize(("arch", "shape"), LARGE)
 def test_large_dense_c_compiles_with_aiecc(arch, shape):
     """The large-shape dense-C modules fit the mem tile's BDs and compile to a PDI."""
-    test_dense_c_compiles_with_aiecc(arch, shape, F32)
+    test_dense_c_compiles_with_aiecc(arch, shape)

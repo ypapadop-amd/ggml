@@ -103,7 +103,7 @@ def _f32_b_grid(M, N, K):
     got = create_mat_mul_external_functions("aie2", ops, _TD(np.float32, (M, N, 1, 1)))
     ExternalFunction._instances.clear()
     m, n, _k = got[0], got[1], got[2]
-    n_pad, shift_rows, shift_cols = got[10], got[11], got[12]
+    n_pad, shift_rows, shift_cols = got[8], got[9], got[10]
     assert n_pad == Npad
     return P.make_grid(
         M, N, Mpad, Npad, m, n, 4, cols, shift_rows=shift_rows, shift_cols=shift_cols

@@ -584,8 +584,6 @@ def my_matmul(
     generate_taps=False,
     M_dense=None,
     N_dense=None,
-    dtype_acc_str=None,
-    narrow_fn=None,
     dtype_b_str=None,
     b_ld=None,
     matmul_tail_fn=None,
@@ -616,9 +614,6 @@ def my_matmul(
         generate_taps: Whether to also return TensorAccessSequences for A/B/C.
         M_dense: Rows of the dense C written, at most M; also C's column stride. Defaults to M.
         N_dense: Columns of the dense C written, at most N. Defaults to N.
-        dtype_acc_str: Accumulator dtype name (defaults to dtype_out_str).
-        narrow_fn: Name of the acc->out narrowing core function, required when the
-            accumulator and output dtypes differ.
         dtype_b_str: Dtype name B is streamed in, if it differs from dtype_in_str. Only
             "f32" with bf16 A on npu: each core converts its f32 B tile into a bf16 scratch
             tile before the bf16 microkernel. Defaults to dtype_in_str.
@@ -746,11 +741,6 @@ def my_matmul(
             "the hand-written C path supports the vectorized column-major C kernel only"
         )
         raise AssertionError(msg)
-    dtype_acc = str_to_dtype(dtype_acc_str) if dtype_acc_str else dtype_out
-    narrowing = np.dtype(dtype_acc) != np.dtype(dtype_out)
-    if narrowing and narrow_fn is None:
-        msg = "a narrowing C path needs narrow_fn"
-        raise ValueError(msg)
     grid = make_grid(
         M if M_dense is None else M_dense,
         N if N_dense is None else N_dense,
@@ -775,28 +765,20 @@ def my_matmul(
         A_l1_ty = np.ndarray[(m, k), np.dtype[dtype_in]]
         B_l1_ty = np.ndarray[(k, n), np.dtype[dtype_b]]
         B_l1_scratch_ty = np.ndarray[(k, n), np.dtype[dtype_in]]
-        acc_l1_ty = np.ndarray[(m, n), np.dtype[dtype_acc]]
-        send_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
+        C_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
         # AIE Core Function declarations. A converted B takes the scratch tile as an extra
         # argument: the kernel converts into it, then multiplies from it.
-        zero = external_func(zero_fn, inputs=[acc_l1_ty], link_with=object_file)
+        zero = external_func(zero_fn, inputs=[C_l1_ty], link_with=object_file)
         matmul_inputs = (
-            [A_l1_ty, B_l1_ty, B_l1_scratch_ty, acc_l1_ty]
+            [A_l1_ty, B_l1_ty, B_l1_scratch_ty, C_l1_ty]
             if convert_b
-            else [A_l1_ty, B_l1_ty, acc_l1_ty]
+            else [A_l1_ty, B_l1_ty, C_l1_ty]
         )
         matmul = external_func(matmul_fn, inputs=matmul_inputs, link_with=object_file)
         matmul_tail = (
             external_func(matmul_tail_fn, inputs=matmul_inputs, link_with=object_file)
             if matmul_tail_fn is not None
-            else None
-        )
-        narrow = (
-            external_func(
-                narrow_fn, inputs=[acc_l1_ty, send_l1_ty], link_with=object_file
-            )
-            if narrowing
             else None
         )
 
@@ -916,7 +898,7 @@ def my_matmul(
         # Output C, written by hand rather than with ObjectFifos, so the runtime sequence can read
         # only the valid part of each block (see gemm_c_plan.py). Core -> mem tile is a static
         # DMA chain per core; mem tile -> shim is issued from the runtime sequence.
-        c_acc, c_send, c_core_lk = {}, {}, {}
+        c_core_buf, c_core_lk = {}, {}
         c_mem_buf, c_mem_lk, c_mem_tok = {}, {}, {}
         for col in range(n_aie_cols):
             mt = mem_tiles[col]
@@ -944,17 +926,10 @@ def my_matmul(
             )
             for row in range(n_aie_rows):
                 ct = core_tiles[row][col]
-                c_send[row, col] = [
-                    buffer(ct, send_l1_ty, name=f"C_send_{col}_{row}_{b}")
+                c_core_buf[row, col] = [
+                    buffer(ct, C_l1_ty, name=f"C_core_{col}_{row}_{b}")
                     for b in range(2)
                 ]
-                # Narrowing keeps one f32 accumulator and double-buffers the narrowed copy; the
-                # L1 cost equals double-buffering the accumulator (select_gemm_tile budgets it).
-                c_acc[row, col] = (
-                    [buffer(ct, acc_l1_ty, name=f"C_acc_{col}_{row}")]
-                    if narrowing
-                    else c_send[row, col]
-                )
                 c_core_lk[row, col] = [
                     (
                         lock(ct, init=1, sym_name=f"C_core_prod_{col}_{row}_{b}"),
@@ -970,7 +945,7 @@ def my_matmul(
                     WireBundle.DMA,
                     C_MEM_S2MM_CHANNEL_BASE + row,
                 )
-                _core_c_dma(ct, c_send[row, col], c_core_lk[row, col], m * n)
+                _core_c_dma(ct, c_core_buf[row, col], c_core_lk[row, col], m * n)
             _mem_c_join(mt, c_mem_buf[col], c_mem_lk[col], m, n, r, t, n_aie_rows)
 
         # Set up compute tiles. Each core follows its static schedule (gemm_c_plan.core_schedule).
@@ -978,7 +953,7 @@ def my_matmul(
         # blocks, the forever-loop body covers two dispatches, the second starting on the other
         # buffer.
         def core_program(row, col):
-            acc, send, lks = c_acc[row, col], c_send[row, col], c_core_lk[row, col]
+            bufs, lks = c_core_buf[row, col], c_core_lk[row, col]
             sched = core_schedule(grid, row, col)
             # Converted-B scratch: filled by the kernel from the streamed B tile on every call,
             # so a single (not double) buffer suffices.
@@ -1017,11 +992,8 @@ def my_matmul(
                     return
                 use_lock(lks[b][0], LockAction.AcquireGreaterEqual, value=1)
                 if kind == "compute":
-                    acc_buf = acc[0] if narrowing else acc[b]
-                    zero(acc_buf)
-                    k_loop(acc_buf)
-                    if narrowing:
-                        narrow(acc_buf, send[b])
+                    zero(bufs[b])
+                    k_loop(bufs[b])
                 else:  # "send": all rows are padding; the mem tile never reads this block
                     k_loop(None)
                 use_lock(lks[b][1], LockAction.Release, value=1)
@@ -1394,11 +1366,11 @@ def create_mat_mul_external_functions(
         output_tensor: Output tensor C.
 
     Returns:
-        (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn, narrow_fn, dtype_acc,
-        matmul_tail_fn, N, shift_rows, shift_cols), where matmul_tail_fn is None unless B holds
-        fewer than K elements per column, N is the padded N the tile was selected for, and
-        shift_rows / shift_cols say whether the last row block / column group is shifted back to
-        end at C's edge rather than clipped (see gemm_c_plan).
+        (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn, matmul_tail_fn, N, shift_rows,
+        shift_cols), where matmul_tail_fn is None unless B holds fewer than K elements per
+        column, N is the padded N the tile was selected for, and shift_rows / shift_cols say
+        whether the last row block / column group is shifted back to end at C's edge rather than
+        clipped (see gemm_c_plan).
 
     Raises:
         ValueError: If the architecture is unsupported.
@@ -1427,10 +1399,6 @@ def create_mat_mul_external_functions(
     dtype_in_str = dtype_to_str(dtype_in)
     # An f32 B with bf16 A is streamed as f32 and converted to bf16 on each core (npu only).
     convert_b = dtype_b != dtype_in
-    # The mmul reduces in f32 even when the destination is bf16: narrowing per K step would lose
-    # precision. A bf16 C therefore accumulates in f32 and narrows once per tile on the core.
-    narrowing = dtype_in_str == "bf16" and dtype_to_str(dtype_out) == "bf16"
-    dtype_acc = np.dtype(np.float32) if narrowing else np.dtype(dtype_out)
     r, s, t = resolve_mac_dims(dev, dtype_in_str)
     row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
     # GGML shape convention (innermost first): A is [K, M], B is [K, N], C is [M, N]. A is
@@ -1454,16 +1422,14 @@ def create_mat_mul_external_functions(
         and m_dense < M
         and m_dense >= row_expand * r * n_aie_rows
     )
-    # Budget L1 for the accumulator dtype: a narrowing core holds one f32 accumulator plus two
-    # bf16 send buffers, the same bytes as two f32 buffers. A shifted group / block must fit
-    # inside C.
+    # A shifted group / block must fit inside C.
     m, k, n = select_gemm_tile(
         dev,
         M,
         N,
         K,
         dtype_in,
-        dtype_acc,
+        dtype_out,
         r,
         s,
         t,
@@ -1478,17 +1444,17 @@ def create_mat_mul_external_functions(
     source_file = str(current_dir / arch / "mm.cc")
     dtype_in_name = dtype_to_str(dtype_in)
     dtype_b_name = dtype_to_str(dtype_b)
-    dtype_acc_name = dtype_to_str(dtype_acc)
+    dtype_out_name = dtype_to_str(dtype_out)
     compile_args = [
         f"-DDIM_M={m}",
         f"-DDIM_N={n}",
         f"-DDIM_K={k}",
-        f"-D{dtype_in_name}_{dtype_acc_name}_ONLY",
+        f"-D{dtype_in_name}_{dtype_out_name}_ONLY",
         "-DB_COL_MAJ",
         "-DC_COL_MAJ",
         # compile only the kernel variant this design calls
         "-DSCALAR_ONLY" if use_scalar else "-DVECTORIZED_ONLY",
-    ] + (["-DGEMM_NARROW_BF16"] if narrowing else [])
+    ]
     if convert_b:
         compile_args.append(f"-DB_{dtype_b_name}")
     # When B holds fewer than K elements per column, the last K tile keeps only its first
@@ -1507,16 +1473,13 @@ def create_mat_mul_external_functions(
     # dialect via link_with, which ld.lld cannot do with textual IR, so this kernel can't inline.
     b_suffix = f"_b{dtype_b_name}" if convert_b else ""
     kv_suffix = f"_kv{k_valid}" if k_valid is not None else ""
-    object_file_name = (
-        f"matmul_core_functions_{dtype_in_name}_{dtype_acc_name}{b_suffix}{kv_suffix}"
-        f"{'_narrow_bf16' if narrowing else ''}_{m}x{k}x{n}.o"
-    )
+    object_file_name = f"matmul_core_functions_{dtype_in_name}_{dtype_out_name}{b_suffix}{kv_suffix}_{m}x{k}x{n}.o"
 
     zero_fn = ExternalFunction(
-        name=f"zero{scalar_suffix}_{dtype_acc_name}",
+        name=f"zero{scalar_suffix}_{dtype_out_name}",
         object_file_name=object_file_name,
         source_file=source_file,
-        arg_types=[np.ndarray[(m, n), np.dtype[dtype_acc]]],
+        arg_types=[np.ndarray[(m, n), np.dtype[dtype_out]]],
         compile_flags=compile_args,
     )
 
@@ -1526,9 +1489,9 @@ def create_mat_mul_external_functions(
     ]
     if convert_b:
         matmul_arg_types.append(np.ndarray[(k, n), np.dtype[dtype_in]])  # scratch
-    matmul_arg_types.append(np.ndarray[(m, n), np.dtype[dtype_acc]])
+    matmul_arg_types.append(np.ndarray[(m, n), np.dtype[dtype_out]])
     matmul_fn = ExternalFunction(
-        name=f"matmul{scalar_suffix}_{dtype_in_name}_{dtype_acc_name}{b_suffix}",
+        name=f"matmul{scalar_suffix}_{dtype_in_name}_{dtype_out_name}{b_suffix}",
         object_file_name=object_file_name,
         source_file=source_file,
         arg_types=matmul_arg_types,
@@ -1546,21 +1509,6 @@ def create_mat_mul_external_functions(
         else None
     )
 
-    narrow_fn = (
-        ExternalFunction(
-            name="narrow_f32_bf16",
-            object_file_name=object_file_name,
-            source_file=source_file,
-            arg_types=[
-                np.ndarray[(m, n), np.dtype[dtype_acc]],
-                np.ndarray[(m, n), np.dtype[dtype_out]],
-            ],
-            compile_flags=compile_args,
-        )
-        if narrowing
-        else None
-    )
-
     return (
         m,
         n,
@@ -1569,8 +1517,6 @@ def create_mat_mul_external_functions(
         num_cols,
         zero_fn,
         matmul_fn,
-        narrow_fn,
-        dtype_acc,
         matmul_tail_fn,
         N,
         shift_rows,
@@ -1650,8 +1596,6 @@ def gemm(arch: str, input_tensors: list, output_tensor):
         num_cols,
         zero_fn,
         matmul_fn,
-        narrow_fn,
-        dtype_acc,
         matmul_tail_fn,
         N,
         shift_rows,
@@ -1691,8 +1635,6 @@ def gemm(arch: str, input_tensors: list, output_tensor):
             object_file=matmul_fn.object_file_name,
             M_dense=C.shape[0],
             N_dense=C.shape[1],
-            dtype_acc_str=dtype_to_str(dtype_acc),
-            narrow_fn=narrow_fn._name if narrow_fn else None,
             dtype_b_str=dtype_to_str(B.dtype),
             b_ld=B.shape[0],
             matmul_tail_fn=matmul_tail_fn._name if matmul_tail_fn is not None else None,
