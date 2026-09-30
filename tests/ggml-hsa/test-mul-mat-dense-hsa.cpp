@@ -100,6 +100,21 @@ bool run_case(ggml_backend_t hsa, ggml_backend_t cpu, int64_t M, int64_t N, int6
 
     bool ok = true;
     for (int d = 0; d < kDispatches; ++d) {
+        // Recomputing an already-allocated graph whose MUL_MAT was folded to bf16 by graph_optimize
+        // returns stale results from the second dispatch (pre-existing, reproduces on 2053fe89), so
+        // cast cases re-allocate per dispatch. The GEMM kernel and its device state persist either
+        // way, so cross-dispatch ping/pong parity is still exercised.
+        if (cast && d > 0) {
+            ggml_backend_sched_reset(sched.get());
+            ggml_backend_sched_set_tensor_backend(sched.get(), a, hsa);
+            ggml_backend_sched_set_tensor_backend(sched.get(), b, hsa);
+            if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
+                printf("  dispatch %d: graph allocation failed\n", d);
+                return false;
+            }
+            ggml_backend_tensor_set(a, fa.data(), 0, ggml_nbytes(a));
+            ggml_backend_tensor_set(b, fb.data(), 0, ggml_nbytes(b));
+        }
         if (ggml_backend_sched_graph_compute(sched.get(), gf) != GGML_STATUS_SUCCESS) {
             printf("  dispatch %d: graph compute failed\n", d);
             return false;
