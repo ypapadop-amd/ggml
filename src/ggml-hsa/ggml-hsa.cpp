@@ -1194,41 +1194,11 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                                                                   node.tensor, parent_tensor);
     }
 
-    // Decide how each group (sources, output) synchronizes its parent<->internal transformations
-    // independently. On-device transformations run on the same in-order queue as the main kernel,
-    // so no host queue drain is needed and the packets batch with surrounding work; the host
-    // fallback must drain (before the dispatch for sources, after it for the output, since the host
-    // may not touch a buffer the device is still using). Device is preferred; the groups do not
-    // have to agree, so a failed kernel build on one side does not force the other onto the host
-    // path.
-
-    // Sources: a source needs pre-processing when it has a padded/converted internal buffer. If
-    // every such source has a pre-processing kernel the whole group runs on-device; otherwise a
-    // host transformation on any source drains before all of them.
-    const bool sources_need_sync = std::any_of(
-        sources.begin(), sources.end(), [](const source_node_t & s) { return s.buffer_size != 0; });
-    const bool sources_device_capable =
-        std::all_of(sources.begin(), sources.end(), [](const source_node_t & s) {
-            return s.buffer_size == 0 || s.preprocess_kernel != nullptr;
-        });
-    if (!sources_need_sync) {
-        sources.sync_mode = sync_mode_t::none;
-    } else if (sources_device_capable) {
-        sources.sync_mode = sync_mode_t::device;
-    } else {
-        sources.sync_mode = sync_mode_t::host;
-    }
-
-    // Output: needs post-processing when the result is de-padded and/or dtype-converted back into
-    // the parent. A post-processing kernel runs it on-device; otherwise it drains after the
-    // dispatch and copies back on the host.
-    if (!node.depad && !node.convert_dtype) {
-        node.sync_mode = sync_mode_t::none;
-    } else if (node.postprocess_kernel != nullptr) {
-        node.sync_mode = sync_mode_t::device;
-    } else {
-        node.sync_mode = sync_mode_t::host;
-    }
+    // No synchronization mode is stored: a source is pre-processed when it has an internal buffer
+    // (buffer_size), on the device queue when it has a preprocess_kernel and on the host otherwise;
+    // the output is transformed back when node.depad or node.convert_dtype is set, on the device
+    // queue when it has a postprocess_kernel. The dispatch functions infer the queue drains the
+    // host paths need.
 }
 
 ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
@@ -1957,16 +1927,16 @@ ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool d
  * @brief Pre-processes a node's sources into their internal buffers before the main kernel
  * dispatch.
  *
- * The path is selected by @c tensor_extra.sources.sync_mode. On the device path
- * (@c sync_mode_t::device) each source that needs a transformed buffer is dispatched on-queue via
- * its `preprocess_kernel` (e.g. convert+pad), no queue drain. On the host path (@c
- * sync_mode_t::host) the queue is drained first (the host may not touch a buffer the device is
- * still using), then each source is copied/scattered into its (padded) internal buffer. Constant
- * sources (weights / biases) are transformed once into the persistent buffer and skipped while the
- * cached pointer matches. No-op when @c sources.sync_mode is @c none.
+ * Each source with an internal buffer is transformed on its own path: on the device queue via its
+ * `preprocess_kernel` (e.g. convert+pad) when it has one, with no queue drain, and otherwise
+ * copied/scattered into its (padded) internal buffer on the host. The queue is drained once, before
+ * the first host copy, since the host may not touch a buffer the device is still using; the queue
+ * is in order, so device transforms enqueued before the drain are covered by it and the main kernel
+ * is enqueued after every copy. Constant sources (weights / biases) are transformed once into the
+ * persistent buffer and skipped while the cached pointer matches.
  *
  * @param[in,out] ctx HSA backend context (queue used for drains and on-device dispatches)
- * @param[in,out] tensor_extra node metadata holding the internal source nodes and sync mode
+ * @param[in,out] tensor_extra node metadata holding the internal source nodes
  * @param[in] node parent graph node whose sources are pre-processed
  * @return @c GGML_STATUS_SUCCESS, or the failing status of the first source that could not be
  *         prepared
@@ -1974,21 +1944,9 @@ ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool d
 static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
                                                 ggml_backend_hsa_tensor_extra & tensor_extra,
                                                 ggml_tensor * node) {
-    using sync_mode_t = ggml_backend_hsa_tensor_extra::sync_mode_t;
-
-    if (tensor_extra.sources.sync_mode == sync_mode_t::none) {
-        return GGML_STATUS_SUCCESS;
-    }
-
-    const bool use_device_transforms = tensor_extra.sources.sync_mode == sync_mode_t::device;
     ggml_tensor & internal_node = tensor_extra.node.tensor;
 
-    if (!use_device_transforms) {
-        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
-            status != GGML_STATUS_SUCCESS) {
-            return status;
-        }
-    }
+    bool drained = false;
     for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
         if (tensor_extra.sources[src_idx].buffer_size == 0) {
             continue;
@@ -2004,13 +1962,19 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
             tensor_extra.sources[src_idx].converted_ptr = node->src[src_idx]->data;
         }
         ggml_status status = GGML_STATUS_SUCCESS;
-        if (use_device_transforms) {
+        if (tensor_extra.sources[src_idx].preprocess_kernel != nullptr) {
             // on-device source pre-processing: transform the parent source into its internal buffer
             // on-queue (e.g. convert+pad), no drain
             ggml_tensor * preprocess_src = node->src[src_idx];
             status = tensor_extra.sources[src_idx].preprocess_kernel->dispatch(
                 ctx, &preprocess_src, 1, *internal_node.src[src_idx]);
         } else {
+            if (!drained) {
+                if (status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
+                    return status;
+                }
+                drained = true;
+            }
             // A padded source has a different shape from its parent, so scatter the logical
             // sub-block into the (pre-zeroed) padded buffer; otherwise the shapes match and a plain
             // layout/dtype copy suffices. Decided per source: node.depad describes the *output*,
@@ -2033,55 +1997,52 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
 /**
  * @brief Post-processes a node's internal output buffer back into the parent tensor after dispatch.
  *
- * The path is selected by @c tensor_extra.node.sync_mode. On the device path (@c
- * sync_mode_t::device) the result is transformed on-queue via `postprocess_kernel` (e.g. de-pad,
- * narrowing f32->bf16 in one pass when the parent is bf16), no drain. On the host path (@c
- * sync_mode_t::host) the queue is drained and the result is gathered/converted back into the parent
- * on the host. No-op when
- * @c node.sync_mode is @c none.
+ * No-op unless @c tensor_extra.node.depad or @c tensor_extra.node.convert_dtype is set. When a
+ * @c postprocess_kernel was built the result is transformed back into the parent on-queue (e.g.
+ * de-pad, narrowing f32->bf16 in one pass when the parent is bf16), with no drain; otherwise the
+ * queue is drained first (the host may not touch a buffer the device is still using) and the result
+ * is gathered/converted back into the parent on the host.
  *
- * @param[in,out] ctx HSA backend context (queue used for drains and on-device dispatches)
- * @param[in,out] tensor_extra node metadata holding the internal output node and sync mode
+ * @param[in,out] ctx HSA backend context (queue used for the drain and on-device dispatch)
+ * @param[in,out] tensor_extra node metadata holding the internal output node
  * @param[in,out] node parent graph node that receives the post-processed result
  * @return @c GGML_STATUS_SUCCESS, or the failing status of the post-processing step
  */
 static ggml_status ggml_hsa_dispatch_postprocess(ggml_backend_hsa_context & ctx,
                                                  ggml_backend_hsa_tensor_extra & tensor_extra,
                                                  ggml_tensor * node) {
-    using sync_mode_t = ggml_backend_hsa_tensor_extra::sync_mode_t;
     ggml_tensor & internal_node = tensor_extra.node.tensor;
 
-    if (tensor_extra.node.sync_mode == sync_mode_t::device) {
+    if (!tensor_extra.node.depad && !tensor_extra.node.convert_dtype) {
+        return GGML_STATUS_SUCCESS;
+    }
+
+    if (tensor_extra.node.postprocess_kernel != nullptr) {
         // on-device result post-processing: transform the internal output back into the parent
         // tensor on-queue (e.g. de-pad), no drain. When the MUL_MAT was retyped to bf16 by
         // graph_optimize, the parent is bf16 and the de-pad narrows f32->bf16 in one pass.
         ggml_tensor * postprocess_src = &internal_node;
-        ggml_status status =
+        const ggml_status status =
             tensor_extra.node.postprocess_kernel->dispatch(ctx, &postprocess_src, 1, *node);
         if (status != GGML_STATUS_SUCCESS) {
-            GGML_HSA_LOG_ERROR("%s: failed to de-pad result for tensor \"%s\" (%s)", __func__,
+            GGML_HSA_LOG_ERROR("%s: failed to post-process result for tensor \"%s\" (%s)", __func__,
                                node->name, ggml_hsa_tensor_op_desc(*node));
         }
         return status;
     }
 
-    if (tensor_extra.node.sync_mode == sync_mode_t::host) {
-        // gather the padded result sub-block back into the parent tensor (de-pad), or convert the
-        // datatype in place for the same-shape case
-        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
-            status != GGML_STATUS_SUCCESS) {
-            return status;
-        }
-        ggml_status status =
-            ggml_hsa_copy_padded_or_plain(&internal_node, node, tensor_extra.node.depad);
-        if (status != GGML_STATUS_SUCCESS) {
-            GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__,
-                               node->name, ggml_hsa_tensor_op_desc(*node));
-        }
+    // gather the padded result sub-block back into the parent tensor (de-pad), or convert the
+    // datatype in place for the same-shape case
+    if (const ggml_status status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
         return status;
     }
-
-    return GGML_STATUS_SUCCESS;
+    const ggml_status status =
+        ggml_hsa_copy_padded_or_plain(&internal_node, node, tensor_extra.node.depad);
+    if (status != GGML_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__, node->name,
+                           ggml_hsa_tensor_op_desc(*node));
+    }
+    return status;
 }
 
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
