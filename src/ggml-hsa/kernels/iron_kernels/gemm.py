@@ -1197,21 +1197,26 @@ def my_matmul(
                                 )
                     # Row blocks with more shim BDs than one half's ids: await the previous chunk
                     # (it completes, because this row block's A and B are already issued) and
-                    # reuse the ids.
-                    for col in range(n_aie_cols):
-                        for chunk in rest_chunks[col]:
+                    # reuse the ids. The columns take turns, chunk by chunk: the A broadcast
+                    # keeps every column within a few objects of the others, so a column whose
+                    # later chunks are not started yet stalls the column being awaited.
+                    for i in range(max(len(c) for c in rest_chunks.values())):
+                        for col in range(n_aie_cols):
+                            if i >= len(rest_chunks[col]):
+                                continue
                             await_all(col)
                             outstanding[col].append(
                                 [
                                     _start_shim_c_task(
                                         shim_tiles[col],
                                         C,
-                                        chunk,
+                                        rest_chunks[col][i],
                                         SHIM_C_BD_IDS[pingpong],
                                     ),
                                     [],
                                 ]
                             )
+                    for col in range(n_aie_cols):
                         # Free this row block's mem tasks once its last shim C task is awaited.
                         if col in mem_ops:
                             outstanding[col][-1][1].extend(mem_ops[col])
