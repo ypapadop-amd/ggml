@@ -1063,6 +1063,11 @@ def my_matmul(
                         # A column that writes no C in this row block has no C task whose
                         # completion proves its A/B transfers done before their BD ids are
                         # reused, so those transfers carry a token and are awaited directly.
+                        # A column idle only in the last column group writes C in every row block
+                        # and needs no token: column 0 is active in every column group (make_grid
+                        # rejects an all-padding column group), and the A broadcast keeps every
+                        # column within ~2 blocks of column 0, so column 0's C completion implies
+                        # every shim A/B transfer of that row block finished.
                         ab_token = True if not chunks else None
                         if not chunks:
                             outstanding[col].append(
