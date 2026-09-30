@@ -168,15 +168,15 @@ bool run_case(ggml_backend_t hsa, ggml_backend_t cpu, int64_t M, int64_t N, int6
 } // namespace
 
 int main() {
-    ggml_backend_t hsa = ggml_backend_hsa_init(0);
-    if (hsa == nullptr) {
+    ggml_backend_t probe = ggml_backend_hsa_init(0);
+    if (probe == nullptr) {
         printf("HSA backend unavailable; skipping.\n");
         return 0;
     }
+    ggml_backend_free(probe);
     ggml_backend_t cpu = ggml_backend_cpu_init();
     if (cpu == nullptr) {
         printf("CPU backend init failed\n");
-        ggml_backend_free(hsa);
         return 1;
     }
 
@@ -198,17 +198,30 @@ int main() {
         {392000, 8, 9, true, "conv1, bf16 destination"},
         {98000, 16, 72, true, "conv2, bf16 destination"},
         {499, 500, 784, true, "odd M: bf16 fold refused, stays f32"},
+        {1500, 2436, 64, false, "47 row blocks, straddling column per row block"},
+        {1500, 2436, 64, true, "straddling column per row block, bf16 destination"},
+        {1000, 260, 512, false, "3 column groups, straddling column 0"},
+        {1000, 260, 512, true, "3 column groups, bf16 destination"},
+        {1000, 2000, 1000, false, "8 column groups, straddling column per row block"},
     };
 
     int failed = 0;
     for (const auto & t : cases) {
-        const bool ok = run_case(hsa, cpu, t.M, t.N, t.K, t.cast);
+        // A fresh HSA backend per case: freeing it evicts the case's cached kernels. Kept for the
+        // whole run they exhaust the process's NPU hardware contexts, and the 14th case failed
+        // with HSA_STATUS_ERROR_OUT_OF_RESOURCES whatever its shape.
+        ggml_backend_t hsa = ggml_backend_hsa_init(0);
+        const bool ok = hsa != nullptr && run_case(hsa, cpu, t.M, t.N, t.K, t.cast);
+        if (hsa == nullptr) {
+            printf("  HSA backend init failed\n");
+        } else {
+            ggml_backend_free(hsa);
+        }
         printf("MUL_MAT %lld,%lld,%lld%s %-45s: %s\n", (long long)t.M, (long long)t.N,
                (long long)t.K, t.cast ? " +cast" : "", t.name, ok ? "PASSED" : "FAILED");
         failed += ok ? 0 : 1;
     }
     ggml_backend_free(cpu);
-    ggml_backend_free(hsa);
 
     if (failed != 0) {
         printf("%d FAILED\n", failed);
