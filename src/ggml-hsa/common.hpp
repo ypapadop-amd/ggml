@@ -75,7 +75,6 @@ extern bool g_ggml_hsa_verbose;
  */
 enum ggml_hsa_op {
     GGML_HSA_OP_CONVERT_PAD = GGML_OP_COUNT + 1, ///< dtype-convert and zero-pad a source
-    GGML_HSA_OP_DEPAD,                           ///< strip zero-padding from a result
     GGML_HSA_OP_CONVERT,                         ///< element-wise dtype cast
     GGML_HSA_OP_COUNT,
 };
@@ -452,7 +451,7 @@ struct ggml_backend_hsa_tensor_extra {
         ggml_tensor tensor{};      ///< Transformed tensor.
         std::size_t buffer_size{}; ///< Temporary storage size in bytes.
         /// @brief Optional on-device post-processing kernel for the result: transforms the internal
-        /// output buffer back into the parent tensor (e.g., de-padding and/or dtype conversion) on
+        /// output buffer back into the parent tensor (e.g., dtype conversion) on
         /// the device queue instead of on the host. Null when the output needs no on-device
         /// post-processing.
         std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
@@ -460,8 +459,6 @@ struct ggml_backend_hsa_tensor_extra {
         /// dispatch.
         sync_mode_t sync_mode{sync_mode_t::none};
         bool convert_dtype{}; ///< True if data conversion is necessary.
-        bool depad{};         ///< True if the transformed tensor is zero-padded and must be
-                              ///< copied to/from the (smaller) parent tensor sub-block.
     };
 
     /// @brief Internal source graph node.

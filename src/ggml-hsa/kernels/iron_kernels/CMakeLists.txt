@@ -21,8 +21,6 @@ set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/conv_2d.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/conv_2d.py
     ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.py
-    ${CMAKE_CURRENT_SOURCE_DIR}/depad.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/depad.py
     ${CMAKE_CURRENT_SOURCE_DIR}/diag_mask_inf.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/diag_mask_inf.py
     ${CMAKE_CURRENT_SOURCE_DIR}/gemm.py

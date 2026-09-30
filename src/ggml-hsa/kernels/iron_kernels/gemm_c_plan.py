@@ -3,7 +3,7 @@
 """Static plan of the GEMM's C (output) data movement into a dense destination.
 
 The GEMM runs over zero-padded operands, A = [Kpad, Mpad] and B = [Kpad, Npad], but writes only the
-dense [M, N] result, so no separate de-pad dispatch is needed. The padding is dropped on the mem
+dense [M, N] result, so no separate post-pass dispatch is needed. The padding is dropped on the mem
 tile's *read* side. A DMA write (S2MM) cannot discard stream data it receives, but a DMA read
 (MM2S) skips data simply by not reading it.
 

@@ -37,8 +37,8 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
  * @defgroup ggml_hsa_ops HSA-only graph operators
  *
  * These build a single-node result whose op is one of the HSA-only operators (see @c ggml_hsa_op
- * in the backend). They are the internal MUL_MAT convert/pad pre-amble and de-pad post-amble, plus
- * the element-wise dtype cast, exposed as ordinary ggml ops so they can be driven through
+ * in the backend). They are the internal MUL_MAT convert/pad pre-amble plus the element-wise dtype
+ * cast, exposed as ordinary ggml ops so they can be driven through
  * @c ggml_build_forward_expand + @c ggml_backend_graph_compute like any other op.
  *
  * @note These operators are only supported by the HSA backend.
@@ -72,21 +72,6 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
  * @return the result tensor, of shape <tt>[ne0, ne1, 1, 1]</tt>
  */
 GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert_pad(
-    struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type, int64_t ne0,
-    int64_t ne1);
-
-/**
- * @brief Strips the zero-padding from @p a, gathering the top-left sub-block into the given
- * (smaller or equal) 2D shape and converting it to @p type.
- *
- * @param[in] ctx  context to allocate the result in
- * @param[in] a    padded source tensor; must be 2D (@c ne[2] == @c ne[3] == 1)
- * @param[in] type datatype of the result
- * @param[in] ne0  unpadded row width, <= @c a->ne[0]
- * @param[in] ne1  unpadded row count, <= @c a->ne[1]
- * @return the result tensor, of shape <tt>[ne0, ne1, 1, 1]</tt>
- */
-GGML_BACKEND_API struct ggml_tensor * ggml_hsa_depad(
     struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type, int64_t ne0,
     int64_t ne1);
 

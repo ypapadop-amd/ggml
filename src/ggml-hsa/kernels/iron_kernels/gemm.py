@@ -1345,7 +1345,7 @@ def gemm(arch: str, input_tensors: list, output_tensor):
 
     # C is the dense destination; A and B may be zero-padded past it to the tile multiples. The
     # GEMM computes over the padded extent and its mem tiles read back only the dense part
-    # (gemm_c_plan.py), so there is no separate de-pad.
+    # (gemm_c_plan.py), so no separate post-pass is needed.
     if not (0 < C.shape[0] <= A.shape[1]):
         msg = f"C rows {C.shape[0]} must be in (0, padded M {A.shape[1]}]"
         raise ValueError(msg)

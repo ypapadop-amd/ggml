@@ -19,7 +19,7 @@
 // Builds the MNIST fully-connected forward pass in bf16 instead of f32.
 //
 // The stock mnist_model_build (mnist-common.cpp) keeps everything f32, so the HSA backend converts
-// each MUL_MAT operand f32->bf16 and de-pads the result back to f32 between layers, round-tripping
+// each MUL_MAT operand f32->bf16 and the GEMM writes the f32 result directly between layers, round-tripping
 // through f32 around every GEMM. Here the activations and weights are cast to bf16 in the graph so
 // the intermediate ADD/RELU run in bf16 and the MUL_MAT operands arrive already bf16 (no per-layer
 // input conversion). ggml always produces an f32 MUL_MAT result, so a cast back to bf16 is still
