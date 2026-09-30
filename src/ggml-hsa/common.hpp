@@ -446,8 +446,7 @@ struct ggml_backend_hsa_tensor_extra {
     enum class output_transform_t {
         none,    ///< The internal output is the parent tensor as-is.
         convert, ///< Same shape, different dtype: converted element-wise into the parent.
-        depad,   ///< Zero-padded (and possibly wider): the parent's sub-block is copied out,
-                 ///< narrowing the dtype in the same pass.
+        depad,   ///< Zero-padded: the parent's sub-block is copied out.
     };
 
     /// @brief Internal output graph node.
