@@ -836,7 +836,7 @@ static void ggml_hsa_pad_gemm_operand(const ggml_hsa_device_info::device_info & 
  *   - the padded regions read as zero (pre-zeroed by @ref allocate_internal_storage), so the extra
  *     rows/cols and the interior K gap contribute nothing to the result.
  * The output node keeps f32 but needs its own padded temporary storage plus a de-pad copy back into
- * the (smaller) parent tensor, flagged via @c node_t::depad.
+ * the (smaller) parent tensor, flagged via @c node_t::transform.
  *
  * Each of the three rewrites is skipped when the parent tensor already has the target dtype and
  * shape, which leaves that tensor pointing at the parent buffer (@c buffer_size stays 0) and elides
@@ -977,7 +977,7 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
         ggml_hsa_set_contiguous_strides(dst);
         node.tensor.data = nullptr;
         node.buffer_size = GGML_PAD(ggml_nbytes(&dst), dev_info.alignment);
-        node.depad = true;
+        node.transform = ggml_backend_hsa_tensor_extra::output_transform_t::depad;
     }
 
     return true;
@@ -1084,7 +1084,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             // output tensor can be converted in-place
             if (node.tensor.type == GGML_TYPE_F16) {
                 node.tensor.type = GGML_TYPE_BF16;
-                node.convert_dtype = true;
+                node.transform = output_transform_t::convert;
             }
 
             // inputs require temporary storage as they may be shared among tensors
@@ -1166,7 +1166,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // needs no dtype conversion but still needs zero-padding to the tile multiples, so build the
     // pre-processing kernel for every source that has a padded internal buffer (HSA_CONVERT_PAD
     // selects convert+pad or pad-only from the source dtype).
-    // Gated on the padded-GEMM path itself, not on node.depad: an operand can still need
+    // Gated on the padded-GEMM path itself, not on node.transform: an operand can still need
     // convert+pad on a node whose output happens to land at the padded shape already.
     if (padded_gemm && !g_ggml_hsa_host_pad) {
         for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
@@ -1177,7 +1177,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_CONVERT_PAD,
                                                 *parent_tensor.src[src_idx], sources[src_idx].tensor);
         }
-        if (node.depad) {
+        if (node.transform == output_transform_t::depad) {
             node.postprocess_kernel = ggml_hsa_build_transform_kernel(
                 dev_info, GGML_HSA_OP_DEPAD, node.tensor, parent_tensor);
         }
@@ -1188,17 +1188,15 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // Like the host copy it converts in place over the parent's buffer: bf16 and f16 are the same
     // width and the output layout is trivial, so element i sits at the same offset on both sides,
     // and the transform only writes a tile back after its input DMA has finished reading it.
-    // Skipped when the padded path already built a de-pad kernel, which narrows in the same pass.
-    if (node.convert_dtype && node.postprocess_kernel == nullptr) {
+    if (node.transform == output_transform_t::convert) {
         node.postprocess_kernel = ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_CONVERT,
                                                                   node.tensor, parent_tensor);
     }
 
     // No synchronization mode is stored: a source is pre-processed when it has an internal buffer
     // (buffer_size), on the device queue when it has a preprocess_kernel and on the host otherwise;
-    // the output is transformed back when node.depad or node.convert_dtype is set, on the device
-    // queue when it has a postprocess_kernel. The dispatch functions infer the queue drains the
-    // host paths need.
+    // the output is transformed back per node.transform, on the device queue when it has a
+    // postprocess_kernel. The dispatch functions infer the queue drains the host paths need.
 }
 
 ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
@@ -1977,9 +1975,9 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
             }
             // A padded source has a different shape from its parent, so scatter the logical
             // sub-block into the (pre-zeroed) padded buffer; otherwise the shapes match and a plain
-            // layout/dtype copy suffices. Decided per source: node.depad describes the *output*,
-            // and the two can disagree -- a GEMM padded only in K has padded operands and an
-            // unpadded result, which a plain copy would get wrong.
+            // layout/dtype copy suffices. Decided per source: node.transform describes the
+            // *output*, and the two can disagree -- a GEMM padded only in K has padded operands and
+            // an unpadded result, which a plain copy would get wrong.
             const bool src_is_padded =
                 !ggml_are_same_shape(node->src[src_idx], internal_node.src[src_idx]);
             status = ggml_hsa_copy_padded_or_plain(node->src[src_idx], internal_node.src[src_idx],
@@ -1997,11 +1995,11 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
 /**
  * @brief Post-processes a node's internal output buffer back into the parent tensor after dispatch.
  *
- * No-op unless @c tensor_extra.node.depad or @c tensor_extra.node.convert_dtype is set. When a
- * @c postprocess_kernel was built the result is transformed back into the parent on-queue (e.g.
- * de-pad, narrowing f32->bf16 in one pass when the parent is bf16), with no drain; otherwise the
- * queue is drained first (the host may not touch a buffer the device is still using) and the result
- * is gathered/converted back into the parent on the host.
+ * No-op when @c tensor_extra.node.transform is @c none. When a @c postprocess_kernel was built the
+ * result is transformed back into the parent on-queue (e.g. de-pad, narrowing f32->bf16 in one pass
+ * when the parent is bf16), with no drain; otherwise the queue is drained first (the host may not
+ * touch a buffer the device is still using) and the result is gathered/converted back into the
+ * parent on the host.
  *
  * @param[in,out] ctx HSA backend context (queue used for the drain and on-device dispatch)
  * @param[in,out] tensor_extra node metadata holding the internal output node
@@ -2013,7 +2011,8 @@ static ggml_status ggml_hsa_dispatch_postprocess(ggml_backend_hsa_context & ctx,
                                                  ggml_tensor * node) {
     ggml_tensor & internal_node = tensor_extra.node.tensor;
 
-    if (!tensor_extra.node.depad && !tensor_extra.node.convert_dtype) {
+    using output_transform_t = ggml_backend_hsa_tensor_extra::output_transform_t;
+    if (tensor_extra.node.transform == output_transform_t::none) {
         return GGML_STATUS_SUCCESS;
     }
 
@@ -2036,8 +2035,8 @@ static ggml_status ggml_hsa_dispatch_postprocess(ggml_backend_hsa_context & ctx,
     if (const ggml_status status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
         return status;
     }
-    const ggml_status status =
-        ggml_hsa_copy_padded_or_plain(&internal_node, node, tensor_extra.node.depad);
+    const ggml_status status = ggml_hsa_copy_padded_or_plain(
+        &internal_node, node, tensor_extra.node.transform == output_transform_t::depad);
     if (status != GGML_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__, node->name,
                            ggml_hsa_tensor_op_desc(*node));

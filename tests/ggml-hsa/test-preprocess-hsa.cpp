@@ -4,7 +4,7 @@
 // ggml_backend_hsa_tensor_extra. The device has no f16 kernels, so an op with f16 operands runs as
 // bf16 internally: each f16 source is converted into its own internal buffer before the dispatch
 // (per source) and the bf16 result is converted back into the f16 parent afterwards
-// (node.convert_dtype).
+// (node.transform == convert).
 //
 // Both source paths are exercised. With an even element count the HSA_CONVERT kernel builds and the
 // conversion is dispatched on the device queue (a preprocess kernel); with an odd element count the

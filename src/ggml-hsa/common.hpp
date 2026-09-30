@@ -436,6 +436,20 @@ const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t 
  * with transformations applied (e.g., making them contiguous, flattening).
  */
 struct ggml_backend_hsa_tensor_extra {
+    /// @brief How the internal output is turned back into the parent tensor after the dispatch.
+    ///
+    /// This says what the transformation is, not where it runs: it runs on the device queue when
+    /// @c node_t::postprocess_kernel (a DEPAD or CONVERT kernel) could be built, and otherwise on
+    /// the host after a queue drain. @c convert and @c depad stay distinct because the host copy
+    /// differs: the output may have been flattened, so a conversion is an element-order copy while
+    /// a de-pad copies the parent's sub-block.
+    enum class output_transform_t {
+        none,    ///< The internal output is the parent tensor as-is.
+        convert, ///< Same shape, different dtype: converted element-wise into the parent.
+        depad,   ///< Zero-padded (and possibly wider): the parent's sub-block is copied out,
+                 ///< narrowing the dtype in the same pass.
+    };
+
     /// @brief Internal output graph node.
     struct node_t {
         ggml_tensor tensor{};      ///< Transformed tensor.
@@ -445,11 +459,8 @@ struct ggml_backend_hsa_tensor_extra {
         /// the device queue instead of on the host. Null when the output needs no on-device
         /// post-processing.
         std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
-        /// @brief True if the result is converted back into the parent's dtype after the dispatch.
-        bool convert_dtype{};
-        /// @brief True if the transformed tensor is zero-padded and the result must be copied back
-        /// into the (smaller) parent tensor sub-block after the dispatch.
-        bool depad{};
+        /// @brief Transformation from the internal output back into the parent tensor.
+        output_transform_t transform{output_transform_t::none};
     };
 
     /// @brief Internal source graph node.
