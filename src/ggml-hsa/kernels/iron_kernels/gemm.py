@@ -1329,12 +1329,18 @@ def gemm(arch: str, input_tensors: list, output_tensor):
         msg = "Tensors must be contiguous"
         raise ValueError(msg)
 
-    if A.shape[1] != C.shape[0]:
-        msg = f"Incompatible M for A and C: {A.shape[1]} != {C.shape[0]}"
+    # C is the dense destination; A and B may be zero-padded past it to the tile multiples. The
+    # GEMM computes over the padded extent and its mem tiles read back only the dense part
+    # (gemm_c_plan.py), so there is no separate de-pad.
+    if not (0 < C.shape[0] <= A.shape[1]):
+        msg = f"C rows {C.shape[0]} must be in (0, padded M {A.shape[1]}]"
         raise ValueError(msg)
-
-    if B.shape[1] != C.shape[1]:
-        msg = f"Incompatible N for B and C: {B.shape[1]} != {C.shape[1]}"
+    if not (0 < C.shape[1] <= B.shape[1]):
+        msg = f"C columns {C.shape[1]} must be in (0, padded N {B.shape[1]}]"
+        raise ValueError(msg)
+    # DMA addresses 32-bit words: with an odd M every other bf16 column would start mid-word.
+    if np.dtype(C.dtype).itemsize == 2 and C.shape[0] % 2:
+        msg = f"a 16-bit C needs an even M for word-aligned columns; got odd M={C.shape[0]}"
         raise ValueError(msg)
 
     if A.shape[0] != B.shape[0]:
@@ -1381,5 +1387,7 @@ def gemm(arch: str, input_tensors: list, output_tensor):
             zero_fn=zero_fn._name,
             matmul_fn=matmul_fn._name,
             object_file=matmul_fn.object_file_name,
+            M_dense=C.shape[0],
+            N_dense=C.shape[1],
         )
         return ctx.module
