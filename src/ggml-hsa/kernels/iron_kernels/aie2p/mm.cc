@@ -637,8 +637,14 @@ extern "C" {
         zero_scalar<ctype_out, DIM_M, DIM_N>(c_out);                                               \
     }
 
-combos(matmul_vectorized_c_func) combos(matmul_scalar_c_func) combos(zero_vectorized_c_func)
-    combos(zero_scalar_c_func)
+// gemm.py compiles only the variant it calls: -DVECTORIZED_ONLY normally, -DSCALAR_ONLY for the
+// scalar reference kernel. Without either (e.g. a standalone build) both are generated.
+#ifndef SCALAR_ONLY
+combos(matmul_vectorized_c_func) combos(zero_vectorized_c_func)
+#endif
+#ifndef VECTORIZED_ONLY
+    combos(matmul_scalar_c_func) combos(zero_scalar_c_func)
+#endif
 
 } // extern "C"
 

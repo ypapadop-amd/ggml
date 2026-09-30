@@ -19,12 +19,15 @@ from aie.iron import ExternalFunction, dtype_to_str, str_to_dtype
 from aie.iron.controlflow import range_
 
 from .gemm_c_plan import (
-    SHIM_C_BD_IDS,
+    SHIM_B_SHIFTED_RUN_BD_OFFSET,
+    b_group_runs,
     core_schedule,
     make_grid,
     mem_buffers,
     mem_plan,
+    row_origin,
     sends,
+    shim_c_bd_ids,
     shim_rb_chunks,
     validate,
 )
@@ -148,6 +151,9 @@ def select_gemm_tile(
     n_aie_rows=4,
     fifo_depth=2,
     max_tile=256,
+    dtype_b=None,
+    n_limit=None,
+    m_limit=None,
 ):
     """Pick the largest valid per-core (m, k, n) GEMM tile for a problem size.
 
@@ -171,6 +177,18 @@ def select_gemm_tile(
     Ties are broken toward a larger output tile (m * n, which amortizes the C
     zero-init and drain), then a larger k.
 
+    A B streamed in another dtype (dtype_b, converted on the core) ranks tiles
+    differently: by the larger min(m, k) first, then volume, then the larger m. Every
+    K-tile call reloads and re-stores the f32 C tile, a cost per unit of work that
+    falls with k, and streams and converts the B tile, one that falls with m; n only
+    sets how far A's broadcast is shared, so a balanced m and k beats a larger volume.
+    Measured on aie2: over the equal-volume tiles of 4096x512x4096, 2048x512x2048 and
+    4096x128x4096 the volume/output-tile rule picked the slowest or second-slowest
+    tile (64x16x64, 128x16x32), and this rule one within 14% of the fastest on each
+    (64x64x16), up to 1.9x faster than the old pick. On 4000x500x4000, whose M only
+    allows m in {16, 48, 112, 144}, the largest-volume tile 144x40x16 takes 40.9 ms
+    and this rule's 48x80x16 25.6 ms, the fastest of the six candidates timed.
+
     Args:
         dev: Target device ("npu" or "npu2").
         M: Full GEMM problem dimension M.
@@ -186,6 +204,15 @@ def select_gemm_tile(
         n_aie_rows: AIE array rows (4 on both npu and npu2).
         fifo_depth: Object-FIFO depth (double buffering).
         max_tile: Upper bound on any single tile dimension.
+        dtype_b: NumPy dtype B is streamed in, if it differs from dtype_in (f32 B converted to
+            bf16 on the core). Defaults to dtype_in. A differing dtype_b also costs one
+            dtype_in-typed (k, n) scratch tile per core for the converted copy.
+        n_limit: Upper bound on a column group's width (n * n_aie_cols), if any. A GEMM whose
+            B is narrower than N shifts its last column group back to end at B's last column,
+            which needs the whole group to fit inside B. Defaults to no bound.
+        m_limit: Upper bound on a row block's height (m * n_aie_rows), if any. The same shift
+            along M: a C with fewer than M rows shifts its last row block up to end at C's last
+            row. Defaults to no bound.
 
     Returns:
         A (m, k, n) tuple of per-core tile dimensions.
@@ -199,6 +226,9 @@ def select_gemm_tile(
 
     size_in = np.dtype(dtype_in).itemsize
     size_out = np.dtype(dtype_out).itemsize
+    size_b = np.dtype(dtype_b if dtype_b is not None else dtype_in).itemsize
+    # single-buffered converted copy of B, only when B is streamed in another dtype
+    size_b_scratch = size_in if size_b != size_in else 0
 
     # Microkernel-granular step sizes for this wrapper's mmul expansion. Using a
     # blanket 2x2 here would under-constrain the aie2 bf16/i8 wrappers, which
@@ -206,10 +236,17 @@ def select_gemm_tile(
     gm, gk, gn = row_expand * r, s, col_expand * t
 
     def working_set(m, k, n):
-        return fifo_depth * (size_in * m * k + size_in * k * n + size_out * m * n)
+        return (
+            fifo_depth * (size_in * m * k + size_b * k * n + size_out * m * n)
+            + size_b_scratch * k * n
+        )
 
     def valid(m, k, n):
         if M % (m * n_aie_rows) or K % k or N % (n * n_aie_cols):
+            return False
+        if n_limit is not None and n * n_aie_cols > n_limit:
+            return False
+        if m_limit is not None and m * n_aie_rows > m_limit:
             return False
         if ((M // m) * (N // n)) % n_cores:
             return False
@@ -228,7 +265,11 @@ def select_gemm_tile(
             for n in range(gn, min(N, max_tile) + 1, gn):
                 if not valid(m, k, n):
                     continue
-                key = (m * k * n, m * n, k)
+                key = (
+                    (min(m, k), m * k * n, m)
+                    if size_b_scratch
+                    else (m * k * n, m * n, k)
+                )
                 if best_key is None or key > best_key:
                     best_key = key
                     best_tile = (m, k, n)
@@ -261,6 +302,16 @@ def select_gemm_tile(
             f"column-major shim-DMA stride exceeds {DMA_MAX_STRIDE} even at the "
             f"minimum n={gn}: M*n*cols={M * gn * n_aie_cols}, "
             f"n*cols*K={gn * n_aie_cols * K}"
+        )
+    if m_limit is not None and gm * n_aie_rows > m_limit:
+        reasons.append(
+            f"even the minimum row block ({gm * n_aie_rows} rows) is taller than C "
+            f"({m_limit} rows)"
+        )
+    if n_limit is not None and gn * n_aie_cols > n_limit:
+        reasons.append(
+            f"even the minimum column group ({gn * n_aie_cols} columns) is wider than B "
+            f"({n_limit} columns)"
         )
     if working_set(gm, gk, gn) > L1_TILE_BUDGET_BYTES:
         reasons.append(
@@ -297,8 +348,10 @@ def main():
     argparser.add_argument("--b-col-maj", type=int, choices=[0, 1], default=0)
     argparser.add_argument("--c-col-maj", type=int, choices=[0, 1], default=0)
     # Whether to use the scalar kernel; this is low, but can be useful for debugging smaller sizes
-    argparser.add_argument("--scalar", type=bool, choices=[0, 1], default=0)
-    argparser.add_argument("--emulate-bf16-mmul-with-bfp16", type=bool, default=False)
+    argparser.add_argument("--scalar", type=int, choices=[0, 1], default=0)
+    argparser.add_argument(
+        "--emulate-bf16-mmul-with-bfp16", type=int, choices=[0, 1], default=0
+    )
     argparser.add_argument(
         "--dtype_in", type=str, choices=["bf16", "i8", "i16"], default="i16"
     )
@@ -316,29 +369,30 @@ def main():
         "of the input/output matrices. These objects can be used for visualization.",
     )
     args = argparser.parse_args()
-    with mlir_mod_ctx():
+    # Function names follow the extern "C" wrappers in <arch>/mm.cc.
+    scalar_suffix = "_scalar" if args.scalar else ""
+    with mlir_mod_ctx() as ctx:
         maybe_taps = my_matmul(
-            args.dev,
-            args.M,
-            args.K,
-            args.N,
-            args.m,
-            args.k,
-            args.n,
-            args.n_aie_cols,
-            args.dtype_in,
-            args.dtype_out,
-            args.b_col_maj,
-            args.c_col_maj,
-            args.scalar,
-            args.emulate_bf16_mmul_with_bfp16,
-            args.trace_size,
-            f"matmul_{dtype_to_str(args.dtype_in)}_{dtype_to_str(args.dtype_out)}",
-            f"zero_{dtype_to_str(args.dtype_out)}",
-            f"mm_{args.m}x{args.k}x{args.n}.o",
-            args.generate_taps,
+            dev=args.dev,
+            M=args.M,
+            K=args.K,
+            N=args.N,
+            m=args.m,
+            k=args.k,
+            n=args.n,
+            n_aie_cols=args.n_aie_cols,
+            dtype_in_str=args.dtype_in,
+            dtype_out_str=args.dtype_out,
+            b_col_maj=bool(args.b_col_maj),
+            c_col_maj=bool(args.c_col_maj),
+            use_scalar=bool(args.scalar),
+            emulate_bf16_mmul_with_bfp16=bool(args.emulate_bf16_mmul_with_bfp16),
+            trace_size=args.trace_size,
+            zero_fn=f"zero{scalar_suffix}_{args.dtype_out}",
+            matmul_fn=f"matmul{scalar_suffix}_{args.dtype_in}_{args.dtype_out}",
+            object_file=f"mm_{args.m}x{args.k}x{args.n}.o",
+            generate_taps=args.generate_taps,
         )
-        # print(ctx.module.operation.verify())
         print(ctx.module)
 
     if args.generate_taps:
@@ -532,6 +586,11 @@ def my_matmul(
     N_dense=None,
     dtype_acc_str=None,
     narrow_fn=None,
+    dtype_b_str=None,
+    b_ld=None,
+    matmul_tail_fn=None,
+    shift_rows=False,
+    shift_cols=False,
 ):
     """Generate MLIR for tiled GEMM across an AIE array (C = A @ B).
 
@@ -555,11 +614,27 @@ def my_matmul(
         matmul_fn: Name of the external matmul kernel function.
         object_file: Path to the compiled kernel object file to link.
         generate_taps: Whether to also return TensorAccessSequences for A/B/C.
-        M_dense: Rows of the dense C written (defaults to M).
-        N_dense: Columns of the dense C written (defaults to N).
+        M_dense: Rows of the dense C written, at most M; also C's column stride. Defaults to M.
+        N_dense: Columns of the dense C written, at most N. Defaults to N.
         dtype_acc_str: Accumulator dtype name (defaults to dtype_out_str).
         narrow_fn: Name of the acc->out narrowing core function, required when the
             accumulator and output dtypes differ.
+        dtype_b_str: Dtype name B is streamed in, if it differs from dtype_in_str. Only
+            "f32" with bf16 A on npu: each core converts its f32 B tile into a bf16 scratch
+            tile before the bf16 microkernel. Defaults to dtype_in_str.
+        b_ld: Column stride of the column-major B buffer, i.e. how many K elements it really
+            holds. May be smaller than K by less than one k tile: the last K tile then reads
+            past each column's end, into the next column (or the buffer's allocation slack),
+            and matmul_tail_fn zeroes those elements on the core. Defaults to K.
+        matmul_tail_fn: Name of the external matmul used for the last K tile when b_ld < K;
+            it takes the same arguments as matmul_fn and zeroes B's elements past b_ld.
+        shift_rows: Shift the last row block up to end at row M_dense, recomputing rows the
+            previous block already wrote with identical results, instead of clipping it. Needs
+            m * n_aie_rows <= M_dense.
+        shift_cols: B holds only N_dense columns rather than N zero-padded ones: shift the last
+            column group back to end at column N_dense, recomputing columns the previous group
+            already wrote with identical results, instead of reading or writing past the real
+            columns. Needs n * n_aie_cols <= N_dense.
 
     Returns:
         A tuple of (A, B, C) TensorAccessSequences if generate_taps, else None.
@@ -568,6 +643,21 @@ def my_matmul(
 
     dtype_in = str_to_dtype(dtype_in_str)
     dtype_out = str_to_dtype(dtype_out_str)
+    dtype_b = str_to_dtype(dtype_b_str) if dtype_b_str is not None else dtype_in
+    convert_b = dtype_b != dtype_in
+    if convert_b and not (
+        dev == "npu" and dtype_in_str == "bf16" and dtype_to_str(dtype_b) == "f32"
+    ):
+        msg = f"Streaming B as {dtype_to_str(dtype_b)} is only supported for bf16 A on npu"
+        raise ValueError(msg)
+
+    b_ld = K if b_ld is None else b_ld
+    if not (K - k < b_ld <= K):
+        msg = f"B's column stride {b_ld} must be within one k={k} tile of K={K}"
+        raise ValueError(msg)
+    if (b_ld < K) != (matmul_tail_fn is not None):
+        msg = "A K-tail matmul is needed exactly when B's column stride is below K"
+        raise ValueError(msg)
 
     if np.issubdtype(dtype_in, np.integer) != np.issubdtype(dtype_out, np.integer):
         msg = f"Input dtype ({dtype_in}) and output dtype ({dtype_out}) must either both be integral or both be float"
@@ -670,23 +760,37 @@ def my_matmul(
         n,
         n_aie_rows,
         n_aie_cols,
+        shift_rows=shift_rows,
+        shift_cols=shift_cols,
     )
     validate(grid)
+    # Columns B really holds: the dense N when the last column group is shifted, else N.
+    n_valid = grid.N if grid.shift_cols else N
 
     @device(dev_ty)
     def device_body():
         A_l2_ty = np.ndarray[(m * k * n_A_tiles_per_shim,), np.dtype[dtype_in]]
-        B_l2_ty = np.ndarray[(k * n,), np.dtype[dtype_in]]
+        B_l2_ty = np.ndarray[(k * n,), np.dtype[dtype_b]]
         C_l2_ty = np.ndarray[(m * n * n_aie_rows,), np.dtype[dtype_out]]
         A_l1_ty = np.ndarray[(m, k), np.dtype[dtype_in]]
-        B_l1_ty = np.ndarray[(k, n), np.dtype[dtype_in]]
+        B_l1_ty = np.ndarray[(k, n), np.dtype[dtype_b]]
+        B_l1_scratch_ty = np.ndarray[(k, n), np.dtype[dtype_in]]
         acc_l1_ty = np.ndarray[(m, n), np.dtype[dtype_acc]]
         send_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
-        # AIE Core Function declarations
+        # AIE Core Function declarations. A converted B takes the scratch tile as an extra
+        # argument: the kernel converts into it, then multiplies from it.
         zero = external_func(zero_fn, inputs=[acc_l1_ty], link_with=object_file)
-        matmul = external_func(
-            matmul_fn, inputs=[A_l1_ty, B_l1_ty, acc_l1_ty], link_with=object_file
+        matmul_inputs = (
+            [A_l1_ty, B_l1_ty, B_l1_scratch_ty, acc_l1_ty]
+            if convert_b
+            else [A_l1_ty, B_l1_ty, acc_l1_ty]
+        )
+        matmul = external_func(matmul_fn, inputs=matmul_inputs, link_with=object_file)
+        matmul_tail = (
+            external_func(matmul_tail_fn, inputs=matmul_inputs, link_with=object_file)
+            if matmul_tail_fn is not None
+            else None
         )
         narrow = (
             external_func(
@@ -876,15 +980,36 @@ def my_matmul(
         def core_program(row, col):
             acc, send, lks = c_acc[row, col], c_send[row, col], c_core_lk[row, col]
             sched = core_schedule(grid, row, col)
+            # Converted-B scratch: filled by the kernel from the streamed B tile on every call,
+            # so a single (not double) buffer suffices.
+            b_scratch = (
+                buffer(
+                    core_tiles[row][col], B_l1_scratch_ty, name=f"B_scratch_{row}_{col}"
+                )
+                if convert_b
+                else None
+            )
+
+            def k_step(fn, acc_buf):
+                elem_in_a = A_l2l1_fifos[row].acquire(ObjectFifoPort.Consume, 1)
+                elem_in_b = B_l2l1_fifos[col].acquire(ObjectFifoPort.Consume, 1)
+                if acc_buf is not None:
+                    if convert_b:
+                        fn(elem_in_a, elem_in_b, b_scratch, acc_buf)
+                    else:
+                        fn(elem_in_a, elem_in_b, acc_buf)
+                A_l2l1_fifos[row].release(ObjectFifoPort.Consume, 1)
+                B_l2l1_fifos[col].release(ObjectFifoPort.Consume, 1)
 
             def k_loop(acc_buf):
-                for _ in range_(K // k):
-                    elem_in_a = A_l2l1_fifos[row].acquire(ObjectFifoPort.Consume, 1)
-                    elem_in_b = B_l2l1_fifos[col].acquire(ObjectFifoPort.Consume, 1)
-                    if acc_buf is not None:
-                        matmul(elem_in_a, elem_in_b, acc_buf)
-                    A_l2l1_fifos[row].release(ObjectFifoPort.Consume, 1)
-                    B_l2l1_fifos[col].release(ObjectFifoPort.Consume, 1)
+                if acc_buf is None or matmul_tail is None:
+                    for _ in range_(K // k):
+                        k_step(matmul, acc_buf)
+                    return
+                # A ragged K ends on the tail matmul, which zeroes the elements the last K tile
+                # read past B's columns.
+                repeat(K // k - 1, lambda: k_step(matmul, acc_buf))
+                k_step(matmul_tail, acc_buf)
 
             def tile_(kind, b):
                 if kind == "consume":
@@ -953,10 +1078,19 @@ def my_matmul(
             for col in range(n_aie_cols):
                 core_program(row, col)
 
-        # To/from AIE-array data movement
+        # B's column groups in transfer order (gemm_c_plan.b_group_runs): one run, or with a
+        # shifted last column group a second run for it (one more shim BD). Splitting only the
+        # outermost, group dimension keeps the stream order intact.
+        group_runs = b_group_runs(grid)
+        b_run_bd_offsets = [2, SHIM_B_SHIFTED_RUN_BD_OFFSET]
+        c_bd_ids = shim_c_bd_ids(grid)
+
+        # To/from AIE-array data movement. B's buffer holds n_valid columns of b_ld elements; the
+        # last K tile of the last column reads (K - b_ld) elements past that, into the
+        # allocation's slack. C is the dense [M_dense, N_dense].
         @runtime_sequence(
             np.ndarray[(M * K,), np.dtype[dtype_in]],
-            np.ndarray[(K * N,), np.dtype[dtype_in]],
+            np.ndarray[(b_ld * n_valid + (K - b_ld),), np.dtype[dtype_b]],
             np.ndarray[(grid.M * grid.N,), np.dtype[dtype_out]],
         )
         def sequence(A, B, C):
@@ -1054,7 +1188,7 @@ def my_matmul(
                                         shim_tiles[col],
                                         C,
                                         chunks[0],
-                                        SHIM_C_BD_IDS[pingpong],
+                                        c_bd_ids[pingpong],
                                     ),
                                     [],
                                 ]
@@ -1109,9 +1243,9 @@ def my_matmul(
                             #     |                |
                             #     |                |
                             #      ----------------
-                            A_block_offset = (
-                                (row_base + tile_row) * n_aie_rows * m * K
-                            )  # base address for this transfer block for all BDs
+                            # base address for this transfer block for all BDs; a shifted last
+                            # row block starts at M_dense - rows_per_block
+                            A_block_offset = row_origin(grid, row_base + tile_row) * K
                             A_row_offset = (
                                 col * n_A_tiles_per_shim * m * K
                             )  # base address for the shim in this column
@@ -1166,35 +1300,42 @@ def my_matmul(
                             #     |0011    0011    |
                             #     |0011    0011    |
                             #      ----------------
-                            B_col_offset = col * n if not b_col_maj else col * n * K
-                            if not b_col_maj:
-                                B_sizes = [N // n // n_aie_cols, K // k, k, n]
-                                B_strides = [n * n_aie_cols, k * N, N, 1]
-                            else:
-                                B_sizes = [N // n // n_aie_cols, K // k, n, k]
-                                B_strides = [n * n_aie_cols * K, k, K, 1]
+                            # A shifted last column group writes C in every column, so only an
+                            # unsplit B can carry the idle column's token (one per fifo wait).
+                            assert ab_token is None or len(group_runs) == 1
+                            for run, (run_groups, run_start) in enumerate(group_runs):
+                                if not b_col_maj:
+                                    B_col_offset = run_start + col * n
+                                    B_sizes = [run_groups, K // k, k, n]
+                                    B_strides = [n * n_aie_cols, k * N, N, 1]
+                                else:
+                                    B_col_offset = (run_start + col * n) * b_ld
+                                    B_sizes = [run_groups, K // k, n, k]
+                                    B_strides = [n * n_aie_cols * b_ld, k, b_ld, 1]
 
-                            npu_dma_memcpy_nd(
-                                metadata=B_l3l2_fifos[col],
-                                bd_id=bd_id_base + 2 * tile_row + 2,
-                                mem=B,
-                                offsets=[0, 0, 0, B_col_offset],
-                                sizes=B_sizes,
-                                strides=B_strides,
-                                issue_token=ab_token,
-                            )
-                            # # Use the calculated sizes/strides/offsets to record the data movement
-                            # # caused by the above call to npu_dma_memcpy_nd.
-                            # # This line does not change MLIR output at all.
-                            if generate_taps:
-                                B_taps.append(
-                                    TensorAccessPattern(
-                                        (K, N),
-                                        offset=B_col_offset,
-                                        sizes=B_sizes,
-                                        strides=B_strides,
-                                    )
+                                npu_dma_memcpy_nd(
+                                    metadata=B_l3l2_fifos[col],
+                                    bd_id=bd_id_base
+                                    + 2 * tile_row
+                                    + b_run_bd_offsets[run],
+                                    mem=B,
+                                    offsets=[0, 0, 0, B_col_offset],
+                                    sizes=B_sizes,
+                                    strides=B_strides,
+                                    issue_token=ab_token,
                                 )
+                                # # Use the calculated sizes/strides/offsets to record the data movement
+                                # # caused by the above call to npu_dma_memcpy_nd.
+                                # # This line does not change MLIR output at all.
+                                if generate_taps:
+                                    B_taps.append(
+                                        TensorAccessPattern(
+                                            (K, N),
+                                            offset=B_col_offset,
+                                            sizes=B_sizes,
+                                            strides=B_strides,
+                                        )
+                                    )
                     # Row blocks with more shim BDs than one half's ids: await the previous chunk
                     # (it completes, because this row block's A and B are already issued) and
                     # reuse the ids. The columns take turns, chunk by chunk: the A broadcast
@@ -1211,7 +1352,7 @@ def my_matmul(
                                         shim_tiles[col],
                                         C,
                                         rest_chunks[col][i],
-                                        SHIM_C_BD_IDS[pingpong],
+                                        c_bd_ids[pingpong],
                                     ),
                                     [],
                                 ]
@@ -1240,10 +1381,6 @@ def my_matmul(
     return None
 
 
-if __name__ == "__main__":
-    main()
-
-
 def create_mat_mul_external_functions(
     arch: str,
     input_tensors: list,
@@ -1257,7 +1394,11 @@ def create_mat_mul_external_functions(
         output_tensor: Output tensor C.
 
     Returns:
-        (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn, narrow_fn, dtype_acc).
+        (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn, narrow_fn, dtype_acc,
+        matmul_tail_fn, N, shift_rows, shift_cols), where matmul_tail_fn is None unless B holds
+        fewer than K elements per column, N is the padded N the tile was selected for, and
+        shift_rows / shift_cols say whether the last row block / column group is shifted back to
+        end at C's edge rather than clipped (see gemm_c_plan).
 
     Raises:
         ValueError: If the architecture is unsupported.
@@ -1278,29 +1419,65 @@ def create_mat_mul_external_functions(
         msg = f"Unsupported architecture: {arch}"
         raise ValueError(msg)
     num_cols = 8 if dev == "npu2" else 4
+    n_aie_rows = 4
 
     dtype_in = input_tensors[0].dtype
+    dtype_b = input_tensors[1].dtype
     dtype_out = output_tensor.dtype
     dtype_in_str = dtype_to_str(dtype_in)
+    # An f32 B with bf16 A is streamed as f32 and converted to bf16 on each core (npu only).
+    convert_b = dtype_b != dtype_in
     # The mmul reduces in f32 even when the destination is bf16: narrowing per K step would lose
     # precision. A bf16 C therefore accumulates in f32 and narrows once per tile on the core.
     narrowing = dtype_in_str == "bf16" and dtype_to_str(dtype_out) == "bf16"
     dtype_acc = np.dtype(np.float32) if narrowing else np.dtype(dtype_out)
     r, s, t = resolve_mac_dims(dev, dtype_in_str)
     row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
-    # GGML shape convention (innermost first): A is [K, M], B is [K, N].
+    # GGML shape convention (innermost first): A is [K, M], B is [K, N], C is [M, N]. A is
+    # padded to the tile multiples. B is either padded too, or (an f32 B converted on the core)
+    # read unpadded, so K comes from A and N is C's width rounded up to the column-group
+    # granularity (a padded B is already that multiple).
+    group_granule = col_expand * t * num_cols
     M = input_tensors[0].shape[1]
     K = input_tensors[0].shape[0]
-    N = input_tensors[1].shape[1]
+    N = -(-output_tensor.shape[1] // group_granule) * group_granule
+    b_ld = input_tensors[1].shape[0]
+    m_dense = output_tensor.shape[0]
+    n_dense = output_tensor.shape[1]
+    # An unpadded B's last column group is shifted back to end at C's last column. The same GEMM
+    # shifts its last row block up to end at C's last row once C holds at least one minimal row
+    # block; below that it clips the row block like a padded GEMM.
+    shift_cols = input_tensors[1].shape[1] < N
+    shift_rows = (
+        convert_b
+        and input_tensors[1].shape[1] == n_dense
+        and m_dense < M
+        and m_dense >= row_expand * r * n_aie_rows
+    )
     # Budget L1 for the accumulator dtype: a narrowing core holds one f32 accumulator plus two
-    # bf16 send buffers, the same bytes as two f32 buffers.
+    # bf16 send buffers, the same bytes as two f32 buffers. A shifted group / block must fit
+    # inside C.
     m, k, n = select_gemm_tile(
-        dev, M, N, K, dtype_in, dtype_acc, r, s, t, row_expand, col_expand
+        dev,
+        M,
+        N,
+        K,
+        dtype_in,
+        dtype_acc,
+        r,
+        s,
+        t,
+        row_expand,
+        col_expand,
+        dtype_b=dtype_b,
+        n_limit=n_dense if shift_cols else None,
+        m_limit=m_dense if shift_rows else None,
     )
 
     current_dir = Path(__file__).resolve().parent
     source_file = str(current_dir / arch / "mm.cc")
     dtype_in_name = dtype_to_str(dtype_in)
+    dtype_b_name = dtype_to_str(dtype_b)
     dtype_acc_name = dtype_to_str(dtype_acc)
     compile_args = [
         f"-DDIM_M={m}",
@@ -1309,7 +1486,16 @@ def create_mat_mul_external_functions(
         f"-D{dtype_in_name}_{dtype_acc_name}_ONLY",
         "-DB_COL_MAJ",
         "-DC_COL_MAJ",
+        # compile only the kernel variant this design calls
+        "-DSCALAR_ONLY" if use_scalar else "-DVECTORIZED_ONLY",
     ] + (["-DGEMM_NARROW_BF16"] if narrowing else [])
+    if convert_b:
+        compile_args.append(f"-DB_{dtype_b_name}")
+    # When B holds fewer than K elements per column, the last K tile keeps only its first
+    # k_valid elements; the tail matmul zeroes the rest on the core.
+    k_valid = b_ld - (K // k - 1) * k if b_ld < K else None
+    if k_valid is not None:
+        compile_args.append(f"-DB_K_VALID={k_valid}")
     # Name the object after the compile flags that vary. Isolation does not depend
     # on this today -- build_iron.py gives each kernel its own work_dir, keyed by a
     # name that already encodes the shapes -- but m/k/n stopped being arch constants
@@ -1319,8 +1505,10 @@ def create_mat_mul_external_functions(
     #
     # Always a .o, not core_function_object(): this path passes the object to the low-level
     # dialect via link_with, which ld.lld cannot do with textual IR, so this kernel can't inline.
+    b_suffix = f"_b{dtype_b_name}" if convert_b else ""
+    kv_suffix = f"_kv{k_valid}" if k_valid is not None else ""
     object_file_name = (
-        f"matmul_core_functions_{dtype_in_name}_{dtype_acc_name}"
+        f"matmul_core_functions_{dtype_in_name}_{dtype_acc_name}{b_suffix}{kv_suffix}"
         f"{'_narrow_bf16' if narrowing else ''}_{m}x{k}x{n}.o"
     )
 
@@ -1332,16 +1520,30 @@ def create_mat_mul_external_functions(
         compile_flags=compile_args,
     )
 
+    matmul_arg_types = [
+        np.ndarray[(m, k), np.dtype[dtype_in]],
+        np.ndarray[(k, n), np.dtype[dtype_b]],
+    ]
+    if convert_b:
+        matmul_arg_types.append(np.ndarray[(k, n), np.dtype[dtype_in]])  # scratch
+    matmul_arg_types.append(np.ndarray[(m, n), np.dtype[dtype_acc]])
     matmul_fn = ExternalFunction(
-        name=f"matmul{scalar_suffix}_{dtype_in_name}_{dtype_acc_name}",
+        name=f"matmul{scalar_suffix}_{dtype_in_name}_{dtype_acc_name}{b_suffix}",
         object_file_name=object_file_name,
         source_file=source_file,
-        arg_types=[
-            np.ndarray[(m, k), np.dtype[dtype_in]],
-            np.ndarray[(k, n), np.dtype[dtype_in]],
-            np.ndarray[(m, n), np.dtype[dtype_acc]],
-        ],
+        arg_types=matmul_arg_types,
         compile_flags=compile_args,
+    )
+    matmul_tail_fn = (
+        ExternalFunction(
+            name=f"{matmul_fn._name}_ktail",
+            object_file_name=object_file_name,
+            source_file=source_file,
+            arg_types=matmul_arg_types,
+            compile_flags=compile_args,
+        )
+        if k_valid is not None
+        else None
     )
 
     narrow_fn = (
@@ -1359,7 +1561,21 @@ def create_mat_mul_external_functions(
         else None
     )
 
-    return (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn, narrow_fn, dtype_acc)
+    return (
+        m,
+        n,
+        k,
+        use_scalar,
+        num_cols,
+        zero_fn,
+        matmul_fn,
+        narrow_fn,
+        dtype_acc,
+        matmul_tail_fn,
+        N,
+        shift_rows,
+        shift_cols,
+    )
 
 
 def gemm(arch: str, input_tensors: list, output_tensor):
@@ -1389,22 +1605,33 @@ def gemm(arch: str, input_tensors: list, output_tensor):
         msg = "Tensors must be contiguous"
         raise ValueError(msg)
 
-    # C is the dense destination; A and B may be zero-padded past it to the tile multiples. The
-    # GEMM computes over the padded extent and its mem tiles read back only the dense part
-    # (gemm_c_plan.py), so no separate post-pass is needed.
+    # C is the dense destination. A is zero-padded past it to the tile multiples, and B either
+    # is too or holds exactly C's columns and up to one k tile less than A's K. The GEMM computes
+    # over the padded extent and writes only the dense C: its mem tiles read back only the valid
+    # part of a padded edge, and an unpadded edge is shifted back inside C (gemm_c_plan.py), so no
+    # separate post-pass is needed.
     if not (0 < C.shape[0] <= A.shape[1]):
         msg = f"C rows {C.shape[0]} must be in (0, padded M {A.shape[1]}]"
         raise ValueError(msg)
     if not (0 < C.shape[1] <= B.shape[1]):
-        msg = f"C columns {C.shape[1]} must be in (0, padded N {B.shape[1]}]"
+        msg = f"C columns {C.shape[1]} must be in (0, B's N {B.shape[1]}]"
         raise ValueError(msg)
     # DMA addresses 32-bit words: with an odd M every other bf16 column would start mid-word.
     if np.dtype(C.dtype).itemsize == 2 and C.shape[0] % 2:
         msg = f"a 16-bit C needs an even M for word-aligned columns; got odd M={C.shape[0]}"
         raise ValueError(msg)
 
-    if A.shape[0] != B.shape[0]:
-        msg = f"Incompatible K for A and B: {A.shape[0]} != {B.shape[0]}"
+    if B.shape[0] > A.shape[0]:
+        msg = f"Incompatible K for A and B: {A.shape[0]} < {B.shape[0]}"
+        raise ValueError(msg)
+    # Only the f32-B path, which converts B on the core, has the K-tail kernel and the shifted
+    # last column group, so only it reads B unpadded.
+    b_on_core = arch == "aie2" and B.dtype == np.float32 and A.dtype != B.dtype
+    if B.shape[0] != A.shape[0] and not b_on_core:
+        msg = (
+            f"B's K ({B.shape[0]}) must match A's ({A.shape[0]}) unless it is an f32 B "
+            "streamed to a bf16 GEMM on aie2"
+        )
         raise ValueError(msg)
 
     if arch == "aie2":
@@ -1415,17 +1642,38 @@ def gemm(arch: str, input_tensors: list, output_tensor):
         msg = f"Unsupported architecture: {arch}"
         raise ValueError(msg)
 
-    (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn, narrow_fn, dtype_acc) = (
-        create_mat_mul_external_functions(
-            arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
-        )
+    (
+        m,
+        n,
+        k,
+        use_scalar,
+        num_cols,
+        zero_fn,
+        matmul_fn,
+        narrow_fn,
+        dtype_acc,
+        matmul_tail_fn,
+        N,
+        shift_rows,
+        shift_cols,
+    ) = create_mat_mul_external_functions(
+        arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
     )
+    if B.shape[1] not in (N, C.shape[1]):
+        msg = f"B's {B.shape[1]} columns must be C's {C.shape[1]} or the padded {N}"
+        raise ValueError(msg)
+    if shift_cols and not b_on_core:
+        msg = (
+            f"B's {B.shape[1]} columns must be padded to {N} unless it is an f32 B streamed "
+            "to a bf16 GEMM on aie2"
+        )
+        raise ValueError(msg)
 
     with mlir_mod_ctx() as ctx:
         my_matmul(
             dev=dev,
             M=A.shape[1],
-            N=B.shape[1],
+            N=N,
             K=A.shape[0],
             m=m,
             n=n,
@@ -1445,5 +1693,14 @@ def gemm(arch: str, input_tensors: list, output_tensor):
             N_dense=C.shape[1],
             dtype_acc_str=dtype_to_str(dtype_acc),
             narrow_fn=narrow_fn._name if narrow_fn else None,
+            dtype_b_str=dtype_to_str(B.dtype),
+            b_ld=B.shape[0],
+            matmul_tail_fn=matmul_tail_fn._name if matmul_tail_fn is not None else None,
+            shift_rows=shift_rows,
+            shift_cols=shift_cols,
         )
         return ctx.module
+
+
+if __name__ == "__main__":
+    main()

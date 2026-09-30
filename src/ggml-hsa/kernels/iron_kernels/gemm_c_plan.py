@@ -13,6 +13,13 @@ the (n_aie_rows * m) x n block that one AIE column's mem tile assembles from its
 column group -- the order the runtime sequence streams A and B -- so object i of a column is
 (rb, cg) = divmod(i, CG).
 
+Two ways to end at the dense edge. By default the last row block and column group are *clipped*:
+they run over the zero padding, and the mem tile reads back only their valid rows and columns. A
+GEMM whose operands are not padded along a dimension instead *shifts* its last row block (column
+group) back to end at M (N): every row (column) of it is valid, and it recomputes rows (columns)
+the previous one already wrote. Those overlapping writes carry bit-identical values -- the same A
+rows, B columns and K order -- so the order in which they land does not matter.
+
 Everything here is decided at JIT time from shapes and the tile, so it is pure Python and is
 tested without an NPU (tests/ggml-hsa/python/test_gemm_c_plan.py).
 """
@@ -30,8 +37,10 @@ MAX_TASK_REPEAT = (
 )
 MAX_SHIM_ITERATIONS = 64  # shim BD iteration wrap is 6 bits
 SHIM_MAX_STEP = 1 << 20  # shim BD step fields are 20 bits
-# Shim BD ids C may use in each ping/pong half; the A/B transfers take 1, 2 and 9, 10.
+# Shim BD ids C may use in each ping/pong half; the A/B transfers take 1, 2 and 9, 10. A B split
+# into two runs by a shifted last column group also takes 5 and 13 (see shim_c_bd_ids).
 SHIM_C_BD_IDS = ((0, 3, 4, 5, 6, 7), (8, 11, 12, 13, 14, 15))
+SHIM_B_SHIFTED_RUN_BD_OFFSET = 5  # per-half offset of the shifted B run's BD id
 # Mem-tile BDs the runtime sequence may hold at once. A mem tile has 48 BDs, but even channels
 # only reach BDs 0-23 and odd channels 24-47 (AIE2TargetModel::isBdChannelAccessible), and the
 # runtime-sequence allocator draws every mem-tile task BD from the even half. Of those 24, the
@@ -54,11 +63,18 @@ class Grid:
     n: int
     n_aie_rows: int
     n_aie_cols: int
+    shift_rows: bool = False  # the last row block ends at M instead of being clipped
+    shift_cols: bool = False  # the last column group ends at N instead of being clipped
 
     @property
     def rows_per_block(self) -> int:
         """C rows one row block covers across the herd's rows."""
         return self.m * self.n_aie_rows
+
+    @property
+    def group_width(self) -> int:
+        """C columns one column group covers across the herd's columns."""
+        return self.n * self.n_aie_cols
 
     @property
     def RB(self) -> int:  # noqa: N802
@@ -71,9 +87,35 @@ class Grid:
         return self.Npad // (self.n * self.n_aie_cols)
 
 
-def make_grid(M, N, Mpad, Npad, m, n, n_aie_rows, n_aie_cols) -> Grid:
-    """Build a Grid, rejecting shapes the plan cannot express."""
-    g = Grid(M, N, Mpad, Npad, m, n, n_aie_rows, n_aie_cols)
+def make_grid(
+    M,
+    N,
+    Mpad,
+    Npad,
+    m,
+    n,
+    n_aie_rows,
+    n_aie_cols,
+    shift_rows=False,
+    shift_cols=False,
+) -> Grid:
+    """Build a Grid, rejecting shapes the plan cannot express.
+
+    shift_rows / shift_cols select the shifted edge (see the module docstring) along M / N; they
+    are dropped when that dimension is not padded, where there is nothing to shift.
+    """
+    g = Grid(
+        M,
+        N,
+        Mpad,
+        Npad,
+        m,
+        n,
+        n_aie_rows,
+        n_aie_cols,
+        shift_rows=shift_rows and Mpad > M,
+        shift_cols=shift_cols and Npad > N,
+    )
     if Mpad % g.rows_per_block or Npad % (n * n_aie_cols):
         msg = (
             f"padded C [{Mpad}, {Npad}] is not a multiple of the "
@@ -88,6 +130,12 @@ def make_grid(M, N, Mpad, Npad, m, n, n_aie_rows, n_aie_cols) -> Grid:
         raise ValueError(msg)
     if Npad - N >= n * n_aie_cols:
         msg = f"the last column group is entirely padding (N={N}, Npad={Npad})"
+        raise ValueError(msg)
+    if g.shift_rows and g.rows_per_block > M:
+        msg = f"a shifted last row block needs M={M} >= {g.rows_per_block} rows"
+        raise ValueError(msg)
+    if g.shift_cols and g.group_width > N:
+        msg = f"a shifted last column group needs N={N} >= {g.group_width} columns"
         raise ValueError(msg)
     if M > SHIM_MAX_STEP:
         msg = f"M={M} exceeds the shim DMA step range {SHIM_MAX_STEP}"
@@ -105,13 +153,38 @@ class CObject:
     cols: int  # valid columns of this AIE column's n; 0 = the column produces no object here
 
 
+def row_origin(g: Grid, rb: int) -> int:
+    """First dense C row of row block `rb`: M - rows_per_block for a shifted last one."""
+    if g.shift_rows and rb == g.RB - 1:
+        return g.M - g.rows_per_block
+    return rb * g.rows_per_block
+
+
+def col_origin(g: Grid, cg: int, col: int) -> int:
+    """First dense C column of AIE column `col` in column group `cg`.
+
+    A shifted last column group starts at N - group_width.
+    """
+    if g.shift_cols and cg == g.CG - 1:
+        return g.N - g.group_width + col * g.n
+    return (cg * g.n_aie_cols + col) * g.n
+
+
 def column_objects(g: Grid, col: int, rbs: range | None = None) -> list[CObject]:
     """All objects of AIE column `col` (of row blocks `rbs`), in the order its cores compute them."""
     objs = []
     for rb in range(g.RB) if rbs is None else rbs:
-        rows = min(g.rows_per_block, g.M - rb * g.rows_per_block)
+        rows = (
+            g.rows_per_block
+            if g.shift_rows
+            else min(g.rows_per_block, g.M - rb * g.rows_per_block)
+        )
         for cg in range(g.CG):
-            cols = max(0, min(g.n, g.N - (cg * g.n_aie_cols + col) * g.n))
+            cols = (
+                g.n
+                if g.shift_cols
+                else max(0, min(g.n, g.N - (cg * g.n_aie_cols + col) * g.n))
+            )
             objs.append(CObject(rb, cg, rows, cols))
     return objs
 
@@ -207,10 +280,11 @@ def mem_read_bds(o: CObject, g: Grid) -> list[Bd]:
 def shim_write_bds(o: CObject, g: Grid, col: int) -> list[Bd]:
     """Shim S2MM patterns writing the stream of mem_read_bds(o) into the dense destination.
 
-    The destination is column-major with leading dimension g.M (ggml ne[0]).
+    The destination is column-major with leading dimension g.M (ggml ne[0]). A shifted object
+    starts at its shifted origin (row_origin, col_origin).
     """
     m = g.m
-    base = (o.cg * g.n_aie_cols + col) * g.n * g.M + o.rb * g.rows_per_block
+    base = col_origin(g, o.cg, col) * g.M + row_origin(g, o.rb)
     full, part = _split_rows(o, g)
     bds = []
     if full:
@@ -264,6 +338,27 @@ def _merge(bds: list[ShimBd]) -> list[ShimBd]:
     return out
 
 
+def b_group_runs(g: Grid) -> list[tuple[int, int]]:
+    """B's column groups in transfer order, as (group count, first column) runs.
+
+    One run from column 0, or, with a shifted last column group, a second run of that group from
+    N - group_width. Each run is one shim BD for B.
+    """
+    if not g.shift_cols:
+        return [(g.CG, 0)]
+    return [(g.CG - 1, 0), (1, g.N - g.group_width)]
+
+
+def shim_c_bd_ids(g: Grid) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Shim BD ids C may use in each ping/pong half: SHIM_C_BD_IDS less the shifted B run's."""
+    if len(b_group_runs(g)) == 1:
+        return SHIM_C_BD_IDS
+    return tuple(
+        tuple(i for i in ids if i != 8 * half + SHIM_B_SHIFTED_RUN_BD_OFFSET)
+        for half, ids in enumerate(SHIM_C_BD_IDS)
+    )
+
+
 def shim_rb_chunks(g: Grid, col: int, rb: int) -> list[list[ShimBd]]:
     """Shim BDs for row block `rb` of AIE column `col`, split into task-sized chunks.
 
@@ -273,7 +368,7 @@ def shim_rb_chunks(g: Grid, col: int, rb: int) -> list[list[ShimBd]]:
     for o in column_objects(g, col, range(rb, rb + 1)):
         if o.cols:
             bds.extend(_to_shim(b) for b in shim_write_bds(o, g, col))
-    k = len(SHIM_C_BD_IDS[0])
+    k = len(shim_c_bd_ids(g)[0])
     chunks: list[list[ShimBd]] = []
     for b in _merge(bds):
         if b.iterations > 1:

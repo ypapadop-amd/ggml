@@ -6,6 +6,11 @@ The simulation test replays the plan at the address level. Every element the mem
 mapped to the dense destination index it belongs to. That sequence must equal the sequence of
 indices the shim BDs write, and the union over all columns must be exactly [0, M*N). This catches
 wrong offsets, strides, stream order, ping/pong parity and coverage without an NPU.
+
+A shifted grid (aie2's unpadded f32 B, see gemm_c_plan) maps each element by its *shifted*
+destination: the last row block starts at M - rows_per_block and the last column group at
+N - group_width, both computed here independently of the plan. Its writes cover [0, M*N) with
+duplicates exactly in the overlap the shift recomputes.
 """
 
 import sys
@@ -20,6 +25,7 @@ sys.path.insert(0, str(KERNELS_DIR))
 
 from iron_kernels import gemm_c_plan as P
 from iron_kernels.gemm import (
+    create_mat_mul_external_functions,
     resolve_expansion,
     resolve_mac_dims,
     select_gemm_tile,
@@ -71,6 +77,88 @@ def _grid(dev, M, N, K):
     return P.make_grid(M, N, Mpad, Npad, m, n, 4, cols)
 
 
+class _TD:
+    """The tensor-descriptor fields create_mat_mul_external_functions reads."""
+
+    def __init__(self, dtype, ne) -> None:  # noqa: D107
+        self.dtype, self.shape = np.dtype(dtype), tuple(ne)
+
+
+def _f32_b_grid(M, N, K):
+    """aie2 grid of an f32 x f32 MUL_MAT as the backend hands it to the GEMM.
+
+    Mirrors ggml_hsa_prepare_mul_mat_f32: A is converted and padded; an f32 B at least one
+    column group wide is read unpadded (else padded, still f32); C is the dense [M, N]. The
+    shift decisions and tile come from gemm.py itself.
+    """
+    from aie.iron import ExternalFunction
+
+    gm, gk, gn, cols = DEVS["npu"]
+    Mpad, Npad, Kpad = _pad(M, gm * 4), _pad(N, gn * cols), _pad(K, gk)
+    b = (K, N) if N >= gn * cols else (Kpad, Npad)
+    ops = [
+        _TD(ml_dtypes.bfloat16, (Kpad, Mpad, 1, 1)),
+        _TD(np.float32, (*b, 1, 1)),
+    ]
+    got = create_mat_mul_external_functions("aie2", ops, _TD(np.float32, (M, N, 1, 1)))
+    ExternalFunction._instances.clear()
+    m, n, _k = got[0], got[1], got[2]
+    n_pad, shift_rows, shift_cols = got[10], got[11], got[12]
+    assert n_pad == Npad
+    return P.make_grid(
+        M, N, Mpad, Npad, m, n, 4, cols, shift_rows=shift_rows, shift_cols=shift_cols
+    )
+
+
+# Dense (M, N, K) f32 x f32 shapes on aie2's f32-B path: test-mul-mat-f32-hsa's cases, MNIST,
+# and larger ones. Each is shifted, clipped or mixed per dimension.
+SHIFT_SHAPES = [
+    (512, 512, 512),  # aligned: nothing to shift or clip
+    (500, 500, 784),  # MNIST fc1: rows and columns shifted
+    (100, 64, 256),  # rows shifted
+    (129, 300, 1000),  # rows and columns shifted
+    (1000, 70, 40),  # many row blocks, columns shifted
+    (64, 100, 500),  # K tail, columns shifted
+    (64, 70, 257),
+    (10, 500, 500),  # MNIST fc2: rows clipped (below a row block), columns shifted
+    (10, 500, 784),
+    (33, 257, 129),
+    (300, 8, 256),  # N below a column group: B padded, both clipped
+    (4000, 500, 4000),
+    (4096, 512, 4096),
+    (3000, 1000, 64),
+    (98000, 64, 72),  # long M, one column group: rows shifted
+    (8000, 100, 72),
+]
+
+
+def _row_start(g, rb):
+    """First destination row of row block rb, shifted or not (independent of the plan)."""
+    if g.shift_rows and rb == g.RB - 1:
+        return g.M - g.rows_per_block
+    return rb * g.rows_per_block
+
+
+def _col_start(g, cg, col):
+    """First destination column of AIE column col in group cg (independent of the plan)."""
+    gw = g.n * g.n_aie_cols
+    if g.shift_cols and cg == g.CG - 1:
+        return g.N - gw + col * g.n
+    return cg * gw + col * g.n
+
+
+def _expected_writes(g):
+    """How many times each dense C element is written: 2 per shifted overlap it lies in."""
+    rows = np.ones(g.M, dtype=np.int64)
+    if g.shift_rows:
+        rows[g.M - g.rows_per_block : (g.RB - 1) * g.rows_per_block] = 2
+    cols = np.ones(g.N, dtype=np.int64)
+    if g.shift_cols:
+        gw = g.n * g.n_aie_cols
+        cols[g.N - gw : (g.CG - 1) * gw] = 2
+    return (cols[:, None] * rows[None, :]).reshape(-1)  # column-major, index j*M + i
+
+
 def _addresses(offset, sizes, strides):
     """Element addresses a DMA pattern visits, in order (sizes/strides outermost first)."""
     idx = np.array(offset, dtype=np.int64)
@@ -109,8 +197,8 @@ def _mem_stream(g, col):
                     off = _addresses(bd.offset, bd.sizes, bd.strides)
                     core, rem = np.divmod(off, g.m * g.n)
                     jj, ii = np.divmod(rem, g.m)
-                    row = o.rb * g.rows_per_block + core * g.m + ii
-                    colg = (o.cg * g.n_aie_cols + col) * g.n + jj
+                    row = _row_start(g, o.rb) + core * g.m + ii
+                    colg = _col_start(g, o.cg, col) + jj
                     out.append(colg * g.M + row)
                 i += 1
     assert i == len(produced), f"tasks cover {i} of {len(produced)} objects"
@@ -121,7 +209,7 @@ def _shim_stream(g, col):
     out = []
     for rb in range(g.RB):
         for chunk in P.shim_rb_chunks(g, col, rb):
-            assert len(chunk) <= len(P.SHIM_C_BD_IDS[0])
+            assert len(chunk) <= len(P.shim_c_bd_ids(g)[0])
             # The iteration dim advances per BD execution: an iterated BD needs its own task.
             assert len(chunk) == 1 or all(b.iterations == 1 for b in chunk)
             for b in chunk:
@@ -135,13 +223,7 @@ def _shim_stream(g, col):
     return np.concatenate(out) if out else np.zeros(0, dtype=np.int64)
 
 
-@pytest.mark.parametrize("dev", list(DEVS))
-@pytest.mark.parametrize("shape", SHAPES)
-def test_streams_pair_up_and_cover_dense_c_exactly_once(dev, shape):
-    try:
-        g = _grid(dev, *shape)
-    except ValueError as e:
-        pytest.skip(f"not tileable on {dev}: {e}")
+def _check_streams(g):
     written = []
     for col in range(g.n_aie_cols):
         mem, shim = _mem_stream(g, col), _shim_stream(g, col)
@@ -149,19 +231,85 @@ def test_streams_pair_up_and_cover_dense_c_exactly_once(dev, shape):
             f"column {col}: mem read order != shim write order"
         )
         written.append(shim)
-    allw = np.sort(np.concatenate(written))
-    assert np.array_equal(allw, np.arange(g.M * g.N)), (
-        "dense C not covered exactly once"
-    )
+    allw = np.concatenate(written)
+    assert allw.min() >= 0
+    assert allw.max() < g.M * g.N, "a write lands past the dense C"
+    assert np.array_equal(
+        np.bincount(allw, minlength=g.M * g.N), _expected_writes(g)
+    ), "dense C not covered once, plus once more in each shifted overlap"
 
 
 @pytest.mark.parametrize("dev", list(DEVS))
 @pytest.mark.parametrize("shape", SHAPES)
-def test_every_core_in_a_column_sends_once_per_produced_object(dev, shape):
+def test_streams_pair_up_and_cover_dense_c_exactly_once(dev, shape):
     try:
         g = _grid(dev, *shape)
     except ValueError as e:
         pytest.skip(f"not tileable on {dev}: {e}")
+    assert not (g.shift_rows or g.shift_cols)
+    _check_streams(g)
+
+
+@pytest.mark.parametrize("shape", SHIFT_SHAPES)
+def test_shifted_streams_pair_up_and_cover_dense_c(shape):
+    """aie2 f32 B: shifted destinations pair up, and only the shifted overlap is rewritten."""
+    _check_streams(_f32_b_grid(*shape))
+
+
+@pytest.mark.parametrize(
+    ("shape", "shift"),
+    [
+        ((500, 500, 784), (True, True)),
+        ((10, 500, 500), (False, True)),
+        ((100, 64, 256), (True, False)),
+        ((300, 8, 256), (False, False)),
+        ((512, 512, 512), (False, False)),
+    ],
+)
+def test_f32_b_shift_decisions(shape, shift):
+    """Rows shift once C holds a row block; columns once B is read unpadded and ragged."""
+    g = _f32_b_grid(*shape)
+    assert (g.shift_rows, g.shift_cols) == shift
+
+
+@pytest.mark.parametrize("shape", SHIFT_SHAPES)
+def test_operands_follow_the_shifted_c(shape):
+    """A's rows and B's columns come from where C's are written, so overlaps recompute equal values.
+
+    gemm.py offsets A's transfer by row_origin and splits B's into b_group_runs; both must place
+    each row block / column group where the shim writes its C.
+    """
+    g = _f32_b_grid(*shape)
+    for rb in range(g.RB):
+        assert P.row_origin(g, rb) == _row_start(g, rb)
+    b_starts = [
+        start + i * g.n * g.n_aie_cols
+        for count, start in P.b_group_runs(g)
+        for i in range(count)
+    ]
+    assert len(b_starts) == g.CG
+    for cg, start in enumerate(b_starts):
+        for col in range(g.n_aie_cols):
+            assert start + col * g.n == _col_start(g, cg, col)
+    # every operand row/column read exists
+    assert b_starts[-1] + g.n * g.n_aie_cols <= (g.N if g.shift_cols else g.Npad)
+    assert _row_start(g, g.RB - 1) + g.rows_per_block <= (
+        g.M if g.shift_rows else g.Mpad
+    )
+
+
+def test_shifted_b_run_takes_a_c_bd_id():
+    """A split B's second run uses BD 5 / 13, so C gives it up in both halves."""
+    g = _f32_b_grid(500, 500, 784)
+    assert len(P.b_group_runs(g)) == 2
+    ids = P.shim_c_bd_ids(g)
+    assert ids == ((0, 3, 4, 6, 7), (8, 11, 12, 14, 15))
+    b_ids = {1, 2, P.SHIM_B_SHIFTED_RUN_BD_OFFSET}
+    for half in range(2):
+        assert not ({8 * half + i for i in b_ids} & set(ids[half]))
+
+
+def _check_core_sends(g):
     for col in range(g.n_aie_cols):
         produced = sum(1 for o in P.column_objects(g, col) if o.cols)
         for row in range(g.n_aie_rows):
@@ -175,6 +323,26 @@ def test_every_core_in_a_column_sends_once_per_produced_object(dev, shape):
             ]
             assert len(kinds) == g.RB * g.CG
             assert sum(k != "consume" for k in kinds) == produced
+            # A shifted row block has no all-padding core; a shifted column group no idle column.
+            if g.shift_rows:
+                assert "send" not in kinds
+            if g.shift_cols:
+                assert "consume" not in kinds
+
+
+@pytest.mark.parametrize("dev", list(DEVS))
+@pytest.mark.parametrize("shape", SHAPES)
+def test_every_core_in_a_column_sends_once_per_produced_object(dev, shape):
+    try:
+        g = _grid(dev, *shape)
+    except ValueError as e:
+        pytest.skip(f"not tileable on {dev}: {e}")
+    _check_core_sends(g)
+
+
+@pytest.mark.parametrize("shape", SHIFT_SHAPES)
+def test_every_core_sends_once_per_object_when_shifted(shape):
+    _check_core_sends(_f32_b_grid(*shape))
 
 
 def _mem_buffer_sequence(g, col):
@@ -196,6 +364,8 @@ def _parity_grids():
                 continue
     # dense == padded (Task 2's C shape): conv2 produces an odd 1021 objects per column,
     # M=32 x N=512 one object per column.
+    for shape in SHIFT_SHAPES:
+        yield f"f32b-{shape}", _f32_b_grid(*shape)
     yield "conv2-padded", P.make_grid(98016, 128, 98016, 128, 24, 16, 4, 8)
     yield "m32-padded", P.make_grid(32, 512, 32, 512, 8, 64, 4, 8)
 
@@ -283,6 +453,23 @@ def test_m10_cores_1_to_3_only_send():
 def test_make_grid_rejects_bad_shapes(args):
     with pytest.raises(ValueError):
         P.make_grid(*args)
+
+
+@pytest.mark.parametrize(
+    ("args", "kw"),
+    [
+        ((100, 512, 128, 512, 32, 64, 4, 8), {"shift_rows": True}),  # M < row block
+        ((512, 500, 512, 512, 32, 128, 4, 4), {"shift_cols": True}),  # N < group
+    ],
+)
+def test_make_grid_rejects_a_shift_wider_than_c(args, kw):
+    with pytest.raises(ValueError, match="shifted"):
+        P.make_grid(*args, **kw)
+
+
+def test_make_grid_drops_a_shift_along_an_unpadded_dimension():
+    g = P.make_grid(512, 512, 512, 512, 32, 64, 4, 8, shift_rows=True, shift_cols=True)
+    assert not (g.shift_rows or g.shift_cols)
 
 
 def _simulate_issue(g, col):
@@ -400,6 +587,37 @@ def test_sweep_plans_fit_the_mem_tile_or_are_rejected(dev):
     assert cg_gt16_seen
     assert odd_cg_seen
     assert long_rb_seen
+    assert accepted >= 0.9 * (accepted + rejected)
+
+
+def test_sweep_shifted_plans_fit_the_mem_tile_or_are_rejected():
+    """aie2 f32 B: a shifted plan fits the mem tile's queue and live-BD budget or raises."""
+    shapes = [(M, N, K) for M in SWEEP_M for N in SWEEP_N for K in SWEEP_K]
+    shapes += SWEEP_SQUARES + SWEEP_LONG_M + SHIFT_SHAPES
+    accepted = rejected = untileable = 0
+    rows_seen = cols_seen = both_seen = 0
+    for shape in shapes:
+        try:
+            g = _f32_b_grid(*shape)
+        except ValueError:
+            untileable += 1
+            continue
+        try:
+            P.validate(g)
+        except ValueError:
+            rejected += 1
+            continue
+        _check_accepted(g)
+        accepted += 1
+        rows_seen += g.shift_rows
+        cols_seen += g.shift_cols
+        both_seen += g.shift_rows and g.shift_cols
+    print(
+        f"npu f32 B: {accepted} accepted, {rejected} rejected, {untileable} not tileable"
+    )
+    assert rows_seen
+    assert cols_seen
+    assert both_seen
     assert accepted >= 0.9 * (accepted + rejected)
 
 

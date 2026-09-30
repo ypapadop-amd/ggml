@@ -75,6 +75,7 @@ src/ggml-hsa/
 │       ├── count_equal.py/cc    # Count equal IRON design + AIE core function
 │       ├── cross_entropy_loss.py/cc  # Cross entropy loss IRON design + AIE core function
 │       ├── gemm.py              # Matrix multiplication IRON design
+│       ├── gemm_c_plan.py       # Static plan of the GEMM's C (output) data movement
 │       ├── ggml-aie.hpp         # Common AIE type definitions
 │       ├── aie_kernel_utils.h   # Loop optimization macros (AIE_LOOP_UNROLL, AIE_PREPARE_FOR_PIPELINING, etc.)
 │       ├── aie_kernel_math.h    # AIE math utility functions (scalar_exp, scalar_log, pow2, vec_exp)
@@ -276,6 +277,27 @@ computation across the AIE array:
 The implementation in `gemm.py` includes both a standalone CLI tool and a `gemm()` function
 callable from the dispatch layer. Key parameters include tile sizes (m, k, n), number of
 columns, data types, and layout (row-major vs column-major).
+
+**f32 operands.** The microkernel is bf16-only, so `ggml_hsa_prepare_mul_mat_f32` (in
+`ggml-hsa.cpp`) converts and zero-pads an f32 A once (it is cached when constant). The GEMM writes
+the dense f32 destination directly; its C path is written by hand from the static plan in
+`gemm_c_plan.py` (no C ObjectFifos). Each dimension ends at C's edge in one of two ways:
+
+- **Clipped** (padded operands): the last row block / column group runs over the zero padding,
+  and the mem tile's runtime MM2S tasks read back only the valid rows and columns.
+- **Shifted** (aie2 only, an unpadded f32 B): on aie2 an f32 B is streamed to the cores as f32
+  and converted there (`matmul_bf16_f32_bf32` in `aie2/mm.cc`). When B is at least one column
+  group wide the GEMM reads it unpadded and shifts its last column group back to end at N, and,
+  when M is at least one row block, its last row block up to end at M. They recompute
+  columns/rows the previous group or block already wrote, with bit-identical values.
+
+On the shifted path:
+
+- The last K tile reads past each column of B by up to 7 elements, and `matmul_*_ktail` zeroes
+  them on the core. HSA device buffers are over-allocated by `ggml_hsa_buffer_read_slack` so this
+  read never leaves the allocation.
+- Every shim C task issues a completion token and is awaited once.
+- The tile selector ranks f32-B tiles by `min(m, k)` before volume (see `select_gemm_tile`).
 
 ### Broadcasting Support
 

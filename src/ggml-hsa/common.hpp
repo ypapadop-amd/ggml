@@ -435,15 +435,14 @@ const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t 
  * with transformations applied (e.g., making them contiguous, flattening).
  */
 struct ggml_backend_hsa_tensor_extra {
-    /// @brief How a group's parent<->internal tensor transformations (dtype conversion, padding)
-    /// are synchronized relative to the main kernel dispatch. Decided per group (sources vs
-    /// output); device is preferred over host.
-    enum class sync_mode_t {
-        none,   ///< No pre/post-processing is required for the group.
-        host,   ///< Pre/post-processing runs on the host; requires a queue drain (before the
-                ///< dispatch for sources, after it for the output).
-        device, ///< Pre/post-processing runs on the device queue via `preprocess_kernel` /
-                ///< `postprocess_kernel`; no queue drain needed.
+    /// @brief How the internal output is turned back into the parent tensor after the dispatch.
+    ///
+    /// This says what the transformation is, not where it runs: it runs on the device queue when
+    /// @c node_t::postprocess_kernel (a CONVERT kernel) could be built, and otherwise on the host
+    /// after a queue drain.
+    enum class output_transform_t {
+        none,    ///< The internal output is the parent tensor as-is.
+        convert, ///< Same shape, different dtype: converted element-wise into the parent.
     };
 
     /// @brief Internal output graph node.
@@ -455,10 +454,8 @@ struct ggml_backend_hsa_tensor_extra {
         /// the device queue instead of on the host. Null when the output needs no on-device
         /// post-processing.
         std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
-        /// @brief Synchronization mode for the output post-processing after the main kernel
-        /// dispatch.
-        sync_mode_t sync_mode{sync_mode_t::none};
-        bool convert_dtype{}; ///< True if data conversion is necessary.
+        /// @brief Transformation from the internal output back into the parent tensor.
+        output_transform_t transform{output_transform_t::none};
     };
 
     /// @brief Internal source graph node.
@@ -484,10 +481,6 @@ struct ggml_backend_hsa_tensor_extra {
     struct sources_t {
         /// @brief Number of source tensors.
         std::int32_t count{};
-        /// @brief Synchronization mode for the source pre-processing before the main kernel
-        /// dispatch. Applies to the whole group: a host transformation on any source drains before
-        /// all of them.
-        sync_mode_t sync_mode{sync_mode_t::none};
         /// @brief Internal graph node sources, indices [0, count) are valid.
         std::array<source_node_t, GGML_MAX_SRC> nodes{};
 

@@ -81,6 +81,17 @@ static const std::size_t g_ggml_hsa_dispatch_batch_size =
 static const bool g_ggml_hsa_host_pad =
     ggml_hsa_getenv_int("GGML_HSA_HOST_PAD", 0, 0, 1) != 0;
 
+/// @brief Bytes every HSA device buffer is allocated beyond its reported size.
+///
+/// A GEMM that reads an f32 B unpadded (see @ref ggml_hsa_prepare_mul_mat_f32) streams whole K
+/// tiles, so its last K tile reads up to one K padding granule (under 8 elements) past the end of
+/// each column. For every column but the last that lands in the next column; for the last it can
+/// land past the tensor, and so past the buffer when the tensor ends it. The slack keeps that read
+/// inside the allocation. The GEMM zeroes those elements before using them.
+static constexpr std::size_t ggml_hsa_buffer_read_slack = 64;
+
+static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer);
+
 /// @brief How long teardown waits for packets that were in flight when the queue was suspended,
 /// in milliseconds. Read once from @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS at startup; 0 means
 /// do not wait at all. See @c ggml_hsa_drain_after_queue_error for why the wait is bounded.
@@ -736,10 +747,8 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
 /**
  * @brief Eligibility for the padded bf16 GEMM path, over a raw tensor.
  *
- * Shared by @c ggml_hsa_prepare_mul_mat_f32 (which additionally constrains the destination dtype)
- * and @c ggml_backend_hsa_graph_optimize (which runs before tensor_extra exists, so it only has the
- * raw graph tensor). Deliberately does NOT check @c mm.type: the two callers disagree on the
- * destination dtype, so each applies its own rule.
+ * Does not check @c mm.type; @c ggml_hsa_prepare_mul_mat_f32 additionally requires an f32
+ * destination.
  *
  * @param[in] mm candidate MUL_MAT node.
  * @return @c true if @p mm is a 2-source MUL_MAT with f32/bf16 operands, trivial layout on both
@@ -776,9 +785,9 @@ static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
 }
 
 /**
- * @brief Points a padded-GEMM operand at a bf16 internal buffer, unless it already matches.
+ * @brief Points a padded-GEMM operand at an internal buffer of @p type, unless it already matches.
  *
- * An operand that is already bf16 at exactly the padded shape needs neither conversion nor
+ * An operand that is already @p type at exactly the padded shape needs neither conversion nor
  * padding, so it keeps pointing at the parent buffer: leaving @c buffer_size at 0 skips the
  * internal allocation, the @c CONVERT_PAD dispatch, and (when no operand needs one) the whole
  * source synchronization. Redirecting it anyway costs a full-size device copy into an
@@ -793,16 +802,18 @@ static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
  * @param[in,out] source internal source node to retype and resize
  * @param[in] ne0 padded extent of dimension 0 (the K dimension for both operands)
  * @param[in] ne1 padded extent of dimension 1 (Mpad for A, Npad for B)
+ * @param[in] type dtype the GEMM kernel consumes this operand in
  */
 static void ggml_hsa_pad_gemm_operand(const ggml_hsa_device_info::device_info & dev_info,
                                       ggml_backend_hsa_tensor_extra::source_node_t & source,
                                       std::int64_t ne0,
-                                      std::int64_t ne1) {
+                                      std::int64_t ne1,
+                                      ggml_type type) {
     ggml_tensor & operand = source.tensor;
-    if (operand.type == GGML_TYPE_BF16 && operand.ne[0] == ne0 && operand.ne[1] == ne1) {
+    if (operand.type == type && operand.ne[0] == ne0 && operand.ne[1] == ne1) {
         return;
     }
-    operand.type = GGML_TYPE_BF16;
+    operand.type = type;
     operand.ne[0] = ne0;
     operand.ne[1] = ne1;
     ggml_hsa_set_contiguous_strides(operand);
@@ -820,13 +831,19 @@ static void ggml_hsa_pad_gemm_operand(const ggml_hsa_device_info::device_info & 
  *   - each dimension is padded to K->Kpad, M->Mpad, N->Npad and the dtype set to bf16;
  *   - the padded regions read as zero (pre-zeroed by @ref allocate_internal_storage), so the extra
  *     rows/cols and the interior K gap contribute nothing to the result.
- * The output node is left as the dense parent: the GEMM writes it directly (f32, or bf16 when
- * graph_optimize retyped it).
+ * The output node is left as the dense parent: the GEMM writes it directly.
  *
  * Each operand rewrite is skipped when the parent tensor already has the target dtype and
  * shape, which leaves that tensor pointing at the parent buffer (@c buffer_size stays 0) and elides
  * the corresponding convert/pad dispatch -- the common case for GEMMs whose dimensions are
- * already tile multiples (see @ref ggml_hsa_pad_gemm_operand for the measured cost of not doing so).
+ * already tile multiples (see @ref ggml_hsa_pad_gemm_operand for the measured cost of not doing
+ * so).
+ *
+ * On aie2 an f32 B is not converted at all: the GEMM streams it as f32 and converts each tile on
+ * the core. Once B is at least one column group wide the GEMM also reads it unpadded: it shifts its
+ * last column group back to end at N and zeroes the K tail on the core, and, when M is at least one
+ * row block, it shifts its last row block up to end at M as well. Such a GEMM has no B
+ * pre-processing dispatch; only the constant A is still converted and padded, once.
  *
  * Only the contiguous, non-batched, non-permuted f32 x f32 case is handled (the shapes exercised by
  * MNIST). Returns @c false for anything else, leaving the node untouched so the caller falls back
@@ -843,10 +860,9 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     ggml_tensor & dst = node.tensor;
 
     // The GEMM microkernel runs in bf16, so both operands must be f32 (converted to bf16 below) or
-    // already bf16 (converted in the graph, e.g. the bf16 MNIST variant). Shared eligibility is
-    // checked over the internal source tensors via the raw-tensor predicate; here we additionally
-    // require an f32 destination (ggml's native MUL_MAT output) or a bf16 destination (retyped by
-    // graph_optimize so the GEMM narrows f32->bf16 on its cores).
+    // already bf16 (cast in the graph). Eligibility is checked over the internal source tensors via
+    // the raw-tensor predicate; here we additionally require an f32 destination (ggml's native
+    // MUL_MAT output).
     if (sources.count != 2) {
         return false;
     }
@@ -862,7 +878,7 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     if (!ggml_hsa_mul_mat_is_padded_gemm(probe)) {
         return false;
     }
-    if (dst.type != GGML_TYPE_F32 && dst.type != GGML_TYPE_BF16) {
+    if (dst.type != GGML_TYPE_F32) {
         return false;
     }
 
@@ -915,13 +931,30 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     // bf16 sources are just zero-padded to the tile multiples (handled by the pre-processing
     // kernel below, which is selected from the parent tensor's own dtype). An operand that needs
     // neither is left alone -- see ggml_hsa_pad_gemm_operand.
-    ggml_hsa_pad_gemm_operand(dev_info, sources[0], Kpad, Mpad);
-    ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad);
+    //
+    // The exception is an f32 B on aie2: the GEMM streams it as f32 and converts it to bf16 on
+    // each core, so B is never converted by a separate dispatch. Once B is at least one column
+    // group wide the GEMM also reads it unpadded: it shifts its last column group back to end at
+    // N, and zeroes the K tail on the core, so B needs no pre-processing dispatch at all. The K
+    // tail read runs up to Kpad - K elements past B's last column, which only an HSA buffer's
+    // allocation slack covers (see ggml_hsa_buffer_read_slack). A B without a buffer yet -- the
+    // supports_op probe runs before allocation -- is taken to land in one, since supports_buft
+    // accepts only HSA buffers; deciding otherwise would have the probe compile a different
+    // kernel than the one that runs.
+    const bool b_f32_on_core = dev_info.name == "aie2" && b.type == GGML_TYPE_F32;
+    const bool b_unpadded =
+        b_f32_on_core && N >= gn * n_aie_cols &&
+        (K == Kpad || b.buffer == nullptr || ggml_backend_buffer_is_hsa(b.buffer));
+    ggml_hsa_pad_gemm_operand(dev_info, sources[0], Kpad, Mpad, GGML_TYPE_BF16);
+    if (!b_unpadded) {
+        ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad,
+                                  b_f32_on_core ? GGML_TYPE_F32 : GGML_TYPE_BF16);
+    }
 
-    // The output is not rewritten: the GEMM computes over the padded operands but its mem tiles
-    // read back only the valid part of each C block and the shim writes it straight into the
-    // dense parent (kernels/iron_kernels/gemm_c_plan.py). An f32 parent receives the f32 result;
-    // a parent retyped to bf16 by graph_optimize is narrowed on the cores. Either way there is no
+    // The output is not rewritten: the GEMM writes the dense parent directly. Over padded operands
+    // its mem tiles read back only the valid part of each C block; with an unpadded f32 B on aie2
+    // it shifts its last column group (and, when M is at least one row block, its last row block)
+    // back inside the parent instead (kernels/iron_kernels/gemm_c_plan.py). Either way there is no
     // internal output buffer and nothing to post-process.
 
     return true;
@@ -1028,7 +1061,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             // output tensor can be converted in-place
             if (node.tensor.type == GGML_TYPE_F16) {
                 node.tensor.type = GGML_TYPE_BF16;
-                node.convert_dtype = true;
+                node.transform = output_transform_t::convert;
             }
 
             // inputs require temporary storage as they may be shared among tensors
@@ -1127,46 +1160,15 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // Like the host copy it converts in place over the parent's buffer: bf16 and f16 are the same
     // width and the output layout is trivial, so element i sits at the same offset on both sides,
     // and the transform only writes a tile back after its input DMA has finished reading it.
-    if (node.convert_dtype) {
+    if (node.transform == output_transform_t::convert) {
         node.postprocess_kernel = ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_CONVERT,
                                                                   node.tensor, parent_tensor);
     }
 
-    // Decide how each group (sources, output) synchronizes its parent<->internal transformations
-    // independently. On-device transformations run on the same in-order queue as the main kernel,
-    // so no host queue drain is needed and the packets batch with surrounding work; the host
-    // fallback must drain (before the dispatch for sources, after it for the output, since the host
-    // may not touch a buffer the device is still using). Device is preferred; the groups do not
-    // have to agree, so a failed kernel build on one side does not force the other onto the host
-    // path.
-
-    // Sources: a source needs pre-processing when it has a padded/converted internal buffer. If
-    // every such source has a pre-processing kernel the whole group runs on-device; otherwise a
-    // host transformation on any source drains before all of them.
-    const bool sources_need_sync = std::any_of(
-        sources.begin(), sources.end(), [](const source_node_t & s) { return s.buffer_size != 0; });
-    const bool sources_device_capable =
-        std::all_of(sources.begin(), sources.end(), [](const source_node_t & s) {
-            return s.buffer_size == 0 || s.preprocess_kernel != nullptr;
-        });
-    if (!sources_need_sync) {
-        sources.sync_mode = sync_mode_t::none;
-    } else if (sources_device_capable) {
-        sources.sync_mode = sync_mode_t::device;
-    } else {
-        sources.sync_mode = sync_mode_t::host;
-    }
-
-    // Output: needs post-processing when the result is dtype-converted back into the
-    // parent. A post-processing kernel runs it on-device; otherwise it drains after the
-    // dispatch and copies back on the host.
-    if (!node.convert_dtype) {
-        node.sync_mode = sync_mode_t::none;
-    } else if (node.postprocess_kernel != nullptr) {
-        node.sync_mode = sync_mode_t::device;
-    } else {
-        node.sync_mode = sync_mode_t::host;
-    }
+    // No synchronization mode is stored: a source is pre-processed when it has an internal buffer
+    // (buffer_size), on the device queue when it has a preprocess_kernel and on the host otherwise;
+    // the output is transformed back per node.transform, on the device queue when it has a
+    // postprocess_kernel. The dispatch functions infer the queue drains the host paths need.
 }
 
 ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
@@ -1616,8 +1618,11 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
     const auto & buft_ctx = *static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & dev_info = ggml_hsa_get_device_info(buft_ctx.device);
 
+    // The allocation is ggml_hsa_buffer_read_slack bytes longer than the buffer ggml sees, so a
+    // kernel may read slightly past the last tensor (see ggml_hsa_buffer_read_slack).
     void * buffer = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
+    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool,
+                                                   size + ggml_hsa_buffer_read_slack,
                                                    /* flags = */ 0, &buffer);
         status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
@@ -1892,16 +1897,16 @@ ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool p
  * @brief Pre-processes a node's sources into their internal buffers before the main kernel
  * dispatch.
  *
- * The path is selected by @c tensor_extra.sources.sync_mode. On the device path
- * (@c sync_mode_t::device) each source that needs a transformed buffer is dispatched on-queue via
- * its `preprocess_kernel` (e.g. convert+pad), no queue drain. On the host path (@c
- * sync_mode_t::host) the queue is drained first (the host may not touch a buffer the device is
- * still using), then each source is copied/scattered into its (padded) internal buffer. Constant
- * sources (weights / biases) are transformed once into the persistent buffer and skipped while the
- * cached pointer matches. No-op when @c sources.sync_mode is @c none.
+ * Each source with an internal buffer is transformed on its own path: on the device queue via its
+ * `preprocess_kernel` (e.g. convert+pad) when it has one, with no queue drain, and otherwise
+ * copied/scattered into its (padded) internal buffer on the host. The queue is drained once, before
+ * the first host copy, since the host may not touch a buffer the device is still using; the queue
+ * is in order, so device transforms enqueued before the drain are covered by it and the main kernel
+ * is enqueued after every copy. Constant sources (weights / biases) are transformed once into the
+ * persistent buffer and skipped while the cached pointer matches.
  *
  * @param[in,out] ctx HSA backend context (queue used for drains and on-device dispatches)
- * @param[in,out] tensor_extra node metadata holding the internal source nodes and sync mode
+ * @param[in,out] tensor_extra node metadata holding the internal source nodes
  * @param[in] node parent graph node whose sources are pre-processed
  * @return @c GGML_STATUS_SUCCESS, or the failing status of the first source that could not be
  *         prepared
@@ -1909,21 +1914,9 @@ ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool p
 static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
                                                 ggml_backend_hsa_tensor_extra & tensor_extra,
                                                 ggml_tensor * node) {
-    using sync_mode_t = ggml_backend_hsa_tensor_extra::sync_mode_t;
-
-    if (tensor_extra.sources.sync_mode == sync_mode_t::none) {
-        return GGML_STATUS_SUCCESS;
-    }
-
-    const bool use_device_transforms = tensor_extra.sources.sync_mode == sync_mode_t::device;
     ggml_tensor & internal_node = tensor_extra.node.tensor;
 
-    if (!use_device_transforms) {
-        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
-            status != GGML_STATUS_SUCCESS) {
-            return status;
-        }
-    }
+    bool drained = false;
     for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
         if (tensor_extra.sources[src_idx].buffer_size == 0) {
             continue;
@@ -1939,13 +1932,19 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
             tensor_extra.sources[src_idx].converted_ptr = node->src[src_idx]->data;
         }
         ggml_status status = GGML_STATUS_SUCCESS;
-        if (use_device_transforms) {
+        if (tensor_extra.sources[src_idx].preprocess_kernel != nullptr) {
             // on-device source pre-processing: transform the parent source into its internal buffer
             // on-queue (e.g. convert+pad), no drain
             ggml_tensor * preprocess_src = node->src[src_idx];
             status = tensor_extra.sources[src_idx].preprocess_kernel->dispatch(
                 ctx, &preprocess_src, 1, *internal_node.src[src_idx]);
         } else {
+            if (!drained) {
+                if (status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
+                    return status;
+                }
+                drained = true;
+            }
             // A padded source has a different shape from its parent, so scatter the logical
             // sub-block into the (pre-zeroed) padded buffer; otherwise the shapes match and a plain
             // layout/dtype copy suffices. Decided per source from the shapes.
@@ -1966,27 +1965,31 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
 /**
  * @brief Post-processes a node's internal output buffer back into the parent tensor after dispatch.
  *
- * The path is selected by @c tensor_extra.node.sync_mode. On the device path
- * (@c sync_mode_t::device) the result is transformed on-queue via `postprocess_kernel` (dtype
- * narrowing), no drain. On the host path (@c sync_mode_t::host) the queue is drained and the result
- * is converted back into the parent on the host. No-op when @c node.sync_mode is @c none.
+ * No-op when @c tensor_extra.node.transform is @c none. When a @c postprocess_kernel was built the
+ * result is converted back into the parent on-queue, with no drain; otherwise the queue is drained
+ * first (the host may not touch a buffer the device is still using) and the result is converted
+ * back into the parent on the host.
  *
- * @param[in,out] ctx HSA backend context (queue used for drains and on-device dispatches)
- * @param[in,out] tensor_extra node metadata holding the internal output node and sync mode
+ * @param[in,out] ctx HSA backend context (queue used for the drain and on-device dispatch)
+ * @param[in,out] tensor_extra node metadata holding the internal output node
  * @param[in,out] node parent graph node that receives the post-processed result
  * @return @c GGML_STATUS_SUCCESS, or the failing status of the post-processing step
  */
 static ggml_status ggml_hsa_dispatch_postprocess(ggml_backend_hsa_context & ctx,
                                                  ggml_backend_hsa_tensor_extra & tensor_extra,
                                                  ggml_tensor * node) {
-    using sync_mode_t = ggml_backend_hsa_tensor_extra::sync_mode_t;
     ggml_tensor & internal_node = tensor_extra.node.tensor;
 
-    if (tensor_extra.node.sync_mode == sync_mode_t::device) {
+    using output_transform_t = ggml_backend_hsa_tensor_extra::output_transform_t;
+    if (tensor_extra.node.transform == output_transform_t::none) {
+        return GGML_STATUS_SUCCESS;
+    }
+
+    if (tensor_extra.node.postprocess_kernel != nullptr) {
         // on-device result post-processing: transform the internal output back into the parent
-        // tensor on-queue (dtype narrowing), no drain.
+        // tensor on-queue (dtype conversion), no drain.
         ggml_tensor * postprocess_src = &internal_node;
-        ggml_status status =
+        const ggml_status status =
             tensor_extra.node.postprocess_kernel->dispatch(ctx, &postprocess_src, 1, *node);
         if (status != GGML_STATUS_SUCCESS) {
             GGML_HSA_LOG_ERROR("%s: failed to post-process result for tensor \"%s\" (%s)", __func__,
@@ -1995,21 +1998,16 @@ static ggml_status ggml_hsa_dispatch_postprocess(ggml_backend_hsa_context & ctx,
         return status;
     }
 
-    if (tensor_extra.node.sync_mode == sync_mode_t::host) {
-        // convert the datatype back into the parent tensor
-        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
-            status != GGML_STATUS_SUCCESS) {
-            return status;
-        }
-        ggml_status status = ggml_hsa_copy_tensor(&internal_node, node);
-        if (status != GGML_STATUS_SUCCESS) {
-            GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__,
-                               node->name, ggml_hsa_tensor_op_desc(*node));
-        }
+    // convert the datatype back into the parent tensor
+    if (const ggml_status status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
         return status;
     }
-
-    return GGML_STATUS_SUCCESS;
+    const ggml_status status = ggml_hsa_copy_tensor(&internal_node, node);
+    if (status != GGML_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__, node->name,
+                           ggml_hsa_tensor_op_desc(*node));
+    }
+    return status;
 }
 
 static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
@@ -2268,132 +2266,6 @@ static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_eve
 }
 
 /**
- * @brief Retypes qualifying padded-GEMM MUL_MAT nodes to bf16 and blanks the following cast(s).
- *
- * ggml_mul_mat always produces f32, so a bf16 graph wraps each GEMM in an f32->bf16 cast. This hook
- * runs per split before allocation and before tensor_extra construction, the sanctioned point to
- * rewrite the graph. For a MUL_MAT eligible for the padded bf16 GEMM path whose every consumer is a
- * non-output f32->bf16 convert-cast and whose M (ne[0]) is even, it retypes the MUL_MAT to bf16
- * (the GEMM then narrows f32->bf16 on its cores), rewires each cast's downstream readers onto the
- * MUL_MAT, and sets each orphaned cast's op to GGML_OP_NONE. The framework's ggml_op_is_empty skip
- * then drops the blanked casts and gallocr gives them no buffer (0 children). All-or-nothing: if
- * any consumer reads the MUL_MAT as f32, or any cast is a graph output, the node is left untouched
- * (f32 result).
- *
- * The passed cgraph is a view over only the current scheduler split's node range, so its scans see
- * only in-split consumers. Consumers in other splits are handled too: using the full-graph
- * use_counts (shared by the view) the hook refuses to retype any MUL_MAT whose total consumer count
- * exceeds the count visible in this split -- an out-of-split consumer would otherwise receive a
- * type-inconsistent cross-split copy and trip a layout assert.
- *
- * Node removal is not possible here (the scheduler rebuilds the split from the original node
- * range), so the cast node persists but is neutralized to a no-op.
- */
-static void ggml_backend_hsa_graph_optimize(ggml_backend_t /*backend*/, ggml_cgraph * cgraph,
-                                            ggml_backend_graph_optimize_params * /*params*/) {
-    const std::int32_t node_count = ggml_graph_n_nodes(cgraph);
-
-    for (std::int32_t i = 0; i < node_count; ++i) {
-        ggml_tensor * mm = ggml_graph_node(cgraph, i);
-        if (!ggml_hsa_mul_mat_is_padded_gemm(*mm)) {
-            continue;
-        }
-        if ((mm->flags & GGML_TENSOR_FLAG_OUTPUT) != 0) {
-            continue;
-        }
-
-        // The GEMM writes its result by DMA, which addresses 32-bit words: with an odd M
-        // (ne[0]) every other bf16 column would start mid-word. Leave those f32; the cast then
-        // runs as its own kernel.
-        if (mm->ne[0] % 2 != 0) {
-            continue;
-        }
-
-        // Collect all consumers of mm; require at least one and every one a non-output
-        // f32->bf16 convert-cast. Any f32 reader (matmul, add, output, or a cast to another dtype)
-        // disqualifies: retyping mm would feed bf16 where f32 is expected.
-        bool qualifies = true;
-        bool has_consumer = false;
-        for (std::int32_t j = 0; j < node_count && qualifies; ++j) {
-            ggml_tensor * c = ggml_graph_node(cgraph, j);
-            for (auto s = 0; s < GGML_MAX_SRC; ++s) {
-                if (c->src[s] != mm) {
-                    continue;
-                }
-                has_consumer = true;
-                const bool is_bf16_cast = ggml_hsa_is_convert_copy(*c) && c->src[0] != nullptr &&
-                                          c->src[0]->type == GGML_TYPE_F32 &&
-                                          c->type == GGML_TYPE_BF16 &&
-                                          (c->flags & GGML_TENSOR_FLAG_OUTPUT) == 0;
-                if (!is_bf16_cast) {
-                    qualifies = false;
-                }
-                break; // a node lists mm in at most one meaningful src slot for this check
-            }
-        }
-        if (!qualifies || !has_consumer) {
-            continue;
-        }
-
-        // Cross-split guard: cgraph is a view over ONE scheduler split's node range, so the scans
-        // above only see consumers within this split. The view shares the full-graph use_counts
-        // array (ggml_graph_view copies it, hash-keyed by tensor over the whole graph), so
-        // ggml_node_get_use_count reports mm's TOTAL operand references across every split. Count
-        // mm's in-view operand references with the SAME convention use_counts uses -- one increment
-        // per (consumer,src-slot) appearance, no break -- so the two counts are apples-to-apples.
-        // If the full-graph count exceeds the in-view count, mm has a consumer in another split
-        // that is invisible here; retyping to bf16 would leave that consumer's cross-split f32
-        // input copy (captured before this hook ran) type-inconsistent and trip a layout assert at
-        // compute time. Refuse outright -- pure no-op, no partial rewrite.
-        std::int32_t in_view_uses = 0;
-        for (std::int32_t j = 0; j < node_count; ++j) {
-            ggml_tensor * c = ggml_graph_node(cgraph, j);
-            for (auto s = 0; s < GGML_MAX_SRC; ++s) {
-                if (c->src[s] == mm) {
-                    ++in_view_uses;
-                }
-            }
-        }
-        if (ggml_node_get_use_count(cgraph, i) > in_view_uses) {
-            continue;
-        }
-
-        // Snapshot the cast consumers of mm before any rewrite. Rewiring below repoints the casts'
-        // downstream readers onto mm, so a rescan for "src == mm" would then re-match those readers
-        // and cascade the blanking through the whole graph. Capturing the genuine casts up front
-        // keeps the set fixed.
-        std::vector<ggml_tensor *> casts;
-        for (std::int32_t j = 0; j < node_count; ++j) {
-            ggml_tensor * cast = ggml_graph_node(cgraph, j);
-            for (auto s = 0; s < GGML_MAX_SRC; ++s) {
-                if (cast->src[s] == mm) {
-                    casts.push_back(cast);
-                    break;
-                }
-            }
-        }
-
-        // Retype the MUL_MAT result to bf16; the GEMM narrows f32->bf16 on its cores.
-        mm->type = GGML_TYPE_BF16;
-        ggml_hsa_set_contiguous_strides(*mm);
-
-        // For each cast consumer: rewire its downstream readers onto mm, then blank it to a no-op.
-        for (ggml_tensor * cast : casts) {
-            // rewire everything that reads the cast to read mm instead
-            for (std::int32_t k = 0; k < node_count; ++k) {
-                ggml_tensor * r = ggml_graph_node(cgraph, k);
-                for (auto s = 0; s < GGML_MAX_SRC; ++s) {
-                    if (r->src[s] == cast) {
-                        r->src[s] = mm;
-                    }
-                }
-            }
-            cast->op = GGML_OP_NONE;
-        }
-    }
-}
-
-/**
  * @brief Interface for managing HSA backends.
  */
 static const ggml_backend_i ggml_backend_hsa_interface = {
@@ -2412,7 +2284,7 @@ static const ggml_backend_i ggml_backend_hsa_interface = {
     /* .graph_compute       = */ ggml_backend_hsa_graph_compute,
     /* .event_record        = */ ggml_backend_hsa_event_record,
     /* .event_wait          = */ ggml_backend_hsa_event_wait,
-    /* .graph_optimize      = */ ggml_backend_hsa_graph_optimize,
+    /* .graph_optimize      = */ nullptr,
 };
 
 /**

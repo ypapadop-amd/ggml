@@ -130,6 +130,72 @@ LARGE = [
 ]
 
 
+# aie2's f32-B path (dense M, N, K): B streamed as f32 and converted on the core, read unpadded
+# with a K tail once it is a column group wide, and C written through the shifted last column
+# group and (once M is a row block) row block. 4096x512x4096 is upstream's timed f32-B shape.
+F32B_SHAPES = [
+    (500, 500, 784),  # MNIST fc1: rows and columns shifted
+    (10, 500, 500),  # MNIST fc2: rows clipped, columns shifted, K tail
+    (4096, 512, 4096),  # aligned
+    (4000, 500, 4000),  # shifted, many row blocks
+    (129, 300, 1000),
+    (64, 70, 257),  # K tail with odd K
+    (300, 8, 256),  # N below a column group: B padded, clipped
+]
+
+
+def _f32_b_module(shape):
+    from aie.iron import ExternalFunction
+
+    ExternalFunction._instances.clear()
+    M, N, K = shape
+    gm, gk, gn, cols = PAD["aie2"]
+    Mp, Np, Kp = _pad(M, gm * 4), _pad(N, gn * cols), _pad(K, gk)
+    b = (K, N) if N >= gn * cols else (Kp, Np)
+    ops = [TD(BF16, (Kp, Mp, 1, 1)), TD(F32, (*b, 1, 1))]
+    return gemm("aie2", ops, TD(F32, (M, N, 1, 1)))
+
+
+@pytest.mark.parametrize("shape", F32B_SHAPES)
+def test_f32_b_module_verifies(shape):
+    """aie2's f32-B GEMM (shifted or clipped C) builds and verifies."""
+    assert _f32_b_module(shape).operation.verify()
+
+
+def test_unpadded_b_needs_the_f32_b_path():
+    """Only an f32 B converted on aie2's cores may be read unpadded."""
+    ops = [TD(BF16, (784, 512, 1, 1)), TD(BF16, (784, 500, 1, 1))]
+    with pytest.raises(ValueError, match="f32 B"):
+        gemm("aie2", ops, TD(F32, (500, 500, 1, 1)))
+
+
+def _compile(mod, arch):
+    from aie.iron import ExternalFunction
+    from aie.utils.compile import compile_external_kernel, compile_mlir_module
+
+    with tempfile.TemporaryDirectory() as work:
+        for f in ExternalFunction._instances:
+            compile_external_kernel(f, work, arch)
+        ExternalFunction._instances.clear()
+        compile_mlir_module(
+            mlir_module=mod,
+            insts_path=f"{work}/insts.bin",
+            pdi_path=f"{work}/gemm.pdi",
+            verbose=False,
+            work_dir=work,
+        )
+        assert Path(f"{work}/gemm.pdi").stat().st_size > 0
+
+
+@pytest.mark.skipif(
+    os.environ.get("RUN_AIECC_TESTS") != "1", reason="set RUN_AIECC_TESTS=1"
+)
+@pytest.mark.parametrize("shape", F32B_SHAPES)
+def test_f32_b_compiles_with_aiecc(shape):
+    """aie2's f32-B GEMM compiles to a PDI: BD ids, task queue and lock rules hold."""
+    _compile(_f32_b_module(shape), "aie2")
+
+
 @pytest.mark.parametrize(("arch", "shape"), LARGE)
 def test_large_dense_c_module_verifies(arch, shape):
     """The large-shape dense-C modules build and verify."""
