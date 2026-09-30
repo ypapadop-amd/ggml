@@ -3,14 +3,14 @@
 // Standalone test for the source pre-processing / output post-processing paths of
 // ggml_backend_hsa_tensor_extra. The device has no f16 kernels, so an op with f16 operands runs as
 // bf16 internally: each f16 source is converted into its own internal buffer before the dispatch
-// (sources.sync_mode) and the bf16 result is converted back into the f16 parent afterwards
-// (node.sync_mode).
+// (per source) and the bf16 result is converted back into the f16 parent afterwards
+// (node.convert_dtype).
 //
 // Both source paths are exercised. With an even element count the HSA_CONVERT kernel builds and the
-// conversion is dispatched on the device queue (sync_mode_t::device); with an odd element count the
-// kernel legitimately declines -- a 2-byte tensor is then not a whole number of DMA words -- and the
-// conversion falls back to the host copy path (sync_mode_t::host). Both must produce identical,
-// correct results; that fallback is the point of the test.
+// conversion is dispatched on the device queue (a preprocess kernel); with an odd element count the
+// kernel legitimately declines -- a 2-byte tensor is then not a whole number of DMA words -- and
+// the conversion falls back to the host copy path (no kernel). Both must produce identical, correct
+// results; that fallback is the point of the test.
 //
 // Inputs are small integers, which are exact in f16 and in bf16, and so are their sums. That makes
 // the expected result an exact integer regardless of how many times the value is round-tripped
@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "ggml-alloc.h"
@@ -39,8 +40,20 @@ enum class case_result { pass, fail, skip };
 float src0_val(int64_t i) { return static_cast<float>(i % 61) - 30.0f; }
 float src1_val(int64_t i) { return static_cast<float>(i % 29) - 14.0f; }
 
-case_result run_case(ggml_backend_t backend, int64_t d0, int64_t d1, bool expect_on_queue) {
-    const std::size_t ctx_size = 4 * ggml_tensor_overhead() + ggml_graph_overhead();
+// b defaults to a's shape; a smaller b ([b_d0, b_d1], each dividing a's) is broadcast. Each
+// source's path is checked separately, so a and b may take different ones.
+case_result run_case(ggml_backend_t backend,
+                     int64_t d0,
+                     int64_t d1,
+                     bool expect_on_queue,
+                     int64_t b_d0 = 0,
+                     int64_t b_d1 = 0,
+                     int expect_b_on_queue = -1) {
+    b_d0 = b_d0 != 0 ? b_d0 : d0;
+    b_d1 = b_d1 != 0 ? b_d1 : d1;
+    const bool expect_b = expect_b_on_queue < 0 ? expect_on_queue : expect_b_on_queue != 0;
+
+    const std::size_t ctx_size = 5 * ggml_tensor_overhead() + ggml_graph_overhead();
     ggml_init_params params{
         /*.mem_size   =*/ctx_size,
         /*.mem_buffer =*/nullptr,
@@ -50,7 +63,7 @@ case_result run_case(ggml_backend_t backend, int64_t d0, int64_t d1, bool expect
 
     ggml_tensor * a = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, d0, d1);
     ggml_set_name(a, "a");
-    ggml_tensor * b = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, d0, d1);
+    ggml_tensor * b = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, b_d0, b_d1);
     ggml_set_name(b, "b");
     ggml_tensor * dst = ggml_add(ctx.get(), a, b);
     ggml_set_name(dst, "dst");
@@ -62,17 +75,19 @@ case_result run_case(ggml_backend_t backend, int64_t d0, int64_t d1, bool expect
 
     // Which path the sources take is not observable from the result: the host copy and the
     // on-queue convert produce identical values, so the numerical check below would pass even if
-    // the device path never ran. Assert the thing that selects the path instead. sources.sync_mode
-    // is device exactly when every converted source has a preprocess kernel, and that kernel is
+    // the device path never ran. Assert the thing that selects the path instead. A source runs on
+    // the device queue exactly when it has a preprocess kernel, and that kernel is
     // the element-wise f16 -> bf16 convert built for this source; probing the same transform as a
     // standalone op therefore reports exactly whether that kernel builds.
-    ggml_tensor * convert_probe = ggml_hsa_convert(ctx.get(), a, GGML_TYPE_BF16);
-    ggml_set_name(convert_probe, "convert_probe");
-    const bool on_queue = ggml_backend_supports_op(backend, convert_probe);
-    if (on_queue != expect_on_queue) {
-        printf("  expected %s pre-processing, got %s\n", expect_on_queue ? "on-queue" : "host",
-               on_queue ? "on-queue" : "host");
-        return case_result::fail;
+    for (auto [src, expect] : {std::pair{a, expect_on_queue}, std::pair{b, expect_b}}) {
+        ggml_tensor * convert_probe = ggml_hsa_convert(ctx.get(), src, GGML_TYPE_BF16);
+        ggml_set_name(convert_probe, "convert_probe");
+        const bool on_queue = ggml_backend_supports_op(backend, convert_probe);
+        if (on_queue != expect) {
+            printf("  expected %s pre-processing of %s, got %s\n", expect ? "on-queue" : "host",
+                   ggml_get_name(src), on_queue ? "on-queue" : "host");
+            return case_result::fail;
+        }
     }
 
     ggml_cgraph * gf = ggml_new_graph(ctx.get());
@@ -90,6 +105,8 @@ case_result run_case(ggml_backend_t backend, int64_t d0, int64_t d1, bool expect
     std::vector<uint8_t> b_bytes(ggml_nbytes(b));
     for (int64_t i = 0; i < n; ++i) {
         store_val(GGML_TYPE_F16, a_bytes.data(), i, src0_val(i));
+    }
+    for (int64_t i = 0; i < b_d0 * b_d1; ++i) {
         store_val(GGML_TYPE_F16, b_bytes.data(), i, src1_val(i));
     }
     ggml_backend_tensor_set(a, a_bytes.data(), 0, ggml_nbytes(a));
@@ -105,7 +122,8 @@ case_result run_case(ggml_backend_t backend, int64_t d0, int64_t d1, bool expect
 
     bool ok = true;
     for (int64_t i = 0; i < n && ok; ++i) {
-        const float want = src0_val(i) + src1_val(i);
+        const int64_t j = (i % d0) % b_d0 + ((i / d0) % b_d1) * b_d0;
+        const float want = src0_val(i) + src1_val(j);
         const float got = load_val(GGML_TYPE_F16, dst_bytes.data(), i);
         if (got != want) {
             printf("  mismatch at %lld: got %g want %g\n", (long long)i, got, want);
@@ -139,11 +157,31 @@ int main() {
         {33, 3, "odd numel rows (host fallback)", false},
     };
 
+    // Mixed paths in one node: a converts on-queue, the broadcast b (odd numel) on the host.
+    // Exercises the lazy drain before the first host copy.
+    struct {
+        int64_t d0, d1, b_d0, b_d1;
+        const char * name;
+    } mixed_cases[] = {
+        {6, 2, 3, 1, "a on-queue, b host"},
+        {30, 4, 15, 1, "a on-queue, b host, larger"},
+    };
+
     bool any_fail = false;
     int passed = 0;
     int skipped = 0;
     for (const auto & c : cases) {
         const case_result r = run_case(backend, c.d0, c.d1, c.expect_on_queue);
+        const char * label = r == case_result::pass   ? "PASSED"
+                             : r == case_result::skip ? "SKIPPED"
+                                                      : "FAILED";
+        printf("ADD f16 %-32s: %s\n", c.name, label);
+        any_fail = any_fail || (r == case_result::fail);
+        passed += (r == case_result::pass);
+        skipped += (r == case_result::skip);
+    }
+    for (const auto & c : mixed_cases) {
+        const case_result r = run_case(backend, c.d0, c.d1, true, c.b_d0, c.b_d1, 0);
         const char * label = r == case_result::pass   ? "PASSED"
                              : r == case_result::skip ? "SKIPPED"
                                                       : "FAILED";
