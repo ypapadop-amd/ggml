@@ -494,3 +494,60 @@ def test_single_column_group_ignores_the_stride_bound(dev, mnk):
 
     assert n_pad // (n * n_aie_cols) == 1
     assert m_pad * n * n_aie_cols > DMA_MAX_STRIDE
+
+
+def _f32_b_tile(M, N, K, n_limit=None, m_limit=None):
+    """Tile for the aie2 GEMM that streams an f32 B and converts it on the core."""
+    r, s, t = resolve_mac_dims("npu", "bf16")
+    row_expand, col_expand = resolve_expansion("npu", "bf16")
+    return select_gemm_tile(
+        "npu",
+        M,
+        N,
+        K,
+        BF16,
+        F32,
+        r,
+        s,
+        t,
+        row_expand,
+        col_expand,
+        max_tile=MAX_TILE,
+        dtype_b=F32,
+        n_limit=n_limit,
+        m_limit=m_limit,
+    )
+
+
+@pytest.mark.parametrize(
+    "M,N,K,n_limit,m_limit",
+    [
+        (512, 512, 784, 500, 500),  # MNIST fc1, padded
+        (64, 512, 504, 500, None),  # MNIST fc2, padded
+        (1024, 1024, 1000, 1000, 1000),
+        (128, 128, 264, 70, 100),
+        (4032, 512, 4000, 500, 4000),
+    ],
+)
+def test_f32_b_tile_fits_the_shift_limits_and_l1(M, N, K, n_limit, m_limit):
+    """A shifted last column group / row block must fit inside the real B / C.
+
+    The f32 B tile is double-buffered at 4 bytes and has a single bf16 scratch copy, so
+    the L1 working set is larger than the bf16-B one ``_working_set`` models.
+    """
+    m, k, n = _f32_b_tile(M, N, K, n_limit, m_limit)
+    assert n * 4 <= n_limit
+    if m_limit is not None:
+        assert m * N_AIE_ROWS <= m_limit
+    working_set = 2 * (
+        BF16.itemsize * m * k + F32.itemsize * k * n + F32.itemsize * m * n
+    )
+    working_set += BF16.itemsize * k * n
+    assert working_set <= L1_TILE_BUDGET_BYTES
+
+
+@pytest.mark.parametrize("n_limit,m_limit", [(63, None), (None, 63)])
+def test_shift_limits_below_one_group_raise(n_limit, m_limit):
+    """No tile exists when B or C is narrower than one minimum column group / row block."""
+    with pytest.raises(ValueError, match="minimum"):
+        _f32_b_tile(512, 512, 512, n_limit, m_limit)

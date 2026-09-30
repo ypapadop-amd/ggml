@@ -277,6 +277,21 @@ The implementation in `gemm.py` includes both a standalone CLI tool and a `gemm(
 callable from the dispatch layer. Key parameters include tile sizes (m, k, n), number of
 columns, data types, and layout (row-major vs column-major).
 
+**f32 operands.** The microkernel is bf16-only, so `ggml_hsa_prepare_mul_mat_f32` (in
+`ggml-hsa.cpp`) converts and zero-pads an f32 A once (it is cached when constant) and pads
+C, de-padding the result afterwards. On aie2 an f32 B is instead streamed to the cores as f32
+and converted there (`matmul_bf16_f32_bf32` in `aie2/mm.cc`), and when B is at least one column
+group wide the GEMM reads it unpadded and, for an f32 C at least one row block tall, writes C in
+place ("ragged" mode, `b_ld`/`n_valid`/`m_valid` in `my_matmul`):
+
+- The last column group and row block are shifted back to end at N and M. They recompute
+  columns/rows the previous group or block already wrote, with bit-identical values.
+- The last K tile reads past each column of B by up to 7 elements, and `matmul_*_ktail` zeroes
+  them on the core. HSA device buffers are over-allocated by `ggml_hsa_buffer_read_slack` so this
+  read never leaves the allocation.
+- Each C drain issues a completion token and each `dma_wait` consumes one, so a transfer block
+  that drains C in two runs (normal plus shifted group) needs two waits.
+
 ### Broadcasting Support
 
 Binary operations (`ADD`, `SUB`, `MUL`, `DIV`) support multi-dimensional broadcasting

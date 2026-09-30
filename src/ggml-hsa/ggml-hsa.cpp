@@ -81,6 +81,17 @@ static const std::size_t g_ggml_hsa_dispatch_batch_size =
 static const bool g_ggml_hsa_host_pad =
     ggml_hsa_getenv_int("GGML_HSA_HOST_PAD", 0, 0, 1) != 0;
 
+/// @brief Bytes every HSA device buffer is allocated beyond its reported size.
+///
+/// A GEMM that reads an f32 B unpadded (see @ref ggml_hsa_prepare_mul_mat_f32) streams whole K
+/// tiles, so its last K tile reads up to one K padding granule (under 8 elements) past the end of
+/// each column. For every column but the last that lands in the next column; for the last it can
+/// land past the tensor, and so past the buffer when the tensor ends it. The slack keeps that read
+/// inside the allocation. The GEMM zeroes those elements before using them.
+static constexpr std::size_t ggml_hsa_buffer_read_slack = 64;
+
+static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer);
+
 /// @brief How long teardown waits for packets that were in flight when the queue was suspended,
 /// in milliseconds. Read once from @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS at startup; 0 means
 /// do not wait at all. See @c ggml_hsa_drain_after_queue_error for why the wait is bounded.
@@ -830,7 +841,15 @@ static void ggml_hsa_pad_gemm_operand(const ggml_hsa_device_info::device_info & 
  * Each of the three rewrites is skipped when the parent tensor already has the target dtype and
  * shape, which leaves that tensor pointing at the parent buffer (@c buffer_size stays 0) and elides
  * the corresponding convert/pad/de-pad dispatch -- the common case for GEMMs whose dimensions are
- * already tile multiples (see @ref ggml_hsa_pad_gemm_operand for the measured cost of not doing so).
+ * already tile multiples (see @ref ggml_hsa_pad_gemm_operand for the measured cost of not doing
+ * so).
+ *
+ * On aie2 an f32 B is not converted at all: the GEMM streams it as f32 and converts each tile on
+ * the core. Once B is at least one column group wide the GEMM also reads it unpadded and, when M is
+ * at least one row block and the output is f32, writes C in place: it shifts its last column group
+ * and row block back to end at N and M, and zeroes the K tail on the core. Such a GEMM has neither
+ * a B pre-processing nor a de-pad dispatch; only the constant A is still converted and padded,
+ * once.
  *
  * Only the contiguous, non-batched, non-permuted f32 x f32 case is handled (the shapes exercised by
  * MNIST). Returns @c false for anything else, leaving the node untouched so the caller falls back
@@ -921,11 +940,23 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     // neither is left alone -- see ggml_hsa_pad_gemm_operand.
     //
     // The exception is an f32 B on aie2: the GEMM streams it as f32 and converts it to bf16 on
-    // each core, so B is only padded, never converted by a separate dispatch.
-    const ggml_type b_type =
-        (dev_info.name == "aie2" && b.type == GGML_TYPE_F32) ? GGML_TYPE_F32 : GGML_TYPE_BF16;
+    // each core, so B is never converted by a separate dispatch. Once B is at least one column
+    // group wide the GEMM also reads it unpadded: it shifts its last column group back to end at
+    // N, and zeroes the K tail on the core, so B needs no pre-processing dispatch at all. The K
+    // tail read runs up to Kpad - K elements past B's last column, which only an HSA buffer's
+    // allocation slack covers (see ggml_hsa_buffer_read_slack). A B without a buffer yet -- the
+    // supports_op probe runs before allocation -- is taken to land in one, since supports_buft
+    // accepts only HSA buffers; deciding otherwise would have the probe compile a different
+    // kernel than the one that runs.
+    const bool b_f32_on_core = dev_info.name == "aie2" && b.type == GGML_TYPE_F32;
+    const bool b_unpadded =
+        b_f32_on_core && N >= gn * n_aie_cols &&
+        (K == Kpad || b.buffer == nullptr || ggml_backend_buffer_is_hsa(b.buffer));
     ggml_hsa_pad_gemm_operand(dev_info, sources[0], Kpad, Mpad, GGML_TYPE_BF16);
-    ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad, b_type);
+    if (!b_unpadded) {
+        ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad,
+                                  b_f32_on_core ? GGML_TYPE_F32 : GGML_TYPE_BF16);
+    }
 
     // Rewrite the output to a padded f32 temporary that must be de-padded back into the parent.
     // The GEMM microkernel always produces f32, and HSA_DEPAD always consumes an f32 source, so the
@@ -934,7 +965,12 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     //
     // When the parent is already f32 at exactly the padded shape there is nothing to de-pad and
     // nothing to narrow, so the kernel writes straight into it.
-    if (dst.type != GGML_TYPE_F32 || dst.ne[0] != Mpad || dst.ne[1] != Npad) {
+    //
+    // It also writes straight into an f32 parent of any shape when B is read unpadded and M is at
+    // least one row block: the GEMM then shifts its last row block up to end at M, as it shifts
+    // its last column group to end at N, so it writes only the parent's real rows and columns.
+    const bool c_in_place = b_unpadded && dst.type == GGML_TYPE_F32 && M >= gm * n_aie_rows;
+    if (!c_in_place && (dst.type != GGML_TYPE_F32 || dst.ne[0] != Mpad || dst.ne[1] != Npad)) {
         dst.type = GGML_TYPE_F32;
         dst.ne[0] = Mpad;
         dst.ne[1] = Npad;
@@ -1642,8 +1678,11 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
     const auto & buft_ctx = *static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & dev_info = ggml_hsa_get_device_info(buft_ctx.device);
 
+    // The allocation is ggml_hsa_buffer_read_slack bytes longer than the buffer ggml sees, so a
+    // kernel may read slightly past the last tensor (see ggml_hsa_buffer_read_slack).
     void * buffer = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
+    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool,
+                                                   size + ggml_hsa_buffer_read_slack,
                                                    /* flags = */ 0, &buffer);
         status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,

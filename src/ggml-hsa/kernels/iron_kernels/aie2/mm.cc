@@ -1190,20 +1190,18 @@ combos(matmul_vectorized_c_func) combos(zero_vectorized_c_func)
 
 #if defined(B_f32) && defined(bf16_f32_ONLY)
     /**
-     * @brief bf16 x f32 -> f32 matrix multiply: converts the f32 B tile to bf16, then multiplies.
+     * @brief Converts the streamed f32 B tile to bf16.
      *
-     * B arrives as f32 so the GEMM can consume an f32 operand without a separate conversion
-     * dispatch. The conversion is the bit-exact round-to-nearest-even used by the host and the
-     * CONVERT_PAD kernel, so the product is identical to converting B beforehand. It is a flat
-     * element-wise pass: the DMA has already applied the mmul blocking to the f32 tile, and the
-     * conversion preserves element order.
+     * The conversion is the bit-exact round-to-nearest-even used by the host and the CONVERT_PAD
+     * kernel, so the product is identical to converting B beforehand. It is a flat element-wise
+     * pass: the DMA has already applied the mmul blocking to the f32 tile, and the conversion
+     * preserves element order.
      *
-     * @param[in]     a_in      A tile (bf16, DIM_M x DIM_K).
-     * @param[in]     b_in      B tile (f32, DIM_K x DIM_N).
-     * @param[out]    b_scratch B tile converted to bf16 (DIM_K x DIM_N).
-     * @param[in,out] c_out     C tile (f32, DIM_M x DIM_N), accumulated.
+     * @param[in]  b_in      B tile (f32, DIM_K x DIM_N).
+     * @param[out] b_scratch B tile converted to bf16 (DIM_K x DIM_N).
      */
-    void matmul_bf16_f32_bf32(bfloat16 * a_in, float * b_in, bfloat16 * b_scratch, float * c_out) {
+    static inline void convert_b_tile(const float * __restrict b_in,
+                                      bfloat16 * __restrict b_scratch) {
     constexpr int32_t V = 512 / (sizeof(float) * 8);
     constexpr int32_t nblk = (DIM_K * DIM_N) / V;
     static_assert((DIM_K * DIM_N) % V == 0, "B tile must be a whole number of vectors");
@@ -1214,9 +1212,75 @@ combos(matmul_vectorized_c_func) combos(zero_vectorized_c_func)
         const aie::vector<float, V> fv = aie::load_v<V>(b_in + b * V);
         aie::store_v(b_scratch + b * V, convert_f32_to_bf16_vector<V>(fv));
     }
+}
 
+#ifdef B_K_VALID
+/**
+ * @brief Zeroes the converted B tile's elements whose K index is B_K_VALID or more.
+ *
+ * On the last K tile of a GEMM whose B holds fewer than K elements per column, the DMA reads
+ * past each column's end (into the next column, or the allocation's slack). Those elements
+ * must not contribute, and zeroing them -- rather than relying on A's zero padding -- also
+ * keeps a NaN or inf read from the next column out of this one.
+ *
+ * gemm.py streams column-major B as (n/t, t*k), (k/s, s), (t, k), (s, 1), so the tile holds
+ * [n/t][k/s][t][s] blocks and an element's K index within the tile is sb * s + jj.
+ *
+ * @param[in,out] b_scratch Converted B tile (bf16, DIM_K x DIM_N).
+ */
+static inline void zero_b_k_tail(bfloat16 * __restrict b_scratch) {
+    constexpr int32_t s = 8;
+    constexpr int32_t t = 4;
+    static_assert(B_K_VALID > 0 && B_K_VALID < DIM_K, "the K tail must be a partial tile");
+
+    for (int32_t tb = 0; tb < DIM_N / t; ++tb) {
+        for (int32_t sb = B_K_VALID / s; sb < DIM_K / s; ++sb) {
+            const int32_t first = sb == B_K_VALID / s ? B_K_VALID % s : 0;
+            for (int32_t i = 0; i < t; ++i) {
+                bfloat16 * block = b_scratch + ((tb * (DIM_K / s) + sb) * t + i) * s;
+                for (int32_t jj = first; jj < s; ++jj) {
+                    block[jj] = static_cast<bfloat16>(0.0f);
+                }
+            }
+        }
+    }
+}
+#endif
+
+/**
+ * @brief bf16 x f32 -> f32 matrix multiply: converts the f32 B tile to bf16, then multiplies.
+ *
+ * B arrives as f32 so the GEMM can consume an f32 operand without a separate conversion dispatch.
+ *
+ * @param[in]     a_in      A tile (bf16, DIM_M x DIM_K).
+ * @param[in]     b_in      B tile (f32, DIM_K x DIM_N).
+ * @param[out]    b_scratch B tile converted to bf16 (DIM_K x DIM_N).
+ * @param[in,out] c_out     C tile (f32, DIM_M x DIM_N), accumulated.
+ */
+void matmul_bf16_f32_bf32(bfloat16 * a_in, float * b_in, bfloat16 * b_scratch, float * c_out) {
+    convert_b_tile(b_in, b_scratch);
     matmul_vectorized_4x8x4_bf16_f32<DIM_M, DIM_K, DIM_N>(a_in, b_scratch, c_out);
 }
+
+#ifdef B_K_VALID
+/**
+ * @brief matmul_bf16_f32_bf32 for the last K tile of a B narrower than K: keeps only the
+ * first B_K_VALID elements of the tile along K.
+ *
+ * @param[in]     a_in      A tile (bf16, DIM_M x DIM_K).
+ * @param[in]     b_in      B tile (f32, DIM_K x DIM_N).
+ * @param[out]    b_scratch B tile converted to bf16 (DIM_K x DIM_N).
+ * @param[in,out] c_out     C tile (f32, DIM_M x DIM_N), accumulated.
+ */
+void matmul_bf16_f32_bf32_ktail(bfloat16 * a_in,
+                                float * b_in,
+                                bfloat16 * b_scratch,
+                                float * c_out) {
+    convert_b_tile(b_in, b_scratch);
+    zero_b_k_tail(b_scratch);
+    matmul_vectorized_4x8x4_bf16_f32<DIM_M, DIM_K, DIM_N>(a_in, b_scratch, c_out);
+}
+#endif
 #endif
 
 } // extern "C"
