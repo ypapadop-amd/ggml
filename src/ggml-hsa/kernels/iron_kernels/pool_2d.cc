@@ -9,7 +9,6 @@
 
 // Pooling op selector (matches enum ggml_op_pool in include/ggml.h).
 constexpr int32_t GGML_OP_POOL_MAX = 0;
-constexpr int32_t GGML_OP_POOL_AVG = 1;
 
 extern "C" {
 
@@ -34,7 +33,8 @@ extern "C" {
  * @param[in]  s1   Stride along height.
  * @param[in]  p0   Padding along width.
  * @param[in]  p1   Padding along height.
- * @param[in]  op   Pooling op: GGML_OP_POOL_MAX or GGML_OP_POOL_AVG.
+ * @param[in]  op   Pooling op: GGML_OP_POOL_MAX (0) for max, otherwise average (pool_2d.py
+ *                  passes 1 and rejects anything else).
  */
 void ggml_op_pool_2d(const INPUT_DTYPE * __restrict in,
                      OUTPUT_DTYPE * __restrict out,

@@ -24,8 +24,8 @@ from .utils import (
     core_function_object,
     fill_drain_program,
     max_tile_size,
-    vector_lanes,
     tiled_tile_size,
+    vector_lanes,
 )
 
 # The vectorized GELU core's frame exceeds the AIE core's 1024-byte default stack (aiecc measures
