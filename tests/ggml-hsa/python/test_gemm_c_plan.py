@@ -104,6 +104,8 @@ def _shim_stream(g, col):
     for rb in range(g.RB):
         for chunk in P.shim_rb_chunks(g, col, rb):
             assert len(chunk) <= len(P.SHIM_C_BD_IDS[0])
+            # The iteration dim advances per BD execution: an iterated BD needs its own task.
+            assert len(chunk) == 1 or all(b.iterations == 1 for b in chunk)
             for b in chunk:
                 out.append(
                     _addresses(
@@ -187,6 +189,15 @@ def test_conv2_long_m_fits_the_task_queue():
     tasks = P.mem_tasks(g, 0)
     assert len(tasks) <= P.MAX_QUEUED_TASKS
     assert all(1 <= t.repeat <= P.MAX_TASK_REPEAT for t in tasks)
+
+
+def test_iterated_shim_bd_gets_its_own_task():
+    # Column 7: column groups 0 and 1 are full (merged into one iterated BD), group 2 is
+    # partial. The iteration dim advances per BD execution, so the iterated BD must not share
+    # a task (whose repeat re-runs the whole chain) with the partial one.
+    g = P.make_grid(32, 760, 32, 768, 8, 32, 4, 8)
+    chunks = P.shim_rb_chunks(g, 7, 0)
+    assert [[b.iterations for b in c] for c in chunks] == [[2], [1]]
 
 
 def test_m10_cores_1_to_3_only_send():

@@ -214,7 +214,12 @@ def shim_write_bds(o: CObject, g: Grid, col: int) -> list[Bd]:
 
 @dataclass(frozen=True)
 class ShimBd:
-    """A shim BD: a <=3-D pattern repeated `iterations` times, `iteration_stride` apart."""
+    """A shim BD: a <=3-D pattern repeated `iterations` times, `iteration_stride` apart.
+
+    The iteration dimension advances once per *execution* of the BD, not within one, so a BD
+    with iterations > 1 only covers its whole pattern when its task repeats it that many times.
+    A task repeat re-runs the whole BD chain, so such a BD must be alone in its task.
+    """
 
     offset: int
     iterations: int
@@ -252,14 +257,24 @@ def _merge(bds: list[ShimBd]) -> list[ShimBd]:
 
 
 def shim_rb_chunks(g: Grid, col: int, rb: int) -> list[list[ShimBd]]:
-    """Shim BDs for row block `rb` of AIE column `col`, split into task-sized chunks."""
+    """Shim BDs for row block `rb` of AIE column `col`, split into task-sized chunks.
+
+    A BD with iterations > 1 is a chunk of its own (see ShimBd); its task repeats it.
+    """
     bds = []
     for o in column_objects(g, col)[rb * g.CG : (rb + 1) * g.CG]:
         if o.cols:
             bds.extend(_to_shim(b) for b in shim_write_bds(o, g, col))
-    bds = _merge(bds)
     k = len(SHIM_C_BD_IDS[0])
-    return [bds[i : i + k] for i in range(0, len(bds), k)]
+    chunks: list[list[ShimBd]] = []
+    for b in _merge(bds):
+        if b.iterations > 1:
+            chunks.append([b])
+        elif chunks and len(chunks[-1]) < k and chunks[-1][0].iterations == 1:
+            chunks[-1].append(b)
+        else:
+            chunks.append([b])
+    return chunks
 
 
 @dataclass(frozen=True)

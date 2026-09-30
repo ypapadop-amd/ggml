@@ -18,6 +18,23 @@ from aie.helpers.taplib import TensorAccessPattern, TensorAccessSequence
 from aie.iron import ExternalFunction, dtype_to_str, str_to_dtype
 from aie.iron.controlflow import range_
 
+from .gemm_c_plan import (
+    SHIM_C_BD_IDS,
+    core_schedule,
+    make_grid,
+    mem_tasks,
+    sends,
+    shim_rb_chunks,
+    validate,
+)
+
+# DMA channels of the hand-written C path. The A/B ObjectFifos take the others; the S2MM join
+# needs n_aie_rows consecutive mem-tile channels starting at C_MEM_S2MM_CHANNEL_BASE.
+C_CORE_MM2S_CHANNEL = 0
+C_MEM_S2MM_CHANNEL_BASE = 2
+C_MEM_MM2S_CHANNEL = 2
+C_SHIM_S2MM_CHANNEL = 0
+
 # Per-device, per-dtype (r, s, t) microkernel MAC-instruction dimensions (M, K, N of the native
 # mmul shape used by mm.cc); must match the r/s/t used by the matmul_vectorized_* wrappers in
 # aie2/mm.cc ("npu") and aie2p/mm.cc ("npu2").
@@ -341,6 +358,147 @@ def ceildiv(a, b):
     return (a + b - 1) // b
 
 
+def _core_c_dma(core_tile, bufs, locks, length):
+    """Static core MM2S chain: send each finished ping/pong C buffer to the mem tile."""
+
+    @mem(core_tile)
+    def _(block):
+        dma_start(
+            DMAChannelDir.MM2S, C_CORE_MM2S_CHANNEL, dest=block[1], chain=block[3]
+        )
+        for b in range(2):
+            with block[1 + b]:
+                use_lock(locks[b][1], LockAction.AcquireGreaterEqual, value=1)
+                dma_bd(bufs[b], transfer_len=length)
+                use_lock(locks[b][0], LockAction.Release, value=1)
+                next_bd(block[2 - b])
+        with block[3]:
+            EndOp()
+
+
+def _mem_c_join(mem_tile, bufs, locks, m, n, r, t, n_aie_rows):
+    """Static mem-tile S2MM join of the n_aie_rows core blocks of one object.
+
+    matmul_vectorized_* with C_COL_MAJ leaves element (i = z*r + ri, j = jb*t + tj) at
+    jb*t*m + z*r*t + tj*r + ri. This writes it as plain column-major m x n (element (i, j) at
+    j*m + i), core `row` at offset row*m*n, so every read the runtime sequence issues is a <=3-D
+    slice (gemm_c_plan.mem_read_bds). Runtime-task mem-tile BDs have only 3 real dims; this
+    static BD may use 4.
+    """
+
+    @memtile_dma(mem_tile)
+    def _(block):
+        nb = 1
+        for row in range(n_aie_rows):
+            channel = C_MEM_S2MM_CHANNEL_BASE + row
+            if row == 0:
+                dma_start(
+                    DMAChannelDir.S2MM, channel, dest=block[nb], chain=block[nb + 2]
+                )
+            else:
+                with block[nb - 1]:
+                    dma_start(
+                        DMAChannelDir.S2MM, channel, dest=block[nb], chain=block[nb + 2]
+                    )
+            for b in range(2):
+                with block[nb + b]:
+                    use_lock(locks[b][0], LockAction.AcquireGreaterEqual, value=1)
+                    dma_bd(
+                        bufs[b],
+                        offset=row * m * n,
+                        transfer_len=m * n,
+                        sizes=[n // t, m // r, t, r],
+                        strides=[t * m, r, m, 1],
+                    )
+                    use_lock(locks[b][1], LockAction.Release, value=1)
+                    next_bd(block[nb + 1 - b])
+            nb += 3
+        with block[nb - 1]:
+            EndOp()
+
+
+def _start_mem_c_task(mem_tile, bufs, locks, token, task, n_aie_rows):
+    """Queue one mem-tile MM2S task (gemm_c_plan.MemTask) reading valid C to the shim.
+
+    A runtime-task BD takes 0 or 2 lock ops. An object read by several BDs passes a token lock
+    along the chain: first acquire cons/release token, then acquire token/release prod.
+    """
+    task_op = dma_configure_task(
+        mem_tile, DMAChannelDir.MM2S, C_MEM_MM2S_CHANNEL, repeat_count=task.repeat - 1
+    )
+    total = sum(len(obj_bds) for obj_bds in task.bds)
+    with bds(task_op) as blk:
+        i = 0
+        for buf_idx, obj_bds in zip(task.buffers, task.bds, strict=True):
+            prod_lock, cons_lock = locks[buf_idx]
+            for j, bd in enumerate(obj_bds):
+                first, last = j == 0, j == len(obj_bds) - 1
+                with blk[i]:
+                    use_lock(
+                        cons_lock if first else token,
+                        LockAction.AcquireGreaterEqual,
+                        value=n_aie_rows if first else 1,
+                    )
+                    layout = (
+                        {}
+                        if len(bd.sizes) == 1
+                        else {"sizes": list(bd.sizes), "strides": list(bd.strides)}
+                    )
+                    dma_bd(
+                        bufs[buf_idx],
+                        offset=bd.offset,
+                        transfer_len=bd.length,
+                        **layout,
+                    )
+                    use_lock(
+                        prod_lock if last else token,
+                        LockAction.Release,
+                        value=n_aie_rows if last else 1,
+                    )
+                    if i == total - 1:
+                        EndOp()
+                    else:
+                        next_bd(blk[i + 1])
+                i += 1
+    dma_start_task(task_op)
+
+
+def _start_shim_c_task(shim_tile, C, chunk, bd_ids):
+    """Start one shim S2MM task writing a chunk of gemm_c_plan.ShimBd into the dense C.
+
+    A BD's iteration dimension advances once per execution, so an iterated BD (alone in its
+    chunk, see gemm_c_plan.ShimBd) is run `iterations` times through the task's repeat count.
+    """
+    repeat = chunk[0].iterations
+    assert repeat == 1 or len(chunk) == 1, (
+        "an iterated shim BD must be alone in its task"
+    )
+    task_op = dma_configure_task(
+        shim_tile,
+        DMAChannelDir.S2MM,
+        C_SHIM_S2MM_CHANNEL,
+        repeat_count=repeat - 1,
+        issue_token=True,
+    )
+    with bds(task_op) as blk:
+        for i, (b, bd_id) in enumerate(zip(chunk, bd_ids[: len(chunk)], strict=True)):
+            with blk[i]:
+                dma_bd(
+                    C,
+                    offset=b.offset,
+                    sizes=[b.iterations, *b.sizes],
+                    strides=[b.iteration_stride, *b.strides],
+                    transfer_len=b.sizes[0] * b.sizes[1] * b.sizes[2],
+                    bd_id=bd_id,
+                )
+                if i == len(chunk) - 1:
+                    EndOp()
+                else:
+                    next_bd(blk[i + 1])
+    dma_start_task(task_op)
+    return task_op
+
+
 # A is tiled into (m, k) blocks broadcast across columns and distributed across rows; B into
 # (k, n) blocks broadcast across rows and distributed across columns. Each core accumulates C
 # tiles over the K dimension.
@@ -364,6 +522,10 @@ def my_matmul(
     matmul_fn,
     object_file,
     generate_taps=False,
+    M_dense=None,
+    N_dense=None,
+    dtype_acc_str=None,
+    narrow_fn=None,
 ):
     """Generate MLIR for tiled GEMM across an AIE array (C = A @ B).
 
@@ -387,12 +549,16 @@ def my_matmul(
         matmul_fn: Name of the external matmul kernel function.
         object_file: Path to the compiled kernel object file to link.
         generate_taps: Whether to also return TensorAccessSequences for A/B/C.
+        M_dense: Rows of the dense C written (defaults to M).
+        N_dense: Columns of the dense C written (defaults to N).
+        dtype_acc_str: Accumulator dtype name (defaults to dtype_out_str).
+        narrow_fn: Name of the acc->out narrowing core function, required when the
+            accumulator and output dtypes differ.
 
     Returns:
         A tuple of (A, B, C) TensorAccessSequences if generate_taps, else None.
     """
     n_aie_rows = 4
-    n_aie_cores = n_aie_rows * n_aie_cols
 
     dtype_in = str_to_dtype(dtype_in_str)
     dtype_out = str_to_dtype(dtype_out_str)
@@ -448,8 +614,6 @@ def my_matmul(
     # a big performance cost.
     fifo_depth = 2
 
-    n_tiles_per_core = (M // m) * (N // n) // n_aie_cores
-
     # When using more AIE columns than n_aie_rows (4) (applicable to NPU2),
     # restrict the number of shim/mem tiles to n_aie_rows,
     # since we have only n_aie_rows row tiles for matrix A
@@ -481,6 +645,28 @@ def my_matmul(
     B_taps = []
     C_taps = []
 
+    if not c_col_maj or use_scalar:
+        msg = (
+            "the hand-written C path supports the vectorized column-major C kernel only"
+        )
+        raise AssertionError(msg)
+    dtype_acc = str_to_dtype(dtype_acc_str) if dtype_acc_str else dtype_out
+    narrowing = np.dtype(dtype_acc) != np.dtype(dtype_out)
+    if narrowing and narrow_fn is None:
+        msg = "a narrowing C path needs narrow_fn"
+        raise ValueError(msg)
+    grid = make_grid(
+        M if M_dense is None else M_dense,
+        N if N_dense is None else N_dense,
+        M,
+        N,
+        m,
+        n,
+        n_aie_rows,
+        n_aie_cols,
+    )
+    validate(grid)
+
     @device(dev_ty)
     def device_body():
         A_l2_ty = np.ndarray[(m * k * n_A_tiles_per_shim,), np.dtype[dtype_in]]
@@ -488,12 +674,20 @@ def my_matmul(
         C_l2_ty = np.ndarray[(m * n * n_aie_rows,), np.dtype[dtype_out]]
         A_l1_ty = np.ndarray[(m, k), np.dtype[dtype_in]]
         B_l1_ty = np.ndarray[(k, n), np.dtype[dtype_in]]
-        C_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
+        acc_l1_ty = np.ndarray[(m, n), np.dtype[dtype_acc]]
+        send_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
         # AIE Core Function declarations
-        zero = external_func(zero_fn, inputs=[C_l1_ty], link_with=object_file)
+        zero = external_func(zero_fn, inputs=[acc_l1_ty], link_with=object_file)
         matmul = external_func(
-            matmul_fn, inputs=[A_l1_ty, B_l1_ty, C_l1_ty], link_with=object_file
+            matmul_fn, inputs=[A_l1_ty, B_l1_ty, acc_l1_ty], link_with=object_file
+        )
+        narrow = (
+            external_func(
+                narrow_fn, inputs=[acc_l1_ty, send_l1_ty], link_with=object_file
+            )
+            if narrowing
+            else None
         )
 
         # Tile declarations as tile[row][col]
@@ -508,9 +702,6 @@ def my_matmul(
 
         B_l3l2_fifos = [None] * n_aie_cols
         B_l2l1_fifos = [None] * n_aie_cols
-
-        C_l1l2_fifos = [[None] * n_aie_cols for _ in range(n_aie_rows)]
-        C_l2l3_fifos = [None] * n_aie_cols
 
         # Input A
         # L3 -> L2 data movement
@@ -612,92 +803,178 @@ def my_matmul(
             # B_l3_l2 and B_l2_l1 object FIFO linking
             object_fifo_link(B_l3l2_fifos[col], B_l2l1_fifos[col])
 
-        # Output C
+        # Output C, written by hand rather than with ObjectFifos, so the runtime sequence can read
+        # only the valid part of each block (see gemm_c_plan.py). Core -> mem tile is a static
+        # DMA chain per core; mem tile -> shim is issued from the runtime sequence.
+        c_acc, c_send, c_core_lk = {}, {}, {}
+        c_mem_buf, c_mem_lk, c_mem_tok = {}, {}, {}
         for col in range(n_aie_cols):
-            for row in range(n_aie_rows):
-                C_l1l2_fifos[row][col] = object_fifo(
-                    f"C_L1L2_{col}_{row}",
-                    core_tiles[row][col],
-                    mem_tiles[col],
-                    fifo_depth,
-                    C_l1_ty,
-                )
-            C_l2l3_fifos[col] = object_fifo(
-                f"C_L2L3_{col}",
-                mem_tiles[col],
-                shim_tiles[col],
-                fifo_depth,
-                C_l2_ty,
+            mt = mem_tiles[col]
+            c_mem_buf[col] = [
+                buffer(mt, C_l2_ty, name=f"C_mem_{col}_{b}") for b in range(2)
+            ]
+            c_mem_lk[col] = [
                 (
-                    (
-                        [
-                            (m // r, r * n),
-                            (r, t),
-                            (n // t, r * t),
-                            (t, 1),
-                        ]
-                        if not c_col_maj
-                        else [(n // t, t * m), (t, r), (m // r, r * t), (r, 1)]
-                    )
-                    if not use_scalar
-                    else []
-                ),
+                    lock(mt, init=n_aie_rows, sym_name=f"C_mem_prod_{col}_{b}"),
+                    lock(mt, init=0, sym_name=f"C_mem_cons_{col}_{b}"),
+                )
+                for b in range(2)
+            ]
+            c_mem_tok[col] = lock(mt, init=0, sym_name=f"C_mem_tok_{col}")
+            flow(
+                mt,
+                WireBundle.DMA,
+                C_MEM_MM2S_CHANNEL,
+                shim_tiles[col],
+                WireBundle.DMA,
+                C_SHIM_S2MM_CHANNEL,
             )
-            if n_aie_rows > 1:
-                of_offsets = [m * n * i for i in range(n_aie_rows)]
-            else:
-                of_offsets = []
-            object_fifo_link(
-                [C_l1l2_fifos[j][col] for j in range(n_aie_rows)],
-                C_l2l3_fifos[col],
-                of_offsets,
-                [],
-            )  # join along one column
+            for row in range(n_aie_rows):
+                ct = core_tiles[row][col]
+                c_send[row, col] = [
+                    buffer(ct, send_l1_ty, name=f"C_send_{col}_{row}_{b}")
+                    for b in range(2)
+                ]
+                # Narrowing keeps one f32 accumulator and double-buffers the narrowed copy; the
+                # L1 cost equals double-buffering the accumulator (select_gemm_tile budgets it).
+                c_acc[row, col] = (
+                    [buffer(ct, acc_l1_ty, name=f"C_acc_{col}_{row}")]
+                    if narrowing
+                    else c_send[row, col]
+                )
+                c_core_lk[row, col] = [
+                    (
+                        lock(ct, init=1, sym_name=f"C_core_prod_{col}_{row}_{b}"),
+                        lock(ct, init=0, sym_name=f"C_core_cons_{col}_{row}_{b}"),
+                    )
+                    for b in range(2)
+                ]
+                flow(
+                    ct,
+                    WireBundle.DMA,
+                    C_CORE_MM2S_CHANNEL,
+                    mt,
+                    WireBundle.DMA,
+                    C_MEM_S2MM_CHANNEL_BASE + row,
+                )
+                _core_c_dma(ct, c_send[row, col], c_core_lk[row, col], m * n)
+            _mem_c_join(mt, c_mem_buf[col], c_mem_lk[col], m, n, r, t, n_aie_rows)
 
-        # Set up compute tiles
+        # Set up compute tiles. Each core follows its static schedule (gemm_c_plan.core_schedule).
+        # Ping/pong parity must survive across dispatches: when a dispatch sends an odd number of
+        # blocks, the forever-loop body covers two dispatches, the second starting on the other
+        # buffer.
+        def core_program(row, col):
+            acc, send, lks = c_acc[row, col], c_send[row, col], c_core_lk[row, col]
+            sched = core_schedule(grid, row, col)
+
+            def k_loop(acc_buf):
+                for _ in range_(K // k):
+                    elem_in_a = A_l2l1_fifos[row].acquire(ObjectFifoPort.Consume, 1)
+                    elem_in_b = B_l2l1_fifos[col].acquire(ObjectFifoPort.Consume, 1)
+                    if acc_buf is not None:
+                        matmul(elem_in_a, elem_in_b, acc_buf)
+                    A_l2l1_fifos[row].release(ObjectFifoPort.Consume, 1)
+                    B_l2l1_fifos[col].release(ObjectFifoPort.Consume, 1)
+
+            def tile_(kind, b):
+                if kind == "consume":
+                    k_loop(None)
+                    return
+                use_lock(lks[b][0], LockAction.AcquireGreaterEqual, value=1)
+                if kind == "compute":
+                    acc_buf = acc[0] if narrowing else acc[b]
+                    zero(acc_buf)
+                    k_loop(acc_buf)
+                    if narrowing:
+                        narrow(acc_buf, send[b])
+                else:  # "send": all rows are padding; the mem tile never reads this block
+                    k_loop(None)
+                use_lock(lks[b][1], LockAction.Release, value=1)
+
+            def repeat(count, body):
+                if count == 1:  # range_(1) trips issue #1547
+                    body()
+                elif count > 1:
+                    for _ in range_(count):
+                        body()
+
+            def emit_runs(runs, p):
+                for kind, count in runs:
+                    if kind == "consume":
+                        repeat(count, lambda kind=kind: tile_(kind, 0))
+                        continue
+                    repeat(
+                        count // 2,
+                        lambda kind=kind, p=p: (tile_(kind, p), tile_(kind, 1 - p)),
+                    )
+                    if count % 2:
+                        tile_(kind, p)
+                        p ^= 1
+                return p
+
+            def emit_dispatch(p):
+                for rep, runs in sched:
+                    if rep > 1 and sends(runs) % 2:
+                        repeat(
+                            rep // 2,
+                            lambda runs=runs, p=p: emit_runs(runs, emit_runs(runs, p)),
+                        )
+                        if rep % 2:
+                            p = emit_runs(runs, p)
+                    else:
+                        repeat(rep, lambda runs=runs, p=p: emit_runs(runs, p))
+                        p ^= (sends(runs) * rep) % 2
+                return p
+
+            # The stack size choice is a workaround explained here:
+            # https://github.com/Xilinx/mlir-aie/pull/2391#issuecomment-2967432485
+            # In summary, the Peano compiler uses a stack size greater than the default one used by this kernel
+            # (default is 0x400, chess' stack size is smaller). This is only necessary for bf16 through bfp16 emulation on npu2.
+            # Exceding the stack size leads to wrong results from the kernel, but no error is triggered.
+            # Stack usage can be checked as explained here:
+            # https://github.com/Xilinx/llvm-aie/issues/487#issuecomment-2969438585
+            @core(core_tiles[row][col], stack_size=0xD00)
+            def core_body():
+                for _ in range_(0xFFFFFFFF):
+                    if emit_dispatch(0):
+                        emit_dispatch(1)
+
         for row in range(n_aie_rows):
             for col in range(n_aie_cols):
-                # The stack size choice is a workaround explained here:
-                # https://github.com/Xilinx/mlir-aie/pull/2391#issuecomment-2967432485
-                # In summary, the Peano compiler uses a stack size greater than the default one used by this kernel
-                # (default is 0x400, chess' stack size is smaller). This is only necessary for bf16 through bfp16 emulation on npu2.
-                # Exceding the stack size leads to wrong results from the kernel, but no error is triggered.
-                # Stack usage can be checked as explained here:
-                # https://github.com/Xilinx/llvm-aie/issues/487#issuecomment-2969438585
-                @core(core_tiles[row][col], stack_size=0xD00)
-                def core_body():
-                    for _ in range_(0xFFFFFFFF):
-                        loop = (
-                            range_(n_tiles_per_core)
-                            if n_tiles_per_core > 1
-                            else range(1)
-                        )  # Workaround for issue #1547
-                        for _ in loop:
-                            elem_out = C_l1l2_fifos[row][col].acquire(
-                                ObjectFifoPort.Produce, 1
-                            )
-                            zero(elem_out)
-
-                            for _ in range_(K // k):
-                                elem_in_a = A_l2l1_fifos[row].acquire(
-                                    ObjectFifoPort.Consume, 1
-                                )
-                                elem_in_b = B_l2l1_fifos[col].acquire(
-                                    ObjectFifoPort.Consume, 1
-                                )
-                                matmul(elem_in_a, elem_in_b, elem_out)
-                                A_l2l1_fifos[row].release(ObjectFifoPort.Consume, 1)
-                                B_l2l1_fifos[col].release(ObjectFifoPort.Consume, 1)
-
-                            C_l1l2_fifos[row][col].release(ObjectFifoPort.Produce, 1)
+                core_program(row, col)
 
         # To/from AIE-array data movement
         @runtime_sequence(
             np.ndarray[(M * K,), np.dtype[dtype_in]],
             np.ndarray[(K * N,), np.dtype[dtype_in]],
-            np.ndarray[(M * N,), np.dtype[dtype_out]],
+            np.ndarray[(grid.M * grid.N,), np.dtype[dtype_out]],
         )
         def sequence(A, B, C):
+            # Mem-tile MM2S for the whole dispatch, queued up front (gemm_c_plan.mem_tasks keeps
+            # each channel within its task-queue depth). The tasks are lock-gated, so they run as
+            # the cores deliver.
+            for col in range(n_aie_cols):
+                for task in mem_tasks(grid, col):
+                    _start_mem_c_task(
+                        mem_tiles[col],
+                        c_mem_buf[col],
+                        c_mem_lk[col],
+                        c_mem_tok[col],
+                        task,
+                        n_aie_rows,
+                    )
+            outstanding = [
+                [] for _ in range(n_aie_cols)
+            ]  # started shim C tasks, oldest first
+
+            def await_all(col, keep=0):
+                # Await all but the newest `keep` started tasks.
+                n_wait = len(outstanding[col]) - keep
+                for task_op in outstanding[col][:n_wait]:
+                    dma_await_task(task_op)
+                del outstanding[col][:n_wait]
+
             # We are limited in the number of BDs. After synchronizing, we can reuse BDs.
             # We only transfer 4 rows of tiles at once before starting a new transfer block.
             # tb = transfer block; block of transfers before sync call
@@ -713,6 +990,8 @@ def my_matmul(
                     if tb_n_rows <= 0:
                         # for small input sizes, we may not even need a "pong" iteration
                         break
+                    assert tb_n_rows == 1
+                    rest_chunks = {}
                     for col in range(n_aie_cols):
                         # C Output Transfer:
                         # The smallest transfer unit is a (m*n_aie_rows)-x-(n)-sized sub-tile of the matrix.
@@ -733,42 +1012,29 @@ def my_matmul(
                         #     |                |
                         #     |                |
                         #      ----------------
-                        if not c_col_maj:
-                            C_row_offset = row_base * m * n_aie_rows * N
-                            C_col_offset = col * n
-                            C_offset = C_col_offset + C_row_offset
-                            C_sizes = [
-                                tb_n_rows,
-                                N // n // n_aie_cols,
-                                m * n_aie_rows,
-                                n,
-                            ]
-                            C_strides = [m * n_aie_rows * N, n * n_aie_cols, N, 1]
-                        else:
-                            C_row_offset = row_base * m * n_aie_rows
-                            C_col_offset = col * n * M
-                            C_offset = C_col_offset + C_row_offset
-                            C_sizes = [N // n // n_aie_cols, n_aie_rows, n, m]
-                            C_strides = [M * n * n_aie_cols, m, M, 1]
-                        npu_dma_memcpy_nd(
-                            metadata=C_l2l3_fifos[col],
-                            bd_id=bd_id_base,
-                            mem=C,
-                            offsets=[0, 0, 0, C_offset],
-                            sizes=C_sizes,
-                            strides=C_strides,
-                        )
-                        # Use the calculated sizes/strides/offsets to record the data movement
-                        # caused by the above call to npu_dma_memcpy_nd.
-                        # This line does not change MLIR output at all.
-                        if generate_taps:
-                            C_taps.append(
-                                TensorAccessPattern(
-                                    (M, N),
-                                    offset=C_offset,
-                                    sizes=C_sizes,
-                                    strides=C_strides,
+                        # C output for this row block: shim writes of the valid data only.
+                        # tb_n_rows is 1 with c_col_maj, so row_base is the row block.
+                        chunks = shim_rb_chunks(grid, col, row_base)
+                        if chunks:
+                            outstanding[col].append(
+                                _start_shim_c_task(
+                                    shim_tiles[col],
+                                    C,
+                                    chunks[0],
+                                    SHIM_C_BD_IDS[pingpong],
                                 )
+                            )
+                        rest_chunks[col] = chunks[1:]
+                        if generate_taps:
+                            C_taps.extend(
+                                TensorAccessPattern(
+                                    (grid.M * grid.N,),
+                                    offset=b.offset,
+                                    sizes=[b.iterations, *b.sizes],
+                                    strides=[b.iteration_stride, *b.strides],
+                                )
+                                for chunk in chunks
+                                for b in chunk
                             )
 
                         for tile_row in range(tb_n_rows):
@@ -874,9 +1140,25 @@ def my_matmul(
                                         strides=B_strides,
                                     )
                                 )
+                    # Row blocks with more shim BDs than one half's ids: await the previous chunk
+                    # (it completes, because this row block's A and B are already issued) and
+                    # reuse the ids.
+                    for col in range(n_aie_cols):
+                        for chunk in rest_chunks[col]:
+                            await_all(col)
+                            outstanding[col].append(
+                                _start_shim_c_task(
+                                    shim_tiles[col], C, chunk, SHIM_C_BD_IDS[pingpong]
+                                )
+                            )
                     if tb > 0 or (tb == 0 and pingpong > 0):
-                        dma_wait(*C_l2l3_fifos)
-            dma_wait(*C_l2l3_fifos)
+                        # Keep this row block's C in flight while the next one's A and B are
+                        # issued; awaiting it too would drain the pipeline every row block. Its
+                        # BD ids are not reused before the next wait, which awaits it.
+                        for col in range(n_aie_cols):
+                            await_all(col, keep=1)
+            for col in range(n_aie_cols):
+                await_all(col)
 
     if generate_taps:
         # If generate_taps is true, return a representation of tensor tiles
