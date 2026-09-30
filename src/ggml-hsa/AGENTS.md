@@ -36,9 +36,7 @@ HSA backend buffers are allocated with the HSA vmem API (`ggml_hsa_vmem_allocati
 into the mapping so offsets match the source buffer, and `ggml_backend_hsa_tensor_alloc_alias`
 places an HSA tensor (an NPU input or an op result) on a source tensor's memory.
 
-The vmem API needs a ROCR with the XDNA vmem unmap fix (otherwise freeing any HSA buffer aborts)
-and a KFD with interface version 1.15 or newer (otherwise ROCR disables vmem and every HSA buffer
-allocation fails); see the ROCm section of `README.md`.
+The vmem API needs a ROCR with the XDNA vmem unmap fix; see the ROCm section of `README.md`.
 
 Place tensors through `ggml_backend_tensor_alloc` (which runs `init_tensor`), never by assigning
 `tensor->data`: the tensor extra copies the tensor at `init_tensor` time and dispatch uses the copy.

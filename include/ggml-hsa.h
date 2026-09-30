@@ -19,7 +19,7 @@ GGML_BACKEND_API bool ggml_backend_is_hsa(ggml_backend_t backend);
 GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int32_t device);
 
 /**
- * @brief Maps another ROCm backend's buffer (e.g. HIP) for the NPU, without copying.
+ * @brief Maps another ROCm backend's buffer (e.g., HIP) for the NPU, without copying.
  *
  * The caller synchronizes between the backends and frees the result before @p buffer.
  *
@@ -72,7 +72,7 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
  *
  * @warning The trailing rows <tt>[a->ne[1], ne1)</tt> are NOT written. The backend does not zero
  * buffers at allocation, so when @p ne1 is greater than @c a->ne[1] the caller must pre-zero the
- * destination (e.g. with @c ggml_backend_tensor_memset) or those rows hold whatever was already in
+ * destination (e.g., with @c ggml_backend_tensor_memset) or those rows hold whatever was already in
  * the buffer.
  *
  * @param[in] ctx  context to allocate the result in
@@ -115,7 +115,7 @@ GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert(
 /** @} */
 
 /**
- * @brief Places @p tensor on the memory of @p src, so the NPU reads or writes @p src in place.
+ * @brief Places @p tensor on the memory of @p src, so the HSA agent reads or writes @p src in place.
  *
  * For an op result, call before the graph is allocated.
  *

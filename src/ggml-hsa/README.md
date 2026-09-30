@@ -85,9 +85,8 @@ cmake --build "$ROCR/build" -j"$(nproc)"
 cmake --install "$ROCR/build"
 ```
 
-`libhsakmt` builds as part of this tree (it lives under `$ROCR`, not as an external package); install
-`libdrm-dev` and `libnuma-dev` first if they are missing. Confirm the AIE header made it into the
-install, since the system runtime does not have it:
+Install `libdrm-dev` and `libnuma-dev` first if they are missing. Confirm the AIE header made it into
+the install, since the system runtime does not have it:
 
 ```bash
 ls "$PREFIX/include/hsa/hsa_ext_amd_aie.h"
