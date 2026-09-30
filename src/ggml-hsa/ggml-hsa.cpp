@@ -822,12 +822,12 @@ static void ggml_hsa_pad_gemm_operand(const ggml_hsa_device_info::device_info & 
  *   - each dimension is padded to K->Kpad, M->Mpad, N->Npad and the dtype set to bf16;
  *   - the padded regions read as zero (pre-zeroed by @ref allocate_internal_storage), so the extra
  *     rows/cols and the interior K gap contribute nothing to the result.
- * The output node keeps f32 but needs its own padded temporary storage plus a de-pad copy back into
- * the (smaller) parent tensor, flagged via @c node_t::depad.
+ * The output node is left as the dense parent: the GEMM writes it directly (f32, or bf16 when
+ * graph_optimize retyped it).
  *
- * Each of the three rewrites is skipped when the parent tensor already has the target dtype and
+ * Each operand rewrite is skipped when the parent tensor already has the target dtype and
  * shape, which leaves that tensor pointing at the parent buffer (@c buffer_size stays 0) and elides
- * the corresponding convert/pad/de-pad dispatch -- the common case for GEMMs whose dimensions are
+ * the corresponding convert/pad dispatch -- the common case for GEMMs whose dimensions are
  * already tile multiples (see @ref ggml_hsa_pad_gemm_operand for the measured cost of not doing so).
  *
  * Only the contiguous, non-batched, non-permuted f32 x f32 case is handled (the shapes exercised by
@@ -848,7 +848,7 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     // already bf16 (converted in the graph, e.g. the bf16 MNIST variant). Shared eligibility is
     // checked over the internal source tensors via the raw-tensor predicate; here we additionally
     // require an f32 destination (ggml's native MUL_MAT output) or a bf16 destination (retyped by
-    // graph_optimize so the de-pad narrows f32->bf16 in one pass).
+    // graph_optimize so the GEMM narrows f32->bf16 on its cores).
     if (sources.count != 2) {
         return false;
     }
@@ -920,22 +920,11 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     ggml_hsa_pad_gemm_operand(dev_info, sources[0], Kpad, Mpad);
     ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad);
 
-    // Rewrite the output to a padded f32 temporary that must be de-padded back into the parent.
-    // The GEMM microkernel always produces f32, and HSA_DEPAD always consumes an f32 source, so the
-    // temporary is f32 even when the parent has been retyped to bf16 by graph_optimize (the de-pad
-    // then narrows f32->bf16 into the bf16 parent in one pass).
-    //
-    // When the parent is already f32 at exactly the padded shape there is nothing to de-pad and
-    // nothing to narrow, so the kernel writes straight into it.
-    if (dst.type != GGML_TYPE_F32 || dst.ne[0] != Mpad || dst.ne[1] != Npad) {
-        dst.type = GGML_TYPE_F32;
-        dst.ne[0] = Mpad;
-        dst.ne[1] = Npad;
-        ggml_hsa_set_contiguous_strides(dst);
-        node.tensor.data = nullptr;
-        node.buffer_size = GGML_PAD(ggml_nbytes(&dst), dev_info.alignment);
-        node.depad = true;
-    }
+    // The output is not rewritten: the GEMM computes over the padded operands but its mem tiles
+    // read back only the valid part of each C block and the shim writes it straight into the
+    // dense parent (kernels/iron_kernels/gemm_c_plan.py). An f32 parent receives the f32 result;
+    // a parent retyped to bf16 by graph_optimize is narrowed on the cores. Either way there is no
+    // internal output buffer and nothing to post-process.
 
     return true;
 }
@@ -2305,11 +2294,11 @@ static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_eve
  * ggml_mul_mat always produces f32, so a bf16 graph wraps each GEMM in an f32->bf16 cast. This hook
  * runs per split before allocation and before tensor_extra construction, the sanctioned point to
  * rewrite the graph. For a MUL_MAT eligible for the padded bf16 GEMM path whose every consumer is a
- * non-output f32->bf16 convert-cast, it retypes the MUL_MAT to bf16 (the de-pad then narrows
- * f32->bf16 in one pass), rewires each cast's downstream readers onto the MUL_MAT, and sets each
+ * non-output f32->bf16 convert-cast and whose M (ne[0]) is even, it retypes the MUL_MAT to bf16
+ * (the GEMM then narrows f32->bf16 on its cores), rewires each cast's downstream readers onto the MUL_MAT, and sets each
  * orphaned cast's op to GGML_OP_NONE. The framework's ggml_op_is_empty skip then drops the blanked
  * casts and gallocr gives them no buffer (0 children). All-or-nothing: if any consumer reads the
- * MUL_MAT as f32, or any cast is a graph output, the node is left untouched (normal f32 de-pad).
+ * MUL_MAT as f32, or any cast is a graph output, the node is left untouched (f32 result).
  *
  * The passed cgraph is a view over only the current scheduler split's node range, so its scans see
  * only in-split consumers. Consumers in other splits are handled too: using the full-graph
@@ -2330,6 +2319,13 @@ static void ggml_backend_hsa_graph_optimize(ggml_backend_t /*backend*/, ggml_cgr
             continue;
         }
         if ((mm->flags & GGML_TENSOR_FLAG_OUTPUT) != 0) {
+            continue;
+        }
+
+        // The GEMM writes its result by DMA, which addresses 32-bit words: with an odd M
+        // (ne[0]) every other bf16 column would start mid-word. Leave those f32; the cast then
+        // runs as its own kernel.
+        if (mm->ne[0] % 2 != 0) {
             continue;
         }
 
@@ -2397,7 +2393,7 @@ static void ggml_backend_hsa_graph_optimize(ggml_backend_t /*backend*/, ggml_cgr
             }
         }
 
-        // Retype the MUL_MAT result to bf16; the de-pad post-amble now narrows f32->bf16 directly.
+        // Retype the MUL_MAT result to bf16; the GEMM narrows f32->bf16 on its cores.
         mm->type = GGML_TYPE_BF16;
         ggml_hsa_set_contiguous_strides(*mm);
 

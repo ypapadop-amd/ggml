@@ -128,10 +128,15 @@ bool run_case(ggml_backend_t hsa, ggml_backend_t cpu, int64_t M, int64_t N, int6
             printf("  MUL_MAT did not run on the HSA backend\n");
             return false;
         }
-        // graph_optimize retypes the MUL_MAT to bf16 when it folds the cast. Odd M is not asserted
-        // yet: the guard that refuses the fold for odd M lands in a later task.
+        // graph_optimize retypes the MUL_MAT to bf16 when it folds the cast, except for an odd M:
+        // the DMA cannot write bf16 columns that start mid-word, so the MUL_MAT must stay f32.
         if (cast && M % 2 == 0 && c->type != GGML_TYPE_BF16) {
             printf("  dispatch %d: bf16 fold did not happen (MUL_MAT type is %s)\n", d,
+                   ggml_type_name(c->type));
+            return false;
+        }
+        if (cast && M % 2 != 0 && c->type != GGML_TYPE_F32) {
+            printf("  dispatch %d: odd-M MUL_MAT was folded (MUL_MAT type is %s)\n", d,
                    ggml_type_name(c->type));
             return false;
         }
