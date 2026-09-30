@@ -279,8 +279,10 @@ def main():
     argparser.add_argument("--b-col-maj", type=int, choices=[0, 1], default=0)
     argparser.add_argument("--c-col-maj", type=int, choices=[0, 1], default=0)
     # Whether to use the scalar kernel; this is low, but can be useful for debugging smaller sizes
-    argparser.add_argument("--scalar", type=bool, choices=[0, 1], default=0)
-    argparser.add_argument("--emulate-bf16-mmul-with-bfp16", type=bool, default=False)
+    argparser.add_argument("--scalar", type=int, choices=[0, 1], default=0)
+    argparser.add_argument(
+        "--emulate-bf16-mmul-with-bfp16", type=int, choices=[0, 1], default=0
+    )
     argparser.add_argument(
         "--dtype_in", type=str, choices=["bf16", "i8", "i16"], default="i16"
     )
@@ -298,29 +300,30 @@ def main():
         "of the input/output matrices. These objects can be used for visualization.",
     )
     args = argparser.parse_args()
-    with mlir_mod_ctx():
+    # Function names follow the extern "C" wrappers in <arch>/mm.cc.
+    scalar_suffix = "_scalar" if args.scalar else ""
+    with mlir_mod_ctx() as ctx:
         maybe_taps = my_matmul(
-            args.dev,
-            args.M,
-            args.K,
-            args.N,
-            args.m,
-            args.k,
-            args.n,
-            args.n_aie_cols,
-            args.dtype_in,
-            args.dtype_out,
-            args.b_col_maj,
-            args.c_col_maj,
-            args.scalar,
-            args.emulate_bf16_mmul_with_bfp16,
-            args.trace_size,
-            f"matmul_{dtype_to_str(args.dtype_in)}_{dtype_to_str(args.dtype_out)}",
-            f"zero_{dtype_to_str(args.dtype_out)}",
-            f"mm_{args.m}x{args.k}x{args.n}.o",
-            args.generate_taps,
+            dev=args.dev,
+            M=args.M,
+            K=args.K,
+            N=args.N,
+            m=args.m,
+            k=args.k,
+            n=args.n,
+            n_aie_cols=args.n_aie_cols,
+            dtype_in_str=args.dtype_in,
+            dtype_out_str=args.dtype_out,
+            b_col_maj=bool(args.b_col_maj),
+            c_col_maj=bool(args.c_col_maj),
+            use_scalar=bool(args.scalar),
+            emulate_bf16_mmul_with_bfp16=bool(args.emulate_bf16_mmul_with_bfp16),
+            trace_size=args.trace_size,
+            zero_fn=f"zero{scalar_suffix}_{args.dtype_out}",
+            matmul_fn=f"matmul{scalar_suffix}_{args.dtype_in}_{args.dtype_out}",
+            object_file=f"mm_{args.m}x{args.k}x{args.n}.o",
+            generate_taps=args.generate_taps,
         )
-        # print(ctx.module.operation.verify())
         print(ctx.module)
 
     if args.generate_taps:
@@ -889,10 +892,6 @@ def my_matmul(
     return None
 
 
-if __name__ == "__main__":
-    main()
-
-
 def create_mat_mul_external_functions(
     arch: str,
     input_tensors: list,
@@ -952,6 +951,8 @@ def create_mat_mul_external_functions(
         f"-D{dtype_in_name}_{dtype_out_name}_ONLY",
         "-DB_COL_MAJ",
         "-DC_COL_MAJ",
+        # compile only the kernel variant this design calls
+        "-DSCALAR_ONLY" if use_scalar else "-DVECTORIZED_ONLY",
     ]
     # Name the object after the compile flags that vary. Isolation does not depend
     # on this today -- build_iron.py gives each kernel its own work_dir, keyed by a
@@ -1078,3 +1079,7 @@ def gemm(arch: str, input_tensors: list, output_tensor):
             object_file=matmul_fn.object_file_name,
         )
         return ctx.module
+
+
+if __name__ == "__main__":
+    main()

@@ -18,9 +18,10 @@
  * tile_idx and tile_size to determine the appropriate src1 index via modulo.
  *
  * Scalar: each element's global index is decomposed into 4D dst coordinates and
- * reduced modulo the src1 shape. The row-bias case is split into the dedicated,
- * vectorized ggml_op_add_bias below because a runtime-dimension modulo/divide here
- * lowers to a __divsi3 call per element, which is too costly for that hot path.
+ * reduced modulo the src1 shape. A src1 that is a single row reused across every dst
+ * row is handled by the vectorized ggml_op_*_row kernels below instead, because a
+ * runtime-dimension modulo/divide here lowers to a __divsi3 call per element, which is
+ * too costly for that hot path.
  *
  * @param[in]  in0       First input tile (tile_size elements, contiguous from src0).
  * @param[in]  in1       Second input array (full broadcasted tensor).
