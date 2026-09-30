@@ -24,6 +24,8 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>
+
 bool g_ggml_hsa_verbose = [] {
     if (const char * verbose = std::getenv("GGML_HSA_ENABLE_LOG"); verbose != nullptr) {
         return ggml_hsa_string_to_bool(verbose);
@@ -458,15 +460,21 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
         return status;
     }
 
+    auto & info = *static_cast<ggml_hsa_device_info *>(data);
     switch (type) {
         case HSA_DEVICE_TYPE_AIE:
             break;
+        case HSA_DEVICE_TYPE_CPU:
+            // record the first host agent; device buffers are mapped for it
+            if (info.cpu_agent.handle == 0) {
+                info.cpu_agent = agent;
+            }
+            return HSA_STATUS_SUCCESS;
         default:
             // only consider AIE agents for now
             return HSA_STATUS_SUCCESS;
     }
 
-    auto & info = *static_cast<ggml_hsa_device_info *>(data);
     if (info.device_count >= GGML_HSA_MAX_DEVICES) {
         GGML_ABORT("%s: exceeded GGML_HSA_MAX_DEVICES limit (%d)", __func__, GGML_HSA_MAX_DEVICES);
     }
@@ -1102,15 +1110,150 @@ ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
 // HSA buffer
 
 /**
+ * @brief Device memory mapped with the HSA vmem API, accessible to the host and the device.
+ */
+class ggml_hsa_vmem_allocation {
+  public:
+    ggml_hsa_vmem_allocation() = default;
+    ggml_hsa_vmem_allocation(const ggml_hsa_vmem_allocation &) = delete;
+    ggml_hsa_vmem_allocation & operator=(const ggml_hsa_vmem_allocation &) = delete;
+    ~ggml_hsa_vmem_allocation() { release(); }
+
+    /**
+     * @brief Allocates at least @p size bytes from the data pool of @p dev_info.
+     *
+     * On failure, nothing is left allocated.
+     */
+    hsa_status_t allocate(const ggml_hsa_device_info::device_info & dev_info, std::size_t size) {
+        assert(m_va == nullptr);
+
+        const auto pool = dev_info.data_memory.memory_pool;
+        std::size_t granule = 0;
+        if (auto status = hsa_amd_memory_pool_get_info(
+                pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_GRANULE, &granule);
+            status != HSA_STATUS_SUCCESS) {
+            return status;
+        }
+        if (granule == 0) {
+            return HSA_STATUS_ERROR_INVALID_REGION;
+        }
+        const std::size_t alloc_size = GGML_PAD(size, granule);
+
+        if (auto status =
+                hsa_amd_vmem_handle_create(pool, alloc_size, MEMORY_TYPE_PINNED, 0, &m_handle);
+            status != HSA_STATUS_SUCCESS) {
+            m_handle = {};
+            return status;
+        }
+
+        return map(dev_info, alloc_size);
+    }
+
+    /**
+     * @brief Maps the whole dma-buf @p dmabuf_fd for the host and the device of @p dev_info.
+     *
+     * The caller may close @p dmabuf_fd afterwards. On failure, nothing is left allocated.
+     */
+    hsa_status_t import(const ggml_hsa_device_info::device_info & dev_info, int dmabuf_fd) {
+        assert(m_va == nullptr);
+
+        const off_t dmabuf_size = lseek(dmabuf_fd, 0, SEEK_END);
+        if (dmabuf_size <= 0) {
+            return HSA_STATUS_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (auto status = hsa_amd_vmem_import_shareable_handle(dmabuf_fd, &m_handle);
+            status != HSA_STATUS_SUCCESS) {
+            m_handle = {};
+            return status;
+        }
+
+        return map(dev_info, static_cast<std::size_t>(dmabuf_size));
+    }
+
+    /// @brief Returns the base address of the mapping.
+    void * get() const { return m_va; }
+
+    /// @brief Returns the size of the mapping in bytes.
+    std::size_t size() const { return m_size; }
+
+  private:
+    /**
+     * @brief Maps @ref m_handle at a new @p size bytes range for the host and @p dev_info.
+     *
+     * On failure, releases everything, including @ref m_handle.
+     */
+    hsa_status_t map(const ggml_hsa_device_info::device_info & dev_info, std::size_t size) {
+        if (auto status = hsa_amd_vmem_address_reserve_align(&m_va, size, /* address = */ 0,
+                                                             /* alignment = */ 0,
+                                                             HSA_AMD_VMEM_ADDRESS_NO_REGISTER);
+            status != HSA_STATUS_SUCCESS) {
+            m_va = nullptr;
+            release();
+            return status;
+        }
+        m_size = size;
+
+        if (auto status = hsa_amd_vmem_map(m_va, m_size, 0, m_handle, 0);
+            status != HSA_STATUS_SUCCESS) {
+            release();
+            return status;
+        }
+        m_mapped = true;
+
+        const std::array<hsa_amd_memory_access_desc_t, 2> access = {{
+            {HSA_ACCESS_PERMISSION_RW, ggml_hsa_info().cpu_agent},
+            {HSA_ACCESS_PERMISSION_RW, dev_info.agent},
+        }};
+        if (auto status = hsa_amd_vmem_set_access(m_va, m_size, access.data(), access.size());
+            status != HSA_STATUS_SUCCESS) {
+            release();
+            return status;
+        }
+
+        return HSA_STATUS_SUCCESS;
+    }
+
+    /// @brief Releases whatever part of the allocation exists.
+    void release() {
+        if (m_mapped) {
+            GGML_HSA_CHECK_ABORT(hsa_amd_vmem_unmap(m_va, m_size));
+            m_mapped = false;
+        }
+        if (m_va != nullptr) {
+            GGML_HSA_CHECK_ABORT(hsa_amd_vmem_address_free(m_va, m_size));
+            m_va = nullptr;
+            m_size = 0;
+        }
+        if (m_handle.handle != 0) {
+            GGML_HSA_CHECK_ABORT(hsa_amd_vmem_handle_release(m_handle));
+            m_handle = {};
+        }
+    }
+
+    hsa_amd_vmem_alloc_handle_t m_handle{}; ///< Physical memory handle.
+    void * m_va{};                          ///< Reserved virtual address range.
+    std::size_t m_size{};                   ///< Size of the reserved range in bytes.
+    bool m_mapped{false};                   ///< @c true if @ref m_handle is mapped at @ref m_va.
+};
+
+/**
  * @brief Context for managing a HSA buffer associated with a specific device.
+ *
+ * An imported buffer maps the whole dma-buf of @ref source; its base is @ref base_offset into the
+ * mapping, so offsets match @ref source.
  */
 struct ggml_backend_hsa_buffer_context {
-    std::int32_t device{};             ///< Device ID associated with this buffer context.
-    ggml_hsa_unique_ptr<void> dev_ptr; ///< Pointer to the device memory.
+    std::int32_t device{};            ///< Device ID associated with this buffer context.
+    ggml_hsa_vmem_allocation dev_mem; ///< Device memory.
+    std::size_t base_offset{};        ///< Offset of the buffer's base within @ref dev_mem.
+    ggml_backend_buffer_t source{};   ///< Buffer this one was imported from, or @c nullptr.
     std::vector<std::unique_ptr<ggml_backend_hsa_tensor_extra>> tensor_extras;
 
-    ggml_backend_hsa_buffer_context(std::int32_t device, ggml_hsa_unique_ptr<void> dev_ptr) :
-        device{device}, dev_ptr{std::move(dev_ptr)} {}
+    explicit ggml_backend_hsa_buffer_context(std::int32_t device) : device{device} {}
+
+    /// @brief Returns the base address of the buffer.
+    void * base() const { return static_cast<std::byte *>(dev_mem.get()) + base_offset; }
 };
 
 /**
@@ -1133,7 +1276,7 @@ static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
  */
 static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
-    return buf_ctx.dev_ptr.get();
+    return buf_ctx.base();
 }
 
 /**
@@ -1249,7 +1392,7 @@ static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t /* buffer *
  */
 static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
-    std::memset(buf_ctx.dev_ptr.get(), value, buffer->size);
+    std::memset(buf_ctx.base(), value, buffer->size);
 }
 
 /**
@@ -1305,20 +1448,16 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
     const auto & buft_ctx = *static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & dev_info = ggml_hsa_get_device_info(buft_ctx.device);
 
-    void * buffer = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
-                                                   /* flags = */ 0, &buffer);
-        status != HSA_STATUS_SUCCESS) {
-        GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
-                           (size / 1024.0 / 1024.0), dev_info.name.c_str(),
-                           ggml_hsa_get_status_string(status));
-        return nullptr;
-    }
-
     try {
-        auto * buf_ctx =
-            new ggml_backend_hsa_buffer_context(buft_ctx.device, ggml_hsa_unique_ptr<void>{buffer});
-        return ggml_backend_buffer_init(buft, ggml_backend_hsa_buffer_interface, buf_ctx, size);
+        auto buf_ctx = std::make_unique<ggml_backend_hsa_buffer_context>(buft_ctx.device);
+        if (auto status = buf_ctx->dev_mem.allocate(dev_info, size); status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
+                               (size / 1024.0 / 1024.0), dev_info.name.c_str(),
+                               ggml_hsa_get_status_string(status));
+            return nullptr;
+        }
+        return ggml_backend_buffer_init(buft, ggml_backend_hsa_buffer_interface, buf_ctx.release(),
+                                        size);
     } catch (const std::exception & ex) {
         GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
         return nullptr;
@@ -2310,3 +2449,95 @@ ggml_backend_t ggml_backend_hsa_init(std::int32_t device) {
 }
 
 GGML_BACKEND_DL_IMPL(ggml_backend_hsa_reg)
+
+ggml_backend_buffer_t ggml_backend_hsa_buffer_import(std::int32_t device,
+                                                     ggml_backend_buffer_t buffer) {
+    if (device < 0 || device >= ggml_hsa_info().device_count) {
+        GGML_HSA_LOG_ERROR("%s: invalid device %d", __func__, device);
+        return nullptr;
+    }
+    // check the size first: the base of a zero-size (dummy) buffer cannot be queried
+    if (buffer == nullptr || ggml_backend_buffer_get_size(buffer) == 0) {
+        GGML_HSA_LOG_ERROR("%s: nothing to import", __func__);
+        return nullptr;
+    }
+    if (ggml_backend_buffer_is_hsa(buffer)) {
+        GGML_HSA_LOG_ERROR("%s: buffer %s is already an HSA buffer", __func__,
+                           ggml_backend_buffer_name(buffer));
+        return nullptr;
+    }
+
+    const auto & dev_info = ggml_hsa_get_device_info(device);
+    void * const base = ggml_backend_buffer_get_base(buffer);
+    const std::size_t size = ggml_backend_buffer_get_size(buffer);
+
+    try {
+        auto buf_ctx = std::make_unique<ggml_backend_hsa_buffer_context>(device);
+
+        int dmabuf_fd = -1;
+        std::uint64_t offset = 0;
+        if (auto status = hsa_amd_portable_export_dmabuf(base, size, &dmabuf_fd, &offset);
+            status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: cannot export buffer %s (%s)", __func__,
+                               ggml_backend_buffer_name(buffer),
+                               ggml_hsa_get_status_string(status));
+            return nullptr;
+        }
+
+        // the runtime keeps its own reference to the dma-buf for the lifetime of the import
+        const auto status = buf_ctx->dev_mem.import(dev_info, dmabuf_fd);
+        GGML_HSA_CHECK_WARN(hsa_amd_portable_close_dmabuf(dmabuf_fd));
+        if (status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: cannot import buffer %s on device %s (%s)", __func__,
+                               ggml_backend_buffer_name(buffer), dev_info.name.c_str(),
+                               ggml_hsa_get_status_string(status));
+            return nullptr;
+        }
+        if (offset + size > buf_ctx->dev_mem.size()) {
+            GGML_HSA_LOG_ERROR("%s: buffer %s does not fit in its dma-buf", __func__,
+                               ggml_backend_buffer_name(buffer));
+            return nullptr;
+        }
+
+        buf_ctx->base_offset = offset;
+        buf_ctx->source = buffer;
+        return ggml_backend_buffer_init(ggml_backend_hsa_buffer_type(device),
+                                        ggml_backend_hsa_buffer_interface, buf_ctx.release(), size);
+    } catch (const std::exception & ex) {
+        GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
+        return nullptr;
+    }
+}
+
+enum ggml_status ggml_backend_hsa_tensor_alloc_alias(ggml_backend_buffer_t imported,
+                                                     ggml_tensor * tensor,
+                                                     const ggml_tensor * src) {
+    if (imported == nullptr || !ggml_backend_buffer_is_hsa(imported) || tensor == nullptr ||
+        src == nullptr) {
+        GGML_HSA_LOG_ERROR("%s: invalid arguments", __func__);
+        return GGML_STATUS_FAILED;
+    }
+    const auto & buf_ctx = *static_cast<const ggml_backend_hsa_buffer_context *>(imported->context);
+    if (buf_ctx.source == nullptr || src->buffer != buf_ctx.source || src->data == nullptr) {
+        GGML_HSA_LOG_ERROR("%s: tensor \"%s\" is not in the buffer that was imported", __func__,
+                           src->name);
+        return GGML_STATUS_FAILED;
+    }
+    if (tensor->type != src->type || !ggml_are_same_shape(tensor, src) ||
+        !ggml_are_same_stride(tensor, src)) {
+        GGML_HSA_LOG_ERROR("%s: tensor \"%s\" does not match the layout of \"%s\"", __func__,
+                           tensor->name, src->name);
+        return GGML_STATUS_FAILED;
+    }
+    if (tensor->buffer != nullptr || tensor->data != nullptr || tensor->view_src != nullptr) {
+        GGML_HSA_LOG_ERROR("%s: tensor \"%s\" is already allocated or is a view", __func__,
+                           tensor->name);
+        return GGML_STATUS_FAILED;
+    }
+
+    const auto offset = static_cast<const std::byte *>(src->data) -
+                        static_cast<const std::byte *>(ggml_backend_buffer_get_base(src->buffer));
+    // places the tensor and runs init_tensor with the final address, which the tensor extra copies
+    return ggml_backend_tensor_alloc(imported, tensor,
+                                     static_cast<std::byte *>(buf_ctx.base()) + offset);
+}
