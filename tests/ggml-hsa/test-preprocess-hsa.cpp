@@ -35,6 +35,15 @@ using hsa_test::store_val;
 
 enum class case_result { pass, fail, skip };
 
+// The backend's source pre-processing counters (device queue, host), read through the registry. The
+// two paths produce identical values, so these are what show which path each source actually took.
+using preprocess_counts_fn = void (*)(ggml_backend_t, std::size_t *, std::size_t *);
+
+preprocess_counts_fn get_preprocess_counts_fn() {
+    return reinterpret_cast<preprocess_counts_fn>(ggml_backend_reg_get_proc_address(
+        ggml_backend_hsa_reg(), "ggml_backend_hsa_get_preprocess_counts"));
+}
+
 // Values chosen to be exactly representable in bf16 (8 significand bits), so no rounding occurs
 // anywhere along f16 -> bf16 -> add -> bf16 -> f16.
 float src0_val(int64_t i) { return static_cast<float>(i % 61) - 30.0f; }
@@ -75,10 +84,11 @@ case_result run_case(ggml_backend_t backend,
 
     // Which path the sources take is not observable from the result: the host copy and the
     // on-queue convert produce identical values, so the numerical check below would pass even if
-    // the device path never ran. Assert the thing that selects the path instead. A source runs on
-    // the device queue exactly when it has a preprocess kernel, and that kernel is
-    // the element-wise f16 -> bf16 convert built for this source; probing the same transform as a
-    // standalone op therefore reports exactly whether that kernel builds.
+    // the device path never ran. Two checks cover it instead. First, that each source's kernel
+    // builds as expected: a source runs on the device queue exactly when it has a preprocess
+    // kernel, the element-wise f16 -> bf16 convert, so probing the same transform as a standalone
+    // op reports whether it builds. Second, after the compute, the backend's pre-processing
+    // counters must show each source took that path.
     for (auto [src, expect] : {std::pair{a, expect_on_queue}, std::pair{b, expect_b}}) {
         ggml_tensor * convert_probe = ggml_hsa_convert(ctx.get(), src, GGML_TYPE_BF16);
         ggml_set_name(convert_probe, "convert_probe");
@@ -112,8 +122,30 @@ case_result run_case(ggml_backend_t backend,
     ggml_backend_tensor_set(a, a_bytes.data(), 0, ggml_nbytes(a));
     ggml_backend_tensor_set(b, b_bytes.data(), 0, ggml_nbytes(b));
 
+    const preprocess_counts_fn preprocess_counts = get_preprocess_counts_fn();
+    if (preprocess_counts == nullptr) {
+        printf("  ggml_backend_hsa_get_preprocess_counts not exported\n");
+        return case_result::fail;
+    }
+    std::size_t n_device_before = 0;
+    std::size_t n_host_before = 0;
+    preprocess_counts(backend, &n_device_before, &n_host_before);
+
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
         printf("  graph compute failed\n");
+        return case_result::fail;
+    }
+
+    std::size_t n_device_after = 0;
+    std::size_t n_host_after = 0;
+    preprocess_counts(backend, &n_device_after, &n_host_after);
+    const std::size_t want_device = (expect_on_queue ? 1 : 0) + (expect_b ? 1 : 0);
+    const std::size_t want_host = 2 - want_device;
+    const std::size_t got_device = n_device_after - n_device_before;
+    const std::size_t got_host = n_host_after - n_host_before;
+    if (got_device != want_device || got_host != want_host) {
+        printf("  expected %zu device + %zu host pre-processing, got %zu + %zu\n", want_device,
+               want_host, got_device, got_host);
         return case_result::fail;
     }
 
