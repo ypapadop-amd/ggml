@@ -12,6 +12,8 @@
 // tensor is not a graph output). The scheduler's graph_optimize then folds the cast into the
 // GEMM when M is even, and the reference rounds with ggml's own f32->bf16 conversion.
 //
+// Cast cases re-allocate the graph between dispatches (see the comment in run_case).
+//
 // Every case runs several dispatches, because the GEMM's ping/pong parity must survive across
 // them. Every case also checks that MUL_MAT ran on the HSA backend: a CPU fallback would pass
 // silently.
@@ -25,7 +27,6 @@
 #include <memory>
 #include <vector>
 
-#include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "ggml-hsa.h"
@@ -44,6 +45,10 @@ bool run_case(ggml_backend_t hsa, ggml_backend_t cpu, int64_t M, int64_t N, int6
         /*.no_alloc   =*/true,
     };
     std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx{ggml_init(params), ggml_free};
+    if (!ctx) {
+        printf("  ggml_init failed\n");
+        return false;
+    }
 
     ggml_tensor * a = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, K, M);
     ggml_set_input(a);
@@ -123,6 +128,13 @@ bool run_case(ggml_backend_t hsa, ggml_backend_t cpu, int64_t M, int64_t N, int6
             printf("  MUL_MAT did not run on the HSA backend\n");
             return false;
         }
+        // graph_optimize retypes the MUL_MAT to bf16 when it folds the cast. Odd M is not asserted
+        // yet: the guard that refuses the fold for odd M lands in a later task.
+        if (cast && M % 2 == 0 && c->type != GGML_TYPE_BF16) {
+            printf("  dispatch %d: bf16 fold did not happen (MUL_MAT type is %s)\n", d,
+                   ggml_type_name(c->type));
+            return false;
+        }
         std::vector<float> got(M * N);
         ggml_backend_tensor_get(out, got.data(), 0, ggml_nbytes(out));
         int64_t mismatches = 0;
@@ -157,6 +169,11 @@ int main() {
         return 0;
     }
     ggml_backend_t cpu = ggml_backend_cpu_init();
+    if (cpu == nullptr) {
+        printf("CPU backend init failed\n");
+        ggml_backend_free(hsa);
+        return 1;
+    }
 
     struct {
         int64_t M, N, K;
