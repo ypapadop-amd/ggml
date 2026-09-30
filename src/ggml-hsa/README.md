@@ -69,9 +69,32 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 
 `ggml-hsa` requires [ROCm](https://github.com/ROCm/rocm-systems) 7.2.1 or newer. See the [installation instructions](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
 
-Due to ongoing NPU support work in [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime), it is recommended to compile the latest ROCR from source. Commit [`bd52f48`](https://github.com/ROCm/rocm-systems/commit/bd52f48dd397bc8a18f60bdea3310ce922b956b8) is confirmed working.
+Due to ongoing NPU support work in [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime), `ggml-hsa` requires a ROCR compiled from source: [`develop`](https://github.com/ROCm/rocm-systems/tree/develop) at or after commit [`512eb6021e7`](https://github.com/ROCm/rocm-systems/commit/512eb6021e7) ("fix(rocr/aie): Avoid unmap during AIE memory release", #12389), which fixes an abort when freeing an HSA vmem buffer. This is not optional: TheRock's nightly wheels do not carry this fix yet (see [One ROCR for both backends](#one-rocr-for-both-backends)).
 
 `ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API.
+
+### Compiling ROCR from source
+
+```bash
+REPO=/path/to/rocm-systems        # a checkout of https://github.com/ROCm/rocm-systems, `develop` branch
+ROCR=$REPO/projects/rocr-runtime
+PREFIX=$HOME/opt/rocm             # must not be /opt/rocm: that is the system runtime and lacks the AIE header
+
+cmake -S "$ROCR" -B "$ROCR/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX"
+cmake --build "$ROCR/build" -j"$(nproc)"
+cmake --install "$ROCR/build"
+```
+
+`libhsakmt` builds as part of this tree (it lives under `$ROCR`, not as an external package); install
+`libdrm-dev` and `libnuma-dev` first if they are missing. Confirm the AIE header made it into the
+install, since the system runtime does not have it:
+
+```bash
+ls "$PREFIX/include/hsa/hsa_ext_amd_aie.h"
+```
+
+Re-run both the build and the install after every branch switch or pull: `ggml-hsa` links against
+`$PREFIX`, not the build tree, so skipping the install silently keeps testing the previous commit.
 
 ### AMD XDNA Driver
 
@@ -159,6 +182,12 @@ combined build alone does not meet.
 A process loads only one `libhsa-runtime64.so.1`, and HIP and `ggml-hsa` must share it. It must be a
 ROCR with NPU support, which a system ROCm usually does not provide: for example, ROCm 7.2.4's
 `libamdhip64` links its own `libhsa-runtime64` without AIE support.
+
+As of this writing, TheRock's nightly wheels bundle a ROCR that does not yet carry the AIE vmem unmap
+fix described in [ROCm](#rocm) (`512eb6021e7`, #12389). The wheel is only used to get a matching HIP;
+the ROCR built from source, not the one inside the wheel, is what `ggml-hsa` and HIP actually load at
+run time — building it yourself (see [Compiling ROCR from source](#compiling-rocr-from-source)) is
+required, not optional, until that fix reaches a nightly build.
 
 One way to get a matching HIP is [TheRock](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)'s
 nightly pip wheels, run against a ROCR built from source:
