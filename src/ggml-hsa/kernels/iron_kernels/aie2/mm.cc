@@ -20,6 +20,10 @@
 
 #include <aie_api/aie.hpp>
 
+#ifdef B_f32
+#include "../ggml-aie.hpp"
+#endif
+
 /**
  * @brief Scalar matrix multiplication kernel for reference/verification.
  *
@@ -1182,6 +1186,37 @@ combos(matmul_vectorized_c_func) combos(zero_vectorized_c_func)
 #endif
 #ifndef VECTORIZED_ONLY
     combos(matmul_scalar_c_func) combos(zero_scalar_c_func)
+#endif
+
+#if defined(B_f32) && defined(bf16_f32_ONLY)
+    /**
+     * @brief bf16 x f32 -> f32 matrix multiply: converts the f32 B tile to bf16, then multiplies.
+     *
+     * B arrives as f32 so the GEMM can consume an f32 operand without a separate conversion
+     * dispatch. The conversion is the bit-exact round-to-nearest-even used by the host and the
+     * CONVERT_PAD kernel, so the product is identical to converting B beforehand. It is a flat
+     * element-wise pass: the DMA has already applied the mmul blocking to the f32 tile, and the
+     * conversion preserves element order.
+     *
+     * @param[in]     a_in      A tile (bf16, DIM_M x DIM_K).
+     * @param[in]     b_in      B tile (f32, DIM_K x DIM_N).
+     * @param[out]    b_scratch B tile converted to bf16 (DIM_K x DIM_N).
+     * @param[in,out] c_out     C tile (f32, DIM_M x DIM_N), accumulated.
+     */
+    void matmul_bf16_f32_bf32(bfloat16 * a_in, float * b_in, bfloat16 * b_scratch, float * c_out) {
+    constexpr int32_t V = 512 / (sizeof(float) * 8);
+    constexpr int32_t nblk = (DIM_K * DIM_N) / V;
+    static_assert((DIM_K * DIM_N) % V == 0, "B tile must be a whole number of vectors");
+
+    AIE_PREPARE_FOR_PIPELINING
+    AIE_LOOP_RANGE(nblk, nblk)
+    for (int32_t b = 0; b < nblk; ++b) {
+        const aie::vector<float, V> fv = aie::load_v<V>(b_in + b * V);
+        aie::store_v(b_scratch + b * V, convert_f32_to_bf16_vector<V>(fv));
+    }
+
+    matmul_vectorized_4x8x4_bf16_f32<DIM_M, DIM_K, DIM_N>(a_in, b_scratch, c_out);
+}
 #endif
 
 } // extern "C"

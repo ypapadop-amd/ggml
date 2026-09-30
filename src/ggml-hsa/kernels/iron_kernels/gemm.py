@@ -130,6 +130,7 @@ def select_gemm_tile(
     n_aie_rows=4,
     fifo_depth=2,
     max_tile=256,
+    dtype_b=None,
 ):
     """Pick the largest valid per-core (m, k, n) GEMM tile for a problem size.
 
@@ -168,6 +169,9 @@ def select_gemm_tile(
         n_aie_rows: AIE array rows (4 on both npu and npu2).
         fifo_depth: Object-FIFO depth (double buffering).
         max_tile: Upper bound on any single tile dimension.
+        dtype_b: NumPy dtype B is streamed in, if it differs from dtype_in (f32 B converted to
+            bf16 on the core). Defaults to dtype_in. A differing dtype_b also costs one
+            dtype_in-typed (k, n) scratch tile per core for the converted copy.
 
     Returns:
         A (m, k, n) tuple of per-core tile dimensions.
@@ -181,6 +185,9 @@ def select_gemm_tile(
 
     size_in = np.dtype(dtype_in).itemsize
     size_out = np.dtype(dtype_out).itemsize
+    size_b = np.dtype(dtype_b if dtype_b is not None else dtype_in).itemsize
+    # single-buffered converted copy of B, only when B is streamed in another dtype
+    size_b_scratch = size_in if size_b != size_in else 0
 
     # Microkernel-granular step sizes for this wrapper's mmul expansion. Using a
     # blanket 2x2 here would under-constrain the aie2 bf16/i8 wrappers, which
@@ -188,7 +195,10 @@ def select_gemm_tile(
     gm, gk, gn = row_expand * r, s, col_expand * t
 
     def working_set(m, k, n):
-        return fifo_depth * (size_in * m * k + size_in * k * n + size_out * m * n)
+        return (
+            fifo_depth * (size_in * m * k + size_b * k * n + size_out * m * n)
+            + size_b_scratch * k * n
+        )
 
     def valid(m, k, n):
         if M % (m * n_aie_rows) or K % k or N % (n * n_aie_cols):
@@ -367,6 +377,7 @@ def my_matmul(
     matmul_fn,
     object_file,
     generate_taps=False,
+    dtype_b_str=None,
 ):
     """Generate MLIR for tiled GEMM across an AIE array (C = A @ B).
 
@@ -390,6 +401,9 @@ def my_matmul(
         matmul_fn: Name of the external matmul kernel function.
         object_file: Path to the compiled kernel object file to link.
         generate_taps: Whether to also return TensorAccessSequences for A/B/C.
+        dtype_b_str: Dtype name B is streamed in, if it differs from dtype_in_str. Only
+            "f32" with bf16 A on npu: each core converts its f32 B tile into a bf16 scratch
+            tile before the bf16 microkernel. Defaults to dtype_in_str.
 
     Returns:
         A tuple of (A, B, C) TensorAccessSequences if generate_taps, else None.
@@ -399,6 +413,13 @@ def my_matmul(
 
     dtype_in = str_to_dtype(dtype_in_str)
     dtype_out = str_to_dtype(dtype_out_str)
+    dtype_b = str_to_dtype(dtype_b_str) if dtype_b_str is not None else dtype_in
+    convert_b = dtype_b != dtype_in
+    if convert_b and not (
+        dev == "npu" and dtype_in_str == "bf16" and dtype_to_str(dtype_b) == "f32"
+    ):
+        msg = f"Streaming B as {dtype_to_str(dtype_b)} is only supported for bf16 A on npu"
+        raise ValueError(msg)
 
     if np.issubdtype(dtype_in, np.integer) != np.issubdtype(dtype_out, np.integer):
         msg = f"Input dtype ({dtype_in}) and output dtype ({dtype_out}) must either both be integral or both be float"
@@ -487,17 +508,22 @@ def my_matmul(
     @device(dev_ty)
     def device_body():
         A_l2_ty = np.ndarray[(m * k * n_A_tiles_per_shim,), np.dtype[dtype_in]]
-        B_l2_ty = np.ndarray[(k * n,), np.dtype[dtype_in]]
+        B_l2_ty = np.ndarray[(k * n,), np.dtype[dtype_b]]
         C_l2_ty = np.ndarray[(m * n * n_aie_rows,), np.dtype[dtype_out]]
         A_l1_ty = np.ndarray[(m, k), np.dtype[dtype_in]]
-        B_l1_ty = np.ndarray[(k, n), np.dtype[dtype_in]]
+        B_l1_ty = np.ndarray[(k, n), np.dtype[dtype_b]]
+        B_l1_scratch_ty = np.ndarray[(k, n), np.dtype[dtype_in]]
         C_l1_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
 
-        # AIE Core Function declarations
+        # AIE Core Function declarations. A converted B takes the scratch tile as an extra
+        # argument: the kernel converts into it, then multiplies from it.
         zero = external_func(zero_fn, inputs=[C_l1_ty], link_with=object_file)
-        matmul = external_func(
-            matmul_fn, inputs=[A_l1_ty, B_l1_ty, C_l1_ty], link_with=object_file
+        matmul_inputs = (
+            [A_l1_ty, B_l1_ty, B_l1_scratch_ty, C_l1_ty]
+            if convert_b
+            else [A_l1_ty, B_l1_ty, C_l1_ty]
         )
+        matmul = external_func(matmul_fn, inputs=matmul_inputs, link_with=object_file)
 
         # Tile declarations as tile[row][col]
         tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(6)]
@@ -660,6 +686,18 @@ def my_matmul(
         # Set up compute tiles
         for row in range(n_aie_rows):
             for col in range(n_aie_cols):
+                # Converted-B scratch: filled by the kernel from the streamed B tile on every
+                # call, so a single (not double) buffer suffices.
+                b_scratch = (
+                    buffer(
+                        core_tiles[row][col],
+                        B_l1_scratch_ty,
+                        name=f"B_scratch_{row}_{col}",
+                    )
+                    if convert_b
+                    else None
+                )
+
                 # The stack size choice is a workaround explained here:
                 # https://github.com/Xilinx/mlir-aie/pull/2391#issuecomment-2967432485
                 # In summary, the Peano compiler uses a stack size greater than the default one used by this kernel
@@ -688,7 +726,10 @@ def my_matmul(
                                 elem_in_b = B_l2l1_fifos[col].acquire(
                                     ObjectFifoPort.Consume, 1
                                 )
-                                matmul(elem_in_a, elem_in_b, elem_out)
+                                if convert_b:
+                                    matmul(elem_in_a, elem_in_b, b_scratch, elem_out)
+                                else:
+                                    matmul(elem_in_a, elem_in_b, elem_out)
                                 A_l2l1_fifos[row].release(ObjectFifoPort.Consume, 1)
                                 B_l2l1_fifos[col].release(ObjectFifoPort.Consume, 1)
 
@@ -697,7 +738,7 @@ def my_matmul(
         # To/from AIE-array data movement
         @runtime_sequence(
             np.ndarray[(M * K,), np.dtype[dtype_in]],
-            np.ndarray[(K * N,), np.dtype[dtype_in]],
+            np.ndarray[(K * N,), np.dtype[dtype_b]],
             np.ndarray[(M * N,), np.dtype[dtype_out]],
         )
         def sequence(A, B, C):
@@ -928,8 +969,11 @@ def create_mat_mul_external_functions(
     num_cols = 8 if dev == "npu2" else 4
 
     dtype_in = input_tensors[0].dtype
+    dtype_b = input_tensors[1].dtype
     dtype_out = output_tensor.dtype
     dtype_in_str = dtype_to_str(dtype_in)
+    # An f32 B with bf16 A is streamed as f32 and converted to bf16 on each core (npu only).
+    convert_b = dtype_b != dtype_in
     r, s, t = resolve_mac_dims(dev, dtype_in_str)
     row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
     # GGML shape convention (innermost first): A is [K, M], B is [K, N].
@@ -937,12 +981,24 @@ def create_mat_mul_external_functions(
     K = input_tensors[0].shape[0]
     N = input_tensors[1].shape[1]
     m, k, n = select_gemm_tile(
-        dev, M, N, K, dtype_in, dtype_out, r, s, t, row_expand, col_expand
+        dev,
+        M,
+        N,
+        K,
+        dtype_in,
+        dtype_out,
+        r,
+        s,
+        t,
+        row_expand,
+        col_expand,
+        dtype_b=dtype_b,
     )
 
     current_dir = Path(__file__).resolve().parent
     source_file = str(current_dir / arch / "mm.cc")
     dtype_in_name = dtype_to_str(input_tensors[0].dtype)
+    dtype_b_name = dtype_to_str(dtype_b)
     dtype_out_name = dtype_to_str(output_tensor.dtype)
     compile_args = [
         f"-DDIM_M={m}",
@@ -954,6 +1010,8 @@ def create_mat_mul_external_functions(
         # compile only the kernel variant this design calls
         "-DSCALAR_ONLY" if use_scalar else "-DVECTORIZED_ONLY",
     ]
+    if convert_b:
+        compile_args.append(f"-DB_{dtype_b_name}")
     # Name the object after the compile flags that vary. Isolation does not depend
     # on this today -- build_iron.py gives each kernel its own work_dir, keyed by a
     # name that already encodes the shapes -- but m/k/n stopped being arch constants
@@ -963,9 +1021,8 @@ def create_mat_mul_external_functions(
     #
     # Always a .o, not core_function_object(): this path passes the object to the low-level
     # dialect via link_with, which ld.lld cannot do with textual IR, so this kernel can't inline.
-    object_file_name = (
-        f"matmul_core_functions_{dtype_in_name}_{dtype_out_name}_{m}x{k}x{n}.o"
-    )
+    b_suffix = f"_b{dtype_b_name}" if convert_b else ""
+    object_file_name = f"matmul_core_functions_{dtype_in_name}_{dtype_out_name}{b_suffix}_{m}x{k}x{n}.o"
 
     zero_fn = ExternalFunction(
         name=f"zero{scalar_suffix}_{dtype_out_name}",
@@ -975,15 +1032,18 @@ def create_mat_mul_external_functions(
         compile_flags=compile_args,
     )
 
+    matmul_arg_types = [
+        np.ndarray[(m, k), np.dtype[dtype_in]],
+        np.ndarray[(k, n), np.dtype[dtype_b]],
+    ]
+    if convert_b:
+        matmul_arg_types.append(np.ndarray[(k, n), np.dtype[dtype_in]])  # scratch
+    matmul_arg_types.append(np.ndarray[(m, n), np.dtype[dtype_out]])
     matmul_fn = ExternalFunction(
-        name=f"matmul{scalar_suffix}_{dtype_in_name}_{dtype_out_name}",
+        name=f"matmul{scalar_suffix}_{dtype_in_name}_{dtype_out_name}{b_suffix}",
         object_file_name=object_file_name,
         source_file=source_file,
-        arg_types=[
-            np.ndarray[(m, k), np.dtype[input_tensors[0].dtype]],
-            np.ndarray[(k, n), np.dtype[input_tensors[0].dtype]],
-            np.ndarray[(m, n), np.dtype[output_tensor.dtype]],
-        ],
+        arg_types=matmul_arg_types,
         compile_flags=compile_args,
     )
 
@@ -1069,6 +1129,7 @@ def gemm(arch: str, input_tensors: list, output_tensor):
             n_aie_cols=num_cols,
             dtype_in_str=dtype_to_str(A.dtype),
             dtype_out_str=dtype_to_str(C.dtype),
+            dtype_b_str=dtype_to_str(B.dtype),
             b_col_maj=True,
             c_col_maj=True,
             use_scalar=use_scalar,

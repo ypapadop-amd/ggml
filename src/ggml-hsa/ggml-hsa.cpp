@@ -778,9 +778,9 @@ static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
 }
 
 /**
- * @brief Points a padded-GEMM operand at a bf16 internal buffer, unless it already matches.
+ * @brief Points a padded-GEMM operand at an internal buffer of @p type, unless it already matches.
  *
- * An operand that is already bf16 at exactly the padded shape needs neither conversion nor
+ * An operand that is already @p type at exactly the padded shape needs neither conversion nor
  * padding, so it keeps pointing at the parent buffer: leaving @c buffer_size at 0 skips the
  * internal allocation, the @c CONVERT_PAD dispatch, and (when no operand needs one) the whole
  * source synchronization. Redirecting it anyway costs a full-size device copy into an
@@ -795,16 +795,18 @@ static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
  * @param[in,out] source internal source node to retype and resize
  * @param[in] ne0 padded extent of dimension 0 (the K dimension for both operands)
  * @param[in] ne1 padded extent of dimension 1 (Mpad for A, Npad for B)
+ * @param[in] type dtype the GEMM kernel consumes this operand in
  */
 static void ggml_hsa_pad_gemm_operand(const ggml_hsa_device_info::device_info & dev_info,
                                       ggml_backend_hsa_tensor_extra::source_node_t & source,
                                       std::int64_t ne0,
-                                      std::int64_t ne1) {
+                                      std::int64_t ne1,
+                                      ggml_type type) {
     ggml_tensor & operand = source.tensor;
-    if (operand.type == GGML_TYPE_BF16 && operand.ne[0] == ne0 && operand.ne[1] == ne1) {
+    if (operand.type == type && operand.ne[0] == ne0 && operand.ne[1] == ne1) {
         return;
     }
-    operand.type = GGML_TYPE_BF16;
+    operand.type = type;
     operand.ne[0] = ne0;
     operand.ne[1] = ne1;
     ggml_hsa_set_contiguous_strides(operand);
@@ -917,8 +919,13 @@ static bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info
     // bf16 sources are just zero-padded to the tile multiples (handled by the pre-processing
     // kernel below, which is selected from the parent tensor's own dtype). An operand that needs
     // neither is left alone -- see ggml_hsa_pad_gemm_operand.
-    ggml_hsa_pad_gemm_operand(dev_info, sources[0], Kpad, Mpad);
-    ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad);
+    //
+    // The exception is an f32 B on aie2: the GEMM streams it as f32 and converts it to bf16 on
+    // each core, so B is only padded, never converted by a separate dispatch.
+    const ggml_type b_type =
+        (dev_info.name == "aie2" && b.type == GGML_TYPE_F32) ? GGML_TYPE_F32 : GGML_TYPE_BF16;
+    ggml_hsa_pad_gemm_operand(dev_info, sources[0], Kpad, Mpad, GGML_TYPE_BF16);
+    ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad, b_type);
 
     // Rewrite the output to a padded f32 temporary that must be de-padded back into the parent.
     // The GEMM microkernel always produces f32, and HSA_DEPAD always consumes an f32 source, so the

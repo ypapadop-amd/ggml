@@ -37,16 +37,17 @@ void ggml_hsa_convert_pad(const INPUT_DTYPE * __restrict in,
 #ifdef CONVERT_PAD_PAD_ONLY
     static_assert(std::is_same_v<INPUT_DTYPE, OUTPUT_DTYPE>,
                   "CONVERT_PAD_PAD_ONLY requires matching input and output types");
-    // bf16 -> bf16: pad only. Aligned store dodges the broken 16-bit unaligned vector store
-    // (output rows are d0pad-wide, a tile multiple, so vector-aligned; input load stays
-    // unaligned since the per-row fifo stride is not).
+    // bf16 -> bf16 or f32 -> f32: pad only. Aligned store dodges the broken 16-bit unaligned
+    // vector store (output rows are d0pad-wide, a tile multiple, so vector-aligned; input load
+    // stays unaligned since the per-row fifo stride is not).
     constexpr int32_t V = 512 / (sizeof(OUTPUT_DTYPE) * 8);
     const int32_t nblk = d0v / V;
     const int32_t vend = nblk * V;
 
     AIE_PREPARE_FOR_PIPELINING
     // Only bind the trip-count hint when the row spans a full vector; nblk == 0 (row < V) makes
-    // AIE_LOOP_RANGE(0, 0) an invalid Peano pragma.
+    // AIE_LOOP_RANGE(0, 0) an invalid Peano pragma. 32 is the widest V (bf16), so the guard also
+    // holds for f32 (V == 16).
 #if defined(CONVERT_PAD_D0) && (CONVERT_PAD_D0) >= 32
     AIE_LOOP_RANGE(nblk, nblk)
 #endif
