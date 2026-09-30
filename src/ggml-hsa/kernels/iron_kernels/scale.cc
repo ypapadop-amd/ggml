@@ -34,8 +34,8 @@ void ggml_op_scale(
     const int32_t vend = (N / V) * V;
 
     // Aligned load/store: scale.py streams whole power-of-two tiles, so in/out are
-    // vector-aligned (unlike row-tiled kernels, e.g. binary_ops ADD bias, whose
-    // per-row stride isn't). MIN_ITERATION_COUNT(1): N (== tile_size) is at least V.
+    // vector-aligned (unlike row-tiled kernels, e.g. the binary_ops row-broadcast
+    // kernels, whose per-row stride isn't). MIN_ITERATION_COUNT(1): N (== tile_size) is at least V.
     AIE_PREPARE_FOR_PIPELINING
     AIE_LOOP_MIN_ITERATION_COUNT(1)
     for (int32_t i = 0; i < vend; i += V) {
