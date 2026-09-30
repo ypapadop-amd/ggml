@@ -1211,7 +1211,7 @@ def create_mat_mul_external_functions(
         output_tensor: Output tensor C.
 
     Returns:
-        (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn).
+        (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn, narrow_fn, dtype_acc).
 
     Raises:
         ValueError: If the architecture is unsupported.
@@ -1236,28 +1236,34 @@ def create_mat_mul_external_functions(
     dtype_in = input_tensors[0].dtype
     dtype_out = output_tensor.dtype
     dtype_in_str = dtype_to_str(dtype_in)
+    # The mmul reduces in f32 even when the destination is bf16: narrowing per K step would lose
+    # precision. A bf16 C therefore accumulates in f32 and narrows once per tile on the core.
+    narrowing = dtype_in_str == "bf16" and dtype_to_str(dtype_out) == "bf16"
+    dtype_acc = np.dtype(np.float32) if narrowing else np.dtype(dtype_out)
     r, s, t = resolve_mac_dims(dev, dtype_in_str)
     row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
     # GGML shape convention (innermost first): A is [K, M], B is [K, N].
     M = input_tensors[0].shape[1]
     K = input_tensors[0].shape[0]
     N = input_tensors[1].shape[1]
+    # Budget L1 for the accumulator dtype: a narrowing core holds one f32 accumulator plus two
+    # bf16 send buffers, the same bytes as two f32 buffers.
     m, k, n = select_gemm_tile(
-        dev, M, N, K, dtype_in, dtype_out, r, s, t, row_expand, col_expand
+        dev, M, N, K, dtype_in, dtype_acc, r, s, t, row_expand, col_expand
     )
 
     current_dir = Path(__file__).resolve().parent
     source_file = str(current_dir / arch / "mm.cc")
-    dtype_in_name = dtype_to_str(input_tensors[0].dtype)
-    dtype_out_name = dtype_to_str(output_tensor.dtype)
+    dtype_in_name = dtype_to_str(dtype_in)
+    dtype_acc_name = dtype_to_str(dtype_acc)
     compile_args = [
         f"-DDIM_M={m}",
         f"-DDIM_N={n}",
         f"-DDIM_K={k}",
-        f"-D{dtype_in_name}_{dtype_out_name}_ONLY",
+        f"-D{dtype_in_name}_{dtype_acc_name}_ONLY",
         "-DB_COL_MAJ",
         "-DC_COL_MAJ",
-    ]
+    ] + (["-DGEMM_NARROW_BF16"] if narrowing else [])
     # Name the object after the compile flags that vary. Isolation does not depend
     # on this today -- build_iron.py gives each kernel its own work_dir, keyed by a
     # name that already encodes the shapes -- but m/k/n stopped being arch constants
@@ -1268,38 +1274,46 @@ def create_mat_mul_external_functions(
     # Always a .o, not core_function_object(): this path passes the object to the low-level
     # dialect via link_with, which ld.lld cannot do with textual IR, so this kernel can't inline.
     object_file_name = (
-        f"matmul_core_functions_{dtype_in_name}_{dtype_out_name}_{m}x{k}x{n}.o"
+        f"matmul_core_functions_{dtype_in_name}_{dtype_acc_name}"
+        f"{'_narrow_bf16' if narrowing else ''}_{m}x{k}x{n}.o"
     )
 
     zero_fn = ExternalFunction(
-        name=f"zero{scalar_suffix}_{dtype_out_name}",
+        name=f"zero{scalar_suffix}_{dtype_acc_name}",
         object_file_name=object_file_name,
         source_file=source_file,
-        arg_types=[np.ndarray[(m, n), np.dtype[output_tensor.dtype]]],
+        arg_types=[np.ndarray[(m, n), np.dtype[dtype_acc]]],
         compile_flags=compile_args,
     )
 
     matmul_fn = ExternalFunction(
-        name=f"matmul{scalar_suffix}_{dtype_in_name}_{dtype_out_name}",
+        name=f"matmul{scalar_suffix}_{dtype_in_name}_{dtype_acc_name}",
         object_file_name=object_file_name,
         source_file=source_file,
         arg_types=[
-            np.ndarray[(m, k), np.dtype[input_tensors[0].dtype]],
-            np.ndarray[(k, n), np.dtype[input_tensors[0].dtype]],
-            np.ndarray[(m, n), np.dtype[output_tensor.dtype]],
+            np.ndarray[(m, k), np.dtype[dtype_in]],
+            np.ndarray[(k, n), np.dtype[dtype_in]],
+            np.ndarray[(m, n), np.dtype[dtype_acc]],
         ],
         compile_flags=compile_args,
     )
 
-    return (
-        m,
-        n,
-        k,
-        use_scalar,
-        num_cols,
-        zero_fn,
-        matmul_fn,
+    narrow_fn = (
+        ExternalFunction(
+            name="narrow_f32_bf16",
+            object_file_name=object_file_name,
+            source_file=source_file,
+            arg_types=[
+                np.ndarray[(m, n), np.dtype[dtype_acc]],
+                np.ndarray[(m, n), np.dtype[dtype_out]],
+            ],
+            compile_flags=compile_args,
+        )
+        if narrowing
+        else None
     )
+
+    return (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn, narrow_fn, dtype_acc)
 
 
 def gemm(arch: str, input_tensors: list, output_tensor):
@@ -1355,16 +1369,10 @@ def gemm(arch: str, input_tensors: list, output_tensor):
         msg = f"Unsupported architecture: {arch}"
         raise ValueError(msg)
 
-    (
-        m,
-        n,
-        k,
-        use_scalar,
-        num_cols,
-        zero_fn,
-        matmul_fn,
-    ) = create_mat_mul_external_functions(
-        arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
+    (m, n, k, use_scalar, num_cols, zero_fn, matmul_fn, narrow_fn, dtype_acc) = (
+        create_mat_mul_external_functions(
+            arch=arch, input_tensors=input_tensors, output_tensor=output_tensor
+        )
     )
 
     with mlir_mod_ctx() as ctx:
@@ -1389,5 +1397,7 @@ def gemm(arch: str, input_tensors: list, output_tensor):
             object_file=matmul_fn.object_file_name,
             M_dense=C.shape[0],
             N_dense=C.shape[1],
+            dtype_acc_str=dtype_to_str(dtype_acc),
+            narrow_fn=narrow_fn._name if narrow_fn else None,
         )
         return ctx.module

@@ -39,10 +39,9 @@ DTYPES = {
 }
 
 # GEMM output dtypes. The microkernel always consumes bf16, but the destination
-# varies: ggml's native MUL_MAT output is f32 (what create_mat_mul_external_functions
-# actually passes), while graph_optimize can retype it to bf16 so the de-pad narrows
-# in one pass. The L1 budget depends on the output element size, so both must be
-# covered -- testing only bf16->bf16 would exercise a combination production never uses.
+# varies: ggml's native MUL_MAT output is f32, while graph_optimize can retype it
+# to bf16 so the GEMM narrows on the core. The L1 budget depends on the output
+# element size, so both must be covered.
 OUT_DTYPES = [BF16, F32]
 
 # Upper bound on a single tile dimension. Passed explicitly to select_gemm_tile so

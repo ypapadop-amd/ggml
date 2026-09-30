@@ -1185,3 +1185,31 @@ combos(matmul_vectorized_c_func) combos(zero_vectorized_c_func)
 #endif
 
 } // extern "C"
+
+#ifdef GEMM_NARROW_BF16
+#include "../aie_kernel_utils.h"
+#include "../ggml-aie.hpp"
+
+extern "C" {
+
+/**
+ * @brief Narrows one core's f32 C accumulator to bf16 for a bf16 GEMM destination.
+ *
+ * Element order is kept, so the mem tile's layout transform applies to the narrowed block
+ * unchanged. Uses the same round-to-nearest-even and NaN rule as ggml's f32->bf16 conversion, so
+ * the result is bit-identical to computing in f32 and casting on the host.
+ *
+ * @param[in]  acc DIM_M x DIM_N f32 accumulator (mmul-blocked order).
+ * @param[out] out DIM_M x DIM_N bf16 block, same order.
+ */
+void narrow_f32_bf16(const float * __restrict acc, bfloat16 * __restrict out) {
+    constexpr int V = 16;
+    static_assert((DIM_M * DIM_N) % V == 0, "C tile must be a multiple of the vector width");
+    AIE_PREPARE_FOR_PIPELINING
+    for (int i = 0; i < DIM_M * DIM_N; i += V) {
+        aie::store_v(out + i, convert_f32_to_bf16_vector<V>(aie::load_v<V>(acc + i)));
+    }
+}
+
+} // extern "C"
+#endif
