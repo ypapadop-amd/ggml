@@ -23,7 +23,7 @@ from .gemm_c_plan import (
     core_schedule,
     make_grid,
     mem_buffers,
-    mem_tasks,
+    mem_plan,
     sends,
     shim_rb_chunks,
     validate,
@@ -466,6 +466,7 @@ def _start_mem_c_task(mem_tile, bufs, locks, token, task, n_aie_rows):
                         next_bd(blk[i + 1])
                 i += 1
     dma_start_task(task_op)
+    return task_op
 
 
 def _start_shim_c_task(shim_tile, C, chunk, bd_ids):
@@ -959,11 +960,13 @@ def my_matmul(
             np.ndarray[(grid.M * grid.N,), np.dtype[dtype_out]],
         )
         def sequence(A, B, C):
-            # Mem-tile MM2S for the whole dispatch, queued up front (gemm_c_plan.mem_tasks keeps
-            # each channel within its task-queue depth). The tasks are lock-gated, so they run as
-            # the cores deliver.
-            for col in range(n_aie_cols):
-                for task in mem_tasks(grid, col):
+            # Mem-tile MM2S tasks (gemm_c_plan.mem_plan). They are lock-gated, so they run as the
+            # cores deliver. An up-front column queues the whole dispatch's tasks here; a
+            # per-row-block column queues each row block's at the start of that row block.
+            mem_plans = [mem_plan(grid, col) for col in range(n_aie_cols)]
+
+            def start_mem_tasks(col, tasks):
+                return [
                     _start_mem_c_task(
                         mem_tiles[col],
                         c_mem_buf[col],
@@ -972,18 +975,30 @@ def my_matmul(
                         task,
                         n_aie_rows,
                     )
-            # Per column, oldest first: started shim C tasks, or -- for a row block in which the
-            # column writes no C -- the A/B fifos whose transfers were issued with a token.
+                    for task in tasks
+                ]
+
+            for col in range(n_aie_cols):
+                if not mem_plans[col].per_row_block:
+                    for tasks in mem_plans[col].groups:
+                        start_mem_tasks(col, tasks)
+            # Per column, oldest first: [entry, mem tasks to free once it is awaited]. An entry is
+            # a started shim C task, or -- for a row block in which the column writes no C -- the
+            # A/B fifos whose transfers were issued with a token.
             outstanding = [[] for _ in range(n_aie_cols)]
 
             def await_all(col, keep=0):
                 # Await all but the newest `keep` entries.
                 n_wait = len(outstanding[col]) - keep
-                for entry in outstanding[col][:n_wait]:
+                for entry, frees in outstanding[col][:n_wait]:
                     if isinstance(entry, list):
                         dma_wait(*entry)
                     else:
                         dma_await_task(entry)
+                    # The shim has received all of this row block's C, so the mem tile finished
+                    # reading it: its per-row-block mem tasks are done and their BDs reusable.
+                    for task_op in frees:
+                        dma_free_task(task_op)
                 del outstanding[col][:n_wait]
 
             # We are limited in the number of BDs. After synchronizing, we can reuse BDs.
@@ -1002,8 +1017,14 @@ def my_matmul(
                         # for small input sizes, we may not even need a "pong" iteration
                         break
                     assert tb_n_rows == 1
-                    rest_chunks = {}
+                    rest_chunks, mem_ops = {}, {}
                     for col in range(n_aie_cols):
+                        # A per-row-block column queues this row block's mem tasks. The row
+                        # block two back was awaited, so at most two row blocks' tasks are live.
+                        if mem_plans[col].per_row_block:
+                            mem_ops[col] = start_mem_tasks(
+                                col, mem_plans[col].groups[row_base]
+                            )
                         # C Output Transfer:
                         # The smallest transfer unit is a (m*n_aie_rows)-x-(n)-sized sub-tile of the matrix.
                         # Transfer one such tile for every (n_aie_cols)-th column, evenly spaced,
@@ -1028,12 +1049,15 @@ def my_matmul(
                         chunks = shim_rb_chunks(grid, col, row_base)
                         if chunks:
                             outstanding[col].append(
-                                _start_shim_c_task(
-                                    shim_tiles[col],
-                                    C,
-                                    chunks[0],
-                                    SHIM_C_BD_IDS[pingpong],
-                                )
+                                [
+                                    _start_shim_c_task(
+                                        shim_tiles[col],
+                                        C,
+                                        chunks[0],
+                                        SHIM_C_BD_IDS[pingpong],
+                                    ),
+                                    [],
+                                ]
                             )
                         rest_chunks[col] = chunks[1:]
                         # A column that writes no C in this row block has no C task whose
@@ -1042,9 +1066,12 @@ def my_matmul(
                         ab_token = True if not chunks else None
                         if not chunks:
                             outstanding[col].append(
-                                [A_l3l2_fifos[col], B_l3l2_fifos[col]]
-                                if col < n_aie_rows
-                                else [B_l3l2_fifos[col]]
+                                [
+                                    [A_l3l2_fifos[col], B_l3l2_fifos[col]]
+                                    if col < n_aie_rows
+                                    else [B_l3l2_fifos[col]],
+                                    [],
+                                ]
                             )
                         if generate_taps:
                             C_taps.extend(
@@ -1170,10 +1197,19 @@ def my_matmul(
                         for chunk in rest_chunks[col]:
                             await_all(col)
                             outstanding[col].append(
-                                _start_shim_c_task(
-                                    shim_tiles[col], C, chunk, SHIM_C_BD_IDS[pingpong]
-                                )
+                                [
+                                    _start_shim_c_task(
+                                        shim_tiles[col],
+                                        C,
+                                        chunk,
+                                        SHIM_C_BD_IDS[pingpong],
+                                    ),
+                                    [],
+                                ]
                             )
+                        # Free this row block's mem tasks once its last shim C task is awaited.
+                        if col in mem_ops:
+                            outstanding[col][-1][1].extend(mem_ops[col])
                     if tb > 0 or (tb == 0 and pingpong > 0):
                         # Keep this row block's C in flight while the next one's A and B are
                         # issued; awaiting it too would drain the pipeline every row block. Its

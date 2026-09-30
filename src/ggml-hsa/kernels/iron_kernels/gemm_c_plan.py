@@ -18,6 +18,7 @@ tested without an NPU (tests/ggml-hsa/python/test_gemm_c_plan.py).
 """
 
 from dataclasses import dataclass
+from functools import cache
 from math import prod
 
 # Hardware/toolchain limits (AIE2 target model, mlir-aie 1.4.3).
@@ -31,7 +32,14 @@ MAX_SHIM_ITERATIONS = 64  # shim BD iteration wrap is 6 bits
 SHIM_MAX_STEP = 1 << 20  # shim BD step fields are 20 bits
 # Shim BD ids C may use in each ping/pong half; the A/B transfers take 1, 2 and 9, 10.
 SHIM_C_BD_IDS = ((0, 3, 4, 5, 6, 7), (8, 11, 12, 13, 14, 15))
-MAX_MEM_CHAIN_BDS = 16  # mem-tile MM2S BDs one task chain may use
+# Mem-tile BDs the runtime sequence may hold at once. A mem tile has 48 BDs, but even channels
+# only reach BDs 0-23 and odd channels 24-47 (AIE2TargetModel::isBdChannelAccessible), and the
+# runtime-sequence allocator draws every mem-tile task BD from the even half. Of those 24, the
+# static DMA code takes 8: the S2MM join's even channels 2 and 4 (one BD per C buffer each, so 4
+# with ping/pong) and the A/B ObjectFifos' even channels S2MM 0 and MM2S 0 (2 BDs each at depth
+# 2), read from aiecc's input_with_addresses.mlir on aie2 and aie2p. 24 - 8 = 16. Checked at the
+# boundary with aiecc: 16 live BDs compile (aie2 2048x50257x768), 18 fail (aie2p 2000x50257x4096).
+MAX_LIVE_MEM_BDS = 16
 
 
 @dataclass(frozen=True)
@@ -97,10 +105,10 @@ class CObject:
     cols: int  # valid columns of this AIE column's n; 0 = the column produces no object here
 
 
-def column_objects(g: Grid, col: int) -> list[CObject]:
-    """All objects of AIE column `col`, in the order its cores compute them."""
+def column_objects(g: Grid, col: int, rbs: range | None = None) -> list[CObject]:
+    """All objects of AIE column `col` (of row blocks `rbs`), in the order its cores compute them."""
     objs = []
-    for rb in range(g.RB):
+    for rb in range(g.RB) if rbs is None else rbs:
         rows = min(g.rows_per_block, g.M - rb * g.rows_per_block)
         for cg in range(g.CG):
             cols = max(0, min(g.n, g.N - (cg * g.n_aie_cols + col) * g.n))
@@ -262,7 +270,7 @@ def shim_rb_chunks(g: Grid, col: int, rb: int) -> list[list[ShimBd]]:
     A BD with iterations > 1 is a chunk of its own (see ShimBd); its task repeats it.
     """
     bds = []
-    for o in column_objects(g, col)[rb * g.CG : (rb + 1) * g.CG]:
+    for o in column_objects(g, col, range(rb, rb + 1)):
         if o.cols:
             bds.extend(_to_shim(b) for b in shim_write_bds(o, g, col))
     k = len(SHIM_C_BD_IDS[0])
@@ -285,6 +293,11 @@ class MemTask:
     bds: tuple[tuple[Bd, ...], ...]  # read patterns of each object
     repeat: int  # executions of the whole chain, 1..MAX_TASK_REPEAT
 
+    @property
+    def n_bds(self) -> int:
+        """Mem-tile BDs the task's chain holds while it is live."""
+        return sum(len(b) for b in self.bds)
+
 
 def mem_buffers(g: Grid, col: int) -> int:
     """Number of mem-tile C buffers of AIE column `col`: 2 (ping/pong) or 1.
@@ -298,61 +311,138 @@ def mem_buffers(g: Grid, col: int) -> int:
     return 1 if n_objs % 2 else 2
 
 
-def _mem_task(
-    objs: list[CObject], first_buf: int, repeat: int, g: Grid, nbuf: int
-) -> MemTask:
-    return MemTask(
-        tuple((first_buf + i) % nbuf for i in range(len(objs))),
-        tuple(tuple(mem_read_bds(o, g)) for o in objs),
-        repeat,
-    )
+def _compress(objs: list[CObject], first_buf: int, g: Grid, nbuf: int) -> list[MemTask]:
+    """Mem tasks reading `objs` in order, object i from buffer (first_buf + i) % nbuf.
 
-
-def mem_tasks(g: Grid, col: int) -> list[MemTask]:
-    """The mem-tile MM2S tasks for one whole dispatch of AIE column `col`, queued up front.
-
-    Row blocks before the last are identical, so one chain (one row block's produced objects,
-    doubled when that count is odd so the chain returns to the same ping/pong buffer) repeats
-    across them. The last row block is its own task. Object i of the dispatch is read from buffer
-    i % mem_buffers(g, col).
+    Each run of objects with the same read geometry repeats its smallest unit -- nbuf objects,
+    one per buffer -- through the task repeat count. When the run has more units than one repeat
+    count holds, the chain gets more copies of the unit rather than the run more tasks. Objects
+    left over (a run too short to repeat, or the remainder of one) are chained, in order, into a
+    single repeat-1 task together with any leftovers that directly follow.
     """
-    objs = column_objects(g, col)
-    nbuf = mem_buffers(g, col)
+    tasks: list[MemTask] = []
+    pending: list[CObject] = []
+    buf = first_buf
 
-    def produced(rb):
-        return [o for o in objs[rb * g.CG : (rb + 1) * g.CG] if o.cols]
+    def task(chain, repeat):
+        nonlocal buf
+        tasks.append(
+            MemTask(
+                tuple((buf + i) % nbuf for i in range(len(chain))),
+                tuple(tuple(mem_read_bds(o, g)) for o in chain),
+                repeat,
+            )
+        )
+        buf = (buf + len(chain) * repeat) % nbuf
 
-    tasks = []
-    buf = 0
-    if g.RB > 1:
-        period = produced(0)
-        if period:
-            odd = len(period) % 2
-            chain = period * 2 if odd else period
-            runs = (g.RB - 1) // 2 if odd else g.RB - 1
-            while runs:
-                r = min(runs, MAX_TASK_REPEAT)
-                tasks.append(_mem_task(chain, buf, r, g, nbuf))
-                runs -= r
-            if odd and (g.RB - 1) % 2:
-                tasks.append(_mem_task(period, buf, 1, g, nbuf))
-                buf = (buf + 1) % nbuf
-    last = produced(g.RB - 1)
-    if last:
-        tasks.append(_mem_task(last, buf, 1, g, nbuf))
+    def flush():
+        if pending:
+            task(list(pending), 1)
+            pending.clear()
 
-    if len(tasks) > MAX_QUEUED_TASKS:
-        msg = f"column {col} needs {len(tasks)} mem-tile C tasks; the queue holds {MAX_QUEUED_TASKS}"
-        raise ValueError(msg)
-    for t in tasks:
-        n_bds = sum(len(b) for b in t.bds)
-        if n_bds > MAX_MEM_CHAIN_BDS:
-            msg = f"column {col} needs a {n_bds}-BD mem-tile chain (max {MAX_MEM_CHAIN_BDS})"
-            raise ValueError(msg)
+    geoms = [(o.rows, o.cols) for o in objs]  # mem_read_bds depends on these only
+    i = 0
+    while i < len(objs):
+        j = i
+        while j < len(objs) and geoms[j] == geoms[i]:
+            j += 1
+        units = (j - i) // nbuf
+        if units >= 2:
+            # The fewest copies that fit the repeat count, lengthened while that shrinks
+            # copies + leftover units (both cost BDs).
+            k0 = -(-units // MAX_TASK_REPEAT)
+            k = min(range(k0, 2 * k0 + 1), key=lambda c: c + units % c)
+            flush()
+            task(objs[i : i + k * nbuf], units // k)
+            pending.extend(objs[i + (units // k) * k * nbuf : j])
+        else:
+            pending.extend(objs[i:j])
+        i = j
+    flush()
     return tasks
+
+
+MEM_LIVE_ROW_BLOCKS = 2  # per-row-block groups live at once (see MemPlan)
+
+
+@dataclass(frozen=True)
+class MemPlan:
+    """How the runtime sequence issues one AIE column's mem-tile MM2S tasks.
+
+    Up front (per_row_block False): groups[0] holds every task of the dispatch, queued before the
+    first row block and never awaited, so all of them are live for the whole sequence.
+
+    Per row block (per_row_block True): groups[rb] is queued at the start of row block rb. The
+    sequence awaits row block rb's shim C tasks before it starts row block rb + 2 (gemm.py's
+    await_all(col, keep=1)), and the shim receiving all of rb's C proves the mem tile finished
+    reading it; only then are rb's tasks freed and their BDs reused. So at most two consecutive
+    groups are live at once (MEM_LIVE_ROW_BLOCKS).
+    """
+
+    per_row_block: bool
+    groups: tuple[tuple[MemTask, ...], ...]
+
+    def live(self) -> tuple[int, int]:
+        """The most (tasks, BDs) live on the mem tile's MM2S channel at once."""
+        if not self.per_row_block:
+            ts = self.groups[0] if self.groups else ()
+            return len(ts), sum(t.n_bds for t in ts)
+        tasks = bds = 0
+        for rb in range(len(self.groups)):
+            window = self.groups[max(0, rb - MEM_LIVE_ROW_BLOCKS + 1) : rb + 1]
+            tasks = max(tasks, sum(len(g) for g in window))
+            bds = max(bds, sum(t.n_bds for g in window for t in g))
+        return tasks, bds
+
+
+def _fits(plan: MemPlan) -> bool:
+    tasks, bds = plan.live()
+    return tasks <= MAX_QUEUED_TASKS and bds <= MAX_LIVE_MEM_BDS
+
+
+@cache
+def mem_plan(g: Grid, col: int) -> MemPlan:
+    """The mem-tile MM2S plan of AIE column `col` for one dispatch.
+
+    Object i of the dispatch is read from buffer i % mem_buffers(g, col). A column whose row
+    blocks each read one repeating geometry (every row block but the last is identical) queues
+    its compressed tasks up front. A column whose row block mixes geometries -- the one that
+    straddles N when there are several column groups: full objects then a clipped one -- would
+    need tasks per row block, so it issues them per row block (see MemPlan). An up-front plan
+    that exceeds the task queue or the live-BD budget (many row blocks and column groups) falls
+    back to per row block too.
+    Raises ValueError when neither fits.
+    """
+    nbuf = mem_buffers(g, col)
+    objs = column_objects(g, col)
+    per_rb = [
+        [o for o in objs[rb * g.CG : (rb + 1) * g.CG] if o.cols] for rb in range(g.RB)
+    ]
+    uniform = len({tuple(mem_read_bds(o, g)) for o in per_rb[0]}) <= 1
+
+    if uniform:
+        everything = [o for r in per_rb for o in r]
+        plan = MemPlan(
+            per_row_block=False, groups=(tuple(_compress(everything, 0, g, nbuf)),)
+        )
+        if _fits(plan):
+            return plan
+    groups, buf = [], 0
+    for r in per_rb:
+        groups.append(tuple(_compress(r, buf, g, nbuf)))
+        buf = (buf + len(r)) % nbuf
+    plan = MemPlan(per_row_block=True, groups=tuple(groups))
+    if not _fits(plan):
+        tasks, bds = plan.live()
+        msg = (
+            f"column {col} needs {tasks} live mem-tile C tasks with {bds} BDs; the queue holds "
+            f"{MAX_QUEUED_TASKS} and the budget is {MAX_LIVE_MEM_BDS} BDs"
+        )
+        raise ValueError(msg)
+    return plan
 
 
 def validate(g: Grid) -> None:
     """Raise ValueError if any column's plan exceeds a hardware limit."""
     for col in range(g.n_aie_cols):
-        mem_tasks(g, col)
+        mem_plan(g, col)

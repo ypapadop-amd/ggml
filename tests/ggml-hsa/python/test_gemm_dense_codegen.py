@@ -119,3 +119,27 @@ def test_dense_c_compiles_with_aiecc(arch, shape, out):
             work_dir=work,
         )
         assert Path(f"{work}/gemm.pdi").stat().st_size > 0
+
+
+# (arch, shape): shapes whose mem-tile C tasks once exceeded the mem tile's live-BD budget, and
+# base 2053fe89 ran on the NPU. aiecc is the check that counts the live BDs.
+LARGE = [
+    ("aie2p", (4096, 4096, 4096)),
+    ("aie2p", (1000, 2000, 1000)),
+    ("aie2", (1024, 4096, 1024)),
+]
+
+
+@pytest.mark.parametrize(("arch", "shape"), LARGE)
+def test_large_dense_c_module_verifies(arch, shape):
+    """The large-shape dense-C modules build and verify."""
+    assert _module(arch, shape, F32).operation.verify()
+
+
+@pytest.mark.skipif(
+    os.environ.get("RUN_AIECC_TESTS") != "1", reason="set RUN_AIECC_TESTS=1"
+)
+@pytest.mark.parametrize(("arch", "shape"), LARGE)
+def test_large_dense_c_compiles_with_aiecc(arch, shape):
+    """The large-shape dense-C modules fit the mem tile's BDs and compile to a PDI."""
+    test_dense_c_compiles_with_aiecc(arch, shape, F32)

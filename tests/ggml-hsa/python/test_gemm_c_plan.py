@@ -39,6 +39,10 @@ SHAPES = [
     (98000, 16, 72),  # conv2: all-padding columns + row clip, long M
     (499, 500, 784),  # odd M (f32 destination only)
     (33, 130, 64),  # small, awkward
+    (1000, 2000, 1000),  # straddling column issued per row block
+    (1000, 260, 512),  # CG 3, straddling column 0
+    (1500, 2436, 64),  # many row blocks, straddling column
+    (256, 50257, 64),  # LM-head-like N: odd CG > 16
 ]
 
 
@@ -75,11 +79,25 @@ def _addresses(offset, sizes, strides):
     return idx.reshape(-1)
 
 
+def _mem_tasks_in_order(g, col):
+    """Every mem task of one dispatch in the order the runtime sequence queues them.
+
+    An up-front plan queues its single group before the first row block; a per-row-block plan
+    queues group rb at the start of row block rb. Either way the channel runs them in this order.
+    """
+    plan = P.mem_plan(g, col)
+    if plan.per_row_block:
+        assert len(plan.groups) == g.RB
+    else:
+        assert len(plan.groups) == 1
+    return [t for group in plan.groups for t in group]
+
+
 def _mem_stream(g, col):
     """Dense destination index of every element the mem tile streams to the shim, in order."""
     produced = [o for o in P.column_objects(g, col) if o.cols]
     out, i = [], 0
-    for task in P.mem_tasks(g, col):
+    for task in _mem_tasks_in_order(g, col):
         for _ in range(task.repeat):
             for buf, obj_bds in zip(task.buffers, task.bds):
                 o = produced[i]
@@ -163,7 +181,7 @@ def _mem_buffer_sequence(g, col):
     """Mem-tile buffer each object of one dispatch is read from, in order."""
     return [
         buf
-        for task in P.mem_tasks(g, col)
+        for task in _mem_tasks_in_order(g, col)
         for _ in range(task.repeat)
         for buf in task.buffers
     ]
@@ -217,7 +235,7 @@ def test_fc1_geometry():
 
 def test_conv1_idle_columns_produce_nothing():
     g = P.make_grid(392000, 8, 392000, 128, 200, 16, 4, 8)
-    assert P.mem_tasks(g, 1) == []
+    assert P.mem_plan(g, 1) == P.MemPlan(per_row_block=False, groups=((),))
     assert P.core_schedule(g, 0, 1) == [
         (489, (("consume", 1),)),
         (1, (("consume", 1),)),
@@ -230,7 +248,7 @@ def test_conv1_idle_columns_produce_nothing():
 
 def test_conv2_long_m_fits_the_task_queue():
     g = P.make_grid(98000, 16, 98016, 128, 24, 16, 4, 8)
-    tasks = P.mem_tasks(g, 0)
+    tasks = _mem_tasks_in_order(g, 0)
     assert len(tasks) <= P.MAX_QUEUED_TASKS
     assert all(1 <= t.repeat <= P.MAX_TASK_REPEAT for t in tasks)
 
@@ -265,3 +283,171 @@ def test_m10_cores_1_to_3_only_send():
 def test_make_grid_rejects_bad_shapes(args):
     with pytest.raises(ValueError):
         P.make_grid(*args)
+
+
+def _simulate_issue(g, col):
+    """Replay gemm.py's issue/await order for one column's mem-tile MM2S channel.
+
+    Mirrors the runtime sequence: an up-front plan queues its tasks before row block 0 and never
+    frees them. Per row block rb, a per-row-block plan queues group rb; the shim C chunks follow
+    (every chunk after the first awaits all outstanding entries first); the group is attached to
+    the row block's last entry; from rb 1 on, all entries but the newest are awaited
+    (await_all(col, keep=1)). Awaiting an entry frees the groups attached to it.
+
+    Asserts a group is freed only once every shim entry of its row block was awaited -- the shim
+    having received all of that row block's C is what proves the mem tile finished reading it.
+    Returns the peak (live tasks, live BDs).
+    """
+    plan = P.mem_plan(g, col)
+    live = {}
+    peak = (0, 0)
+
+    def note():
+        nonlocal peak
+        ts = [t for group in live.values() for t in group]
+        peak = max(peak, (len(ts), sum(t.n_bds for t in ts)))
+
+    if not plan.per_row_block:
+        live["up-front"] = plan.groups[0]
+        note()
+    n_entries, awaited, outstanding = {}, set(), []
+
+    def await_all(keep=0):
+        n = len(outstanding) - keep
+        for rb, i, frees in outstanding[:n]:
+            awaited.add((rb, i))
+            for key in frees:
+                assert all((key, j) in awaited for j in range(n_entries[key])), (
+                    f"column {col}: row block {key}'s mem BDs freed before its shim C completed"
+                )
+                del live[key]
+        del outstanding[:n]
+
+    for rb in range(g.RB):
+        if plan.per_row_block:
+            live[rb] = plan.groups[rb]
+            note()
+        chunks = P.shim_rb_chunks(g, col, rb)
+        # A row block without C awaits its A/B instead.
+        n_entries[rb] = max(1, len(chunks))
+        outstanding.append([rb, 0, []])
+        for i in range(1, len(chunks)):
+            await_all()
+            outstanding.append([rb, i, []])
+        if plan.per_row_block:
+            outstanding[-1][2].append(rb)
+        if rb > 0:
+            await_all(keep=1)
+    await_all()
+    return peak
+
+
+def _check_accepted(g):
+    for col in range(g.n_aie_cols):
+        plan = P.mem_plan(g, col)
+        tasks, bds = plan.live()
+        assert tasks <= P.MAX_QUEUED_TASKS
+        assert bds <= P.MAX_LIVE_MEM_BDS
+        assert all(
+            1 <= t.repeat <= P.MAX_TASK_REPEAT for grp in plan.groups for t in grp
+        )
+        sim_tasks, sim_bds = _simulate_issue(g, col)
+        assert sim_tasks <= tasks
+        assert sim_bds <= bds
+
+
+# Plan-level sweep: large N (LM heads), large M, many and odd column groups, aligned squares.
+SWEEP_M = [1, 10, 100, 500, 1000, 1500, 2000, 2048, 2436, 3000, 4096]
+SWEEP_N = [8, 100, 260, 500, 1000, 2000, 2436, 4096, 5000, 8192, 32000, 50257]
+SWEEP_K = [64, 768, 4096]
+SWEEP_SQUARES = [(s, s, s) for s in range(512, 4097, 512)]
+# Long M with narrow N (conv layers): row blocks in the thousands.
+SWEEP_LONG_M = [
+    (M, N, K)
+    for M in (49999, 98000, 150000, 392000)
+    for N in (8, 16, 100, 260)
+    for K in (9, 72)
+]
+
+
+@pytest.mark.parametrize("dev", list(DEVS))
+def test_sweep_plans_fit_the_mem_tile_or_are_rejected(dev):
+    """A plan either fits the mem tile's queue and live-BD budget or raises ValueError."""
+    shapes = [(M, N, K) for M in SWEEP_M for N in SWEEP_N for K in SWEEP_K]
+    shapes += SWEEP_SQUARES + SWEEP_LONG_M + SHAPES
+    accepted = rejected = untileable = 0
+    per_rb_seen = cg_gt16_seen = odd_cg_seen = long_rb_seen = 0
+    for shape in shapes:
+        try:
+            g = _grid(dev, *shape)
+        except ValueError:
+            untileable += 1
+            continue
+        try:
+            P.validate(g)
+        except ValueError:
+            rejected += 1
+            continue
+        _check_accepted(g)
+        accepted += 1
+        per_rb_seen += any(P.mem_plan(g, c).per_row_block for c in range(g.n_aie_cols))
+        cg_gt16_seen += g.CG > 16
+        odd_cg_seen += g.CG % 2 == 1 and g.CG > 8
+        long_rb_seen += g.RB >= 1500
+    print(f"{dev}: {accepted} accepted, {rejected} rejected, {untileable} not tileable")
+    # The sweep must reach the regimes it is for.
+    assert per_rb_seen
+    assert cg_gt16_seen
+    assert odd_cg_seen
+    assert long_rb_seen
+    assert accepted >= 0.9 * (accepted + rejected)
+
+
+@pytest.mark.parametrize(
+    ("dev", "shape"),
+    [
+        ("npu2", (4096, 4096, 4096)),
+        ("npu2", (1000, 2000, 1000)),
+        ("npu2", (1024, 4096, 1024)),
+        ("npu", (1024, 4096, 1024)),
+        ("npu2", (2048, 2048, 2048)),
+        ("npu", (2048, 2048, 2048)),
+    ],
+)
+def test_large_shapes_are_accepted(dev, shape):
+    """Shapes base 2053fe89 ran on the NPU are accepted."""
+    # One BD per object in an up-front chain once exceeded the mem-tile BD budget for these.
+    g = _grid(dev, *shape)
+    P.validate(g)
+    _check_accepted(g)
+
+
+def test_straddling_column_issues_per_row_block():
+    """The column straddling N issues its mem tasks per row block."""
+    # aie2p 1000x2000: column 6 straddles N (full objects, then one clipped by N) in every row
+    # block, so it cannot repeat one chain across row blocks.
+    g = _grid("npu2", 1000, 2000, 1000)
+    plan = P.mem_plan(g, 6)
+    assert plan.per_row_block
+    assert len(plan.groups) == g.RB
+    assert not P.mem_plan(g, 0).per_row_block
+
+
+def test_uniform_run_is_one_short_chain():
+    """A run of identical objects repeats one ping/pong unit."""
+    # 4096^3 aie2p: 256 identical full objects per column, ping/pong -> a 2-BD chain x 128.
+    g = _grid("npu2", 4096, 4096, 4096)
+    (group,) = P.mem_plan(g, 0).groups
+    assert [(t.buffers, t.repeat) for t in group] == [((0, 1), 128)]
+
+
+def test_rejects_what_does_not_fit(monkeypatch):
+    """A plan over the live-BD budget raises ValueError (CPU fallback)."""
+    g = _grid("npu2", 1000, 2000, 1000)
+    monkeypatch.setattr(P, "MAX_LIVE_MEM_BDS", 4)
+    P.mem_plan.cache_clear()  # plans are cached per grid
+    try:
+        with pytest.raises(ValueError, match="live mem-tile"):
+            P.validate(g)
+    finally:
+        P.mem_plan.cache_clear()
