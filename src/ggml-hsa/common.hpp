@@ -514,12 +514,6 @@ struct ggml_backend_hsa_context {
     std::size_t dispatch_batch_size{1}; ///< Packets accumulated before the doorbell is rung.
     std::size_t n_batched{};            ///< Packets written since the last doorbell ring.
 
-    /// @brief Source pre-processing transforms dispatched on the device queue, and run on the
-    /// host, since the context was created. Diagnostic only; read through the registry proc
-    /// address @c ggml_backend_hsa_get_preprocess_counts.
-    std::size_t n_device_preprocess{};
-    std::size_t n_host_preprocess{}; ///< See @ref n_device_preprocess.
-
     /// @brief First error reported by the queue's error callback, or @c HSA_STATUS_SUCCESS.
     std::atomic<hsa_status_t> queue_error{HSA_STATUS_SUCCESS};
 

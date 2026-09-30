@@ -1600,7 +1600,6 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
             ggml_tensor * preprocess_src = node->src[src_idx];
             status = tensor_extra.sources[src_idx].preprocess_kernel->dispatch(
                 ctx, &preprocess_src, 1, *internal_node.src[src_idx]);
-            ++ctx.n_device_preprocess;
         } else {
             if (!drained) {
                 if (status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
@@ -1610,7 +1609,6 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
             }
             // change layout and/or convert datatypes
             status = ggml_hsa_copy_tensor(node->src[src_idx], internal_node.src[src_idx]);
-            ++ctx.n_host_preprocess;
         }
         if (status != GGML_STATUS_SUCCESS) {
             GGML_HSA_LOG_ERROR("%s: failed to prepare source %i for tensor \"%s (%s)\"", __func__,
@@ -2227,26 +2225,6 @@ static ggml_backend_feature * ggml_backend_hsa_get_features(ggml_backend_reg_t r
     return reg_ctx.features.data();
 }
 
-/**
- * @brief Reports how many source pre-processing transforms @p backend has dispatched on the device
- * queue and run on the host.
- *
- * Diagnostic, used by tests to observe which path each source took (the two produce identical
- * values). Reached through the registry proc address @c ggml_backend_hsa_get_preprocess_counts.
- *
- * @param[in] backend HSA backend
- * @param[out] n_device number of transforms dispatched on the device queue
- * @param[out] n_host number of transforms run on the host
- */
-static void ggml_backend_hsa_get_preprocess_counts(ggml_backend_t backend,
-                                                   std::size_t * n_device,
-                                                   std::size_t * n_host) {
-    GGML_ASSERT(ggml_backend_is_hsa(backend));
-    const auto & ctx = *static_cast<const ggml_backend_hsa_context *>(backend->context);
-    *n_device = ctx.n_device_preprocess;
-    *n_host = ctx.n_host_preprocess;
-}
-
 static void * ggml_backend_hsa_reg_get_proc_address(ggml_backend_reg_t /* reg */,
                                                     const char * name) {
     if (strcmp(name, "ggml_backend_register_host_buffer") == 0) {
@@ -2257,9 +2235,6 @@ static void * ggml_backend_hsa_reg_get_proc_address(ggml_backend_reg_t /* reg */
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return reinterpret_cast<void *>(ggml_backend_hsa_get_features);
-    }
-    if (strcmp(name, "ggml_backend_hsa_get_preprocess_counts") == 0) {
-        return reinterpret_cast<void *>(ggml_backend_hsa_get_preprocess_counts);
     }
     return nullptr;
 }
