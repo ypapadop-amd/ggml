@@ -18,6 +18,17 @@ GGML_BACKEND_API bool ggml_backend_is_hsa(ggml_backend_t backend);
 // device buffer
 GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(int32_t device);
 
+/**
+ * @brief Maps another ROCm backend's buffer (e.g., HIP) for the NPU, without copying.
+ *
+ * The caller synchronizes between the backends and frees the result before @p buffer.
+ *
+ * @param[in] device HSA device
+ * @param[in] buffer buffer to import
+ * @return HSA buffer over the same memory at the same offsets, or @c NULL on failure
+ */
+GGML_BACKEND_API ggml_backend_buffer_t ggml_backend_hsa_buffer_import(int32_t device, ggml_backend_buffer_t buffer);
+
 // split tensor buffer that splits matrices by rows across multiple devices
 GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_hsa_split_buffer_type(int32_t main_device, const float * tensor_split);
 
@@ -61,7 +72,7 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
  *
  * @warning The trailing rows <tt>[a->ne[1], ne1)</tt> are NOT written. The backend does not zero
  * buffers at allocation, so when @p ne1 is greater than @c a->ne[1] the caller must pre-zero the
- * destination (e.g. with @c ggml_backend_tensor_memset) or those rows hold whatever was already in
+ * destination (e.g., with @c ggml_backend_tensor_memset) or those rows hold whatever was already in
  * the buffer.
  *
  * @param[in] ctx  context to allocate the result in
@@ -102,6 +113,18 @@ GGML_BACKEND_API struct ggml_tensor * ggml_hsa_convert(
     struct ggml_context * ctx, struct ggml_tensor * a, enum ggml_type type);
 
 /** @} */
+
+/**
+ * @brief Places @p tensor on the memory of @p src, so the HSA agent reads or writes @p src in place.
+ *
+ * For an op result, call before the graph is allocated.
+ *
+ * @param[in] imported result of @ref ggml_backend_hsa_buffer_import for @p src->buffer
+ * @param[in,out] tensor unallocated tensor with the type, shape and strides of @p src
+ * @param[in] src tensor to alias
+ * @return @c GGML_STATUS_SUCCESS, or @c GGML_STATUS_FAILED if the arguments do not match
+ */
+GGML_BACKEND_API enum ggml_status ggml_backend_hsa_tensor_alloc_alias(ggml_backend_buffer_t imported, ggml_tensor * tensor, const ggml_tensor * src);
 
 #ifdef  __cplusplus
 }
