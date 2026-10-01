@@ -165,15 +165,18 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     // each core, so B is never converted by a separate dispatch. Once B is at least one column
     // group wide the GEMM also reads it unpadded: it shifts its last column group back to end at
     // N, and zeroes the K tail on the core, so B needs no pre-processing dispatch at all. The K
-    // tail read runs up to Kpad - K elements past B's last column, which only an HSA buffer's
-    // allocation slack covers (see ggml_hsa_buffer_read_slack). A B without a buffer yet -- the
-    // supports_op probe runs before allocation -- is taken to land in one, since supports_buft
-    // accepts only HSA buffers; deciding otherwise would have the probe compile a different
-    // kernel than the one that runs.
+    // tail read runs up to Kpad - K elements past B's last column, which only the allocation slack
+    // of a buffer the HSA buffer type allocated covers (see ggml_hsa_buffer_read_slack); a buffer
+    // imported from another device maps exactly the memory it was given, so a B there is padded
+    // instead. A B without a buffer yet -- the supports_op probe runs before allocation -- is
+    // taken to read unpadded: supports_buft accepts only HSA buffers, and every buffer ggml's
+    // allocators create for it comes from the HSA buffer type, so the probe compiles the kernel
+    // that runs. A B later placed in an imported buffer gets the padded kernel instead, built when
+    // its consumer's tensor is initialized.
     const bool b_f32_on_core = dev_info.name == "aie2" && b.type == GGML_TYPE_F32;
     const bool b_unpadded =
         b_f32_on_core && N >= gn * n_aie_cols &&
-        (K == Kpad || b.buffer == nullptr || ggml_backend_buffer_is_hsa(b.buffer));
+        (K == Kpad || b.buffer == nullptr || ggml_hsa_buffer_has_read_slack(b.buffer));
     ggml_hsa_pad_gemm_operand(dev_info, sources[0], Kpad, Mpad, GGML_TYPE_BF16);
     if (!b_unpadded) {
         ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad,

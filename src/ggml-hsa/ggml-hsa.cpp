@@ -1363,6 +1363,8 @@ struct ggml_backend_hsa_buffer_context {
     ggml_hsa_vmem_allocation dev_mem; ///< Device memory.
     std::size_t base_offset{};        ///< Offset of the buffer's base within @ref dev_mem.
     ggml_backend_buffer_t source{};   ///< Buffer this one was imported from, or @c nullptr.
+    /// @brief @c true if @ref dev_mem extends ggml_hsa_buffer_read_slack bytes past the buffer.
+    bool has_read_slack{false};
     /// @brief Changes whenever this backend writes the buffer's contents: through the buffer
     /// interface (set/memset/copy/clear), the backend's async set/copy, or a graph node computed
     /// into it. Lets a cached conversion of a tensor in this buffer tell whether it is stale. Values
@@ -1395,6 +1397,11 @@ static void ggml_backend_hsa_buffer_free_buffer(ggml_backend_buffer_t buffer) {
  */
 bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
     return buffer->iface.free_buffer == ggml_backend_hsa_buffer_free_buffer;
+}
+
+bool ggml_hsa_buffer_has_read_slack(ggml_backend_buffer_t buffer) {
+    return buffer != nullptr && ggml_backend_buffer_is_hsa(buffer) &&
+           static_cast<const ggml_backend_hsa_buffer_context *>(buffer->context)->has_read_slack;
 }
 
 /**
@@ -1621,6 +1628,7 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
                                ggml_hsa_get_status_string(status));
             return nullptr;
         }
+        buf_ctx->has_read_slack = true;
         return ggml_backend_buffer_init(buft, ggml_backend_hsa_buffer_interface, buf_ctx.release(),
                                         size);
     } catch (const std::exception & ex) {
