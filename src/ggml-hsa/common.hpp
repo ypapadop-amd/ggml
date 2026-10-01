@@ -491,10 +491,13 @@ struct ggml_backend_hsa_tensor_extra {
         /// queue instead of on the host. Null when the source needs no on-device pre-processing.
         std::shared_ptr<ggml_hsa_kernel> preprocess_kernel;
         /// @brief The parent data pointer whose converted contents currently sit in the internal
-        /// buffer. Null until the first conversion. The pre-processing is skipped while this
-        /// matches the parent's data pointer (constant sources only), guarding against a moved
-        /// buffer.
+        /// buffer, or null if there are none (no conversion yet, or the last one failed).
         const void * converted_ptr{nullptr};
+        /// @brief Write generation of the parent's buffer when the cached contents were converted.
+        /// The pre-processing of a constant source is skipped only while both this and
+        /// @ref converted_ptr match the parent, so a moved parent or one whose buffer has been
+        /// written since forces a re-conversion.
+        std::uint64_t converted_generation{0};
         /// @brief True if the source is a graph-constant leaf (e.g. a weight or bias) whose
         /// converted/padded contents can be cached in the (persistent) internal buffer and reused
         /// across dispatches instead of re-running the pre-processing every time.
