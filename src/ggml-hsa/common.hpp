@@ -159,6 +159,25 @@ void ggml_hsa_error(
 std::int32_t ggml_hsa_nsrcs(const ggml_tensor & tensor);
 
 /**
+ * @brief Returns if @p tensor has a trivial layout.
+ *
+ * A tensor with a trivial layout is contiguously allocated and is not permuted.
+ */
+bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor);
+
+/**
+ * @brief Recomputes the strides of @p tensor from its shape for a contiguous, unpermuted layout.
+ *
+ * After this function is called, the @p tensor has a trivial layout.
+ */
+void ggml_hsa_set_contiguous_strides(ggml_tensor & tensor);
+
+/**
+ * @brief Returns if @p buffer is an HSA device buffer.
+ */
+bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer);
+
+/**
  * @brief Creates a string representation of the tensor shape.
  *
  * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `3x3x4`.
