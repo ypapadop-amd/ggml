@@ -172,7 +172,12 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     // taken to read unpadded: supports_buft accepts only HSA buffers, and every buffer ggml's
     // allocators create for it comes from the HSA buffer type, so the probe compiles the kernel
     // that runs. A B later placed in an imported buffer gets the padded kernel instead, built when
-    // its consumer's tensor is initialized.
+    // its consumer's tensor is initialized. That relies on B being placed first, which gallocr
+    // does (it allocates a node's sources before the node) and ggml_backend_hsa_tensor_alloc_alias
+    // enforces (it refuses an already allocated tensor). Only a manual, out-of-order allocation --
+    // the consumer initialized while B has no buffer, B then aliased into an imported buffer --
+    // keeps the unpadded kernel; on aie2 its K-tail read then runs up to 28 bytes (Kpad - K < 8
+    // f32 elements) past the end of the dma-buf. There is no guard for that case.
     const bool b_f32_on_core = dev_info.name == "aie2" && b.type == GGML_TYPE_F32;
     const bool b_unpadded =
         b_f32_on_core && N >= gn * n_aie_cols &&

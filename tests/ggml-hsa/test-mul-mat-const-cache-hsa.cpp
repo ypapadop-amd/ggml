@@ -150,7 +150,7 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K, ca
     // buffer, so only the CPY itself writes the weight's buffer
     ctx_ptr cctx = make_ctx(2);
     ggml_cgraph * gc = nullptr;
-    gallocr_ptr calloc{nullptr, ggml_gallocr_free};
+    gallocr_ptr cpy_galloc{nullptr, ggml_gallocr_free};
     ggml_tensor * w_src = nullptr;
     if (kind == case_kind::const_graph_write) {
         w_src = ggml_new_tensor_2d(cctx.get(), GGML_TYPE_F32, K, M);
@@ -163,8 +163,8 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K, ca
         }
         gc = ggml_new_graph(cctx.get());
         ggml_build_forward_expand(gc, cpy);
-        calloc.reset(ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)));
-        if (!ggml_gallocr_alloc_graph(calloc.get(), gc)) {
+        cpy_galloc.reset(ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)));
+        if (!ggml_gallocr_alloc_graph(cpy_galloc.get(), gc)) {
             printf("  CPY graph allocation failed\n");
             return case_result::fail;
         }
