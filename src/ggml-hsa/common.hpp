@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <hsa/hsa.h>
@@ -570,6 +571,14 @@ struct ggml_backend_hsa_context {
     ggml_hsa_kernarg_pool kernargs;     ///< Per-ring-slot kernarg buffers for in-flight packets.
     std::size_t dispatch_batch_size{1}; ///< Packets accumulated before the doorbell is rung.
     std::size_t n_batched{};            ///< Packets written since the last doorbell ring.
+    hsa_agent_t agent{};                ///< Agent @ref queue was created on.
+
+    /// @brief Distinct PDIs dispatched on @ref queue since it was created.
+    ///
+    /// The runtime gives each PDI a queue introduces one of 32 compute units of the queue's
+    /// hardware context and never frees them, so a 33rd PDI suspends the queue. Tracked here to
+    /// replace the queue before that happens (see @ref ggml_hsa_reserve_pdi).
+    std::unordered_set<const void *> queue_pdis;
 
     /// @brief First error reported by the queue's error callback, or @c HSA_STATUS_SUCCESS.
     std::atomic<hsa_status_t> queue_error{HSA_STATUS_SUCCESS};
@@ -618,3 +627,20 @@ struct ggml_backend_hsa_context {
  *         submission; the pending packets did not run
  */
 [[nodiscard]] ggml_status ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx);
+
+/// @brief Compute units, hence distinct PDIs, an AIE queue can hold (the runtime's CU mask width).
+inline constexpr std::size_t ggml_hsa_max_queue_pdis = 32;
+
+/**
+ * @brief Makes room on @p ctx's queue for a packet that runs @p pdi.
+ *
+ * A queue holds at most @ref ggml_hsa_max_queue_pdis distinct PDIs for its lifetime. When @p pdi
+ * would be one more, drains the queue and replaces it with a fresh one. Call before reserving the
+ * packet's ring slot.
+ *
+ * @param[in,out] ctx backend context
+ * @param[in] pdi address of the PDI the packet runs
+ * @retval GGML_STATUS_SUCCESS the queue can take a packet running @p pdi
+ * @retval GGML_STATUS_FAILED  the queue is suspended, or could not be replaced
+ */
+[[nodiscard]] ggml_status ggml_hsa_reserve_pdi(ggml_backend_hsa_context & ctx, const void * pdi);

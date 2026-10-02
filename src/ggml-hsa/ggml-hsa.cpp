@@ -1062,8 +1062,7 @@ static void ggml_hsa_queue_error_callback(hsa_status_t status, hsa_queue_t * sou
 
 ggml_backend_hsa_context::ggml_backend_hsa_context(
     const ggml_hsa_device_info::device_info & dev_info) :
-    device{dev_info.device}, name{ggml_hsa_format_name(device)} {
-    hsa_agent_t agent = dev_info.agent;
+    device{dev_info.device}, name{ggml_hsa_format_name(device)}, agent{dev_info.agent} {
 
     // create queue
     const std::uint32_t min_queue_size = ggml_hsa_get_agent_min_queue_size(agent);
@@ -1199,6 +1198,36 @@ ggml_status ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
     return ctx.queue_error.load(std::memory_order_relaxed) == HSA_STATUS_SUCCESS
                ? GGML_STATUS_SUCCESS
                : GGML_STATUS_FAILED;
+}
+
+ggml_status ggml_hsa_reserve_pdi(ggml_backend_hsa_context & ctx, const void * pdi) {
+    if (ctx.queue_pdis.count(pdi) != 0) {
+        return GGML_STATUS_SUCCESS;
+    }
+    if (ctx.queue_pdis.size() == ggml_hsa_max_queue_pdis) {
+        // The runtime cannot run a new PDI on this queue: it would suspend it with
+        // HSA_STATUS_ERROR_OUT_OF_RESOURCES. Retire everything on it, then start a fresh queue.
+        // Nothing references the old queue once drained: kernarg slots are indexed by ring slot
+        // and are all free, and an event recorded on it compares unequal to the new queue, so
+        // waiting on it falls back to the (already satisfied) dispatch-signal snapshot.
+        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
+            status != GGML_STATUS_SUCCESS) {
+            return status;
+        }
+        hsa_queue_t * queue = nullptr;
+        if (auto status = hsa_queue_create(ctx.agent, ctx.queue->size, HSA_QUEUE_TYPE_SINGLE,
+                                           ggml_hsa_queue_error_callback, &ctx, 0, 0, &queue);
+            status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: could not replace a queue holding %zu PDIs: %s", __func__,
+                               ctx.queue_pdis.size(), ggml_hsa_get_status_string(status));
+            return GGML_STATUS_FAILED;
+        }
+        GGML_HSA_CHECK_WARN(hsa_queue_destroy(ctx.queue));
+        ctx.queue = queue;
+        ctx.queue_pdis.clear();
+    }
+    ctx.queue_pdis.insert(pdi);
+    return GGML_STATUS_SUCCESS;
 }
 
 ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
