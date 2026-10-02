@@ -114,6 +114,17 @@ L1_TILE_BUDGET_BYTES = 48 * 1024
 # extent and no tile could otherwise keep M * n * n_aie_cols in range.
 DMA_MAX_STRIDE = 1 << 20
 
+# Upper bound on the column-group count N // (n * n_aie_cols). That count is the
+# outermost dimension of every A, B and C shim transfer, which a shim BD carries in
+# its 6-bit iteration field ([1:64]). aiecc does not reject a larger one: its
+# AIEDecomposeLargeDmaBd pass splits the transfer over extra BDs, numbering them
+# after every id the runtime sequence already uses on that channel. That runs far
+# past the shim's 16 BDs (to 93..95 for 1504x32000x768), so the BD write lands
+# outside the BD registers while the task queue is pushed the id's low 4 bits: the
+# second part of the transfer runs a BD that was never written, the cores starve,
+# and the GEMM hangs until the driver times it out.
+DMA_MAX_SHIM_ITERATIONS = 64
+
 
 def select_gemm_tile(
     dev,
@@ -152,6 +163,8 @@ def select_gemm_tile(
       * the shim-DMA buffer-descriptor stride range, which the column-major B/C
         transfers cross for large M/K (a hard aiecc failure, not a miscompute) --
         but only when the dimension those strides step actually has size > 1.
+      * at most DMA_MAX_SHIM_ITERATIONS column groups, the outermost dimension
+        of the A/B/C shim transfers (past it the GEMM hangs; see the constant).
 
     Ties are broken toward a larger output tile (m * n, which amortizes the C
     zero-init and drain), then a larger k.
@@ -229,6 +242,8 @@ def select_gemm_tile(
             return False
         if ((M // m) * (N // n)) % n_cores:
             return False
+        if N // (n * n_aie_cols) > DMA_MAX_SHIM_ITERATIONS:
+            return False
         # Column-major B/C shim-DMA outer strides must fit the BD stride range,
         # unless the dimension they step has size 1 and never applies them.
         if N // (n * n_aie_cols) > 1 and (
@@ -281,6 +296,16 @@ def select_gemm_tile(
             f"column-major shim-DMA stride exceeds {DMA_MAX_STRIDE} even at the "
             f"minimum n={gn}: M*n*cols={M * gn * n_aie_cols}, "
             f"n*cols*K={gn * n_aie_cols * K}"
+        )
+    group_counts = [
+        N // (n * n_aie_cols)
+        for n in range(gn, min(N, max_tile) + 1, gn)
+        if N % (n * n_aie_cols) == 0
+    ]
+    if group_counts and min(group_counts) > DMA_MAX_SHIM_ITERATIONS:
+        reasons.append(
+            f"more than {DMA_MAX_SHIM_ITERATIONS} column groups for every n that "
+            f"tiles N: at least {min(group_counts)}"
         )
     if m_limit is not None and gm * n_aie_rows > m_limit:
         reasons.append(
