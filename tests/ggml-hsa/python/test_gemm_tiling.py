@@ -29,6 +29,8 @@ from iron_kernels.gemm import (  # noqa: E402
     select_gemm_tile,
 )
 
+import iron_kernels.gemm as gemm_module  # noqa: E402
+
 BF16 = np.dtype(ml_dtypes.bfloat16)
 F32 = np.dtype(np.float32)
 
@@ -179,26 +181,27 @@ def test_tile_respects_dma_stride_limit(dev, n_aie_cols, M, N, K):
 
 
 @pytest.mark.parametrize(
-    "M,N,K,unbounded_tile",
+    "dev,n_aie_cols,M,N,K",
     [
         # Hung on aie2p: the largest-volume tile gives 65 and 125 column groups.
-        (32, 16640, 512, (8, 256, 32)),
-        (1504, 32000, 768, (8, 256, 32)),
+        ("npu2", 8, 32, 16640, 512),
+        ("npu2", 8, 1504, 32000, 768),
+        # aie2: the largest-volume tile 16x128x48 gives 65 column groups.
+        ("npu", 4, 64, 12480, 128),
     ],
 )
-def test_column_groups_fit_the_shim_iteration_limit(M, N, K, unbounded_tile):
-    """The column-group count, the outermost A/B/C shim dimension, must stay <= 64.
+def test_column_groups_fit_the_shim_iteration_limit(dev, n_aie_cols, M, N, K, monkeypatch):
+    """The column-group count, the outermost A/B shim dimension, must stay <= 64.
 
-    A shim BD iterates at most 64 times. aiecc splits a longer transfer over BDs it
-    numbers past the shim's 16, so the GEMM hangs instead of failing to compile. Pins
-    both halves: without the bound the selector would pick a tile over the limit.
+    A shim BD iterates at most 64 times. aiecc splits a longer transfer over BDs whose
+    ids it does not check, so the GEMM hangs or miscomputes instead of failing to
+    compile. Pins both halves: without the bound the selector picks a tile over it.
     """
-    n_aie_cols = 8
-    *_, m, k, n = _tile("npu2", M, N, K)
+    *_, n = _tile(dev, M, N, K)
     assert N // (n * n_aie_cols) <= DMA_MAX_SHIM_ITERATIONS
-    um, uk, un = unbounded_tile
-    assert N // (un * n_aie_cols) > DMA_MAX_SHIM_ITERATIONS
-    assert m * k * n < um * uk * un
+    monkeypatch.setattr(gemm_module, "DMA_MAX_SHIM_ITERATIONS", 1 << 30)
+    *_, unbounded_n = _tile(dev, M, N, K)
+    assert N // (unbounded_n * n_aie_cols) > DMA_MAX_SHIM_ITERATIONS
 
 
 def test_raises_past_the_shim_iteration_limit():

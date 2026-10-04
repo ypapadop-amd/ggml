@@ -144,7 +144,7 @@ int main() {
         // N below one column group: B padded as before
         {300, 8, 256, -1, "narrow N"},
         // more than 64 column groups for the largest-volume tile (8x256x32 on aie2p): a shim BD
-        // iterates at most 64 times, so the tile must be chosen to keep the group count below that
+        // iterates at most 64 times, so the tile must be chosen to keep the group count at most 64
         {32, 16640, 512, -1, "many column groups"},
     };
 

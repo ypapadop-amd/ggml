@@ -115,14 +115,18 @@ L1_TILE_BUDGET_BYTES = 48 * 1024
 DMA_MAX_STRIDE = 1 << 20
 
 # Upper bound on the column-group count N // (n * n_aie_cols). That count is the
-# outermost dimension of every A, B and C shim transfer, which a shim BD carries in
-# its 6-bit iteration field ([1:64]). aiecc does not reject a larger one: its
-# AIEDecomposeLargeDmaBd pass splits the transfer over extra BDs, numbering them
-# after every id the runtime sequence already uses on that channel. That runs far
-# past the shim's 16 BDs (to 93..95 for 1504x32000x768), so the BD write lands
-# outside the BD registers while the task queue is pushed the id's low 4 bits: the
-# second part of the transfer runs a BD that was never written, the cores starve,
-# and the GEMM hangs until the driver times it out.
+# outermost dimension of the A and B shim transfers, and of the C transfer when C
+# is column-major (a row-major C carries it in an inner, wrap-limited dimension).
+# A shim BD holds the outermost dimension in its 6-bit iteration field ([1:64]).
+# aiecc does not reject a larger one: its AIEDecomposeLargeDmaBd pass splits the
+# transfer over extra BDs whose ids it picks as the first ones that channel's
+# own transfers in the runtime sequence leave unused. It checks them neither
+# against the BDs other channels on the same shim tile have queued nor against
+# the shim's 16 BDs. So an extra BD can overwrite one A or B still has queued, or
+# fall outside the BD registers (ids 93..95 for 1504x32000x768, whose BD writes
+# miss while the task queue is pushed the id's low 4 bits). Either way part of a
+# transfer runs the wrong BD: observed as a hang until the driver times the GEMM
+# out, and on other designs as a silently wrong last column group.
 DMA_MAX_SHIM_ITERATIONS = 64
 
 
@@ -164,7 +168,8 @@ def select_gemm_tile(
         transfers cross for large M/K (a hard aiecc failure, not a miscompute) --
         but only when the dimension those strides step actually has size > 1.
       * at most DMA_MAX_SHIM_ITERATIONS column groups, the outermost dimension
-        of the A/B/C shim transfers (past it the GEMM hangs; see the constant).
+        of the A, B and column-major C shim transfers (past it the GEMM hangs or
+        miscomputes; see the constant).
 
     Ties are broken toward a larger output tile (m * n, which amortizes the C
     zero-init and drain), then a larger k.
