@@ -35,7 +35,7 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.pdi_addr = pdi.data(); // PDI to use with this command
 
     // May replace ctx.queue, so it comes before the queue is read.
-    if (const ggml_status status = ggml_hsa_reserve_pdi(ctx, pdi.data());
+    if (const ggml_status status = ggml_hsa_reserve_pdi(ctx, *this, pdi.data());
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
