@@ -1452,7 +1452,7 @@ static void ggml_backend_hsa_buffer_free_buffer(ggml_backend_buffer_t buffer) {
 /**
  * @brief Returns if @p buffer is a HSA buffer.
  */
-bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
+static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
     return buffer->iface.free_buffer == ggml_backend_hsa_buffer_free_buffer;
 }
 
