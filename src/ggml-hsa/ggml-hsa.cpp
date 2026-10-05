@@ -95,7 +95,6 @@ static const bool g_ggml_hsa_host_pad =
 /// inside the allocation. The GEMM zeroes those elements before using them.
 static constexpr std::size_t ggml_hsa_buffer_read_slack = 64;
 
-
 /// @brief How long teardown waits for packets that were in flight when the queue was suspended,
 /// in milliseconds. Read once from @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS at startup; 0 means
 /// do not wait at all. See @c ggml_hsa_drain_after_queue_error for why the wait is bounded.
@@ -1060,6 +1059,17 @@ static void ggml_hsa_queue_error_callback(hsa_status_t status, hsa_queue_t * sou
     }
 }
 
+/**
+ * @brief Creates a queue of @p size packets on @p agent whose errors are reported to @p ctx.
+ */
+static hsa_status_t ggml_hsa_create_queue(hsa_agent_t agent,
+                                          std::uint32_t size,
+                                          ggml_backend_hsa_context * ctx,
+                                          hsa_queue_t ** queue) {
+    return hsa_queue_create(agent, size, HSA_QUEUE_TYPE_SINGLE, ggml_hsa_queue_error_callback, ctx,
+                            0, 0, queue);
+}
+
 ggml_backend_hsa_context::ggml_backend_hsa_context(
     const ggml_hsa_device_info::device_info & dev_info) :
     device{dev_info.device}, name{ggml_hsa_format_name(device)}, agent{dev_info.agent} {
@@ -1069,8 +1079,7 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     // The callback receives `this` while the object is still under construction. It only touches
     // queue_error, which its default member initializer has already set, and the runtime cannot
     // invoke it before a packet is submitted -- which cannot happen until construction finishes.
-    if (auto status = hsa_queue_create(agent, min_queue_size, HSA_QUEUE_TYPE_SINGLE,
-                                       ggml_hsa_queue_error_callback, this, 0, 0, &queue);
+    if (auto status = ggml_hsa_create_queue(agent, min_queue_size, this, &queue);
         status != HSA_STATUS_SUCCESS) {
         throw std::runtime_error{std::string("Could not create hsa_queue (")
                                      .append(ggml_hsa_get_status_string(status))
@@ -1205,6 +1214,45 @@ ggml_status ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
                : GGML_STATUS_FAILED;
 }
 
+/**
+ * @brief Drains @p ctx's queue and replaces it with a fresh one, which holds no PDIs.
+ *
+ * Nothing still depends on the old queue once drained: kernarg slots are indexed by ring slot and
+ * are all free, and an event recorded on it fences only retired work, so a later wait on it is
+ * satisfied whether it matches the new queue (which may reuse the address) or falls back to the
+ * dispatch-signal snapshot. On failure the error is recorded in @c ctx.queue_error.
+ */
+static ggml_status ggml_hsa_replace_queue(ggml_backend_hsa_context & ctx) {
+    if (const ggml_status status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
+    GGML_HSA_LOG_INFO("%s: queue holds %zu PDIs, the runtime's limit; replacing it", __func__,
+                      ctx.queue_pdis.size());
+    const std::uint32_t queue_size = ctx.queue->size;
+    hsa_queue_t * queue = nullptr;
+    hsa_status_t status = ggml_hsa_create_queue(ctx.agent, queue_size, &ctx, &queue);
+    // The old queue's hardware context may be what the runtime ran out of: if so, release it first
+    // and try once more.
+    GGML_HSA_CHECK_WARN(hsa_queue_destroy(ctx.queue));
+    ctx.queue = nullptr;
+    ctx.queue_pdis.clear();
+    if (status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_WARN("%s: could not create a replacement queue (%s); retrying after "
+                          "destroying the old one",
+                          __func__, ggml_hsa_get_status_string(status));
+        status = ggml_hsa_create_queue(ctx.agent, queue_size, &ctx, &queue);
+    }
+    if (status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: could not replace the queue: %s", __func__,
+                           ggml_hsa_get_status_string(status));
+        hsa_status_t expected = HSA_STATUS_SUCCESS;
+        ctx.queue_error.compare_exchange_strong(expected, status);
+        return GGML_STATUS_FAILED;
+    }
+    ctx.queue = queue;
+    return GGML_STATUS_SUCCESS;
+}
+
 ggml_status ggml_hsa_reserve_pdi(ggml_backend_hsa_context & ctx,
                                  const ggml_hsa_kernel & kernel,
                                  const void * pdi) {
@@ -1215,48 +1263,12 @@ ggml_status ggml_hsa_reserve_pdi(ggml_backend_hsa_context & ctx,
     if (ctx.queue_pdis.count(pdi) != 0) {
         return GGML_STATUS_SUCCESS;
     }
+    // The runtime cannot run a new PDI on a full queue: it would suspend it with
+    // HSA_STATUS_ERROR_OUT_OF_RESOURCES.
     if (ctx.queue_pdis.size() == ggml_hsa_max_queue_pdis) {
-        // The runtime cannot run a new PDI on this queue: it would suspend it with
-        // HSA_STATUS_ERROR_OUT_OF_RESOURCES. Retire everything on it, then start a fresh queue.
-        // Nothing still depends on the old queue once drained: kernarg slots are indexed by ring
-        // slot and are all free, and an event recorded on it fences only retired work, so a later
-        // wait on it is satisfied whether it matches the new queue (which may reuse the address)
-        // or falls back to the dispatch-signal snapshot.
-        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
-            status != GGML_STATUS_SUCCESS) {
+        if (const ggml_status status = ggml_hsa_replace_queue(ctx); status != GGML_STATUS_SUCCESS) {
             return status;
         }
-        GGML_HSA_LOG_INFO("%s: queue holds %zu PDIs, the runtime's limit; replacing it", __func__,
-                          ctx.queue_pdis.size());
-        const std::uint32_t queue_size = ctx.queue->size;
-        auto create_queue = [&](hsa_queue_t ** queue) {
-            return hsa_queue_create(ctx.agent, queue_size, HSA_QUEUE_TYPE_SINGLE,
-                                    ggml_hsa_queue_error_callback, &ctx, 0, 0, queue);
-        };
-        hsa_queue_t * queue = nullptr;
-        hsa_status_t status = create_queue(&queue);
-        if (status != HSA_STATUS_SUCCESS) {
-            // The old queue's hardware context may be what the runtime ran out of: release it and
-            // try once more.
-            GGML_HSA_LOG_WARN("%s: could not create a replacement queue (%s); retrying after "
-                              "destroying the old one",
-                              __func__, ggml_hsa_get_status_string(status));
-            GGML_HSA_CHECK_WARN(hsa_queue_destroy(ctx.queue));
-            ctx.queue = nullptr;
-            ctx.queue_pdis.clear();
-            status = create_queue(&queue);
-            if (status != HSA_STATUS_SUCCESS) {
-                GGML_HSA_LOG_ERROR("%s: could not replace the queue: %s", __func__,
-                                   ggml_hsa_get_status_string(status));
-                hsa_status_t expected = HSA_STATUS_SUCCESS;
-                ctx.queue_error.compare_exchange_strong(expected, status);
-                return GGML_STATUS_FAILED;
-            }
-        } else {
-            GGML_HSA_CHECK_WARN(hsa_queue_destroy(ctx.queue));
-        }
-        ctx.queue = queue;
-        ctx.queue_pdis.clear();
     }
     ctx.queue_pdis.emplace(pdi, kernel.shared_from_this());
     return GGML_STATUS_SUCCESS;
@@ -1426,9 +1438,10 @@ struct ggml_backend_hsa_buffer_context {
     std::int32_t device{};            ///< Device ID associated with this buffer context.
     ggml_hsa_vmem_allocation dev_mem; ///< Device memory.
     std::size_t base_offset{};        ///< Offset of the buffer's base within @ref dev_mem.
-    ggml_backend_buffer_t source{};   ///< Buffer this one was imported from, or @c nullptr.
-    /// @brief @c true if @ref dev_mem extends ggml_hsa_buffer_read_slack bytes past the buffer.
-    bool has_read_slack{false};
+    /// @brief Buffer this one was imported from, or @c nullptr. A buffer that is not imported was
+    /// allocated by the HSA buffer type, so @ref dev_mem extends ggml_hsa_buffer_read_slack bytes
+    /// past it.
+    ggml_backend_buffer_t source{};
     /// @brief Changes whenever this backend writes the buffer's contents: through the buffer
     /// interface (set/memset/copy/clear), the backend's async set/copy, or a graph node computed
     /// into it. Lets a cached conversion of a tensor in this buffer tell whether it is stale. Values
@@ -1465,7 +1478,7 @@ static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
 
 bool ggml_hsa_buffer_has_read_slack(ggml_backend_buffer_t buffer) {
     return buffer != nullptr && ggml_backend_buffer_is_hsa(buffer) &&
-           static_cast<const ggml_backend_hsa_buffer_context *>(buffer->context)->has_read_slack;
+           static_cast<const ggml_backend_hsa_buffer_context *>(buffer->context)->source == nullptr;
 }
 
 /**
@@ -1695,7 +1708,6 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
                                ggml_hsa_get_status_string(status));
             return nullptr;
         }
-        buf_ctx->has_read_slack = true;
         return ggml_backend_buffer_init(buft, ggml_backend_hsa_buffer_interface, buf_ctx.release(),
                                         size);
     } catch (const std::exception & ex) {
@@ -1984,14 +1996,14 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
 
     bool drained = false;
     for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
-        if (tensor_extra.sources[src_idx].buffer_size == 0) {
+        auto & src_node = tensor_extra.sources[src_idx];
+        if (src_node.buffer_size == 0) {
             continue;
         }
         // A constant source (weight/bias) is converted+padded into the persistent internal buffer
         // once and reused until it changes. Keyed on the parent's data pointer, so a moved parent
         // forces a re-conversion, and on its buffer's write generation, so does any write to the
         // buffer. A source whose writes cannot be tracked (generation 0) is never reused.
-        auto & src_node = tensor_extra.sources[src_idx];
         std::uint64_t generation = 0;
         if (src_node.is_constant) {
             generation = ggml_hsa_source_write_generation(node->src[src_idx]);
@@ -1999,17 +2011,15 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
                 src_node.converted_generation == generation) {
                 continue;
             }
-            // The internal buffer is about to be overwritten: it holds no valid conversion until
-            // this one has been issued successfully.
-            src_node.converted_ptr = nullptr;
+            src_node.converted_ptr = nullptr; // invalid until this conversion is issued
         }
         ggml_status status = GGML_STATUS_SUCCESS;
-        if (tensor_extra.sources[src_idx].preprocess_kernel != nullptr) {
+        if (src_node.preprocess_kernel != nullptr) {
             // on-device source pre-processing: transform the parent source into its internal buffer
             // on-queue (e.g. convert+pad), no drain
             ggml_tensor * preprocess_src = node->src[src_idx];
-            status = tensor_extra.sources[src_idx].preprocess_kernel->dispatch(
-                ctx, &preprocess_src, 1, *internal_node.src[src_idx]);
+            status = src_node.preprocess_kernel->dispatch(ctx, &preprocess_src, 1,
+                                                          *internal_node.src[src_idx]);
         } else {
             if (!drained) {
                 if (status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
