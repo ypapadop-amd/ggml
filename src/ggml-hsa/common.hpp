@@ -174,11 +174,6 @@ bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor);
 void ggml_hsa_set_contiguous_strides(ggml_tensor & tensor);
 
 /**
- * @brief Returns if @p buffer is an HSA device buffer.
- */
-bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer);
-
-/**
  * @brief Returns if @p buffer is an HSA buffer whose allocation extends past its reported size, so
  * a kernel may read slightly past its last tensor.
  *
