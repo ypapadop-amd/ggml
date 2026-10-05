@@ -18,8 +18,8 @@ import pytest
 KERNELS_DIR = Path(__file__).resolve().parents[3] / "src" / "ggml-hsa" / "kernels"
 sys.path.insert(0, str(KERNELS_DIR))
 
+from iron_kernels.gemm_c_plan import MAX_SHIM_ITERATIONS  # noqa: E402
 from iron_kernels.gemm import (  # noqa: E402
-    DMA_MAX_SHIM_ITERATIONS,
     DMA_MAX_STRIDE,
     L1_TILE_BUDGET_BYTES,
     microkernel_expansion_map,
@@ -120,7 +120,7 @@ def _is_valid(n_aie_cols, M, N, K, m, k, n, dtype_out=F32):
         return False
     if ((M // m) * (N // n)) % (N_AIE_ROWS * n_aie_cols):
         return False
-    if N // (n * n_aie_cols) > DMA_MAX_SHIM_ITERATIONS:
+    if N // (n * n_aie_cols) > MAX_SHIM_ITERATIONS:
         return False
     if N // (n * n_aie_cols) > 1 and (
         M * n * n_aie_cols > DMA_MAX_STRIDE or n * n_aie_cols * K > DMA_MAX_STRIDE
@@ -198,10 +198,10 @@ def test_column_groups_fit_the_shim_iteration_limit(dev, n_aie_cols, M, N, K, mo
     compile. Pins both halves: without the bound the selector picks a tile over it.
     """
     *_, n = _tile(dev, M, N, K)
-    assert N // (n * n_aie_cols) <= DMA_MAX_SHIM_ITERATIONS
-    monkeypatch.setattr(gemm_module, "DMA_MAX_SHIM_ITERATIONS", 1 << 30)
+    assert N // (n * n_aie_cols) <= MAX_SHIM_ITERATIONS
+    monkeypatch.setattr(gemm_module, "MAX_SHIM_ITERATIONS", 1 << 30)
     *_, unbounded_n = _tile(dev, M, N, K)
-    assert N // (unbounded_n * n_aie_cols) > DMA_MAX_SHIM_ITERATIONS
+    assert N // (unbounded_n * n_aie_cols) > MAX_SHIM_ITERATIONS
 
 
 def test_raises_past_the_shim_iteration_limit():

@@ -19,6 +19,7 @@ from aie.iron import ExternalFunction, dtype_to_str, str_to_dtype
 from aie.iron.controlflow import range_
 
 from .gemm_c_plan import (
+    MAX_SHIM_ITERATIONS,
     SHIM_B_SHIFTED_RUN_BD_OFFSET,
     b_group_runs,
     core_schedule,
@@ -135,20 +136,18 @@ L1_TILE_BUDGET_BYTES = 48 * 1024
 # extent and no tile could otherwise keep M * n * n_aie_cols in range.
 DMA_MAX_STRIDE = 1 << 20
 
-# Upper bound on the column-group count N // (n * n_aie_cols). That count is the
-# outermost dimension of the A and B shim transfers, and of the C transfer when C
-# is column-major (a row-major C carries it in an inner, wrap-limited dimension).
-# A shim BD holds the outermost dimension in its 6-bit iteration field ([1:64]).
-# aiecc does not reject a larger one: its AIEDecomposeLargeDmaBd pass splits the
-# transfer over extra BDs whose ids it picks as the first ones that channel's
-# own transfers in the runtime sequence leave unused. It checks them neither
-# against the BDs other channels on the same shim tile have queued nor against
-# the shim's 16 BDs. So an extra BD can overwrite one A or B still has queued, or
-# fall outside the BD registers (ids 93..95 for 1504x32000x768, whose BD writes
-# miss while the task queue is pushed the id's low 4 bits). Either way part of a
-# transfer runs the wrong BD: observed as a hang until the driver times the GEMM
-# out, and on other designs as a silently wrong last column group.
-DMA_MAX_SHIM_ITERATIONS = 64
+# The column-group count N // (n * n_aie_cols) is the outermost dimension of the A
+# and B shim transfers, which a shim BD holds in its 6-bit iteration field, so
+# select_gemm_tile caps it at gemm_c_plan.MAX_SHIM_ITERATIONS. C needs no such cap
+# here: gemm_c_plan._merge never builds a shim C BD past that many iterations.
+# aiecc does not reject a longer A or B transfer: its AIEDecomposeLargeDmaBd pass
+# splits it over extra BDs whose ids it picks as the first ones that channel's own
+# transfers in the runtime sequence leave unused. It checks them neither against
+# the BDs other channels on the same shim tile have queued nor against the shim's
+# 16 BDs, so an extra BD can overwrite one still queued, or fall outside the BD
+# registers. Either way part of a transfer runs the wrong BD: observed as a hang
+# until the driver times the GEMM out (1500x32000x768) or as a silently wrong
+# 65th column group (32x16640x512).
 
 
 def select_gemm_tile(
@@ -188,9 +187,9 @@ def select_gemm_tile(
       * the shim-DMA buffer-descriptor stride range, which the column-major B/C
         transfers cross for large M/K (a hard aiecc failure, not a miscompute) --
         but only when the dimension those strides step actually has size > 1.
-      * at most DMA_MAX_SHIM_ITERATIONS column groups, the outermost dimension
-        of the A, B and column-major C shim transfers (past it the GEMM hangs or
-        miscomputes; see the constant).
+      * at most MAX_SHIM_ITERATIONS column groups, the outermost dimension
+        of the A and B shim transfers (past it the GEMM hangs or miscomputes; see
+        the comment above select_gemm_tile).
 
     Ties are broken toward a larger output tile (m * n, which amortizes the C
     zero-init and drain), then a larger k.
@@ -268,7 +267,7 @@ def select_gemm_tile(
             return False
         if ((M // m) * (N // n)) % n_cores:
             return False
-        if N // (n * n_aie_cols) > DMA_MAX_SHIM_ITERATIONS:
+        if N // (n * n_aie_cols) > MAX_SHIM_ITERATIONS:
             return False
         # Column-major B/C shim-DMA outer strides must fit the BD stride range,
         # unless the dimension they step has size 1 and never applies them.
@@ -328,9 +327,9 @@ def select_gemm_tile(
         for n in range(gn, min(N, max_tile) + 1, gn)
         if N % (n * n_aie_cols) == 0
     ]
-    if group_counts and min(group_counts) > DMA_MAX_SHIM_ITERATIONS:
+    if group_counts and min(group_counts) > MAX_SHIM_ITERATIONS:
         reasons.append(
-            f"more than {DMA_MAX_SHIM_ITERATIONS} column groups for every n that "
+            f"more than {MAX_SHIM_ITERATIONS} column groups for every n that "
             f"tiles N: at least {min(group_counts)}"
         )
     if m_limit is not None and gm * n_aie_rows > m_limit:
