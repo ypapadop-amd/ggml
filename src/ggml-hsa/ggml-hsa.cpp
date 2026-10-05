@@ -1055,8 +1055,7 @@ static void ggml_hsa_queue_error_callback(hsa_status_t status, hsa_queue_t * sou
 
 ggml_backend_hsa_context::ggml_backend_hsa_context(
     const ggml_hsa_device_info::device_info & dev_info) :
-    device{dev_info.device}, name{ggml_hsa_format_name(device)} {
-    hsa_agent_t agent = dev_info.agent;
+    device{dev_info.device}, name{ggml_hsa_format_name(device)}, agent{dev_info.agent} {
 
     // create queue
     const std::uint32_t min_queue_size = ggml_hsa_get_agent_min_queue_size(agent);
@@ -1160,13 +1159,18 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
                           __func__,
                           static_cast<long long>(g_ggml_hsa_queue_error_drain_timeout.count()));
     } else {
+        // Release this queue's kernels so the purge below can free them.
+        queue_pdis.clear();
         ggml_hsa_purge_unused_cached_kernels(device);
         GGML_HSA_CHECK_WARN(hsa_signal_destroy(dispatch_signal));
     }
 
     // Destroying a suspended queue can fail; aborting would replace a reported failure with a
     // crash at backend free.
-    GGML_HSA_CHECK_WARN(hsa_queue_destroy(queue));
+    // A failed replacement (see ggml_hsa_reserve_pdi) leaves no queue.
+    if (queue != nullptr) {
+        GGML_HSA_CHECK_WARN(hsa_queue_destroy(queue));
+    }
 }
 
 ggml_status ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
@@ -1192,6 +1196,63 @@ ggml_status ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx) {
     return ctx.queue_error.load(std::memory_order_relaxed) == HSA_STATUS_SUCCESS
                ? GGML_STATUS_SUCCESS
                : GGML_STATUS_FAILED;
+}
+
+ggml_status ggml_hsa_reserve_pdi(ggml_backend_hsa_context & ctx,
+                                 const ggml_hsa_kernel & kernel,
+                                 const void * pdi) {
+    // A failed replacement leaves no queue to dispatch to.
+    if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
+        return GGML_STATUS_FAILED;
+    }
+    if (ctx.queue_pdis.count(pdi) != 0) {
+        return GGML_STATUS_SUCCESS;
+    }
+    if (ctx.queue_pdis.size() == ggml_hsa_max_queue_pdis) {
+        // The runtime cannot run a new PDI on this queue: it would suspend it with
+        // HSA_STATUS_ERROR_OUT_OF_RESOURCES. Retire everything on it, then start a fresh queue.
+        // Nothing still depends on the old queue once drained: kernarg slots are indexed by ring
+        // slot and are all free, and an event recorded on it fences only retired work, so a later
+        // wait on it is satisfied whether it matches the new queue (which may reuse the address)
+        // or falls back to the dispatch-signal snapshot.
+        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
+            status != GGML_STATUS_SUCCESS) {
+            return status;
+        }
+        GGML_HSA_LOG_INFO("%s: queue holds %zu PDIs, the runtime's limit; replacing it", __func__,
+                          ctx.queue_pdis.size());
+        const std::uint32_t queue_size = ctx.queue->size;
+        auto create_queue = [&](hsa_queue_t ** queue) {
+            return hsa_queue_create(ctx.agent, queue_size, HSA_QUEUE_TYPE_SINGLE,
+                                    ggml_hsa_queue_error_callback, &ctx, 0, 0, queue);
+        };
+        hsa_queue_t * queue = nullptr;
+        hsa_status_t status = create_queue(&queue);
+        if (status != HSA_STATUS_SUCCESS) {
+            // The old queue's hardware context may be what the runtime ran out of: release it and
+            // try once more.
+            GGML_HSA_LOG_WARN("%s: could not create a replacement queue (%s); retrying after "
+                              "destroying the old one",
+                              __func__, ggml_hsa_get_status_string(status));
+            GGML_HSA_CHECK_WARN(hsa_queue_destroy(ctx.queue));
+            ctx.queue = nullptr;
+            ctx.queue_pdis.clear();
+            status = create_queue(&queue);
+            if (status != HSA_STATUS_SUCCESS) {
+                GGML_HSA_LOG_ERROR("%s: could not replace the queue: %s", __func__,
+                                   ggml_hsa_get_status_string(status));
+                hsa_status_t expected = HSA_STATUS_SUCCESS;
+                ctx.queue_error.compare_exchange_strong(expected, status);
+                return GGML_STATUS_FAILED;
+            }
+        } else {
+            GGML_HSA_CHECK_WARN(hsa_queue_destroy(ctx.queue));
+        }
+        ctx.queue = queue;
+        ctx.queue_pdis.clear();
+    }
+    ctx.queue_pdis.emplace(pdi, kernel.shared_from_this());
+    return GGML_STATUS_SUCCESS;
 }
 
 ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {

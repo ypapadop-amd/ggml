@@ -125,8 +125,12 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     //     aie2p (npu2) bf16: (r,s,t)=(4,8,8), expansion (2,2) -> (gm,gk,gn)=( 8,8,16), 8 columns
     //
     // select_gemm_tile then needs M%(gm*n_aie_rows)==0, K%gk==0, N%(gn*n_aie_cols)==0, which is
-    // exactly what the padding below guarantees -- so the minimum tile is always available and a
-    // padded GEMM can never fail tile selection for want of padding.
+    // exactly what the padding below guarantees. That alone no longer guarantees a tile:
+    // select_gemm_tile also caps the column-group count N/(n*n_aie_cols) at 64 (the shim BD
+    // iteration limit). With the padded N = gn*n_aie_cols*q and n = gn*d (d <= max_tile/gn = 16),
+    // a tile exists only if q has a divisor d <= 16 with q/d <= 64. Otherwise the kernel build
+    // raises and MUL_MAT falls back to the CPU: e.g. N = 8576 = 128*67 on aie2p. Padding N further
+    // (to a q that factors) would keep such shapes on the NPU; not done yet.
     //
     // The previous constants (tile=16 on aie2p, 32 on aie2, applied to all three dimensions)
     // over-padded K and M: they were a single number standing in for three different granularities.

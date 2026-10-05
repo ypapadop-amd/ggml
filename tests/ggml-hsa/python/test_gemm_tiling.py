@@ -19,6 +19,7 @@ KERNELS_DIR = Path(__file__).resolve().parents[3] / "src" / "ggml-hsa" / "kernel
 sys.path.insert(0, str(KERNELS_DIR))
 
 from iron_kernels.gemm import (  # noqa: E402
+    DMA_MAX_SHIM_ITERATIONS,
     DMA_MAX_STRIDE,
     L1_TILE_BUDGET_BYTES,
     microkernel_expansion_map,
@@ -27,6 +28,8 @@ from iron_kernels.gemm import (  # noqa: E402
     resolve_mac_dims,
     select_gemm_tile,
 )
+
+import iron_kernels.gemm as gemm_module  # noqa: E402
 
 BF16 = np.dtype(ml_dtypes.bfloat16)
 F32 = np.dtype(np.float32)
@@ -117,6 +120,8 @@ def _is_valid(n_aie_cols, M, N, K, m, k, n, dtype_out=F32):
         return False
     if ((M // m) * (N // n)) % (N_AIE_ROWS * n_aie_cols):
         return False
+    if N // (n * n_aie_cols) > DMA_MAX_SHIM_ITERATIONS:
+        return False
     if N // (n * n_aie_cols) > 1 and (
         M * n * n_aie_cols > DMA_MAX_STRIDE or n * n_aie_cols * K > DMA_MAX_STRIDE
     ):
@@ -173,6 +178,50 @@ def test_tile_respects_dma_stride_limit(dev, n_aie_cols, M, N, K):
     if N // (n * n_aie_cols) > 1:
         assert M * n * n_aie_cols <= DMA_MAX_STRIDE
         assert n * n_aie_cols * K <= DMA_MAX_STRIDE
+
+
+@pytest.mark.parametrize(
+    "dev,n_aie_cols,M,N,K",
+    [
+        # Hung on aie2p: the largest-volume tile gives 65 and 125 column groups.
+        ("npu2", 8, 32, 16640, 512),
+        ("npu2", 8, 1504, 32000, 768),
+        # aie2: the largest-volume tile 16x128x48 gives 65 column groups.
+        ("npu", 4, 64, 12480, 128),
+    ],
+)
+def test_column_groups_fit_the_shim_iteration_limit(dev, n_aie_cols, M, N, K, monkeypatch):
+    """The column-group count, the outermost A/B shim dimension, must stay <= 64.
+
+    A shim BD iterates at most 64 times. aiecc splits a longer transfer over BDs whose
+    ids it does not check, so the GEMM hangs or miscomputes instead of failing to
+    compile. Pins both halves: without the bound the selector picks a tile over it.
+    """
+    *_, n = _tile(dev, M, N, K)
+    assert N // (n * n_aie_cols) <= DMA_MAX_SHIM_ITERATIONS
+    monkeypatch.setattr(gemm_module, "DMA_MAX_SHIM_ITERATIONS", 1 << 30)
+    *_, unbounded_n = _tile(dev, M, N, K)
+    assert N // (unbounded_n * n_aie_cols) > DMA_MAX_SHIM_ITERATIONS
+
+
+def test_raises_past_the_shim_iteration_limit():
+    """No tile with <= 64 column groups exists for N = 128 * 67 at max_tile 256.
+
+    67 is prime, so a column group is 128 or 8576 columns wide; the second needs
+    n = 1072. Returning the 67-group tile would hang the device.
+    """
+    with pytest.raises(ValueError, match="column groups"):
+        select_gemm_tile(
+            "npu2",
+            32,
+            128 * 67,
+            64,
+            BF16,
+            F32,
+            *resolve_mac_dims("npu2", "bf16"),
+            *resolve_expansion("npu2", "bf16"),
+            max_tile=MAX_TILE,
+        )
 
 
 @pytest.mark.parametrize("dev,n_aie_cols", DEVICES)
