@@ -84,8 +84,8 @@ static void ggml_hsa_pad_gemm_operand(const ggml_hsa_device_info::device_info & 
 }
 
 bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_info,
-                                         ggml_backend_hsa_tensor_extra::node_t & node,
-                                         ggml_backend_hsa_tensor_extra::sources_t & sources) {
+                                  ggml_backend_hsa_tensor_extra::node_t & node,
+                                  ggml_backend_hsa_tensor_extra::sources_t & sources) {
     ggml_tensor & dst = node.tensor;
 
     // The GEMM microkernel runs in bf16, so both operands must be f32 (converted to bf16 below) or
@@ -165,23 +165,14 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     // kernel below, which is selected from the parent tensor's own dtype). An operand that needs
     // neither is left alone -- see ggml_hsa_pad_gemm_operand.
     //
-    // The exception is an f32 B on aie2: the GEMM streams it as f32 and converts it to bf16 on
-    // each core, so B is never converted by a separate dispatch. Once B is at least one column
-    // group wide the GEMM also reads it unpadded: it shifts its last column group back to end at
-    // N, and zeroes the K tail on the core, so B needs no pre-processing dispatch at all. The K
-    // tail read runs up to Kpad - K elements past B's last column, which only the allocation slack
-    // of a buffer the HSA buffer type allocated covers (see ggml_hsa_buffer_read_slack); a buffer
-    // imported from another device maps exactly the memory it was given, so a B there is padded
-    // instead. A B without a buffer yet -- the supports_op probe runs before allocation -- is
-    // taken to read unpadded: supports_buft accepts only HSA buffers, and every buffer ggml's
-    // allocators create for it comes from the HSA buffer type, so the probe compiles the kernel
-    // that runs. A B later placed in an imported buffer gets the padded kernel instead, built when
-    // its consumer's tensor is initialized. That relies on B being placed first, which gallocr
-    // does (it allocates a node's sources before the node) and ggml_backend_hsa_tensor_alloc_alias
-    // enforces (it refuses an already allocated tensor). Only a manual, out-of-order allocation --
-    // the consumer initialized while B has no buffer, B then aliased into an imported buffer --
-    // keeps the unpadded kernel; on aie2 its K-tail read then runs up to 28 bytes (Kpad - K < 8
-    // f32 elements) past the end of the dma-buf. There is no guard for that case.
+    // The exception is an f32 B on aie2, which the GEMM converts on the core and, once B is at
+    // least one column group wide, reads unpadded (see gemm.hpp). Its K-tail read runs up to
+    // Kpad - K elements past B's last column, which only the read slack of a buffer the HSA buffer
+    // type allocated covers (ggml_hsa_buffer_has_read_slack); a B in an imported buffer is padded
+    // instead. A B without a buffer yet (the supports_op probe) is taken to read unpadded, since
+    // every buffer ggml's allocators create for it comes from the HSA buffer type. A manual,
+    // out-of-order allocation -- the consumer initialized first, B then aliased into an imported
+    // buffer -- keeps the unpadded kernel and can read up to 28 bytes past the dma-buf; unguarded.
     const bool b_f32_on_core = dev_info.name == "aie2" && b.type == GGML_TYPE_F32;
     const bool b_unpadded =
         b_f32_on_core && N >= gn * n_aie_cols &&

@@ -70,7 +70,7 @@ int main() {
     }
 
     bool ok = true;
-    for (int c = 0; c < kComputes && ok; ++c) {
+    for (int c = 0; c < kComputes; ++c) {
         // A different input per compute, so a stale result from the previous one cannot pass.
         // Kept on the host: the allocator may run NEG in place over its input.
         std::vector<std::vector<float>> ins(kKernels);
@@ -107,6 +107,7 @@ int main() {
         if (failed_kernels != 0) {
             printf("compute %d: %d / %d kernels wrong\n", c, failed_kernels, kKernels);
             ok = false;
+            break;
         }
     }
     ggml_backend_free(backend);
