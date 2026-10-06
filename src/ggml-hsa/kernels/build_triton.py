@@ -2,11 +2,9 @@
 
 """Triton-XDNA backend compiler for GGML HSA kernels."""
 
-import json
 import logging
 import os
 import shutil
-import subprocess
 from contextlib import ContextDecorator
 from dataclasses import MISSING
 from pathlib import Path
@@ -96,8 +94,8 @@ def compile_triton_kernel(
 ) -> None:
     """Compile a Triton kernel for the target architecture in kernel_spec.
 
-    NPU targets run the Triton-XDNA pipeline and pack the PDI and instructions
-    binary from the resulting xclbin into an hsaco; GPU targets run the HIP pipeline and copy
+    NPU targets run the Triton-XDNA pipeline and pack the resulting xclbin and
+    instructions binary into an hsaco; GPU targets run the HIP pipeline and copy
     the hsaco object from the Triton cache.
 
     Args:
@@ -153,37 +151,15 @@ def compile_triton_kernel(
                 f.write(str(compiled_kernel.asm["ttsharedir"]))
                 logger.info("Triton Shared MLIR written to %s", f.name)
 
-            # Extract the PDI and partition from the Triton cache xclbin
-            cmd = [
-                "/opt/xilinx/xrt/bin/xclbinutil",
-                "--dump-section",
-                "AIE_PARTITION:JSON:partition.json",
-                "--force",
-                "--input",
-                str(xclbin_path / "aie.xclbin"),
-            ]
-            subprocess.run(
-                cmd,
-                check=True,
-                text=True,
-                capture_output=True,
-                cwd=str(xclbin_path),
-            )
-            pdi_path = next(xclbin_path.glob("**/*.pdi"))
-            partition = json.loads((xclbin_path / "partition.json").read_text())
-            # xclbinutil renders every number in this section as a string
-            num_cols = int(partition["aie_partition"]["partition"]["column_width"])
-
-            # Pack PDI and instructions from the Triton cache into an hsaco
+            # Pack xclbin and instructions from the Triton cache into an hsaco
             hsaco_path = output_directory / f"{exported_name}.hsaco"
             pack_aie_hsaco(
                 hsaco_path,
                 arch=kernel_spec.arch,
                 kernel_name=exported_name,
-                insts=(xclbin_path / "insts.bin").read_bytes(),
-                pdi=pdi_path.read_bytes(),
+                xclbin_path=xclbin_path / "aie.xclbin",
+                insts_path=xclbin_path / "insts.bin",
                 num_kernargs=len(kernel_spec.input_tensors) + 1,
-                num_cols=num_cols,
             )
 
             logger.info(

@@ -4,14 +4,17 @@
 
 The ggml-hsa backend JIT-compiles GGML operations into AIE (AI Engine) kernels
 at **tensor initialization time** — before graph execution begins. Each kernel
-compiles to a PDI (Programmable Device Image) and a DMA instruction sequence,
-which are packed into one artifact:
+compiles to an xclbin (holding the PDI, the Programmable Device Image) and a DMA
+instruction sequence, which are packed into one artifact:
 
 | Artifact | Contents |
 |---|---|
 | `<name>.hsaco` | HSA code object with an `aie2`/`aie2p` section holding one `PdiInsts` kernel named `<name>` (see ROCr `docs/aie-hsaco-format.md`) |
 
-Packing uses `aie.compiler.hsaco.pack` from mlir-aie (`kernels/aie_hsaco.py`).
+Packing runs mlir-aie's `aie-hsaco` packer (`aie.compiler.hsaco.pack`, called from
+`kernels/aie_hsaco.py`), which reads the PDI and the partition column count from
+the xclbin with `xclbinutil`. Set `AIE_XCLBINUTIL` if `xclbinutil` is not on `PATH`
+or in the mlir-aie `bin/` directory.
 
 Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
 
@@ -70,8 +73,8 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
  │         ├── IRON ──────────────────────────── kernels/build_iron.py
  │         │    1. function() → MLIR module (aie.iron DSL)
  │         │    2. compile C++ core functions via Peano/llvm-aie → .o
- │         │    3. compile_mlir_module() → .pdi + _insts.bin (in the work dir)
- │         │    4. pack into .hsaco; num_cols from the aie.device target model
+ │         │    3. compile_mlir_module() → .xclbin + _insts.bin (in the work dir)
+ │         │    4. aie-hsaco packs .xclbin + _insts.bin into .hsaco
  │         │
  │         └── Triton ────────────────────────── kernels/build_triton.py
  │              1. set_active(NPUDriver()) for npu1/npu2 target
@@ -80,8 +83,7 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
  │              3. config_context(compile_only=True,
  │                 transform_tiling_script=..., output_format="xclbin")
  │              4. function() → compiled_kernel (triggers Triton JIT)
- │              5. extract .pdi + partition from xclbin via xclbinutil
- │              6. pack .pdi + insts.bin into .hsaco; num_cols from column_width
+ │              5. aie-hsaco packs aie.xclbin + insts.bin into .hsaco
  │         │
  │         ▼
  │    artifacts written to cache_dir/<device>/
@@ -173,9 +175,9 @@ configuration — tiles, object FIFOs, compute cores, and DMA sequences.
 | GEMM | `-DDIM_M=N -DDIM_N=N -DDIM_K=N -D<input_dtype>_<output_dtype>_ONLY -DB_COL_MAJ -DC_COL_MAJ` |
 
 The MLIR module is then lowered through MLIR-AIE passes to produce the final
-`.pdi` and `_insts.bin` files, using MLIR-AIE's default buffer allocator. These
-are packed into `<name>.hsaco`; the kernel's `num_cols` is the column count of
-the device the module's `aie.device` targets (e.g. 1 for `npu1_1col`).
+`.xclbin` and `_insts.bin` files, using MLIR-AIE's default buffer allocator.
+These are packed into `<name>.hsaco`; the packer takes the kernel's `num_cols`
+from the xclbin's partition `column_width` (e.g. 1 for an `npu1_1col` design).
 
 ### Triton-XDNA
 
@@ -192,10 +194,8 @@ Compilation runs inside a combined context:
   `KernelSpec.config["transform_script"]`), and `output_format="xclbin"`
 
 Calling `kernel_spec.function()` inside this context triggers the Triton JIT
-compiler. The output xclbin is located via `get_npu_cache_dir()`, the `.pdi`
-and the `AIE_PARTITION` JSON are extracted with `xclbinutil`, and the `.pdi` and
-`insts.bin` are packed into `<name>.hsaco` in the output directory, with the
-partition's `column_width` as `num_cols`.
+compiler. The output xclbin is located via `get_npu_cache_dir()`, and it and
+`insts.bin` are packed into `<name>.hsaco` in the output directory.
 
 ---
 
@@ -274,6 +274,7 @@ Kernargs live in a fixed per-ring-slot pool (`ctx.kernargs`) allocated from the
 | `GGML_HSA_ENABLE_LOG` | Verbose C++ logging (defaults ON in debug builds) |
 | `GGML_HSA_KERNEL_INLINE` | Have IRON kernels hand their core function to `aiecc` as textual LLVM IR (`ExternalFunction(inline=True)`) instead of a `.o`, so it inlines into the tile loop instead of being linked with `ld.lld` (`1`, `true`, or `on`). Not usable on every kernel; each kernel opts in only once verified to compile both ways. Default off. |
 | `GGML_HSA_JIT_COMPILE` | CMake option (default ON): enable JIT compilation |
+| `AIE_XCLBINUTIL` | `xclbinutil` that aiecc and the hsaco packer use, if it is not on `PATH` or in the mlir-aie `bin/` directory |
 
 ---
 

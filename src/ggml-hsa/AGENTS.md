@@ -227,14 +227,13 @@ Each backend has a dedicated compiler module:
 - **IRON** (`build_iron.py`): Compiles IRON Python designs to PDI/instructions
   - Calls the `KernelSpec.function` to generate an MLIR module
   - Compiles any C++ core functions to object files
-  - Packs the PDI and instructions into a `.hsaco` code object for AIE execution
+  - Packs the xclbin and instructions into a `.hsaco` code object (mlir-aie `aie-hsaco`) for AIE execution
 
 - **TRITON** (`build_triton.py`): Compiles Triton kernels via MLIR-AIR/AIE
   - Uses `config_context` from `triton.backends.amd_triton_npu.config` to set compilation parameters (`compile_only`, `transform_tiling_script` from `kernel_spec.config["transform_script"]`, `output_format`, `debug`, `target`)
   - Sets `TRITON_CACHE_DIR` environment variable for artifact caching
   - Calls `kernel_spec.function()` to trigger Triton compilation
-  - Extracts PDI and partition column width from the generated `aie.xclbin` via `xclbinutil`
-  - Packs the PDI and instructions into a `.hsaco` code object for AIE execution
+  - Packs the xclbin and instructions into a `.hsaco` code object (mlir-aie `aie-hsaco`) for AIE execution
 
 Compilers are resolved in `build.py` by `_get_compiler()`:
 

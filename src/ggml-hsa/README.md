@@ -79,7 +79,9 @@ This needs a ROCR with AIE hsaco support, which is not on `develop` yet: build b
 It also needs the hsaco packer (`aie.compiler.hsaco`) from MLIR-AIE
 [`main`](https://github.com/Xilinx/mlir-aie) at or after commit
 [`a1c715a`](https://github.com/Xilinx/mlir-aie/commit/a1c715a709c) (#3796), which no MLIR-AIE
-release contains yet, including the 1.4.3 that `requirements-iron.txt` pins.
+release contains yet, including the 1.4.3 that `requirements-iron.txt` pins. The packer reads
+each kernel's PDI out of its xclbin with `xclbinutil`; set `AIE_XCLBINUTIL` to it (for example
+`/opt/xilinx/xrt/bin/xclbinutil`) if it is not on `PATH` or in the MLIR-AIE `bin/` directory.
 
 ### Compiling ROCR from source
 

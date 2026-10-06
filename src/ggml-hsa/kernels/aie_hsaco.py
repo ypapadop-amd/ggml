@@ -2,12 +2,10 @@
 
 """Packs a compiled AIE kernel into an hsaco (HSA code object) for the ROCr loader."""
 
-import os
 import tempfile
 from pathlib import Path
 
-from aie.compiler.hsaco.elf import make_empty_elf64
-from aie.compiler.hsaco.pack import build_section, inject
+from aie.compiler.hsaco import pack
 
 # Each kernel argument occupies two uint64 kernarg entries: its device address and its size.
 _KERNARG_BYTES_PER_ARG = 16
@@ -17,45 +15,52 @@ def pack_aie_hsaco(
     hsaco_path: Path,
     arch: str,
     kernel_name: str,
-    insts: bytes,
-    pdi: bytes,
+    xclbin_path: Path,
+    insts_path: Path,
     num_kernargs: int,
-    num_cols: int,
 ) -> None:
-    """Write a single-kernel hsaco holding a PDI and instruction sequence.
+    """Write a single-kernel hsaco from an xclbin and its instruction sequence.
 
-    The hsaco is assembled in a scratch file next to ``hsaco_path`` and renamed over it
-    only once complete, so a failed or interrupted pack never leaves a partial hsaco
-    that the runtime would find and fail to load.
+    Runs MLIR-AIE's ``aie-hsaco`` packer, which takes the PDI and the partition's
+    column count from the xclbin's ``AIE_PARTITION`` section. The hsaco is assembled
+    in a scratch directory next to ``hsaco_path`` and renamed over it only once
+    complete, so a failed pack never leaves a partial hsaco that the runtime would
+    find and fail to load.
 
     Args:
         hsaco_path: Output hsaco path.
         arch: AIE architecture, which is also the hsaco section name ("aie2" or "aie2p").
         kernel_name: HSA symbol name of the kernel.
-        insts: Instruction sequence (``insts.bin``).
-        pdi: PDI.
+        xclbin_path: xclbin holding the kernel's PDI.
+        insts_path: Instruction sequence (``insts.bin``).
         num_kernargs: Number of kernel arguments (buffers).
-        num_cols: Column count of the partition the kernel was compiled for.
+
+    Raises:
+        RuntimeError: If the packer rejects the inputs.
     """
-    section = build_section(
-        arch,
-        [
-            {
-                "name": kernel_name,
-                "insts": insts,
-                "pdi": pdi,
-                "kernarg_size": _KERNARG_BYTES_PER_ARG * num_kernargs,
-                "num_cols": num_cols,
-            }
-        ],
-    )
-    fd, scratch = tempfile.mkstemp(
-        dir=hsaco_path.parent, prefix=hsaco_path.name + ".", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(make_empty_elf64())
-        inject(scratch, arch, section)
-        Path(scratch).replace(hsaco_path)
-    finally:
-        Path(scratch).unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(dir=hsaco_path.parent) as scratch_dir:
+        scratch = Path(scratch_dir) / hsaco_path.name
+        argv = [
+            "--hsaco",
+            str(scratch),
+            "--arch",
+            arch,
+            "--kernel-name",
+            kernel_name,
+            "--kernel-xclbin",
+            str(xclbin_path),
+            "--kernel-insts",
+            str(insts_path),
+            "--kernel-kernarg",
+            str(_KERNARG_BYTES_PER_ARG * num_kernargs),
+        ]
+        # The packer is a command-line tool and reports bad input by exiting; it
+        # prints the reason to stderr.
+        try:
+            pack.main(argv)
+        except SystemExit as e:
+            msg = (
+                f"aie-hsaco could not pack kernel {kernel_name} (exit status {e.code})"
+            )
+            raise RuntimeError(msg) from e
+        scratch.replace(hsaco_path)
