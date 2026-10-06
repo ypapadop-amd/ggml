@@ -828,14 +828,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const bool padded_gemm = ggml_hsa_prepare_mul_mat_f32(dev_info, node, sources);
     if (padded_gemm) {
         // A source that is a graph-constant leaf (a weight/bias: op == GGML_OP_NONE, not a graph
-        // input) usually keeps its contents across dispatches, so its converted+padded (or just
-        // padded) form can be produced once into the persistent internal buffer and reused.
-        // graph_compute skips the pre-processing while the parent's data pointer and its buffer's
-        // write generation both match the cached ones (converted_ptr, converted_generation); any
-        // write to the buffer forces a re-conversion. That covers trainable parameters too, which
-        // are deliberately not excluded (models such as MNIST flag their weights as parameters
-        // even for inference): an optimizer step computed here writes the parameter's buffer, and
-        // a parameter in a buffer whose writes cannot be tracked is never cached.
+        // input) is converted+padded (or just padded) once into the persistent internal buffer and
+        // reused while the parent's data pointer is unchanged (converted_ptr). A constant source
+        // must therefore not be rewritten in place after its first use: the GEMM would keep using
+        // the old contents. Only sources in this backend's own allocated buffers are cached; one in
+        // another backend's buffer or in a buffer imported from another device (which that device
+        // writes directly) is converted on every dispatch.
         for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
             const ggml_tensor * src = parent_tensor.src[src_idx];
             if (sources[src_idx].buffer_size != 0 && src->op == GGML_OP_NONE &&
@@ -1410,14 +1408,6 @@ class ggml_hsa_vmem_allocation {
 };
 
 /**
- * @brief Returns a new, process-wide unique buffer write generation (never 0).
- */
-static std::uint64_t ggml_hsa_next_write_generation() {
-    static std::atomic<std::uint64_t> counter{0};
-    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
-}
-
-/**
  * @brief Context for managing a HSA buffer associated with a specific device.
  *
  * An imported buffer maps the whole dma-buf of @ref source; its base is @ref base_offset into the
@@ -1431,23 +1421,12 @@ struct ggml_backend_hsa_buffer_context {
     /// allocated by the HSA buffer type, so @ref dev_mem extends ggml_hsa_buffer_read_slack bytes
     /// past it.
     ggml_backend_buffer_t source{};
-    /// @brief Changes whenever this backend writes the buffer's contents: through the buffer
-    /// interface (set/memset/copy/clear), the backend's async set/copy, or a graph node computed
-    /// into it. Lets a cached conversion of a tensor in this buffer tell whether it is stale. Values
-    /// come from one process-wide counter, so they are never reused, not even by another buffer at
-    /// the same address; 0 is never assigned.
-    std::atomic<std::uint64_t> write_generation{ggml_hsa_next_write_generation()};
     std::vector<std::unique_ptr<ggml_backend_hsa_tensor_extra>> tensor_extras;
 
     explicit ggml_backend_hsa_buffer_context(std::int32_t device) : device{device} {}
 
     /// @brief Returns the base address of the buffer.
     void * base() const { return static_cast<std::byte *>(dev_mem.get()) + base_offset; }
-
-    /// @brief Records that the buffer's contents have been written.
-    void mark_written() {
-        write_generation.store(ggml_hsa_next_write_generation(), std::memory_order_relaxed);
-    }
 };
 
 /**
@@ -1471,35 +1450,13 @@ bool ggml_hsa_buffer_has_read_slack(ggml_backend_buffer_t buffer) {
 }
 
 /**
- * @brief Records that @p buffer's contents have been written, if it is an HSA buffer.
- *
- * Invalidates the cached conversions of constant sources held in it (see
- * @ref ggml_hsa_source_write_generation).
+ * @brief Returns if a conversion of @p src may be cached: its data lives in a buffer this backend
+ * allocated, not in another backend's buffer or one imported from another device.
  */
-static void ggml_hsa_buffer_mark_written(ggml_backend_buffer_t buffer) {
-    if (buffer != nullptr && ggml_backend_buffer_is_hsa(buffer)) {
-        static_cast<ggml_backend_hsa_buffer_context *>(buffer->context)->mark_written();
-    }
-}
-
-/**
- * @brief Returns the write generation of the buffer holding @p src's data, or 0 if writes to it
- * cannot be tracked.
- *
- * Only this backend's own writes to its own buffers are seen. Anything else is untracked, and a
- * conversion of it must not be cached: a buffer of another backend, and an HSA buffer imported from
- * another device, whose memory that device writes directly.
- */
-static std::uint64_t ggml_hsa_source_write_generation(const ggml_tensor * src) {
+static bool ggml_hsa_source_is_cacheable(const ggml_tensor * src) {
     ggml_backend_buffer_t buffer = src->view_src != nullptr ? src->view_src->buffer : src->buffer;
-    if (buffer == nullptr || !ggml_backend_buffer_is_hsa(buffer)) {
-        return 0;
-    }
-    const auto & buf_ctx = *static_cast<const ggml_backend_hsa_buffer_context *>(buffer->context);
-    if (buf_ctx.source != nullptr) {
-        return 0;
-    }
-    return buf_ctx.write_generation.load(std::memory_order_relaxed);
+    return buffer != nullptr && ggml_backend_buffer_is_hsa(buffer) &&
+           static_cast<const ggml_backend_hsa_buffer_context *>(buffer->context)->source == nullptr;
 }
 
 /**
@@ -1556,13 +1513,12 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
  * @param offset offset in tensor
  * @param size size of data to set, in bytes
  */
-static void ggml_backend_hsa_buffer_memset_tensor(ggml_backend_buffer_t buffer,
+static void ggml_backend_hsa_buffer_memset_tensor(ggml_backend_buffer_t /* buffer */,
                                                   ggml_tensor * tensor,
                                                   uint8_t value,
                                                   size_t offset,
                                                   size_t size) {
     std::memset(static_cast<std::byte *>(tensor->data) + offset, value, size);
-    ggml_hsa_buffer_mark_written(buffer);
 }
 
 /**
@@ -1574,13 +1530,12 @@ static void ggml_backend_hsa_buffer_memset_tensor(ggml_backend_buffer_t buffer,
  * @param offset offset in source data
  * @param size size of source data, in bytes
  */
-static void ggml_backend_hsa_buffer_set_tensor(ggml_backend_buffer_t buffer,
+static void ggml_backend_hsa_buffer_set_tensor(ggml_backend_buffer_t /* buffer */,
                                                ggml_tensor * tensor,
                                                const void * data,
                                                size_t offset,
                                                size_t size) {
     std::memcpy(static_cast<std::byte *>(tensor->data) + offset, data, size);
-    ggml_hsa_buffer_mark_written(buffer);
 }
 
 /**
@@ -1610,13 +1565,12 @@ static void ggml_backend_hsa_buffer_get_tensor(ggml_backend_buffer_t /* buffer *
  * @param dst destination tensor
  * @return true if the copy operation succeeded, false otherwise.
  */
-static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t buffer,
+static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t /* buffer */,
                                                const ggml_tensor * src,
                                                ggml_tensor * dst) {
     if (ggml_backend_buffer_is_hsa(src->buffer)) {
         std::memcpy(dst->data, src->data, ggml_nbytes(src));
-        ggml_hsa_buffer_mark_written(buffer);
-        return true;
+            return true;
     }
     return false;
 }
@@ -1627,14 +1581,10 @@ static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t buffer,
 static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
     std::memset(buf_ctx.base(), value, buffer->size);
-    buf_ctx.mark_written();
 }
 
 /**
  * @brief Interface for HSA buffers.
- *
- * Every entry that writes tensor data must call ggml_hsa_buffer_mark_written after the write,
- * including any future set_tensor_2d (and the backend's set_tensor_2d_async).
  */
 static const ggml_backend_buffer_i ggml_backend_hsa_buffer_interface = {
     /* .free_buffer   = */ ggml_backend_hsa_buffer_free_buffer,
@@ -1890,7 +1840,6 @@ static void ggml_backend_hsa_set_tensor_async(
                  ggml_backend_dev_buffer_type(backend->device)) &&
                 "unsupported buffer type");
     std::memcpy(static_cast<std::byte *>(tensor->data) + offset, data, size);
-    ggml_hsa_buffer_mark_written(tensor->buffer);
     GGML_UNUSED(backend);
 }
 
@@ -1937,7 +1886,6 @@ static bool ggml_backend_hsa_cpy_tensor_async(ggml_backend_t backend_src,
         return false; // only contiguous tensors supported
     }
     std::memcpy(dst->data, src->data, ggml_nbytes(dst));
-    ggml_hsa_buffer_mark_written(dst->buffer);
     return true;
 }
 
@@ -1990,14 +1938,12 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
             continue;
         }
         // A constant source (weight/bias) is converted+padded into the persistent internal buffer
-        // once and reused until it changes. Keyed on the parent's data pointer, so a moved parent
-        // forces a re-conversion, and on its buffer's write generation, so does any write to the
-        // buffer. A source whose writes cannot be tracked (generation 0) is never reused.
-        std::uint64_t generation = 0;
-        if (src_node.is_constant) {
-            generation = ggml_hsa_source_write_generation(node->src[src_idx]);
-            if (generation != 0 && src_node.converted_ptr == node->src[src_idx]->data &&
-                src_node.converted_generation == generation) {
+        // once and reused while the parent's data pointer is unchanged, so a moved parent forces a
+        // re-conversion (see the is_constant contract in ggml_backend_hsa_tensor_extra).
+        const bool cache =
+            src_node.is_constant && ggml_hsa_source_is_cacheable(node->src[src_idx]);
+        if (cache) {
+            if (src_node.converted_ptr == node->src[src_idx]->data) {
                 continue;
             }
             src_node.converted_ptr = nullptr; // invalid until this conversion is issued
@@ -2033,12 +1979,11 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
         }
         // Cache only a conversion that was issued: a device conversion that fails after this
         // records a queue error, which fails this and every later graph_compute on this context.
-        // The cached (ptr, generation) lives in the tensor extra, i.e. in the buffer, and is shared
-        // by every backend context: a fresh context created after such a queue error could still
-        // trust a conversion that never completed.
-        if (src_node.is_constant) {
+        // The cached pointer lives in the tensor extra, i.e. in the buffer, and is shared by every
+        // backend context: a fresh context created after such a queue error could still trust a
+        // conversion that never completed.
+        if (cache) {
             src_node.converted_ptr = node->src[src_idx]->data;
-            src_node.converted_generation = generation;
         }
     }
     return GGML_STATUS_SUCCESS;
@@ -2133,10 +2078,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         if (ggml_op_is_empty(node->op) || ggml_is_empty(node)) {
             continue;
         }
-
-        // The node writes its buffer (for a view, e.g. a KV-cache write CPY, the viewed tensor's
-        // buffer), which invalidates cached conversions of constant sources held there.
-        ggml_hsa_buffer_mark_written(node->buffer);
 
         // Host-path ops require neither a compiled kernel nor an extra (they read node->src
         // directly), so handle them before dereferencing node->extra: a CPY/DUP whose result is a

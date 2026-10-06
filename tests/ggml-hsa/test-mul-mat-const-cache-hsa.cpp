@@ -3,13 +3,13 @@
 // Standalone test for the cache of converted constant MUL_MAT sources. An f32 MUL_MAT at a shape
 // that is not a tile multiple runs as a padded bf16 GEMM: each operand is converted and
 // zero-padded into an internal buffer first. For a graph-constant weight that conversion is done
-// once and reused across computes, so the cache must notice every way the weight's contents can
-// change. Each case computes C = W x X twice (or more) and checks every result against a host
-// reference; inputs are small integers, so every product and partial sum is exact in bf16/f32 and
-// the result must match bit for bit.
+// once and reused across computes (a constant must not be rewritten in place after its first use).
+// Each case computes C = W x X several times and checks every result against a host reference;
+// inputs are small integers, so every product and partial sum is exact in bf16/f32 and the result
+// must match bit for bit.
 //
 // The weight lives in a buffer of its own, as model weights do, apart from the input and the
-// result, so writes to those do not touch the weight's buffer.
+// result.
 
 #include <cstdint>
 #include <cstdio>
@@ -25,33 +25,6 @@
 namespace {
 
 enum class case_result { pass, fail, skip };
-
-enum class case_kind {
-    // W is a trainable parameter (ggml_set_param), rewritten in place with ggml_backend_tensor_set
-    // between the computes, as an optimizer step updates it at the same address.
-    param_rewrite,
-    // W is a plain constant (no flags), rewritten in place with ggml_backend_tensor_set.
-    const_rewrite,
-    // W is a plain constant, overwritten in place by a CPY computed on the HSA backend in another
-    // graph (a KV-cache write is such a CPY).
-    const_graph_write,
-    // W is a plain constant that is not rewritten: the computes must reuse the cached conversion.
-    const_cached,
-};
-
-const char * kind_name(case_kind kind) {
-    switch (kind) {
-        case case_kind::param_rewrite:
-            return "param, tensor_set rewrite";
-        case case_kind::const_rewrite:
-            return "const, tensor_set rewrite";
-        case case_kind::const_graph_write:
-            return "const, CPY graph rewrite";
-        case case_kind::const_cached:
-            return "const, not rewritten";
-    }
-    return "?";
-}
 
 using ctx_ptr = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
 using buffer_ptr = std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)>;
@@ -109,14 +82,11 @@ bool check(const char * label,
     return true;
 }
 
-case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K, case_kind kind) {
+case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K) {
     // the weight, in a buffer of its own
     ctx_ptr wctx = make_ctx(1);
     ggml_tensor * w = ggml_new_tensor_2d(wctx.get(), GGML_TYPE_F32, K, M);
     ggml_set_name(w, "w");
-    if (kind == case_kind::param_rewrite) {
-        ggml_set_param(w);
-    }
     buffer_ptr wbuf{ggml_backend_alloc_ctx_tensors(wctx.get(), backend), ggml_backend_buffer_free};
     if (wbuf == nullptr) {
         printf("  weight allocation failed\n");
@@ -146,30 +116,6 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K, ca
         return case_result::fail;
     }
 
-    // W' -> W, computed by the backend in a graph of its own; the source lives in that graph's
-    // buffer, so only the CPY itself writes the weight's buffer
-    ctx_ptr cctx = make_ctx(2);
-    ggml_cgraph * gc = nullptr;
-    gallocr_ptr cpy_galloc{nullptr, ggml_gallocr_free};
-    ggml_tensor * w_src = nullptr;
-    if (kind == case_kind::const_graph_write) {
-        w_src = ggml_new_tensor_2d(cctx.get(), GGML_TYPE_F32, K, M);
-        ggml_set_name(w_src, "w_src");
-        ggml_set_input(w_src);
-        ggml_tensor * cpy = ggml_cpy(cctx.get(), w_src, w);
-        if (!ggml_backend_supports_op(backend, cpy)) {
-            printf("  CPY not supported (skipped)\n");
-            return case_result::skip;
-        }
-        gc = ggml_new_graph(cctx.get());
-        ggml_build_forward_expand(gc, cpy);
-        cpy_galloc.reset(ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)));
-        if (!ggml_gallocr_alloc_graph(cpy_galloc.get(), gc)) {
-            printf("  CPY graph allocation failed\n");
-            return case_result::fail;
-        }
-    }
-
     std::vector<float> hx(N * K);
     for (int64_t j = 0; j < N; ++j) {
         for (int64_t k = 0; k < K; ++k) {
@@ -193,31 +139,13 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K, ca
 
     bool ok = compute("compute 1", w1);
 
-    switch (kind) {
-        case case_kind::param_rewrite:
-        case case_kind::const_rewrite:
-            // same tensor, same address, new contents
-            ggml_backend_tensor_set(w, w2.data(), 0, ggml_nbytes(w));
-            ok = compute("compute 2 (after rewrite)", w2) && ok;
-            break;
-        case case_kind::const_graph_write:
-            ggml_backend_tensor_set(w_src, w2.data(), 0, ggml_nbytes(w_src));
-            if (ggml_backend_graph_compute(backend, gc) != GGML_STATUS_SUCCESS) {
-                printf("  CPY graph compute failed\n");
-                return case_result::fail;
-            }
-            ok = compute("compute 2 (after CPY rewrite)", w2) && ok;
-            break;
-        case case_kind::const_cached:
-            ok = compute("compute 2", w1) && ok;
-            // Shows that the second compute reused the cached conversion without a test hook:
-            // HSA buffers are host-mapped, so a store straight to the weight's memory, bypassing
-            // every ggml write path, is something the cache cannot see. A compute that still
-            // returns the first weight's result therefore did not re-convert the weight.
-            std::memcpy(w->data, w2.data(), ggml_nbytes(w));
-            ok = compute("compute 3 (after untracked store; expects cached W)", w1) && ok;
-            break;
-    }
+    ok = compute("compute 2", w1) && ok;
+    // Shows that the second compute reused the cached conversion without a test hook: HSA buffers
+    // are host-mapped, so a store straight to the weight's memory, bypassing every ggml write path,
+    // is something the cache cannot see. A compute that still returns the first weight's result
+    // therefore did not re-convert the weight.
+    std::memcpy(w->data, w2.data(), ggml_nbytes(w));
+    ok = compute("compute 3 (after a store to W; expects cached W)", w1) && ok;
 
     return ok ? case_result::pass : case_result::fail;
 }
@@ -239,24 +167,20 @@ int main() {
         {500, 500, 784},
         {10, 500, 500},
     };
-    const case_kind kinds[] = {case_kind::param_rewrite, case_kind::const_rewrite,
-                               case_kind::const_graph_write, case_kind::const_cached};
 
     bool any_fail = false;
     int passed = 0;
     int skipped = 0;
     for (const auto & s : shapes) {
-        for (const case_kind kind : kinds) {
-            const case_result r = run_case(backend, s.M, s.N, s.K, kind);
-            const char * label = r == case_result::pass   ? "PASSED"
-                                 : r == case_result::skip ? "SKIPPED"
-                                                          : "FAILED";
-            printf("MUL_MAT f32 %lldx%lldx%lld %-26s: %s\n", (long long)s.M, (long long)s.N,
-                   (long long)s.K, kind_name(kind), label);
-            any_fail = any_fail || (r == case_result::fail);
-            passed += (r == case_result::pass);
-            skipped += (r == case_result::skip);
-        }
+        const case_result r = run_case(backend, s.M, s.N, s.K);
+        const char * label = r == case_result::pass   ? "PASSED"
+                             : r == case_result::skip ? "SKIPPED"
+                                                      : "FAILED";
+        printf("MUL_MAT f32 %lldx%lldx%lld cached constant: %s\n", (long long)s.M,
+               (long long)s.N, (long long)s.K, label);
+        any_fail = any_fail || (r == case_result::fail);
+        passed += (r == case_result::pass);
+        skipped += (r == case_result::skip);
     }
     ggml_backend_free(backend);
 
