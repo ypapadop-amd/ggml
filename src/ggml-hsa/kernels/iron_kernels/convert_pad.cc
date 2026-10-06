@@ -112,6 +112,7 @@ void ggml_hsa_convert_pad_zero_row(OUTPUT_DTYPE * __restrict out) {
     const int32_t vend = nblk * V;
     const aie::vector<OUTPUT_DTYPE, V> zeros = aie::zeros<OUTPUT_DTYPE, V>();
 
+    AIE_PREPARE_FOR_PIPELINING
     for (int32_t b = 0; b < nblk; ++b) {
         aie::store_v(out + b * V, zeros);
     }
