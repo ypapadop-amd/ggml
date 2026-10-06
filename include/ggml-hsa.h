@@ -67,6 +67,8 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
 /**
  * @brief Converts @p a to @p type and widens it into the given (larger or equal) 2D shape.
  *
+ * Supported: f32 -> bf16 (convert and pad), and bf16 -> bf16 or f32 -> f32 (pad only).
+ *
  * The kernel writes the first @c a->ne[1] rows, zero-filling each one's tail columns
  * <tt>[a->ne[0], ne0)</tt>.
  *
