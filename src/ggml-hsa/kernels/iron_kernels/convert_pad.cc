@@ -96,19 +96,14 @@ void ggml_hsa_convert_pad(const INPUT_DTYPE * __restrict in,
 }
 
 /**
- * @brief Zero-fills one padding row of @p d0pad elements (a row past the source's last row).
- * @param[out] out    Output row of @p d0pad elements (OUTPUT_DTYPE).
- * @param[in]  d0pad  Padded row width.
+ * @brief Zero-fills one padding row of CONVERT_PAD_D0PAD elements (a row past the source's last
+ * row).
+ * @param[out] out Output row of CONVERT_PAD_D0PAD elements (OUTPUT_DTYPE).
  */
-void ggml_hsa_convert_pad_zero_row(OUTPUT_DTYPE * __restrict out, int32_t d0pad) {
+void ggml_hsa_convert_pad_zero_row(OUTPUT_DTYPE * __restrict out) {
     event0();
 
-#ifdef CONVERT_PAD_D0PAD
     constexpr int32_t d0padv = CONVERT_PAD_D0PAD;
-    (void)d0pad;
-#else
-    const int32_t d0padv = d0pad;
-#endif
 
     // Output rows are d0pad-wide (tile-multiple, vector-aligned), so an aligned store is safe;
     // d0pad need not be a multiple of V (e.g. a 16-wide bf16 row), so a scalar loop finishes it.

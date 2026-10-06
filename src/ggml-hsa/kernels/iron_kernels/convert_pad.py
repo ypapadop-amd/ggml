@@ -147,7 +147,7 @@ def convert_pad(
         if n_zero_rows > 0:
             for _ in range_(n_zero_rows):
                 row_out = of_out.acquire(1)
-                zero_function(row_out, d0pad)
+                zero_function(row_out)
                 of_out.release(1)
 
     workers = [
@@ -275,7 +275,7 @@ def _create_external_functions(
         name="ggml_hsa_convert_pad_zero_row",
         object_file_name=object_file_name,
         source_file=source_file,
-        arg_types=[row_out_ty, np.int32],  # out, d0pad
+        arg_types=[row_out_ty],
         compile_flags=compile_flags,
     )
     return function, zero_function
