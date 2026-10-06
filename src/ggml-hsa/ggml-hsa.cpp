@@ -986,9 +986,8 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     }
     buffer.reset(static_cast<std::byte *>(ptr));
 
-    // pre-zero the whole block so padding gaps (trailing rows/cols and the interior K gap of a
-    // padded MUL_MAT) read as zero without the per-dispatch sub-block copies having to touch them
-    std::memset(buffer.get(), 0, buffer_size);
+    // The block is left uninitialized: whatever fills an internal tensor (device transform, host
+    // copy, or the kernel itself for the output) writes every element of it, padding included.
 
     auto buffer_ptr = buffer.get();
     for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
@@ -1963,10 +1962,10 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
                 drained = true;
             }
             // A padded source has a different shape from its parent, so scatter the logical
-            // sub-block into the (pre-zeroed) padded buffer; otherwise the shapes match and a plain
-            // layout/dtype copy suffices. Decided per source: node.transform describes the
-            // *output*, and the two can disagree -- a GEMM padded only in K has padded operands and
-            // an unpadded result, which a plain copy would get wrong.
+            // sub-block into the padded buffer, zero-filling the padding; otherwise the shapes
+            // match and a plain layout/dtype copy suffices. Decided per source: node.transform
+            // describes the *output*, and the two can disagree -- a GEMM padded only in K has
+            // padded operands and an unpadded result, which a plain copy would get wrong.
             const bool src_is_padded =
                 !ggml_are_same_shape(node->src[src_idx], internal_node.src[src_idx]);
             status = ggml_hsa_copy_padded_or_plain(node->src[src_idx], internal_node.src[src_idx],
