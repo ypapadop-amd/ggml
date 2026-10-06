@@ -825,13 +825,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // generic dtype/layout/flatten handling below is skipped.
     const bool padded_gemm = ggml_hsa_prepare_mul_mat_f32(dev_info, node, sources);
     if (padded_gemm) {
-        // A source that is a graph-constant leaf (a weight/bias: op == GGML_OP_NONE, not a graph
-        // input) is converted+padded (or just padded) once into the persistent internal buffer and
-        // reused while the parent's data pointer is unchanged (converted_ptr). A constant source
-        // must therefore not be rewritten in place after its first use: the GEMM would keep using
-        // the old contents. Only sources in this backend's own allocated buffers are cached; one in
-        // another backend's buffer or in a buffer imported from another device (which that device
-        // writes directly) is converted on every dispatch.
+        // Graph-constant leaves (weights/biases) are converted once and cached; see
+        // source_node_t::is_constant for the contract.
         for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
             const ggml_tensor * src = parent_tensor.src[src_idx];
             if (sources[src_idx].buffer_size != 0 && src->op == GGML_OP_NONE &&
@@ -1437,19 +1432,27 @@ static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
     return buffer->iface.free_buffer == ggml_backend_hsa_buffer_free_buffer;
 }
 
-bool ggml_hsa_buffer_has_read_slack(ggml_backend_buffer_t buffer) {
+/**
+ * @brief Returns if @p buffer was allocated by the HSA buffer type: an HSA buffer that is not
+ * imported from another device.
+ */
+static bool ggml_hsa_buffer_is_allocated_here(ggml_backend_buffer_t buffer) {
     return buffer != nullptr && ggml_backend_buffer_is_hsa(buffer) &&
            static_cast<const ggml_backend_hsa_buffer_context *>(buffer->context)->source == nullptr;
 }
 
+bool ggml_hsa_buffer_has_read_slack(ggml_backend_buffer_t buffer) {
+    return ggml_hsa_buffer_is_allocated_here(buffer);
+}
+
 /**
  * @brief Returns if a conversion of @p src may be cached: its data lives in a buffer this backend
- * allocated, not in another backend's buffer or one imported from another device.
+ * allocated, not in another backend's buffer or one imported from another device (which that
+ * device writes directly).
  */
 static bool ggml_hsa_source_is_cacheable(const ggml_tensor * src) {
-    ggml_backend_buffer_t buffer = src->view_src != nullptr ? src->view_src->buffer : src->buffer;
-    return buffer != nullptr && ggml_backend_buffer_is_hsa(buffer) &&
-           static_cast<const ggml_backend_hsa_buffer_context *>(buffer->context)->source == nullptr;
+    return ggml_hsa_buffer_is_allocated_here(src->view_src != nullptr ? src->view_src->buffer
+                                                                      : src->buffer);
 }
 
 /**
@@ -1563,7 +1566,7 @@ static bool ggml_backend_hsa_buffer_cpy_tensor(ggml_backend_buffer_t /* buffer *
                                                ggml_tensor * dst) {
     if (ggml_backend_buffer_is_hsa(src->buffer)) {
         std::memcpy(dst->data, src->data, ggml_nbytes(src));
-            return true;
+        return true;
     }
     return false;
 }
@@ -1930,9 +1933,6 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
         if (src_node.buffer_size == 0) {
             continue;
         }
-        // A constant source (weight/bias) is converted+padded into the persistent internal buffer
-        // once and reused while the parent's data pointer is unchanged, so a moved parent forces a
-        // re-conversion (see the is_constant contract in ggml_backend_hsa_tensor_extra).
         const bool cache =
             src_node.is_constant && ggml_hsa_source_is_cacheable(node->src[src_idx]);
         if (cache) {
