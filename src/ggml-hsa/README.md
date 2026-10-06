@@ -170,8 +170,9 @@ Triton-XDNA pins its own MLIR-AIE (`1.4.4.dev82+gbe5b809`, through `mlir-air[aie
 than the one in `requirements-iron.txt`; pip cannot install both in one environment, so a Triton
 environment also runs the IRON kernels on that MLIR-AIE.
 
-Compiling a Triton kernel packages an xclbin with `xclbinutil`, from [XRT](https://github.com/Xilinx/XRT).
-If it is not on `PATH`, point `AIE_XCLBINUTIL` at it:
+Compiling a Triton kernel packages an xclbin with `xclbinutil`, from [XRT](https://github.com/Xilinx/XRT),
+and `ggml-hsa` reads the PDI back out of it with the same tool. If it is not on `PATH`, point
+`AIE_XCLBINUTIL` at it:
 
 ```bash
 export AIE_XCLBINUTIL=/opt/xilinx/xrt/bin/xclbinutil
@@ -357,5 +358,5 @@ JIT compilation generates kernels on-the-fly. Precompiled kernels in `GGML_HSA_K
 | `GGML_HSA_JIT_VERBOSE`                  | Verbose JIT output (`1`, `true`, or `on`)                                                                                                                                                               |
 | `GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS` | Milliseconds teardown waits for work still in flight when the runtime suspended the queue (default `1000`, `0` disables the wait). On timeout the dispatch signal is leaked instead of destroyed.        |
 | `GGML_HSA_JIT_COMPILER_ORDER`           | Comma-separated JIT backend order (e.g. `triton,iron`, case-insensitive); backends not listed are not used. Unset keeps each operation's own order.                                                     |
-| `AIE_XCLBINUTIL`                        | `xclbinutil` that MLIR-AIE's `aiecc` uses to package an xclbin (needed by the Triton backend), if it is not on `PATH`.                                                                                  |
+| `AIE_XCLBINUTIL`                        | `xclbinutil` (a path, or a name looked up on `PATH`) that the Triton backend uses to package its xclbin (MLIR-AIE's `aiecc`) and to extract the PDI from it; default: `xclbinutil` on `PATH`.            |
 | `GGML_HSA_KERNEL_INLINE`                | Inline supported kernels' core functions into the tile loop instead of linking them as a `.o` (mlir-aie `ExternalFunction(inline=True)`) (`1`, `true`, or `on`); default off. Support varies by kernel; see `core_function_object()` in `kernels/iron_kernels/utils.py`.        |
