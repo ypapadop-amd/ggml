@@ -66,6 +66,27 @@ class TempEnvSet(ContextDecorator):
             del os.environ[self.env_var]
 
 
+def _xclbinutil_path() -> str:
+    """Return the xclbinutil that aiecc uses to package the Triton-XDNA xclbin.
+
+    Resolved the way aiecc resolves it: ``AIE_XCLBINUTIL`` (a path, or a name looked up on
+    ``PATH``), else ``xclbinutil`` on ``PATH``. Extracting the PDI with the same tool keeps the
+    packaging and the extraction in step.
+
+    Raises:
+        RuntimeError: If no xclbinutil is found.
+    """
+    override = os.environ.get("AIE_XCLBINUTIL")
+    found = shutil.which(override or "xclbinutil")
+    if found is None:
+        if override:
+            msg = f"AIE_XCLBINUTIL is set to {override!r}, which is not an executable."
+        else:
+            msg = "xclbinutil not found on PATH; install XRT or set AIE_XCLBINUTIL."
+        raise RuntimeError(msg)
+    return found
+
+
 def _get_triton_target(kernel_spec: KernelSpec) -> str:
     """Return the Triton target string for a KernelSpec's architecture.
 
@@ -154,7 +175,7 @@ def compile_triton_kernel(
             # Create PDI from Triton cache xclbin
             pdi_path = output_directory / f"{exported_name}.pdi"
             cmd = [
-                "/opt/xilinx/xrt/bin/xclbinutil",
+                _xclbinutil_path(),
                 "--dump-section",
                 "AIE_PARTITION:JSON:partition.json",
                 "--force",
