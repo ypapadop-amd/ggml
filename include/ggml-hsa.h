@@ -69,13 +69,9 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
  *
  * Supported: f32 -> bf16 (convert and pad), and bf16 -> bf16 or f32 -> f32 (pad only).
  *
- * The kernel writes the first @c a->ne[1] rows, zero-filling each one's tail columns
- * <tt>[a->ne[0], ne0)</tt>.
- *
- * @warning The trailing rows <tt>[a->ne[1], ne1)</tt> are NOT written. The backend does not zero
- * buffers at allocation, so when @p ne1 is greater than @c a->ne[1] the caller must pre-zero the
- * destination (e.g., with @c ggml_backend_tensor_memset) or those rows hold whatever was already in
- * the buffer.
+ * The kernel writes the whole destination: the first @c a->ne[1] rows with their tail columns
+ * <tt>[a->ne[0], ne0)</tt> zero-filled, and the trailing rows <tt>[a->ne[1], ne1)</tt> zero-filled,
+ * so the destination need not be pre-zeroed.
  *
  * @param[in] ctx  context to allocate the result in
  * @param[in] a    source tensor; must be 2D (@c ne[2] == @c ne[3] == 1)
