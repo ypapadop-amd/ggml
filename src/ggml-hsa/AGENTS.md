@@ -237,7 +237,7 @@ Each backend has a dedicated compiler module:
   - Uses `config_context` from `triton.backends.amd_triton_npu.config` to set compilation parameters (`compile_only`, `transform_tiling_script` from `kernel_spec.config["transform_script"]`, `output_format`, `debug`, `target`)
   - Sets `TRITON_CACHE_DIR` environment variable for artifact caching
   - Calls `kernel_spec.function()` to trigger Triton compilation
-  - Packs the xclbin and instructions into a `.hsaco` code object (mlir-aie `aie-hsaco`) for AIE execution, on both architectures. ROCR rejects a dispatch batch that mixes these with full-ELF kernels, so on aie2p a Triton fallback next to IRON kernels is not supported yet
+  - Packs the result into a `.hsaco` code object (mlir-aie `aie-hsaco`) for AIE execution: on aie2p a full ELF (Triton-XDNA `output_format="elf"`, `aie.elf`), on aie2 the xclbin and instructions. MLIR-AIR's full ELF also holds an internal sequence that loads no PDI, which ROCR refuses, so only the kernel named in Triton-XDNA's `elf_kernel_name.txt` is packed (`pack_aie_hsaco(..., elf_kernel_name=...)`). Its control code loads two PDIs, which needs a ROCR that allows several PDIs per full-ELF kernel. Matching IRON's kind per architecture matters: ROCR rejects a dispatch batch that mixes full-ELF and PDI-plus-instructions kernels
 
 Compilers are resolved in `build.py` by `_get_compiler()`:
 

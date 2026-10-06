@@ -70,25 +70,30 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 `ggml-hsa` needs a [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime)
 with NPU support that loads AIE hsacos (HSA code objects). Build it from rocm-systems branch
 [`users/ypapadop-amd/aie-hsaco`](https://github.com/ROCm/rocm-systems/tree/users/ypapadop-amd/aie-hsaco)
-(see [Compiling ROCR from source](#compiling-rocr-from-source)).
+(see [Compiling ROCR from source](#compiling-rocr-from-source)). Triton kernels on aie2p also need
+that branch to include "feat(rocr/aie): Allow a full-ELF kernel to load several PDIs": the full ELF
+Triton-XDNA builds loads two.
 
 `ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API.
 
 What an hsaco holds depends on the architecture and the backend:
 
-- **aie2p, IRON:** a full ELF (`aiecc --get-full-elf`), which carries its own PDI. A queue can run any
-  number of distinct full-ELF kernels.
-- **aie2, and Triton on either architecture:** a PDI and an instruction sequence. A queue holds at most
-  32 distinct PDIs (a driver/firmware limit), so at most 32 distinct kernels of this kind can share a
-  queue. ROCR also rejects a dispatch batch that mixes the two kinds. On aie2p that can happen when an
-  op falls back from IRON to Triton.
+What an hsaco holds depends on the architecture:
+
+- **aie2p:** a full ELF (IRON: `aiecc --get-full-elf`; Triton: Triton-XDNA's `elf` output), which
+  carries its own PDI. A queue can run any number of distinct full-ELF kernels.
+- **aie2:** a PDI and an instruction sequence. A queue holds at most 32 distinct PDIs (a
+  driver/firmware limit), so at most 32 distinct kernels can share a queue.
+
+ROCR rejects a dispatch batch that mixes the two kinds. Every kernel built for one architecture is of
+the same kind, so that cannot happen unless the kernel cache holds kernels from an older build.
 
 Packing a PDI-plus-instructions kernel reads its PDI out of its xclbin with `xclbinutil`, from
 [XRT](https://github.com/Xilinx/XRT). If it is not on `PATH`, point `AIE_XCLBINUTIL` at it.
 
-After upgrading from a build that packed aie2p IRON kernels as PDI plus instructions, clear the kernel
+After upgrading from a build that packed aie2p kernels as PDI plus instructions, clear the kernel
 cache once (`GGML_HSA_KERNEL_CACHE_CLEAR=1`): the cache is keyed by op, shapes and dtypes only, so it
-would keep serving the old kernels.
+would keep serving the old kernels, and mixing them with new ones fails the batch.
 
 ### Compiling ROCR from source
 
@@ -149,15 +154,23 @@ Install Triton dependencies (includes IRON):
 
 ```bash
 python3 -m pip install -r src/ggml-hsa/requirements-triton.txt
+python3 -m pip install --no-deps \
+  --extra-index-url https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.4 \
+  mlir_aie_no_rtti==1.4.4
 ```
 
-Or use the setup script:
+The second command is needed because MLIR-AIR pins an MLIR-AIE (`1.4.4.dev82`) older than the hsaco
+packer (`aie.compiler.hsaco`) that every kernel is packed with, so `requirements-triton.txt` cannot
+request a newer one. `pip check` does not report the override: it does not check the extra that
+carries MLIR-AIR's pin.
+
+Or use the setup script, which does both:
 
 ```bash
 source src/ggml-hsa/env_setup.sh triton
 ```
 
-Compiling a Triton kernel packages an xclbin with `xclbinutil`, from [XRT](https://github.com/Xilinx/XRT),
+On aie2, compiling a Triton kernel packages an xclbin with `xclbinutil`, from [XRT](https://github.com/Xilinx/XRT),
 and `ggml-hsa` reads the PDI back out of it with the same tool. If it is not on `PATH`, point
 `AIE_XCLBINUTIL` at it:
 

@@ -94,9 +94,9 @@ def compile_triton_kernel(
 ) -> None:
     """Compile a Triton kernel for the target architecture in kernel_spec.
 
-    NPU targets run the Triton-XDNA pipeline and pack the resulting xclbin and
-    instructions binary into an hsaco; GPU targets run the HIP pipeline and copy
-    the hsaco object from the Triton cache.
+    NPU targets run the Triton-XDNA pipeline and pack the result into an hsaco: a
+    full ELF on aie2p, an xclbin and instructions binary on aie2. GPU targets run
+    the HIP pipeline and copy the hsaco object from the Triton cache.
 
     Args:
         kernel_spec: The KernelSpec containing the Triton kernel function.
@@ -121,6 +121,11 @@ def compile_triton_kernel(
         from triton.backends.amd_triton_npu.config import config_context
         from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
 
+        # As for IRON, aie2p kernels are built as full ELFs, which take none of the queue's 32
+        # PDI slots, and ROCR rejects a dispatch batch that mixes them with PDI-plus-instructions
+        # kernels. aie2 has no full-ELF format and keeps the xclbin.
+        full_elf = kernel_spec.arch == "aie2p"
+
         triton.runtime.driver.set_active(NPUDriver())
         with (
             TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
@@ -129,35 +134,53 @@ def compile_triton_kernel(
                 transform_tiling_script=kernel_spec.config.get(
                     "transform_script", MISSING
                 ),
-                output_format="xclbin",
+                output_format="elf" if full_elf else "xclbin",
                 debug=1 if verbose else 0,
                 target=arch,
             ),
         ):
             compiled_kernel = kernel_spec.function()
-            xclbin_path = Path(get_npu_cache_dir(compiled_kernel))
+            npu_artifacts_path = Path(get_npu_cache_dir(compiled_kernel))
             logger.info(
                 (
                     "Triton compilation successful\n"
                     "  Metadata:           %s\n"
                     "  Metadata Group:     %s\n"
-                    "  XCLBIN Parent Path: %s"
+                    "  NPU Artifacts Path: %s"
                 ),
                 compiled_kernel.metadata,
                 compiled_kernel.metadata_group,
-                str(xclbin_path),
+                str(npu_artifacts_path),
             )
-            with Path(xclbin_path / "tt.shared.mlir").open("w", encoding="utf-8") as f:
+            with Path(npu_artifacts_path / "tt.shared.mlir").open(
+                "w", encoding="utf-8"
+            ) as f:
                 f.write(str(compiled_kernel.asm["ttsharedir"]))
                 logger.info("Triton Shared MLIR written to %s", f.name)
 
-            hsaco_path = pack_aie_hsaco(
-                kernel_spec,
-                exported_name,
-                output_directory,
-                xclbin_path / "aie.xclbin",
-                xclbin_path / "insts.bin",
-            )
+            if full_elf:
+                # MLIR-AIR's full ELF also holds an internal sequence that loads no PDI,
+                # which ROCR refuses to load; pack only the kernel Triton-XDNA dispatches.
+                elf_kernel_name = (
+                    (npu_artifacts_path / "elf_kernel_name.txt")
+                    .read_text(encoding="utf-8")
+                    .strip()
+                )
+                hsaco_path = pack_aie_hsaco(
+                    kernel_spec,
+                    exported_name,
+                    output_directory,
+                    full_elf_path=npu_artifacts_path / "aie.elf",
+                    elf_kernel_name=elf_kernel_name,
+                )
+            else:
+                hsaco_path = pack_aie_hsaco(
+                    kernel_spec,
+                    exported_name,
+                    output_directory,
+                    npu_artifacts_path / "aie.xclbin",
+                    npu_artifacts_path / "insts.bin",
+                )
 
             logger.info(
                 "Triton-XDNA compilation successful\n  HSACO Path: %s", hsaco_path
