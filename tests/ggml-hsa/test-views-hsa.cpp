@@ -43,14 +43,20 @@ int main(int argc, char * argv[]) {
     if (argc > 2) {
         op = argv[2];
     }
+    // with a single row the transpose only moves a dimension of size 1, so the data stays in
+    // order; with more rows it is a real permutation
+    std::size_t rows = 1;
+    if (argc > 3) {
+        rows = std::atoi(argv[3]);
+    }
 
-    std::cout << "Creating arrays of " << N << " elements and doing A " << op << " B.\n";
+    std::cout << "Creating " << rows << "x" << N << " arrays and doing A^T " << op << " B^T.\n";
 
     // create data
     using value_type = std::int32_t;
     constexpr auto ggml_type = GGML_TYPE_I32;
-    const std::vector<value_type> A = create_data<value_type>(N, 10);
-    const std::vector<value_type> B = create_data<value_type>(N, 2);
+    const std::vector<value_type> A = create_data<value_type>(N * rows, 10);
+    const std::vector<value_type> B = create_data<value_type>(N * rows, 2);
 
     // initialize GGML backend and allocators
     ggml_backend_t backend = {};
@@ -81,8 +87,8 @@ int main(int argc, char * argv[]) {
                                /*.mem_buffer =*/nullptr,
                                /*.no_alloc   =*/true};
     ggml_context * ctx = ggml_init(params);
-    ggml_tensor * tensor_a = ggml_new_tensor_1d(ctx, ggml_type, N);
-    ggml_tensor * tensor_b = ggml_new_tensor_1d(ctx, ggml_type, N);
+    ggml_tensor * tensor_a = ggml_new_tensor_2d(ctx, ggml_type, N, rows);
+    ggml_tensor * tensor_b = ggml_new_tensor_2d(ctx, ggml_type, N, rows);
 
     ggml_tensor * tensor_a_trans = ggml_transpose(ctx, tensor_a);
     ggml_tensor * tensor_b_trans = ggml_transpose(ctx, tensor_b);
@@ -136,11 +142,38 @@ int main(int argc, char * argv[]) {
     }
 
     // copy data out and print
-    std::vector<value_type> result(N);
+    std::vector<value_type> result(N * rows);
     ggml_backend_tensor_get(tensor_result, std::data(result), 0, ggml_nbytes(tensor_result));
-    std::cout << "A =     " << A << '\n'
-              << "B =     " << B << '\n'
-              << "A " << op << " B = " << result << '\n';
+    std::cout << "A =         " << A << '\n'
+              << "B =         " << B << '\n'
+              << "A^T " << op << " B^T = " << result << '\n';
+
+    // check result: the result is contiguous with rows elements per row, and element (r, i) of
+    // the transposes is element (i, r) of A and B
+    std::size_t errors = 0;
+    for (std::size_t i = 0; i < N * rows; ++i) {
+        const std::size_t j = (i % rows) * N + (i / rows);
+        value_type expected = {};
+        switch (op[0]) {
+            case '+':
+                expected = A[j] + B[j];
+                break;
+            case '-':
+                expected = A[j] - B[j];
+                break;
+            case '*':
+                expected = A[j] * B[j];
+                break;
+            case '/':
+                expected = A[j] / B[j];
+                break;
+        }
+        if (result[i] != expected) {
+            std::cerr << "Mismatch at " << i << ": got " << result[i] << ", expected " << expected
+                      << '\n';
+            ++errors;
+        }
+    }
 
     // free resources
     ggml_free(ctx);
@@ -148,5 +181,5 @@ int main(int argc, char * argv[]) {
     ggml_gallocr_free(galloc);
     ggml_backend_free(backend);
 
-    return EXIT_SUCCESS;
+    return (errors == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
