@@ -6,11 +6,6 @@
 
 --extra-index-url https://pypi.org/simple
 
-# Pinned to a build verified on-device with the transform scripts in triton_kernels/, which use
-# the MLIR properties syntax this and later builds require. It pins mlir-air[aie], and through it
-# MLIR-AIE 1.4.4.dev82+gbe5b809: older than the one requirements-iron.txt pins, and without the
-# hsaco packer. pip cannot install both MLIR-AIEs in one environment, so a Triton environment
-# runs IRON kernels on dev82.
 triton-xdna==3.6.0.2026100504+694d60d
 --find-links https://github.com/amd/Triton-XDNA/releases/expanded_assets/latest-wheels
 # Must be the "-2" tag: triton-xdna needs mlir-air[aie], which requires the

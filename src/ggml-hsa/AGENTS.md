@@ -623,9 +623,7 @@ python3 -m pip install -r requirements-triton.txt
 
 The project pins the **mlir-aie nightly `1.4.4.dev91+g74ccfe9`** in
 `requirements-iron.txt` (the first build with the hsaco packer; no release has it
-yet). A Triton environment instead gets the `1.4.4.dev82+gbe5b809` that
-triton-xdna pins (see `requirements-triton.txt`). Ensure your environment
-matches the pin to avoid compatibility issues with:
+yet). Ensure your environment matches the pin to avoid compatibility issues with:
 
 - IRON API changes
 - ObjectFifo semantics

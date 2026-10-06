@@ -68,22 +68,17 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 ### ROCm
 
 `ggml-hsa` needs a [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime)
-with NPU support that includes commit [`512eb6021e7`](https://github.com/ROCm/rocm-systems/commit/512eb6021e7)
-("fix(rocr/aie): Avoid unmap during AIE memory release", #12389), which fixes an abort when freeing
-an HSA vmem buffer; `ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API. The
-system ROCm (`/opt/rocm`) does not provide the AIE header `hsa/hsa_ext_amd_aie.h`, so use one of:
+with NPU support, from either:
 
 - [TheRock](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)'s nightly pip wheels, from
   `10.2.0a20261006` on (see [Using TheRock's ROCR](#using-therocks-rocr)).
 - A ROCR built from [`develop`](https://github.com/ROCm/rocm-systems/tree/develop) at or after
-  `512eb6021e7` (see [Compiling ROCR from source](#compiling-rocr-from-source)).
+  [`512eb6021e7`](https://github.com/ROCm/rocm-systems/commit/512eb6021e7) (see
+  [Compiling ROCR from source](#compiling-rocr-from-source)).
+
+`ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API.
 
 ### Using TheRock's ROCR
-
-TheRock's nightlies are published on `https://nightly.repo.amd.com/rocm/whl-next/`. The older
-`https://rocm.nightlies.amd.com/whl-multi-arch/` index stopped at `10.1.0a20260822`, which predates
-the fix. Each wheel records the rocm-systems commit it was built from in
-`share/therock/therock_manifest.json`; `10.2.0a20261006` is built from `81d4fa3` (2026-10-04).
 
 ```bash
 python3 -m venv .venv-rocm
@@ -166,10 +161,6 @@ Or use the setup script:
 source src/ggml-hsa/env_setup.sh triton
 ```
 
-Triton-XDNA pins its own MLIR-AIE (`1.4.4.dev82+gbe5b809`, through `mlir-air[aie]`), which is older
-than the one in `requirements-iron.txt`; pip cannot install both in one environment, so a Triton
-environment also runs the IRON kernels on that MLIR-AIE.
-
 Compiling a Triton kernel packages an xclbin with `xclbinutil`, from [XRT](https://github.com/Xilinx/XRT),
 and `ggml-hsa` reads the PDI back out of it with the same tool. If it is not on `PATH`, point
 `AIE_XCLBINUTIL` at it:
@@ -229,10 +220,9 @@ A process loads only one `libhsa-runtime64.so.1`, and HIP and `ggml-hsa` must sh
 ROCR with NPU support, which a system ROCm usually does not provide: for example, ROCm 7.2.4's
 `libamdhip64` links its own `libhsa-runtime64` without AIE support.
 
-TheRock's nightly wheels provide both. From `10.2.0a20261006` on, their ROCR carries the AIE vmem
-unmap fix described in [ROCm](#rocm) (`512eb6021e7`, #12389), and `ggml-hsa` runs on it. Running HIP
-and `ggml-hsa` together on the wheel's ROCR has not been verified yet; the setup below, with a ROCR
-built from source, is the verified one.
+TheRock's nightly wheels (`10.2.0a20261006` or later) provide both. Running HIP and `ggml-hsa`
+together on the wheel's ROCR has not been verified yet; the setup below, with a ROCR built from
+source, is the verified one.
 
 ```bash
 python3 -m venv build/.venv-rocm
