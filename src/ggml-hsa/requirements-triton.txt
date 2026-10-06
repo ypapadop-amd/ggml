@@ -6,7 +6,7 @@
 
 --extra-index-url https://pypi.org/simple
 
-triton-xdna
+triton-xdna==3.6.0.2026100504+694d60d
 --find-links https://github.com/amd/Triton-XDNA/releases/expanded_assets/latest-wheels
 # Must be the "-2" tag: triton-xdna needs mlir-air[aie], which requires the
 # mlir_aie_no_rtti distribution. Only this tag publishes that name; the older

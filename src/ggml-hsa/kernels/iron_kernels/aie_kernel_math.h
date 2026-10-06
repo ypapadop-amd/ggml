@@ -404,6 +404,7 @@ inline constexpr uint32_t kSqrtSignBit = 0x80000000u;
 inline constexpr uint32_t kSqrtMinNormalBits = 0x00800000u;
 inline constexpr uint32_t kSqrtScaleBelowBits = 0x1F800000u; // 2^-64
 inline constexpr uint32_t kSqrtInfBits = 0x7F800000u;
+inline constexpr uint32_t kSqrtQuietNaNBits = 0x7FC00000u;
 // A normal is scaled by adding 150 to its exponent field. A subnormal is m * 2^-149 with m < 2^23,
 // so x * 2^150 = 2m, built exactly from normal floats as the bit pattern of 2^24 + 2m minus 2^24.
 inline constexpr uint32_t kSqrtScaleExponentBits = 150u << 23;
@@ -443,7 +444,14 @@ inline float scalar_sqrt(float x) {
         return x;
     }
     if ((bits & kSqrtSignBit) != 0) {
-        return std::numeric_limits<float>::quiet_NaN();
+        // The NaN is built from x's bits rather than returned as a constant. Under
+        // GGML_HSA_KERNEL_INLINE, aiecc relinks this IR with its newer LLVM, which prints a NaN
+        // phi operand as `+qnan`; Peano's opt cannot parse that, and aiecc does not rewrite it.
+        // The local is not named `nan`: aiecc's rewrite of bare `nan` literals also hits `%nan`.
+        const uint32_t nan_bits = bits | kSqrtQuietNaNBits;
+        float result;
+        std::memcpy(&result, &nan_bits, sizeof(result));
+        return result;
     }
     if (bits >= kSqrtInfBits) {
         return x;

@@ -14,7 +14,7 @@ import numpy as np
 from aie.dialects.aie import *
 from aie.dialects.aiex import *
 from aie.extras.context import mlir_mod_ctx
-from aie.helpers.taplib import TensorAccessPattern, TensorAccessSequence
+from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import ExternalFunction, dtype_to_str, str_to_dtype
 from aie.iron.controlflow import range_
 
@@ -640,7 +640,7 @@ def my_matmul(
         zero_fn: Name of the external zero-init kernel function.
         matmul_fn: Name of the external matmul kernel function.
         object_file: Path to the compiled kernel object file to link.
-        generate_taps: Whether to also return TensorAccessSequences for A/B/C.
+        generate_taps: Whether to also return the TensorAccessPatterns for A/B/C.
         M_dense: Rows of the dense C written, at most M; also C's column stride. Defaults to M.
         N_dense: Columns of the dense C written, at most N. Defaults to N.
         dtype_b_str: Dtype name B is streamed in, if it differs from dtype_in_str. Only
@@ -661,7 +661,8 @@ def my_matmul(
             columns. Needs n * n_aie_cols <= N_dense.
 
     Returns:
-        A tuple of (A, B, C) TensorAccessSequences if generate_taps, else None.
+        A tuple of (A, B, C) lists of TensorAccessPatterns, one per data transfer, if
+        generate_taps, else None.
     """
     n_aie_rows = 4
 
@@ -1374,11 +1375,7 @@ def my_matmul(
     if generate_taps:
         # If generate_taps is true, return a representation of tensor tiles
         # representing all the npu_dma_memcpy_nd runtime sequence operations per input/ouput tensor.
-        return (
-            TensorAccessSequence.from_taps(A_taps),
-            TensorAccessSequence.from_taps(B_taps),
-            TensorAccessSequence.from_taps(C_taps),
-        )
+        return (A_taps, B_taps, C_taps)
     return None
 
 
