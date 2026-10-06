@@ -15,6 +15,9 @@ from conftest import KERNELS_DIR
 # duck typing on the spec, so the two KernelSpec classes coexisting is harmless.
 sys.path.insert(0, str(KERNELS_DIR))
 
+# aie must load before triton, as build._get_compiler ensures for the JIT: packing the hsaco
+# imports aie, and loading it after triton aborts on an LLVM CommandLine clash.
+pytest.importorskip("aie.iron")
 pytest.importorskip("triton")
 
 
