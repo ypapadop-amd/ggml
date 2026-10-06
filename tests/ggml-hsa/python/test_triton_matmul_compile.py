@@ -30,7 +30,7 @@ def _has_npu_backend():
 # M must be a multiple of the arch's L3 block M (_BLOCK_MN_BY_ARCH in
 # mul_mat.py): 256 on aie2, 512 on aie2p. N=256 and K=256 satisfy both archs.
 @pytest.mark.parametrize(("arch", "m"), [("aie2", 256), ("aie2p", 512)])
-def test_matmul_compiles_to_pdi(tmp_path, arch, m, import_kernel_module):
+def test_matmul_compiles_to_hsaco(tmp_path, arch, m, import_kernel_module):
     from build_triton import compile_triton_kernel
     from tensor_desc import TensorDesc
 
@@ -50,5 +50,4 @@ def test_matmul_compiles_to_pdi(tmp_path, arch, m, import_kernel_module):
     name = f"mul_mat_{arch}"
     compile_triton_kernel(spec, name, tmp_path, logging.getLogger("test"), verbose=False)
 
-    assert (tmp_path / f"{name}.pdi").is_file()
-    assert (tmp_path / f"{name}_insts.bin").is_file()
+    assert (tmp_path / f"{name}.hsaco").is_file()

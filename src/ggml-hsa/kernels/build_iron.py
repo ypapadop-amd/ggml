@@ -5,9 +5,26 @@
 import logging
 from pathlib import Path
 
+from aie import ir
+from aie.dialects.aie import AIEDevice, get_target_model
 from aie.iron import ExternalFunction
 from aie.utils.compile import compile_external_kernel, compile_mlir_module
+from aie_hsaco import pack_aie_hsaco
 from kernel import KernelSpec
+
+
+def _partition_columns(mlir_module: ir.Module) -> int:
+    """Return the column count of the device the module's ``aie.device`` targets.
+
+    This is the width of the partition the kernel was compiled for (e.g. 1 for
+    ``npu1_1col``, 4 for ``npu1``), not the number of columns the design uses.
+    """
+    for op in mlir_module.body.operations:
+        if op.operation.name == "aie.device":
+            device = AIEDevice(ir.IntegerAttr(op.attributes["device"]).value)
+            return get_target_model(device).columns()
+    msg = "MLIR module has no aie.device operation"
+    raise ValueError(msg)
 
 
 def compile_iron_kernel(
@@ -21,12 +38,12 @@ def compile_iron_kernel(
 
     Runs the kernel's Python function to generate an MLIR module, compiles any
     external C++ core functions to object files, then compiles the module into
-    PDI and instruction binaries.
+    PDI and instruction binaries, and packs those into an hsaco.
 
     Args:
         kernel_spec: The KernelSpec containing the IRON kernel function.
         exported_name: Name for the exported kernel files.
-        output_directory: Directory for output PDI and instruction files.
+        output_directory: Directory for the output hsaco.
         logger: Logger for status messages.
         verbose: If True, enables verbose compilation output.
     """
@@ -81,8 +98,8 @@ def compile_iron_kernel(
         file.write(str(mlir_module))
 
     # Generate PDI and instructions files from MLIR
-    pdi_path = output_directory / f"{exported_name}.pdi"
-    insts_path = output_directory / f"{exported_name}_insts.bin"
+    pdi_path = work_dir / f"{exported_name}.pdi"
+    insts_path = work_dir / f"{exported_name}_insts.bin"
     compile_mlir_module(
         mlir_module=mlir_module,
         insts_path=str(insts_path),
@@ -91,8 +108,16 @@ def compile_iron_kernel(
         work_dir=str(work_dir),
     )
 
-    logger.info(
-        "IRON compilation successful\n  PDI Path: %s\n  Instructions Path: %s",
-        pdi_path,
-        insts_path,
+    # Pack PDI and instructions into an hsaco
+    hsaco_path = output_directory / f"{exported_name}.hsaco"
+    pack_aie_hsaco(
+        hsaco_path,
+        arch=kernel_spec.arch,
+        kernel_name=exported_name,
+        insts=insts_path.read_bytes(),
+        pdi=pdi_path.read_bytes(),
+        num_kernargs=len(kernel_spec.input_tensors) + 1,
+        num_cols=_partition_columns(mlir_module),
     )
+
+    logger.info("IRON compilation successful\n  HSACO Path: %s", hsaco_path)

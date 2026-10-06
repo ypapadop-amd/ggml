@@ -73,6 +73,14 @@ Due to ongoing NPU support work in [ROCR](https://github.com/ROCm/rocm-systems/t
 
 `ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API.
 
+`ggml-hsa` loads its kernels as AIE hsacos (HSA code objects) and dispatches them by kernel object.
+This needs a ROCR with AIE hsaco support, which is not on `develop` yet: build branch
+[`users/ypapadop-amd/aie-hsaco`](https://github.com/ROCm/rocm-systems/tree/users/ypapadop-amd/aie-hsaco).
+It also needs the hsaco packer (`aie.compiler.hsaco`) from MLIR-AIE
+[`main`](https://github.com/Xilinx/mlir-aie) at or after commit
+[`a1c715a`](https://github.com/Xilinx/mlir-aie/commit/a1c715a709c) (#3796), which no MLIR-AIE
+release contains yet, including the 1.4.3 that `requirements-iron.txt` pins.
+
 ### Compiling ROCR from source
 
 ```bash

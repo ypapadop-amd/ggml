@@ -2,6 +2,7 @@
 
 """Triton-XDNA backend compiler for GGML HSA kernels."""
 
+import json
 import logging
 import os
 import shutil
@@ -95,8 +96,8 @@ def compile_triton_kernel(
 ) -> None:
     """Compile a Triton kernel for the target architecture in kernel_spec.
 
-    NPU targets run the Triton-XDNA pipeline and extract a PDI and instructions
-    binary from the resulting xclbin; GPU targets run the HIP pipeline and copy
+    NPU targets run the Triton-XDNA pipeline and pack the PDI and instructions
+    binary from the resulting xclbin into an hsaco; GPU targets run the HIP pipeline and copy
     the hsaco object from the Triton cache.
 
     Args:
@@ -118,6 +119,7 @@ def compile_triton_kernel(
     # Set active driver based on architecture
     arch = _get_triton_target(kernel_spec)
     if is_npu_arch(kernel_spec.arch):
+        from aie_hsaco import pack_aie_hsaco
         from triton.backends.amd_triton_npu.config import config_context
         from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
 
@@ -151,8 +153,7 @@ def compile_triton_kernel(
                 f.write(str(compiled_kernel.asm["ttsharedir"]))
                 logger.info("Triton Shared MLIR written to %s", f.name)
 
-            # Create PDI from Triton cache xclbin
-            pdi_path = output_directory / f"{exported_name}.pdi"
+            # Extract the PDI and partition from the Triton cache xclbin
             cmd = [
                 "/opt/xilinx/xrt/bin/xclbinutil",
                 "--dump-section",
@@ -168,21 +169,25 @@ def compile_triton_kernel(
                 capture_output=True,
                 cwd=str(xclbin_path),
             )
-            pdi_src_path = next(xclbin_path.glob("**/*.pdi"))
-            shutil.copy(pdi_src_path, pdi_path)
+            pdi_path = next(xclbin_path.glob("**/*.pdi"))
+            partition = json.loads((xclbin_path / "partition.json").read_text())
+            # xclbinutil renders every number in this section as a string
+            num_cols = int(partition["aie_partition"]["partition"]["column_width"])
 
-            # Copy instructions file from Triton cache
-            insts_path = output_directory / f"{exported_name}_insts.bin"
-            shutil.copy(xclbin_path / "insts.bin", insts_path)
+            # Pack PDI and instructions from the Triton cache into an hsaco
+            hsaco_path = output_directory / f"{exported_name}.hsaco"
+            pack_aie_hsaco(
+                hsaco_path,
+                arch=kernel_spec.arch,
+                kernel_name=exported_name,
+                insts=(xclbin_path / "insts.bin").read_bytes(),
+                pdi=pdi_path.read_bytes(),
+                num_kernargs=len(kernel_spec.input_tensors) + 1,
+                num_cols=num_cols,
+            )
 
             logger.info(
-                (
-                    "Triton-XDNA compilation successful\n"
-                    "  PDI Path:          %s\n"
-                    "  Instructions Path: %s"
-                ),
-                pdi_path,
-                insts_path,
+                "Triton-XDNA compilation successful\n  HSACO Path: %s", hsaco_path
             )
     elif is_gpu_arch(kernel_spec.arch):
         from triton.backends.amd.driver import HIPDriver

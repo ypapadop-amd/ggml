@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+// Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,50 +6,41 @@
 #include "ggml.h"
 
 #include <cstddef>
-#include <utility>
-
-/**
- * @brief Buffer for AIE agent kernels.
- *
- * This buffer is used to hold the PDI and instruction data for AIE kernels.
- */
-class ggml_hsa_aie_buffer {
-    ggml_hsa_unique_ptr<std::byte> m_data;
-    std::size_t m_size{};
-
-  public:
-    constexpr ggml_hsa_aie_buffer() = default;
-    ggml_hsa_aie_buffer(std::byte * data, std::size_t size) : m_data{data}, m_size{size} {}
-
-    ggml_hsa_aie_buffer(ggml_hsa_aie_buffer && other) noexcept :
-        m_data{std::exchange(other.m_data, nullptr)}, m_size{std::exchange(other.m_size, 0)} {}
-
-    ~ggml_hsa_aie_buffer() = default;
-
-    ggml_hsa_aie_buffer & operator=(ggml_hsa_aie_buffer && other) noexcept {
-        m_data = std::exchange(other.m_data, nullptr);
-        m_size = std::exchange(other.m_size, 0);
-        return *this;
-    }
-
-    /**
-     * @brief Returns the size of the buffer in bytes.
-     */
-    std::size_t size() const { return m_size; }
-
-    /**
-     * @brief Returns a pointer to the buffer data.
-     */
-    std::byte * data() const { return m_data.get(); }
-};
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <string>
 
 /**
  * @brief Kernel for AIE agents.
+ *
+ * The kernel is loaded from an hsaco (HSA code object) holding an AIE section. The kernel owns the
+ * executable it was loaded into, which keeps its kernel object valid.
  */
 class ggml_hsa_aie_kernel : public ggml_hsa_kernel {
+    hsa_code_object_reader_t m_reader{};
+    hsa_executable_t m_executable{};
+    std::uint64_t m_kernel_object{};
+    std::uint32_t m_kernarg_size{};
+
   public:
-    ggml_hsa_aie_buffer pdi;
-    ggml_hsa_aie_buffer insts;
+    ggml_hsa_aie_kernel() = default;
+    ggml_hsa_aie_kernel(const ggml_hsa_aie_kernel &) = delete;
+    ggml_hsa_aie_kernel & operator=(const ggml_hsa_aie_kernel &) = delete;
+    ~ggml_hsa_aie_kernel() override;
+
+    /**
+     * @brief Loads kernel @p kernel_name from the hsaco at @p path on @p agent.
+     *
+     * @param[in] agent AIE agent to load the kernel on
+     * @param[in] path hsaco path
+     * @param[in] kernel_name kernel symbol name
+     * @param[out] kernel loaded kernel
+     */
+    static ggml_status load(hsa_agent_t agent,
+                            const std::filesystem::path & path,
+                            const std::string & kernel_name,
+                            std::shared_ptr<ggml_hsa_aie_kernel> & kernel);
 
     ggml_status dispatch(ggml_backend_hsa_context & ctx,
                          ggml_tensor * src_tensors[],

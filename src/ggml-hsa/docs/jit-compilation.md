@@ -4,12 +4,14 @@
 
 The ggml-hsa backend JIT-compiles GGML operations into AIE (AI Engine) kernels
 at **tensor initialization time** — before graph execution begins. Each kernel
-compiles to two binary artifacts:
+compiles to a PDI (Programmable Device Image) and a DMA instruction sequence,
+which are packed into one artifact:
 
 | Artifact | Contents |
 |---|---|
-| `<name>.pdi` | Programmable Device Image (bitstream/configuration) |
-| `<name>_insts.bin` | DMA instruction sequence (dword array) |
+| `<name>.hsaco` | HSA code object with an `aie2`/`aie2p` section holding one `PdiInsts` kernel named `<name>` (see ROCr `docs/aie-hsaco-format.md`) |
+
+Packing uses `aie.compiler.hsaco.pack` from mlir-aie (`kernels/aie_hsaco.py`).
 
 Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
 
@@ -68,7 +70,8 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
  │         ├── IRON ──────────────────────────── kernels/build_iron.py
  │         │    1. function() → MLIR module (aie.iron DSL)
  │         │    2. compile C++ core functions via Peano/llvm-aie → .o
- │         │    3. compile_mlir_module() → .pdi + _insts.bin
+ │         │    3. compile_mlir_module() → .pdi + _insts.bin (in the work dir)
+ │         │    4. pack into .hsaco; num_cols from the aie.device target model
  │         │
  │         └── Triton ────────────────────────── kernels/build_triton.py
  │              1. set_active(NPUDriver()) for npu1/npu2 target
@@ -77,16 +80,17 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
  │              3. config_context(compile_only=True,
  │                 transform_tiling_script=..., output_format="xclbin")
  │              4. function() → compiled_kernel (triggers Triton JIT)
- │              5. extract .pdi from xclbin via xclbinutil; copy _insts.bin
+ │              5. extract .pdi + partition from xclbin via xclbinutil
+ │              6. pack .pdi + insts.bin into .hsaco; num_cols from column_width
  │         │
  │         ▼
  │    artifacts written to cache_dir/<device>/
  │
  │  load from disk:
- │    ggml_hsa_load_pdi()                     ─── kernel-discovery.cpp
- │      hsa_amd_memory_pool_allocate(dev_memory) → read .pdi bytes
- │    ggml_hsa_load_insts()                   ─── kernel-discovery.cpp
- │      hsa_amd_memory_pool_allocate(dev_memory) → read _insts.bin
+ │    ggml_hsa_aie_kernel::load()             ─── aie-kernel.cpp
+ │      hsa_code_object_reader_create_from_file(.hsaco)
+ │      hsa_executable_load_agent_code_object() + freeze
+ │      symbol <name> → HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT
  │
  └─ ggml_hsa_cache_kernel()                   ─── ggml-hsa.cpp
       insert into in-memory map
@@ -105,12 +109,10 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
            │
            ▼
  ggml_hsa_aie_kernel::dispatch()              ─── aie-kernel.cpp
-   • allocate payload from kernarg_memory pool
-   • fill hsa_amd_aie_ert_start_kernel_data_t:
-       pdi_addr, insts ptr+count, tensor ptrs+sizes
    • claim queue slot (hsa_queue_add_write_index_relaxed)
-   • write vendor packet (HSA_AMD_PACKET_TYPE_AIE_ERT)
-   • ring doorbell → AIE array executes
+   • fill the slot's kernargs: tensor ptrs, then tensor sizes
+   • write hsa_amd_aie_kernel_dispatch_packet_t with the kernel object
+   • ring doorbell once a batch is full → AIE array executes
            │
            ▼
  ggml_hsa_wait_dispatches()                   ─── ggml-hsa.cpp
@@ -171,7 +173,9 @@ configuration — tiles, object FIFOs, compute cores, and DMA sequences.
 | GEMM | `-DDIM_M=N -DDIM_N=N -DDIM_K=N -D<input_dtype>_<output_dtype>_ONLY -DB_COL_MAJ -DC_COL_MAJ` |
 
 The MLIR module is then lowered through MLIR-AIE passes to produce the final
-`.pdi` and `_insts.bin` files, using MLIR-AIE's default buffer allocator.
+`.pdi` and `_insts.bin` files, using MLIR-AIE's default buffer allocator. These
+are packed into `<name>.hsaco`; the kernel's `num_cols` is the column count of
+the device the module's `aie.device` targets (e.g. 1 for `npu1_1col`).
 
 ### Triton-XDNA
 
@@ -189,8 +193,9 @@ Compilation runs inside a combined context:
 
 Calling `kernel_spec.function()` inside this context triggers the Triton JIT
 compiler. The output xclbin is located via `get_npu_cache_dir()`, the `.pdi`
-is extracted with `xclbinutil`, and `insts.bin` is copied to the output
-directory.
+and the `AIE_PARTITION` JSON are extracted with `xclbinutil`, and the `.pdi` and
+`insts.bin` are packed into `<name>.hsaco` in the output directory, with the
+partition's `column_width` as `num_cols`.
 
 ---
 
@@ -201,7 +206,7 @@ directory.
 1. **In-memory cache** — `unordered_map<string, shared_ptr<ggml_hsa_kernel>>`
    in `ggml_hsa_device_info::device_info::kernels`. Zero-cost on repeated use.
 
-2. **Precompiled directory** — `$GGML_HSA_KERNEL_DIR/<device>/<name>.pdi`.
+2. **Precompiled directory** — `$GGML_HSA_KERNEL_DIR/<device>/<name>.hsaco`.
    For shipping pre-built kernels. Checked before the disk cache.
 
 3. **Disk cache** — resolved by priority:
@@ -230,20 +235,17 @@ into the cache from the unretired packet is what makes eviction unsafe there.
 
 ## HSA Dispatch
 
-Dispatch uses the AMD vendor-specific packet type `HSA_AMD_PACKET_TYPE_AIE_ERT`
-with opcode `HSA_AMD_AIE_ERT_START_CU`.
-
-The payload (`hsa_amd_aie_ert_start_kernel_data_t`) contains:
+Dispatch writes an `hsa_amd_aie_kernel_dispatch_packet_t`
+(`hsa/hsa_ext_amd_aie.h`, opcode `HSA_AMD_AIE_PACKET_OPCODE_KMQ`):
 
 | Field | Content |
 |---|---|
-| `pdi_addr` | Pointer to PDI in dev_memory |
-| `data[0..1]` | Transaction opcode (`0x3, 0x0`) |
-| `data[2..4]` | Instructions pointer (lo/hi 32-bit) + dword count |
-| `data[5..N]` | Per-tensor: address (lo/hi) + byte size |
+| `kernel_object_low/high` | Kernel object from the loaded hsaco symbol |
+| `num_kernargs` | Number of tensors (sources, then destination) |
+| `kernarg_address` | `2 * num_kernargs` `uint64_t`: tensor addresses, then tensor byte sizes |
 
-Payload memory is allocated from the `kernarg_memory` pool and tracked in
-`ctx.kernargs` for deferred free after signal wait.
+Kernargs live in a fixed per-ring-slot pool (`ctx.kernargs`) allocated from the
+`kernarg_memory` pool. The hsaco's `kernarg_size` is `16 * num_kernargs`.
 
 ---
 
@@ -252,9 +254,7 @@ Payload memory is allocated from the `kernarg_memory` pool and tracked in
 | Structure | Location | Purpose |
 |---|---|---|
 | `ggml_hsa_kernel` | `common.hpp` | Abstract base with virtual `dispatch()` |
-| `ggml_hsa_aie_kernel` | `aie-kernel.hpp` | Holds PDI + instruction buffers |
-| `ggml_hsa_pdi_buffer` | `aie-kernel.hpp` | HSA-allocated PDI bytes |
-| `ggml_hsa_insts_buffer` | `aie-kernel.hpp` | HSA-allocated instruction dwords + count |
+| `ggml_hsa_aie_kernel` | `aie-kernel.hpp` | Owns the HSA executable loaded from the hsaco and its kernel object |
 | `ggml_backend_hsa_tensor_extra` | `common.hpp` | Per-tensor: node_t (tensor+convert info), kernel, staging buffer, sync flag |
 | `ggml_backend_hsa_context` | `common.hpp` | Queue, signal, pending payloads |
 | `KernelSpec` | `kernels/kernel.py` | Python: backend, op_name, arch, tensors, function, config |
@@ -284,8 +284,8 @@ Payload memory is allocated from the `kernarg_memory` pool and tracked in
   `GGML_STATUS_FAILED`. An invalid backend name in `GGML_HSA_JIT_COMPILER_ORDER`
   raises `ValueError` from `_make_kernel_specs()` and surfaces the same way; an
   order that drops every candidate for an op logs a warning before failing.
-- **File load failure:** `ggml_hsa_load_pdi()` / `ggml_hsa_load_insts()`
-  return `GGML_STATUS_ALLOC_FAILED` or `GGML_STATUS_FAILED`.
+- **Code object load failure:** `ggml_hsa_aie_kernel::load()` logs the failing
+  HSA call and returns `GGML_STATUS_FAILED`.
 - **Kernel not found and JIT disabled:** returns `GGML_STATUS_FAILED`,
   causing `ggml_backend_hsa_tensor_extra` constructor to throw.
 - **Duplicate cache insert:** `GGML_ABORT` — indicates a logic error.
