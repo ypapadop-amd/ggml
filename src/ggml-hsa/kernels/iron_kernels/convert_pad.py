@@ -34,9 +34,10 @@ def convert_pad(
 ):
     """Build the convert_pad IRON program: zero-pad a tensor, with an optional f32 -> bf16 convert.
 
-    MUL_MAT pre-amble. Widens each of the first d1 rows from d0 to d0pad elements
-    (compute kernel zero-fills the tail); trailing rows [d1, d1pad) are left as
-    the pre-zeroed destination buffer contents.
+    MUL_MAT pre-amble. Writes the whole [d0pad, d1pad] destination: each of the first d1 rows is
+    widened from d0 to d0pad elements (the compute kernel zero-fills the tail), and the trailing
+    rows [d1, d1pad), which have no source row, are zero-filled by the cores. The caller need not
+    pre-zero the destination.
 
     The d1 independent rows are fanned out across compute tiles: the convert is compute-bound per
     core (full RNE f32 -> bf16 emulation), so distributing rows scales throughput until the
@@ -111,7 +112,7 @@ def convert_pad(
         )
         raise ValueError(msg)
 
-    function = _create_external_function(
+    function, zero_function = _create_external_functions(
         src=src, output_tensor=output_tensor, d0=d0, d0pad=d0pad
     )
 
@@ -124,32 +125,51 @@ def convert_pad(
     n_workers = fan_out_worker_count(arch, d0 * d1, d1, max_workers)
     base, rem = divmod(d1, n_workers)
     rows_per_worker = [base + (1 if w < rem else 0) for w in range(n_workers)]
+    # The d1pad - d1 trailing padding rows have no source row; each worker also zero-fills a
+    # contiguous band of them. The last workers take the extra rows, balancing the first workers'
+    # extra source rows.
+    zbase, zrem = divmod(d1pad - d1, n_workers)
+    zero_rows_per_worker = [
+        zbase + (1 if w >= n_workers - zrem else 0) for w in range(n_workers)
+    ]
 
     of_ins = [ObjectFifo(row_in_ty, name=f"in{w}") for w in range(n_workers)]
     of_outs = [ObjectFifo(row_out_ty, name=f"out{w}") for w in range(n_workers)]
 
-    def core_fn(of_in, of_out, function, n_rows):
+    def core_fn(of_in, of_out, function, zero_function, n_rows, n_zero_rows):
         for _ in range_(n_rows):
             row_in = of_in.acquire(1)
             row_out = of_out.acquire(1)
             function(row_in, row_out, d0, d0pad)
             of_in.release(1)
             of_out.release(1)
+        # Then the worker's band of padding rows: output only, no input.
+        if n_zero_rows > 0:
+            for _ in range_(n_zero_rows):
+                row_out = of_out.acquire(1)
+                zero_function(row_out)
+                of_out.release(1)
 
     workers = [
         Worker(
             core_fn,
-            fn_args=[of_ins[w].cons(), of_outs[w].prod(), function, rows_per_worker[w]],
+            fn_args=[
+                of_ins[w].cons(),
+                of_outs[w].prod(),
+                function,
+                zero_function,
+                rows_per_worker[w],
+                zero_rows_per_worker[w],
+            ],
         )
         for w in range(n_workers)
     ]
 
     # Per-worker fill/drain: worker w reads its band of rows from the contiguous src buffer and
-    # writes them to the matching band of the (pre-zeroed) dst buffer. Each band is a contiguous
-    # 1-D slice (offset, size) of the flat buffer, so every worker drives its own shim DMA path.
-    # The declared buffer types cover each ggml tensor in full -- the destination is [d0pad, d1pad],
-    # not the [d0pad, d1] subrange the workers write -- so the Runtime signature matches the buffer
-    # the backend actually passes. The drain access patterns below restrict the writes.
+    # writes them to the matching band of the dst buffer, then writes its band of zero rows to the
+    # matching band of the trailing [d0pad, d1pad - d1] region. Each band is a contiguous 1-D slice
+    # (offset, size) of the flat buffer, so every worker drives its own shim DMA path. The fills
+    # cover the d1 source rows; the drains cover all d1pad destination rows.
     src_ty = np.ndarray[(d0 * d1,), np.dtype[src.dtype]]
     dst_ty = np.ndarray[(d0pad * d1pad,), np.dtype[output_tensor.dtype]]
 
@@ -158,29 +178,41 @@ def convert_pad(
         # drain: the workers finish out of order (uneven row bands), so waiting only on the
         # last-issued drain can signal completion while a slower worker is still writing, and an
         # on-queue consumer (the MUL_MAT) would then read partial data.
+        #
+        # Each worker's output stream is its source rows then its zero rows, so its drains are
+        # issued in that order (DMA tasks on one channel run in issue order).
+
+        def out_tap(offset, length):
+            return TensorAccessPattern(
+                (d0pad * d1pad,),
+                offset=offset,
+                sizes=[1, 1, 1, length],
+                strides=[0, 0, 0, 1],
+            )
+
         in_off = 0
         out_off = 0
+        zero_off = d1 * d0pad
         out_taps = []
         for w in range(n_workers):
             n_rows = rows_per_worker[w]
             in_len = n_rows * d0
             out_len = n_rows * d0pad
+            zero_len = zero_rows_per_worker[w] * d0pad
             in_tap = TensorAccessPattern(
                 (d0 * d1,), offset=in_off, sizes=[1, 1, 1, in_len], strides=[0, 0, 0, 1]
             )
-            out_taps.append(
-                TensorAccessPattern(
-                    (d0pad * d1pad,),
-                    offset=out_off,
-                    sizes=[1, 1, 1, out_len],
-                    strides=[0, 0, 0, 1],
-                )
-            )
+            taps = [out_tap(out_off, out_len)]
+            if zero_len > 0:
+                taps.append(out_tap(zero_off, zero_len))
+            out_taps.append(taps)
             in_prods[w].fill(a_in, in_tap)
             in_off += in_len
             out_off += out_len
+            zero_off += zero_len
         for w in range(n_workers):
-            out_conses[w].drain(b_out, out_taps[w], wait=True)
+            for tap in out_taps[w]:
+                out_conses[w].drain(b_out, tap, wait=True)
 
     rt = Runtime(
         sequence,
@@ -195,10 +227,10 @@ def convert_pad(
     return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
-def _create_external_function(
+def _create_external_functions(
     src, output_tensor, d0: int, d0pad: int
-) -> ExternalFunction:
-    """Create the ExternalFunction for the convert_pad core function.
+) -> tuple[ExternalFunction, ExternalFunction]:
+    """Create the ExternalFunctions for the convert_pad core functions.
 
     Args:
         src: Source tensor.
@@ -207,7 +239,8 @@ def _create_external_function(
         d0pad: Padded row width.
 
     Returns:
-        The configured ExternalFunction.
+        The row convert/pad function and the padding-row zero-fill function, both built into one
+        object file.
     """
     current_dir = Path(__file__).resolve().parent
     compile_flags = [
@@ -223,15 +256,26 @@ def _create_external_function(
     if src.dtype == output_tensor.dtype:
         compile_flags.append("-DCONVERT_PAD_PAD_ONLY=1")
 
-    return ExternalFunction(
+    object_file_name = "ggml_hsa_convert_pad_core_function.o"
+    source_file = str(current_dir / "convert_pad.cc")
+    row_out_ty = np.ndarray[(d0pad,), np.dtype[output_tensor.dtype]]
+    function = ExternalFunction(
         name="ggml_hsa_convert_pad",
-        object_file_name="ggml_hsa_convert_pad_core_function.o",
-        source_file=str(current_dir / "convert_pad.cc"),
+        object_file_name=object_file_name,
+        source_file=source_file,
         arg_types=[
             np.ndarray[(d0,), np.dtype[src.dtype]],
-            np.ndarray[(d0pad,), np.dtype[output_tensor.dtype]],
+            row_out_ty,
             np.int32,  # d0
             np.int32,  # d0pad
         ],
         compile_flags=compile_flags,
     )
+    zero_function = ExternalFunction(
+        name="ggml_hsa_convert_pad_zero_row",
+        object_file_name=object_file_name,
+        source_file=source_file,
+        arg_types=[row_out_ty],
+        compile_flags=compile_flags,
+    )
+    return function, zero_function

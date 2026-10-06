@@ -2,12 +2,12 @@
 
 // Standalone test for the HSA-only ggml_hsa_convert_pad op: f32 [d0, d1] -> bf16 [d0pad, d1pad],
 // converting the valid sub-block (round-to-nearest-even, matching the host reference), or
-// f32 -> f32, padding only; either way the padded regions stay zero. Builds a real single-node op
-// graph and computes it on the device.
+// f32 -> f32, padding only; either way every padded element reads as zero. Builds a real
+// single-node op graph and computes it on the device.
 //
-// The convert/pad kernel writes only the valid sub-block; the padded regions are expected to be
-// pre-zeroed (in production the internal buffer is memset to zero at allocation), so the test zeroes
-// the destination before computing.
+// The kernel writes the whole destination, padding included, so the test fills the destination with
+// a non-zero sentinel before computing: any padding element the kernel fails to zero shows up as a
+// mismatch.
 
 #include <cstdint>
 #include <cstdio>
@@ -56,15 +56,15 @@ bool run_case(ggml_backend_t backend,
         return false;
     }
 
-    // fill source with a varied pattern; pre-zero the (padded) destination
+    // fill source with a varied pattern; fill the (padded) destination with a non-zero sentinel
     std::vector<float> src_host(d0 * d1);
     for (int64_t i = 0; i < d0 * d1; ++i) {
         src_host[i] = static_cast<float>(i % 97) * 0.5f - 13.0f;
     }
     ggml_backend_tensor_set(src, src_host.data(), 0, ggml_nbytes(src));
 
-    std::vector<uint8_t> dst_zero(ggml_nbytes(dst), 0);
-    ggml_backend_tensor_set(dst, dst_zero.data(), 0, ggml_nbytes(dst));
+    std::vector<uint8_t> dst_sentinel(ggml_nbytes(dst), 0xFF);
+    ggml_backend_tensor_set(dst, dst_sentinel.data(), 0, ggml_nbytes(dst));
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
         printf("  graph compute failed\n");

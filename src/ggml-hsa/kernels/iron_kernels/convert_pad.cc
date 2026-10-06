@@ -95,4 +95,33 @@ void ggml_hsa_convert_pad(const INPUT_DTYPE * __restrict in,
     event1();
 }
 
+/**
+ * @brief Zero-fills one padding row of CONVERT_PAD_D0PAD elements (a row past the source's last
+ * row).
+ * @param[out] out Output row of CONVERT_PAD_D0PAD elements (OUTPUT_DTYPE).
+ */
+void ggml_hsa_convert_pad_zero_row(OUTPUT_DTYPE * __restrict out) {
+    event0();
+
+    constexpr int32_t d0padv = CONVERT_PAD_D0PAD;
+
+    // Output rows are d0pad-wide (tile-multiple, vector-aligned), so an aligned store is safe;
+    // d0pad need not be a multiple of V (e.g. a 16-wide bf16 row), so a scalar loop finishes it.
+    constexpr int32_t V = 512 / (sizeof(OUTPUT_DTYPE) * 8);
+    const int32_t nblk = d0padv / V;
+    const int32_t vend = nblk * V;
+    const aie::vector<OUTPUT_DTYPE, V> zeros = aie::zeros<OUTPUT_DTYPE, V>();
+
+    AIE_PREPARE_FOR_PIPELINING
+    for (int32_t b = 0; b < nblk; ++b) {
+        aie::store_v(out + b * V, zeros);
+    }
+
+    for (int32_t i = vend; i < d0padv; ++i) {
+        out[i] = static_cast<OUTPUT_DTYPE>(0);
+    }
+
+    event1();
+}
+
 } // extern "C"
