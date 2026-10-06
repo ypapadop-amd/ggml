@@ -48,7 +48,8 @@ def convert_pad(
     Args:
         arch: Target architecture.
         input_tensors: [src] input tensor.
-        output_tensor: padded bf16 output tensor.
+        output_tensor: padded output tensor: bf16, or the source dtype (bf16 or f32) to pad
+            without converting.
         op_params: unused (kept for the dispatch ABI).
         max_workers: Hard cap on compute tiles to fan the row loop across. Defaults to the array's
             column count (one worker per shim-DMA path); the actual count also scales with the work
@@ -72,13 +73,18 @@ def convert_pad(
 
     src = input_tensors[0]
 
-    # Two modes: f32 -> bf16 (convert + pad) or bf16 -> bf16 (pad only, operand already bf16).
-    if output_tensor.dtype != bfloat16:
-        msg = f"convert_pad destination must be bfloat16; got {output_tensor.dtype}."
-        raise ValueError(msg)
-    pad_only = src.dtype == bfloat16
-    if src.dtype != np.float32 and not pad_only:
-        msg = f"convert_pad source must be float32 or bfloat16; got {src.dtype}."
+    # Two modes: f32 -> bf16 (convert + pad), or pad only when the operand already has the
+    # destination dtype (bf16 -> bf16, or f32 -> f32 for a GEMM that converts f32 on the core).
+    pad_only = src.dtype == output_tensor.dtype
+    if pad_only:
+        if src.dtype not in (bfloat16, np.float32):
+            msg = f"convert_pad pad-only dtype must be bfloat16 or float32; got {src.dtype}."
+            raise ValueError(msg)
+    elif src.dtype != np.float32 or output_tensor.dtype != bfloat16:
+        msg = (
+            "convert_pad converts float32 -> bfloat16 only; got "
+            f"{src.dtype} -> {output_tensor.dtype}."
+        )
         raise ValueError(msg)
     if not src.contiguous or not output_tensor.contiguous:
         msg = "convert_pad tensors must be contiguous in memory."
@@ -212,9 +218,9 @@ def _create_external_function(
         f"-DCONVERT_PAD_D0={d0}",
         f"-DCONVERT_PAD_D0PAD={d0pad}",
     ]
-    # bf16 -> bf16 selects the pad-only kernel body (no dtype conversion); f32 -> bf16 keeps the
-    # default convert+pad body.
-    if src.dtype == bfloat16:
+    # A same-dtype pair selects the pad-only kernel body (no dtype conversion); f32 -> bf16 keeps
+    # the default convert+pad body.
+    if src.dtype == output_tensor.dtype:
         compile_flags.append("-DCONVERT_PAD_PAD_ONLY=1")
 
     return ExternalFunction(
