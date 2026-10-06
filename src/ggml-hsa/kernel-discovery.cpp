@@ -8,7 +8,6 @@
 #include <filesystem>
 #include <string_view>
 
-#include "ggml-hsa/aie-kernel.hpp"
 #include "ggml-impl.h"
 #ifdef GGML_HSA_JIT_COMPILE
 #include "ggml-hsa/kernel-compiler.hpp"
@@ -80,7 +79,7 @@ static bool ggml_hsa_is_file(const fs::path & p) {
 }
 
 /**
- * @brief Returns if the code object for a @ref ggml_hsa_aie_kernel exists in any of the
+ * @brief Returns if the code object for a @ref ggml_hsa_kernel exists in any of the
  * directories.
  */
 static bool ggml_hsa_find_aie_kernel_file(const std::string & device_name,
@@ -152,16 +151,7 @@ static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device
 #endif
     }
 
-    std::shared_ptr<ggml_hsa_aie_kernel> aie_kernel;
-    if (auto status =
-            ggml_hsa_aie_kernel::load(dev_info.agent, hsaco_path, kernel_name, aie_kernel);
-        status != GGML_STATUS_SUCCESS) {
-        return status;
-    }
-
-    kernel = std::move(aie_kernel);
-
-    return GGML_STATUS_SUCCESS;
+    return ggml_hsa_kernel::load(dev_info.agent, hsaco_path, kernel_name, kernel);
 }
 
 ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev_info,

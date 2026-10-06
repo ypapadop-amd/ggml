@@ -1,6 +1,6 @@
 // Copyright (c) 2024-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include "ggml-hsa/aie-kernel.hpp"
+#include "ggml-hsa/common.hpp"
 
 #include <cassert>
 #include <cstddef>
@@ -13,7 +13,7 @@
 
 #include "ggml-impl.h"
 
-ggml_hsa_aie_kernel::~ggml_hsa_aie_kernel() {
+ggml_hsa_kernel::~ggml_hsa_kernel() {
     if (m_executable.handle != 0) {
         GGML_HSA_CHECK_WARN(hsa_executable_destroy(m_executable));
     }
@@ -22,11 +22,11 @@ ggml_hsa_aie_kernel::~ggml_hsa_aie_kernel() {
     }
 }
 
-ggml_status ggml_hsa_aie_kernel::load(hsa_agent_t agent,
-                                      const std::filesystem::path & path,
-                                      const std::string & kernel_name,
-                                      std::shared_ptr<ggml_hsa_aie_kernel> & kernel) {
-    auto aie_kernel = std::make_shared<ggml_hsa_aie_kernel>();
+ggml_status ggml_hsa_kernel::load(hsa_agent_t agent,
+                                  const std::filesystem::path & path,
+                                  const std::string & kernel_name,
+                                  std::shared_ptr<ggml_hsa_kernel> & kernel) {
+    auto loaded = std::make_shared<ggml_hsa_kernel>();
 
     // the reader maps the file, so the descriptor is not needed once the reader exists
     const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
@@ -35,7 +35,7 @@ ggml_status ggml_hsa_aie_kernel::load(hsa_agent_t agent,
         return GGML_STATUS_FAILED;
     }
     const hsa_status_t reader_status =
-        hsa_code_object_reader_create_from_file(fd, &aie_kernel->m_reader);
+        hsa_code_object_reader_create_from_file(fd, &loaded->m_reader);
     close(fd);
     if (reader_status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: could not read code object %s (%s)", __func__, path.c_str(),
@@ -45,22 +45,22 @@ ggml_status ggml_hsa_aie_kernel::load(hsa_agent_t agent,
 
     if (auto status =
             hsa_executable_create_alt(HSA_PROFILE_FULL, HSA_DEFAULT_FLOAT_ROUNDING_MODE_DEFAULT,
-                                      nullptr, &aie_kernel->m_executable);
+                                      nullptr, &loaded->m_executable);
         status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: could not create executable (%s)", __func__,
                            ggml_hsa_get_status_string(status));
         return GGML_STATUS_FAILED;
     }
 
-    if (auto status = hsa_executable_load_agent_code_object(aie_kernel->m_executable, agent,
-                                                            aie_kernel->m_reader, nullptr, nullptr);
+    if (auto status = hsa_executable_load_agent_code_object(loaded->m_executable, agent,
+                                                            loaded->m_reader, nullptr, nullptr);
         status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: could not load code object %s (%s)", __func__, path.c_str(),
                            ggml_hsa_get_status_string(status));
         return GGML_STATUS_FAILED;
     }
 
-    if (auto status = hsa_executable_freeze(aie_kernel->m_executable, nullptr);
+    if (auto status = hsa_executable_freeze(loaded->m_executable, nullptr);
         status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: could not freeze executable for %s (%s)", __func__, path.c_str(),
                            ggml_hsa_get_status_string(status));
@@ -68,8 +68,8 @@ ggml_status ggml_hsa_aie_kernel::load(hsa_agent_t agent,
     }
 
     hsa_executable_symbol_t symbol{};
-    if (auto status = hsa_executable_get_symbol_by_name(aie_kernel->m_executable,
-                                                        kernel_name.c_str(), &agent, &symbol);
+    if (auto status = hsa_executable_get_symbol_by_name(loaded->m_executable, kernel_name.c_str(),
+                                                        &agent, &symbol);
         status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: kernel %s not found in %s (%s)", __func__, kernel_name.c_str(),
                            path.c_str(), ggml_hsa_get_status_string(status));
@@ -77,7 +77,7 @@ ggml_status ggml_hsa_aie_kernel::load(hsa_agent_t agent,
     }
 
     if (auto status = hsa_executable_symbol_get_info(
-            symbol, HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT, &aie_kernel->m_kernel_object);
+            symbol, HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT, &loaded->m_kernel_object);
         status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: could not get kernel object of %s (%s)", __func__,
                            kernel_name.c_str(), ggml_hsa_get_status_string(status));
@@ -86,22 +86,22 @@ ggml_status ggml_hsa_aie_kernel::load(hsa_agent_t agent,
 
     if (auto status = hsa_executable_symbol_get_info(
             symbol, HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_KERNARG_SEGMENT_SIZE,
-            &aie_kernel->m_kernarg_size);
+            &loaded->m_kernarg_size);
         status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: could not get kernarg size of %s (%s)", __func__,
                            kernel_name.c_str(), ggml_hsa_get_status_string(status));
         return GGML_STATUS_FAILED;
     }
 
-    kernel = std::move(aie_kernel);
+    kernel = std::move(loaded);
 
     return GGML_STATUS_SUCCESS;
 }
 
-ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
-                                          ggml_tensor * src_tensors[],
-                                          std::size_t num_src_tensors,
-                                          ggml_tensor & dst_tensor) const {
+ggml_status ggml_hsa_kernel::dispatch(ggml_backend_hsa_context & ctx,
+                                      ggml_tensor * src_tensors[],
+                                      std::size_t num_src_tensors,
+                                      ggml_tensor & dst_tensor) const {
     const auto num_kernargs = num_src_tensors + 1 /* destination tensor */;
 
     // each kernarg is an address and a size entry (see hsa_amd_aie_kernel_dispatch_packet_t)

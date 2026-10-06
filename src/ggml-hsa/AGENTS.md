@@ -52,7 +52,7 @@ src/ggml-hsa/
 ├── common.hpp                   # Common utilities and type definitions
 ├── host-ops.cpp/hpp             # Host-side operation implementations
 ├── kernel-discovery.cpp/hpp     # Runtime kernel discovery and loading
-├── aie-kernel.cpp/hpp           # AIE kernel abstraction layer
+├── kernel.cpp                   # Kernel loading (hsaco) and dispatch
 ├── kernel-compiler.cpp/hpp      # JIT compilation interface
 ├── type-traits.hpp              # GGML type to C++ type mapping
 ├── kernels/                     # AIE kernel implementations (two-layer architecture)
