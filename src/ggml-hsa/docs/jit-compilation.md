@@ -47,7 +47,7 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
  │    dispatches by device type (HSA_DEVICE_TYPE_AIE)
  │         │
  │         ▼
- │  ggml_hsa_create_aie_kernel()              ─── kernel-discovery.cpp
+ │  ggml_hsa_create_kernel()                  ─── kernel-discovery.cpp
  │    │
  │    ├─ precompiled dir ($GGML_HSA_KERNEL_DIR)?
  │    │    found → load from disk
@@ -110,7 +110,7 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
      • optional output post-processing (node.convert_dtype: on-queue or CPU-side)
            │
            ▼
- ggml_hsa_kernel::dispatch()                  ─── kernel.cpp
+ ggml_hsa_aie_kernel::dispatch()              ─── aie-kernel.cpp
    • claim queue slot (hsa_queue_add_write_index_relaxed)
    • fill the slot's kernargs: tensor ptrs, then tensor sizes
    • write hsa_amd_aie_kernel_dispatch_packet_t with the kernel object
@@ -253,7 +253,8 @@ Kernargs live in a fixed per-ring-slot pool (`ctx.kernargs`) allocated from the
 
 | Structure | Location | Purpose |
 |---|---|---|
-| `ggml_hsa_kernel` | `common.hpp` | Owns the HSA executable loaded from the hsaco and its kernel object; `load()` and `dispatch()` |
+| `ggml_hsa_kernel` | `kernel.hpp` | Base: owns the HSA executable loaded from the hsaco and its kernel object; `load()`, virtual `dispatch()` |
+| `ggml_hsa_aie_kernel` | `aie-kernel.hpp` | Dispatches with the AIE agent dispatch packet |
 | `ggml_backend_hsa_tensor_extra` | `common.hpp` | Per-tensor: node_t (tensor+convert info), kernel, staging buffer, sync flag |
 | `ggml_backend_hsa_context` | `common.hpp` | Queue, signal, pending payloads |
 | `KernelSpec` | `kernels/kernel.py` | Python: backend, op_name, arch, tensors, function, config |

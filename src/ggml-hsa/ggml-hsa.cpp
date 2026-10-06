@@ -7,6 +7,7 @@
 #include "ggml-hsa/common.hpp"
 #include "ggml-hsa/host-ops.hpp"
 #include "ggml-hsa/kernel-discovery.hpp"
+#include "ggml-hsa/kernel.hpp"
 
 #include <algorithm>
 #include <cctype>
