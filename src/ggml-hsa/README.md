@@ -57,13 +57,14 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 | OS          | [Ubuntu 24.04.2], [Ubuntu 25.10]                                                   |
 | ROCR        | [TheRock] nightly `10.2.0a20261006` (rocm-systems `81d4fa3`), or built from source |
 | XDNA Driver | [1.6][XDNA Driver 1.6]                                                             |
-| MLIR-AIE    | `1.4.4.dev91+g74ccfe9` (nightly; [`requirements-iron.txt`](requirements-iron.txt))  |
+| MLIR-AIE    | [1.4.4][MLIR-AIE 1.4.4]                                                            |
 | Triton-XDNA | `3.6.0.2026100504+694d60d` ([`requirements-triton.txt`](requirements-triton.txt))  |
 
 [Ubuntu 24.04.2]: https://releases.ubuntu.com/noble/
 [Ubuntu 25.10]: https://releases.ubuntu.com/questing/
 [TheRock]: https://github.com/ROCm/TheRock/blob/main/RELEASES.md
 [XDNA Driver 1.6]: https://github.com/amd/xdna-driver/tree/1.6
+[MLIR-AIE 1.4.4]: https://github.com/Xilinx/mlir-aie/tree/v1.4.4
 
 ### ROCm
 
@@ -128,8 +129,6 @@ Re-run both the build and the install after every branch switch or pull: `ggml-h
 #### IRON (MLIR-AIE)
 
 The default backend using the [IRON framework](https://github.com/Xilinx/mlir-aie).
-[`requirements-iron.txt`](requirements-iron.txt) pins an MLIR-AIE nightly, not a release: it is the
-first build with the hsaco packer (`aie.compiler.hsaco`), which no release carries yet.
 
 Install IRON dependencies:
 

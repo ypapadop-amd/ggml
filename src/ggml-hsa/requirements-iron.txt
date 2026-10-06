@@ -2,14 +2,11 @@
 
 # The MLIR-AIE and LLVM-AIE (Peano) packages are not on the official PyPI, so
 # we add them as additional indices here.
---find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2
+--extra-index-url https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.4
 --extra-index-url https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 --extra-index-url https://pypi.org/simple
 
-# A nightly, not a release: the first MLIR-AIE with the hsaco packer (aie.compiler.hsaco, added in
-# Xilinx/mlir-aie a1c715a, #3796). No release carries it yet; 1.4.3 does not. The nightly channel
-# keeps a limited history, so move this to a release once one includes the packer.
-mlir_aie_no_rtti==1.4.4.dev91+g74ccfe9
+mlir_aie==1.4.4
 
 # Floor, not an exact pin: llvm-aie only publishes rolling nightlies and the index retains
 # roughly the last three months, so an exact pin would stop resolving and break a fresh install.
