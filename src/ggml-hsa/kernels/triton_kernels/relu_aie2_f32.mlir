@@ -30,24 +30,24 @@ module attributes {transform.with_named_sequence} {
     // f32 pad+promote (inlined @pad_and_promote_unary_bf16 with an f32 pad value).
     %op = transform.structured.match ops{["linalg.generic"]} in %arg1
         : (!transform.any_op) -> !transform.any_op
-    %padded_op, %pad_op, %__ = transform.structured.pad %op {
+    %padded_op, %pad_op, %__ = transform.structured.pad %op <{
         padding_values=[0.0 : f32, 0.0 : f32],
         padding_dimensions=[0, 1],
         nofold_flags=[1, 1],
         copy_back_op="linalg.copy"
-    } : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+    }> : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
     %pad_dps = transform.structured.rewrite_in_destination_passing_style %pad_op
         : (!transform.any_op) -> !transform.any_op
     %padded_input = transform.get_producer_of_operand %padded_op[0]
         : (!transform.any_op) -> (!transform.any_op)
     %padded_input_buffer, %padded_input_new =
         transform.structured.bufferize_to_allocation %padded_input
-        {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+        <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
     %padded_result = transform.get_producer_of_operand %padded_op[1]
         : (!transform.any_op) -> (!transform.any_op)
     %padded_result_buffer, %padded_result_new =
         transform.structured.bufferize_to_allocation %padded_result
-        {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+        <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     transform.include @canonicalize_with_cse failures(propagate)
         (%arg1) : (!transform.any_op) -> ()
