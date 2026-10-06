@@ -282,7 +282,7 @@ def ggml_compile_op(
     exported_name: str,
     config: CompilerConfig,
 ) -> None:
-    """Compile a GGML operation kernel to PDI and instruction files.
+    """Compile a GGML operation kernel to an hsaco.
 
     Main entry point for kernel compilation: looks up the dispatch module,
     calls it to obtain a KernelSpec (backend + function), then invokes the

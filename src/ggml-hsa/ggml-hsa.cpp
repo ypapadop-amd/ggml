@@ -1045,9 +1045,10 @@ ggml_backend_hsa_context::~ggml_backend_hsa_context() {
                          ggml_hsa_drain_after_queue_error(*this);
 
     if (!drained) {
-        // An unretired packet names its completion signal, its kernel's instruction and PDI
-        // buffers, and a kernarg slot. Leak all three. The kernel cache is per-device, so pinning
-        // it is what stops another context on this device evicting those buffers later.
+        // An unretired packet names its completion signal, its kernel's kernel object, and a
+        // kernarg slot. Leak all three. The kernel object is valid only while its kernel's
+        // executable lives, and the kernel cache is per-device, so pinning it is what stops
+        // another context on this device evicting that kernel later.
         //
         // The queue is still destroyed below, though its ring holds the same packets: leaking it
         // would pin a hardware context for the process lifetime and could starve queue creation.

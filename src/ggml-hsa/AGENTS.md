@@ -225,7 +225,7 @@ unchanged. This replaces the former `GGML_HSA_PREFER_TRITON` boolean.
 
 Each backend has a dedicated compiler module:
 
-- **IRON** (`build_iron.py`): Compiles IRON Python designs to PDI/instructions
+- **IRON** (`build_iron.py`): Compiles IRON Python designs to an hsaco
   - Calls the `KernelSpec.function` to generate an MLIR module
   - Compiles any C++ core functions to object files
   - Packs the xclbin and instructions into a `.hsaco` code object (mlir-aie `aie-hsaco`) for AIE execution
@@ -486,7 +486,7 @@ To add a new backend, follow the pattern used for the Triton backend. This examp
    ) -> None:
        # Access kernel_spec.arch, kernel_spec.input_tensors, etc. as needed
        # Call kernel_spec.function to generate Triton IR
-       # Compile to PDI and instructions
+       # Compile, then pack into <exported_name>.hsaco with aie_hsaco.pack_aie_hsaco
        pass
    ```
 

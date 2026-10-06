@@ -151,15 +151,12 @@ def compile_triton_kernel(
                 f.write(str(compiled_kernel.asm["ttsharedir"]))
                 logger.info("Triton Shared MLIR written to %s", f.name)
 
-            # Pack xclbin and instructions from the Triton cache into an hsaco
-            hsaco_path = output_directory / f"{exported_name}.hsaco"
-            pack_aie_hsaco(
-                hsaco_path,
-                arch=kernel_spec.arch,
-                kernel_name=exported_name,
-                xclbin_path=xclbin_path / "aie.xclbin",
-                insts_path=xclbin_path / "insts.bin",
-                num_kernargs=len(kernel_spec.input_tensors) + 1,
+            hsaco_path = pack_aie_hsaco(
+                kernel_spec,
+                exported_name,
+                output_directory,
+                xclbin_path / "aie.xclbin",
+                xclbin_path / "insts.bin",
             )
 
             logger.info(
