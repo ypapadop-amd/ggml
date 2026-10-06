@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 // Standalone test for the HSA-only ggml_hsa_convert_pad op: f32 [d0, d1] -> bf16 [d0pad, d1pad],
-// converting the valid sub-block (round-to-nearest-even, matching the host reference) and leaving
-// the padded regions zero. Builds a real single-node op graph and computes it on the device.
+// converting the valid sub-block (round-to-nearest-even, matching the host reference), or
+// f32 -> f32, padding only; either way the padded regions stay zero. Builds a real single-node op
+// graph and computes it on the device.
 //
 // The convert/pad kernel writes only the valid sub-block; the padded regions are expected to be
 // pre-zeroed (in production the internal buffer is memset to zero at allocation), so the test zeroes
@@ -10,6 +11,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -20,7 +22,12 @@
 
 namespace {
 
-bool run_case(ggml_backend_t backend, int64_t d0, int64_t d1, int64_t d0pad, int64_t d1pad) {
+bool run_case(ggml_backend_t backend,
+              ggml_type dst_type,
+              int64_t d0,
+              int64_t d1,
+              int64_t d0pad,
+              int64_t d1pad) {
     const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
     ggml_init_params params{
         /*.mem_size   =*/ctx_size,
@@ -31,7 +38,7 @@ bool run_case(ggml_backend_t backend, int64_t d0, int64_t d1, int64_t d0pad, int
 
     ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, d0, d1);
     ggml_set_name(src, "src");
-    ggml_tensor * dst = ggml_hsa_convert_pad(ctx.get(), src, GGML_TYPE_BF16, d0pad, d1pad);
+    ggml_tensor * dst = ggml_hsa_convert_pad(ctx.get(), src, dst_type, d0pad, d1pad);
     ggml_set_name(dst, "dst");
 
     if (!ggml_backend_supports_op(backend, dst)) {
@@ -56,7 +63,7 @@ bool run_case(ggml_backend_t backend, int64_t d0, int64_t d1, int64_t d0pad, int
     }
     ggml_backend_tensor_set(src, src_host.data(), 0, ggml_nbytes(src));
 
-    std::vector<uint16_t> dst_zero(d0pad * d1pad, 0);
+    std::vector<uint8_t> dst_zero(ggml_nbytes(dst), 0);
     ggml_backend_tensor_set(dst, dst_zero.data(), 0, ggml_nbytes(dst));
 
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
@@ -64,16 +71,27 @@ bool run_case(ggml_backend_t backend, int64_t d0, int64_t d1, int64_t d0pad, int
         return false;
     }
 
-    std::vector<uint16_t> dst_host(d0pad * d1pad);
+    std::vector<uint8_t> dst_host(ggml_nbytes(dst));
     ggml_backend_tensor_get(dst, dst_host.data(), 0, ggml_nbytes(dst));
 
+    // compare bit patterns: bf16 must round like the host, f32 must be copied exactly
+    const std::size_t esize = ggml_type_size(dst_type);
     bool ok = true;
     for (int64_t i1 = 0; i1 < d1pad && ok; ++i1) {
         for (int64_t i0 = 0; i0 < d0pad && ok; ++i0) {
-            uint16_t got = dst_host[i1 * d0pad + i0];
-            uint16_t want = (i0 < d0 && i1 < d1) ? ggml_fp32_to_bf16(src_host[i1 * d0 + i0]).bits : 0;
+            uint32_t got = 0;
+            std::memcpy(&got, &dst_host[(i1 * d0pad + i0) * esize], esize);
+            uint32_t want = 0;
+            if (i0 < d0 && i1 < d1) {
+                const float v = src_host[i1 * d0 + i0];
+                if (dst_type == GGML_TYPE_BF16) {
+                    want = ggml_fp32_to_bf16(v).bits;
+                } else {
+                    std::memcpy(&want, &v, sizeof(v));
+                }
+            }
             if (got != want) {
-                printf("  mismatch at [%lld,%lld]: got 0x%04x want 0x%04x\n", (long long)i0,
+                printf("  mismatch at [%lld,%lld]: got 0x%08x want 0x%08x\n", (long long)i0,
                        (long long)i1, got, want);
                 ok = false;
             }
@@ -105,13 +123,22 @@ int main() {
         {500, 10, 512, 128, "mnist A c2"},
         {500, 500, 512, 512, "mnist B c2"},
         {784, 10, 800, 128, "mnist A c3"},
+        // the im2col GEMM operands behind MNIST-CNN's two CONV_2D layers: the A operand's
+        // d1 is the whole batch*OH*OW extent, orders of magnitude past every case above.
+        {9, 392000, 16, 392000, "mnist-cnn conv1 A"},
+        {9, 8, 16, 64, "mnist-cnn conv1 B"},
+        {72, 98000, 72, 98048, "mnist-cnn conv2 A"},
+        {72, 16, 72, 64, "mnist-cnn conv2 B"},
     };
 
     bool all_ok = true;
-    for (const auto & c : cases) {
-        bool ok = run_case(backend, c.d0, c.d1, c.d0pad, c.d1pad);
-        printf("HSA_CONVERT_PAD %-16s: %s\n", c.name, ok ? "PASSED" : "FAILED");
-        all_ok = all_ok && ok;
+    for (const ggml_type dst_type : {GGML_TYPE_BF16, GGML_TYPE_F32}) {
+        for (const auto & c : cases) {
+            bool ok = run_case(backend, dst_type, c.d0, c.d1, c.d0pad, c.d1pad);
+            printf("HSA_CONVERT_PAD f32->%-4s %-18s: %s\n", ggml_type_name(dst_type), c.name,
+                   ok ? "PASSED" : "FAILED");
+            all_ok = all_ok && ok;
+        }
     }
 
     ggml_backend_free(backend);
