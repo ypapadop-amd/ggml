@@ -74,17 +74,6 @@ static const std::size_t g_ggml_hsa_dispatch_batch_size =
     static_cast<std::size_t>(ggml_hsa_getenv_int(
         "GGML_HSA_DISPATCH_BATCH_SIZE", 0, 1, std::numeric_limits<std::int64_t>::max()));
 
-/// @brief When set, the padded-GEMM convert/pad transforms run on the host instead of
-/// as their own AIE dispatches. Read once from @c GGML_HSA_HOST_PAD at startup.
-///
-/// This exists to measure a tradeoff, not because either side is obviously right. On device the
-/// transforms cost no host round-trip but make the queue alternate kernels, and swapping the
-/// whole-array GEMM overlay in and out is expensive (~2.5 ms on aie2p, far more than either
-/// kernel). On the host they cost a queue drain and a CPU copy, but leave the queue dispatching
-/// one kernel. Which wins depends on the shape.
-static const bool g_ggml_hsa_host_pad =
-    ggml_hsa_getenv_int("GGML_HSA_HOST_PAD", 0, 0, 1) != 0;
-
 /// @brief Bytes every buffer the HSA buffer type allocates is allocated beyond its reported size.
 /// Buffers imported from another device are HSA buffers without this slack.
 ///
@@ -941,7 +930,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // has a padded internal buffer (HSA_CONVERT_PAD selects convert+pad or pad-only from the source
     // dtype). Gated on the padded-GEMM path itself: only the operands are transformed, the GEMM
     // writes the output.
-    if (padded_gemm && !g_ggml_hsa_host_pad) {
+    if (padded_gemm) {
         for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
             if (sources[src_idx].buffer_size == 0) {
                 continue;
