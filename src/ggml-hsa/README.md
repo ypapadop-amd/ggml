@@ -52,26 +52,50 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 
 ### Tested Configurations
 
-| Component   | Version                                                              |
-|-------------|----------------------------------------------------------------------|
-| OS          | [Ubuntu 24.04.2], [Ubuntu 25.10]                                     |
-| ROCm        | [7.2.1][ROCm 7.2.1]                                                  |
-| XDNA Driver | [1.6][XDNA Driver 1.6]                                               |
-| MLIR-AIE    | [1.4.3][MLIR-AIE 1.4.3]                                              |
+| Component   | Version                                                                            |
+|-------------|------------------------------------------------------------------------------------|
+| OS          | [Ubuntu 24.04.2], [Ubuntu 25.10]                                                   |
+| ROCR        | [TheRock] nightly `10.2.0a20261006` (rocm-systems `81d4fa3`), or built from source |
+| XDNA Driver | [1.6][XDNA Driver 1.6]                                                             |
+| MLIR-AIE    | `1.4.4.dev91+g74ccfe9` (nightly; [`requirements-iron.txt`](requirements-iron.txt))  |
+| Triton-XDNA | `3.6.0.2026100504+694d60d` ([`requirements-triton.txt`](requirements-triton.txt))  |
 
 [Ubuntu 24.04.2]: https://releases.ubuntu.com/noble/
 [Ubuntu 25.10]: https://releases.ubuntu.com/questing/
-[ROCm 7.2.1]: https://rocm.docs.amd.com/en/docs-7.2.1/
+[TheRock]: https://github.com/ROCm/TheRock/blob/main/RELEASES.md
 [XDNA Driver 1.6]: https://github.com/amd/xdna-driver/tree/1.6
-[MLIR-AIE 1.4.3]: https://github.com/Xilinx/mlir-aie/tree/v1.4.3
 
 ### ROCm
 
-`ggml-hsa` requires [ROCm](https://github.com/ROCm/rocm-systems) 7.2.1 or newer. See the [installation instructions](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html).
+`ggml-hsa` needs a [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime)
+with NPU support that includes commit [`512eb6021e7`](https://github.com/ROCm/rocm-systems/commit/512eb6021e7)
+("fix(rocr/aie): Avoid unmap during AIE memory release", #12389), which fixes an abort when freeing
+an HSA vmem buffer; `ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API. The
+system ROCm (`/opt/rocm`) does not provide the AIE header `hsa/hsa_ext_amd_aie.h`, so use one of:
 
-Due to ongoing NPU support work in [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime), `ggml-hsa` requires a ROCR compiled from source: [`develop`](https://github.com/ROCm/rocm-systems/tree/develop) at or after commit [`512eb6021e7`](https://github.com/ROCm/rocm-systems/commit/512eb6021e7) ("fix(rocr/aie): Avoid unmap during AIE memory release", #12389), which fixes an abort when freeing an HSA vmem buffer. This is not optional: TheRock's nightly wheels do not carry this fix yet (see [One ROCR for both backends](#one-rocr-for-both-backends)).
+- [TheRock](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)'s nightly pip wheels, from
+  `10.2.0a20261006` on (see [Using TheRock's ROCR](#using-therocks-rocr)).
+- A ROCR built from [`develop`](https://github.com/ROCm/rocm-systems/tree/develop) at or after
+  `512eb6021e7` (see [Compiling ROCR from source](#compiling-rocr-from-source)).
 
-`ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API.
+### Using TheRock's ROCR
+
+TheRock's nightlies are published on `https://nightly.repo.amd.com/rocm/whl-next/`. The older
+`https://rocm.nightlies.amd.com/whl-multi-arch/` index stopped at `10.1.0a20260822`, which predates
+the fix. Each wheel records the rocm-systems commit it was built from in
+`share/therock/therock_manifest.json`; `10.2.0a20261006` is built from `81d4fa3` (2026-10-04).
+
+```bash
+python3 -m venv .venv-rocm
+.venv-rocm/bin/pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
+  "rocm[devel]==10.2.0a20261006"
+.venv-rocm/bin/rocm-sdk init                        # expands the devel tree
+ROCM_SDK="$(.venv-rocm/bin/rocm-sdk path --root)"
+ls "$ROCM_SDK/include/hsa/hsa_ext_amd_aie.h"        # the AIE header
+```
+
+Build with `-Dhsa-runtime64_DIR="$ROCM_SDK/lib/cmake/hsa-runtime64"` (see [Building](#building)).
+The build records the library's path, so no `LD_LIBRARY_PATH` is needed at run time.
 
 ### Compiling ROCR from source
 
@@ -109,6 +133,8 @@ Re-run both the build and the install after every branch switch or pull: `ggml-h
 #### IRON (MLIR-AIE)
 
 The default backend using the [IRON framework](https://github.com/Xilinx/mlir-aie).
+[`requirements-iron.txt`](requirements-iron.txt) pins an MLIR-AIE nightly, not a release: it is the
+first build with the hsaco packer (`aie.compiler.hsaco`), which no release carries yet.
 
 Install IRON dependencies:
 
@@ -140,7 +166,18 @@ Or use the setup script:
 source src/ggml-hsa/env_setup.sh triton
 ```
 
-> **Note:** Operations may prefer either backend.
+Triton-XDNA pins its own MLIR-AIE (`1.4.4.dev82+gbe5b809`, through `mlir-air[aie]`), which is older
+than the one in `requirements-iron.txt`; pip cannot install both in one environment, so a Triton
+environment also runs the IRON kernels on that MLIR-AIE.
+
+Compiling a Triton kernel packages an xclbin with `xclbinutil`, from [XRT](https://github.com/Xilinx/XRT).
+If it is not on `PATH`, point `AIE_XCLBINUTIL` at it:
+
+```bash
+export AIE_XCLBINUTIL=/opt/xilinx/xrt/bin/xclbinutil
+```
+
+> **Note:** Operations may prefer either backend. Set `GGML_HSA_JIT_COMPILER_ORDER` (e.g. `triton,iron`) to change the order.
 
 ## Building
 
@@ -150,10 +187,19 @@ source src/ggml-hsa/env_setup.sh triton
 cmake -S . -B build \
   -DGGML_HSA=ON \
   -DGGML_HSA_JIT_COMPILE=ON \
-  -Dhsa-runtime64_DIR=/path/to/rocm/lib/cmake/hsa-runtime64 \
+  -Dhsa-runtime64_DIR="$ROCM_SDK/lib/cmake/hsa-runtime64" \
   -DCMAKE_BUILD_TYPE=Release
 
 cmake --build build --config Release -j
+```
+
+`hsa-runtime64_DIR` is the ROCR from [ROCm](#rocm): `$ROCM_SDK` for TheRock's, or
+`$PREFIX/lib/cmake/hsa-runtime64` for one built from source. With JIT compilation, configure and
+run with the backend's environment active, so that the embedded interpreter finds its packages:
+
+```bash
+source .venv/bin/activate        # from env_setup.sh
+./build/bin/test-vector-hsa 1024 + f32
 ```
 
 ### Combined HSA + HIP Build
@@ -182,19 +228,15 @@ A process loads only one `libhsa-runtime64.so.1`, and HIP and `ggml-hsa` must sh
 ROCR with NPU support, which a system ROCm usually does not provide: for example, ROCm 7.2.4's
 `libamdhip64` links its own `libhsa-runtime64` without AIE support.
 
-As of this writing, TheRock's nightly wheels bundle a ROCR that does not yet carry the AIE vmem unmap
-fix described in [ROCm](#rocm) (`512eb6021e7`, #12389). The wheel is only used to get a matching HIP;
-the ROCR built from source, not the one inside the wheel, is what `ggml-hsa` and HIP actually load at
-run time — building it yourself (see [Compiling ROCR from source](#compiling-rocr-from-source)) is
-required, not optional, until that fix reaches a nightly build.
-
-One way to get a matching HIP is [TheRock](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)'s
-nightly pip wheels, run against a ROCR built from source:
+TheRock's nightly wheels provide both. From `10.2.0a20261006` on, their ROCR carries the AIE vmem
+unmap fix described in [ROCm](#rocm) (`512eb6021e7`, #12389), and `ggml-hsa` runs on it. Running HIP
+and `ggml-hsa` together on the wheel's ROCR has not been verified yet; the setup below, with a ROCR
+built from source, is the verified one.
 
 ```bash
 python3 -m venv build/.venv-rocm
 source build/.venv-rocm/bin/activate
-pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
   "rocm[devel,libraries]" rocm-sdk-device-gfx1103   # device package for your GPU
 rocm-sdk init                                       # expands the devel tree (~3 GB)
 ROCM_SDK="$(rocm-sdk path --root)"
@@ -314,4 +356,6 @@ JIT compilation generates kernels on-the-fly. Precompiled kernels in `GGML_HSA_K
 | `GGML_HSA_KERNEL_CACHE_CLEAR`           | Clear JIT cache on startup (`1`, `true`, or `on`)                                                                                                                                                       |
 | `GGML_HSA_JIT_VERBOSE`                  | Verbose JIT output (`1`, `true`, or `on`)                                                                                                                                                               |
 | `GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS` | Milliseconds teardown waits for work still in flight when the runtime suspended the queue (default `1000`, `0` disables the wait). On timeout the dispatch signal is leaked instead of destroyed.        |
+| `GGML_HSA_JIT_COMPILER_ORDER`           | Comma-separated JIT backend order (e.g. `triton,iron`, case-insensitive); backends not listed are not used. Unset keeps each operation's own order.                                                     |
+| `AIE_XCLBINUTIL`                        | `xclbinutil` that MLIR-AIE's `aiecc` uses to package an xclbin (needed by the Triton backend), if it is not on `PATH`.                                                                                  |
 | `GGML_HSA_KERNEL_INLINE`                | Inline supported kernels' core functions into the tile loop instead of linking them as a `.o` (mlir-aie `ExternalFunction(inline=True)`) (`1`, `true`, or `on`); default off. Support varies by kernel; see `core_function_object()` in `kernels/iron_kernels/utils.py`.        |
