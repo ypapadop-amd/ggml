@@ -57,8 +57,8 @@ static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
  * aie2p, a third of a 512^3 bf16 GEMM spent copying data to itself.
  *
  * The zero-padding itself is not done here: this only points the internal tensor at a buffer of
- * the padded shape, which @ref allocate_internal_storage pre-zeroes and the @c CONVERT_PAD
- * dispatch fills.
+ * the padded shape, which the @c CONVERT_PAD dispatch (or the host fallback scatter) fills in full,
+ * padding included.
  *
  * @param[in] dev_info device information (supplies the buffer alignment)
  * @param[in,out] source internal source node to retype and resize

@@ -12,7 +12,8 @@
  * (and its sources) so the kernel sees bf16 operands zero-padded up to those tile multiples:
  *   - src0 A = [K, M], src1 B = [K, N], dst C = [M, N] (GGML MUL_MAT layout);
  *   - each dimension is padded to K->Kpad, M->Mpad, N->Npad and the dtype set to bf16;
- *   - the padded regions read as zero (pre-zeroed by @ref allocate_internal_storage), so the extra
+ *   - the padded regions are zero-filled by whatever fills the operand (the @c CONVERT_PAD
+ *     dispatch, or the host sub-block scatter if that kernel is unavailable), so the extra
  *     rows/cols and the interior K gap contribute nothing to the result.
  * The output node is left as the dense parent: the GEMM writes it directly.
  *
