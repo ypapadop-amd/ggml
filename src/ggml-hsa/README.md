@@ -73,8 +73,21 @@ with NPU support that loads AIE hsacos (HSA code objects). Build it from rocm-sy
 
 `ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API.
 
-Packing a kernel into an hsaco reads its PDI out of its xclbin with `xclbinutil`, from
+What an hsaco holds depends on the architecture and the backend:
+
+- **aie2p, IRON:** a full ELF (`aiecc --get-full-elf`), which carries its own PDI. A queue can run any
+  number of distinct full-ELF kernels.
+- **aie2, and Triton on either architecture:** a PDI and an instruction sequence. A queue holds at most
+  32 distinct PDIs (a driver/firmware limit), so at most 32 distinct kernels of this kind can share a
+  queue. ROCR also rejects a dispatch batch that mixes the two kinds. On aie2p that can happen when an
+  op falls back from IRON to Triton.
+
+Packing a PDI-plus-instructions kernel reads its PDI out of its xclbin with `xclbinutil`, from
 [XRT](https://github.com/Xilinx/XRT). If it is not on `PATH`, point `AIE_XCLBINUTIL` at it.
+
+After upgrading from a build that packed aie2p IRON kernels as PDI plus instructions, clear the kernel
+cache once (`GGML_HSA_KERNEL_CACHE_CLEAR=1`): the cache is keyed by op, shapes and dtypes only, so it
+would keep serving the old kernels.
 
 ### Compiling ROCR from source
 

@@ -55,14 +55,40 @@ ggml_status ggml_hsa_kernel::load(hsa_agent_t agent,
         return GGML_STATUS_FAILED;
     }
 
-    hsa_executable_symbol_t symbol{};
-    if (auto status =
-            hsa_executable_get_symbol_by_name(m_executable, kernel_name.c_str(), &agent, &symbol);
+    // Each hsaco holds exactly one kernel, found by kind rather than by name: a kernel packed from
+    // a full ELF is named by the ELF (e.g. "main:sequence"), not after the hsaco.
+    struct kernel_search {
+        hsa_executable_symbol_t symbol{};
+        std::size_t count = 0;
+    } search;
+    if (auto status = hsa_executable_iterate_agent_symbols(
+            m_executable, agent,
+            [](hsa_executable_t, hsa_agent_t, hsa_executable_symbol_t symbol, void * data) {
+                hsa_symbol_kind_t kind{};
+                if (auto status = hsa_executable_symbol_get_info(
+                        symbol, HSA_EXECUTABLE_SYMBOL_INFO_TYPE, &kind);
+                    status != HSA_STATUS_SUCCESS) {
+                    return status;
+                }
+                if (kind == HSA_SYMBOL_KIND_KERNEL) {
+                    auto & search = *static_cast<kernel_search *>(data);
+                    search.symbol = symbol;
+                    ++search.count;
+                }
+                return HSA_STATUS_SUCCESS;
+            },
+            &search);
         status != HSA_STATUS_SUCCESS) {
-        GGML_HSA_LOG_ERROR("%s: kernel %s not found in %s (%s)", __func__, kernel_name.c_str(),
-                           path.c_str(), ggml_hsa_get_status_string(status));
+        GGML_HSA_LOG_ERROR("%s: could not list the kernels in %s (%s)", __func__, path.c_str(),
+                           ggml_hsa_get_status_string(status));
         return GGML_STATUS_FAILED;
     }
+    if (search.count != 1) {
+        GGML_HSA_LOG_ERROR("%s: %s holds %zu kernels, expected exactly one for kernel %s", __func__,
+                           path.c_str(), search.count, kernel_name.c_str());
+        return GGML_STATUS_FAILED;
+    }
+    const hsa_executable_symbol_t symbol = search.symbol;
 
     if (auto status = hsa_executable_symbol_get_info(
             symbol, HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT, &m_kernel_object);

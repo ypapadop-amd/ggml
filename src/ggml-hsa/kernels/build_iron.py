@@ -7,6 +7,7 @@ from pathlib import Path
 
 from aie.iron import ExternalFunction
 from aie.utils.compile import compile_external_kernel, compile_mlir_module
+from aie.utils.compile.jit.context import compile_context
 from aie_hsaco import pack_aie_hsaco
 from kernel import KernelSpec
 
@@ -21,8 +22,9 @@ def compile_iron_kernel(
     """Run the IRON compilation pipeline for a kernel.
 
     Runs the kernel's Python function to generate an MLIR module, compiles any
-    external C++ core functions to object files, then compiles the module into
-    xclbin and instruction binaries, and packs those into an hsaco.
+    external C++ core functions to object files, then compiles the module and packs
+    it into an hsaco: as a full ELF on aie2p, and as an xclbin plus instruction
+    sequence on aie2.
 
     Args:
         kernel_spec: The KernelSpec containing the IRON kernel function.
@@ -39,9 +41,17 @@ def compile_iron_kernel(
     # Clear any existing external functions from previous compilations
     ExternalFunction._instances.clear()
 
+    # aie2p kernels are built as full ELFs: a full ELF carries its own PDI, so it does not take
+    # one of the queue's 32 PDI slots and any number of distinct kernels can share a queue. aie2
+    # has no full-ELF format and keeps the xclbin plus instruction sequence.
+    full_elf = kernel_spec.arch == "aie2p"
+
     # Generate MLIR module by calling the kernel function
-    # (this populates ExternalFunction._instances)
-    mlir_module = kernel_spec.function()
+    # (this populates ExternalFunction._instances). On the full-ELF path the runtime sequence
+    # must load its own PDI, which IRON emits only under this compile-context flag -- the one
+    # MLIR-AIE's own JIT sets for full ELFs.
+    with compile_context(_iron_full_elf=full_elf):
+        mlir_module = kernel_spec.function()
 
     # Compile any external C++ core functions. The objects land in work_dir,
     # which is also compile_mlir_module's work_dir, so the relative link_with
@@ -81,19 +91,30 @@ def compile_iron_kernel(
     with mlir_path.open("w", encoding="utf-8") as file:
         file.write(str(mlir_module))
 
-    # Generate xclbin and instructions files from MLIR
-    xclbin_path = work_dir / f"{exported_name}.xclbin"
-    insts_path = work_dir / f"{exported_name}_insts.bin"
-    compile_mlir_module(
-        mlir_module=mlir_module,
-        insts_path=str(insts_path),
-        xclbin_path=str(xclbin_path),
-        verbose=verbose,
-        work_dir=str(work_dir),
-    )
-
-    hsaco_path = pack_aie_hsaco(
-        kernel_spec, exported_name, output_directory, xclbin_path, insts_path
-    )
+    if full_elf:
+        full_elf_path = work_dir / f"{exported_name}.elf"
+        compile_mlir_module(
+            mlir_module=mlir_module,
+            full_elf_path=str(full_elf_path),
+            verbose=verbose,
+            work_dir=str(work_dir),
+        )
+        hsaco_path = pack_aie_hsaco(
+            kernel_spec, exported_name, output_directory, full_elf_path=full_elf_path
+        )
+    else:
+        # Generate xclbin and instructions files from MLIR
+        xclbin_path = work_dir / f"{exported_name}.xclbin"
+        insts_path = work_dir / f"{exported_name}_insts.bin"
+        compile_mlir_module(
+            mlir_module=mlir_module,
+            insts_path=str(insts_path),
+            xclbin_path=str(xclbin_path),
+            verbose=verbose,
+            work_dir=str(work_dir),
+        )
+        hsaco_path = pack_aie_hsaco(
+            kernel_spec, exported_name, output_directory, xclbin_path, insts_path
+        )
 
     logger.info("IRON compilation successful\n  HSACO Path: %s", hsaco_path)

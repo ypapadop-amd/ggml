@@ -37,11 +37,14 @@ class ggml_hsa_kernel {
     virtual ~ggml_hsa_kernel();
 
     /**
-     * @brief Loads kernel @p kernel_name from the hsaco at @p path on @p agent.
+     * @brief Loads the kernel in the hsaco at @p path on @p agent.
+     *
+     * The hsaco must hold exactly one kernel. It is found by kind, not by name, since a kernel
+     * packed from a full ELF keeps the ELF's name.
      *
      * @param[in] agent agent to load the kernel on
      * @param[in] path hsaco path
-     * @param[in] kernel_name kernel symbol name
+     * @param[in] kernel_name ggml's name for the kernel, used in error messages
      */
     ggml_status
     load(hsa_agent_t agent, const std::filesystem::path & path, const std::string & kernel_name);

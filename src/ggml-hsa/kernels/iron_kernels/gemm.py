@@ -17,6 +17,7 @@ from aie.extras.context import mlir_mod_ctx
 from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import ExternalFunction, dtype_to_str, str_to_dtype
 from aie.iron.controlflow import range_
+from aie.utils.compile.jit.context import get_compile_arg
 
 # Per-device, per-dtype (r, s, t) microkernel MAC-instruction dimensions (M, K, N of the native
 # mmul shape used by mm.cc); must match the r/s/t used by the matmul_vectorized_* wrappers in
@@ -485,7 +486,9 @@ def my_matmul(
     B_taps = []
     C_taps = []
 
-    @device(dev_ty)
+    # Named like IRON's Program devices, so the full ELF's kernel is "main:sequence" for every
+    # design, and so the runtime sequence can name the device whose PDI it loads.
+    @device(dev_ty, sym_name="main")
     def device_body():
         A_l2_ty = np.ndarray[(m * k * n_A_tiles_per_shim,), np.dtype[dtype_in]]
         B_l2_ty = np.ndarray[(k * n,), np.dtype[dtype_in]]
@@ -702,6 +705,11 @@ def my_matmul(
             np.ndarray[(M * N,), np.dtype[dtype_out]],
         )
         def sequence(A, B, C):
+            # A full ELF has no xclbin to configure the device, so its sequence loads the PDI
+            # first. This is what IRON's Runtime emits under the same compile-context flag.
+            if get_compile_arg("_iron_full_elf"):
+                npu_load_pdi(device_ref="main")
+
             # We are limited in the number of BDs. After synchronizing, we can reuse BDs.
             # We only transfer 4 rows of tiles at once before starting a new transfer block.
             # tb = transfer block; block of transfers before sync call

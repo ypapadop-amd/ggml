@@ -228,13 +228,16 @@ Each backend has a dedicated compiler module:
 - **IRON** (`build_iron.py`): Compiles IRON Python designs to an hsaco
   - Calls the `KernelSpec.function` to generate an MLIR module
   - Compiles any C++ core functions to object files
-  - Packs the xclbin and instructions into a `.hsaco` code object (mlir-aie `aie-hsaco`) for AIE execution
+  - Packs the result into a `.hsaco` code object (mlir-aie `aie-hsaco`) for AIE execution:
+    - aie2p: a full ELF. The design is generated under `compile_context(_iron_full_elf=True)`, so the runtime sequence loads its own PDI. A design that builds its runtime sequence with the low-level dialect (`gemm.py`) must emit `npu_load_pdi(device_ref="main")` itself and name its device `main`. A full ELF takes no PDI slot, so any number of distinct kernels can share a queue.
+    - aie2: the xclbin and the instruction sequence. A queue holds at most 32 distinct PDIs.
+  - The loader (`kernel.cpp`) takes each hsaco's single kernel by kind, not by name: a full-ELF kernel is named `main:sequence`
 
 - **TRITON** (`build_triton.py`): Compiles Triton kernels via MLIR-AIR/AIE
   - Uses `config_context` from `triton.backends.amd_triton_npu.config` to set compilation parameters (`compile_only`, `transform_tiling_script` from `kernel_spec.config["transform_script"]`, `output_format`, `debug`, `target`)
   - Sets `TRITON_CACHE_DIR` environment variable for artifact caching
   - Calls `kernel_spec.function()` to trigger Triton compilation
-  - Packs the xclbin and instructions into a `.hsaco` code object (mlir-aie `aie-hsaco`) for AIE execution
+  - Packs the xclbin and instructions into a `.hsaco` code object (mlir-aie `aie-hsaco`) for AIE execution, on both architectures. ROCR rejects a dispatch batch that mixes these with full-ELF kernels, so on aie2p a Triton fallback next to IRON kernels is not supported yet
 
 Compilers are resolved in `build.py` by `_get_compiler()`:
 
