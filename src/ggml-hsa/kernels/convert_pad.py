@@ -18,7 +18,8 @@ def ggml_hsa_convert_pad(
     Args:
         arch: Target architecture.
         input_tensors: [src] dense f32 or bf16 tensor of logical shape [d0, d1].
-        output_tensor: padded bf16 tensor of shape [d0pad, d1pad].
+        output_tensor: padded tensor of shape [d0pad, d1pad]: bf16 (converting an f32 source),
+            or the source dtype (bf16 or f32) to pad without converting.
         op_params: unused.
 
     Returns:
