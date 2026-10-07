@@ -693,10 +693,12 @@ static void ggml_hsa_shallow_copy(const ggml_tensor & src, ggml_tensor & dst) { 
 /**
  * @brief Returns if @p tensor has a trivial layout.
  *
- * A tensor with a trivial layout is contiguously allocated and is not permuted.
+ * A tensor with a trivial layout is contiguous. The strides of dimensions of size 1 are ignored, as
+ * they never address an element: e.g., a transposed 1D tensor has a trivial layout even though
+ * @ref ggml_is_permuted reports it as permuted.
  */
 bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor) {
-    return ggml_is_contiguously_allocated(&tensor) && !ggml_is_permuted(&tensor);
+    return ggml_is_contiguous(&tensor);
 }
 
 /**
@@ -834,6 +836,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 sources[src_idx].is_constant = true;
             }
         }
+        // As on the generic path below: a trivial layout can still have arbitrary strides in
+        // dimensions of size 1, so make the strides of the tensors the kernel sees canonical.
+        ggml_hsa_set_contiguous_strides(node.tensor);
+        for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+            ggml_hsa_set_contiguous_strides(sources[src_idx].tensor);
+        }
     } else {
         // convert tensor data types if needed
         if (dev_info.substitute_fp16_bf16) {
@@ -855,17 +863,19 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         }
 
         // make tensor layouts trivial; tensors that do not have a trivial layout will need
-        // temporary storage
+        // temporary storage, and the strides of all tensors are made canonical (a trivial layout
+        // can still have arbitrary strides in dimensions of size 1)
         if (!ggml_hsa_has_trivial_layout(node.tensor)) {
             throw std::runtime_error{"Output tensor does not have trivial layout."};
         }
+        ggml_hsa_set_contiguous_strides(node.tensor);
         for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
             auto & src_node = sources[src_idx];
             if (!ggml_hsa_has_trivial_layout(src_node.tensor)) {
                 update_src_buffer_size[src_idx] = true;
                 src_dtype_only[src_idx] = false;
-                ggml_hsa_set_contiguous_strides(src_node.tensor);
             }
+            ggml_hsa_set_contiguous_strides(src_node.tensor);
         }
 
         // flatten tensors to reuse kernels
@@ -891,7 +901,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // graph_compute, removing the queue drain that copy would otherwise force. A null kernel (the
     // dtype pair or element count is not streamable) simply leaves the source on the host path.
     for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-        if (!src_dtype_only[src_idx] || !ggml_is_contiguous(parent_tensor.src[src_idx])) {
+        if (!src_dtype_only[src_idx]) {
             continue;
         }
         sources[src_idx].preprocess_kernel = ggml_hsa_build_transform_kernel(

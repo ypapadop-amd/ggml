@@ -161,7 +161,9 @@ std::int32_t ggml_hsa_nsrcs(const ggml_tensor & tensor);
 /**
  * @brief Returns if @p tensor has a trivial layout.
  *
- * A tensor with a trivial layout is contiguously allocated and is not permuted.
+ * A tensor with a trivial layout is contiguous. The strides of dimensions of size 1 are ignored, as
+ * they never address an element: e.g., a transposed 1D tensor has a trivial layout even though
+ * @ref ggml_is_permuted reports it as permuted.
  */
 bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor);
 
