@@ -842,7 +842,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // graph_compute, removing the queue drain that copy would otherwise force. A null kernel (the
     // dtype pair or element count is not streamable) simply leaves the source on the host path.
     for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-        if (!src_dtype_only[src_idx] || !ggml_is_contiguous(parent_tensor.src[src_idx])) {
+        if (!src_dtype_only[src_idx]) {
             continue;
         }
         sources[src_idx].preprocess_kernel = ggml_hsa_build_transform_kernel(
