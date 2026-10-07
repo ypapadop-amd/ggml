@@ -379,7 +379,7 @@ struct ggml_backend_hsa_context;
 /**
  * @brief Base class for HSA kernels.
  */
-class ggml_hsa_kernel : public std::enable_shared_from_this<ggml_hsa_kernel> {
+class ggml_hsa_kernel {
   public:
     virtual ~ggml_hsa_kernel() = default;
 
@@ -563,19 +563,6 @@ struct ggml_backend_hsa_context {
     ggml_hsa_kernarg_pool kernargs;     ///< Per-ring-slot kernarg buffers for in-flight packets.
     std::size_t dispatch_batch_size{1}; ///< Packets accumulated before the doorbell is rung.
     std::size_t n_batched{};            ///< Packets written since the last doorbell ring.
-    hsa_agent_t agent{};                ///< Agent @ref queue was created on.
-
-    /// @brief Distinct PDIs dispatched on @ref queue since it was created.
-    ///
-    /// The runtime gives each PDI a queue introduces one of 32 compute units of the queue's
-    /// hardware context and never frees them, so a 33rd PDI suspends the queue. Tracked here to
-    /// replace the queue before that happens (see @ref ggml_hsa_reserve_pdi).
-    ///
-    /// Maps each PDI's address to the kernel that owns its buffer. Holding the kernel keeps the
-    /// buffer, and so its address, alive while the queue may run it: the kernel cache is shared by
-    /// every context on the device, and another context's teardown purges kernels only this map
-    /// still uses. A PDI freed under it and reallocated at the same address would go uncounted.
-    std::unordered_map<const void *, std::shared_ptr<const ggml_hsa_kernel>> queue_pdis;
 
     /// @brief First error reported by the queue's error callback, or @c HSA_STATUS_SUCCESS.
     std::atomic<hsa_status_t> queue_error{HSA_STATUS_SUCCESS};
@@ -624,25 +611,3 @@ struct ggml_backend_hsa_context {
  *         submission; the pending packets did not run
  */
 [[nodiscard]] ggml_status ggml_hsa_flush_dispatches(ggml_backend_hsa_context & ctx);
-
-/// @brief Compute units, hence distinct PDIs, an AIE queue can hold (the runtime's CU mask width).
-inline constexpr std::size_t ggml_hsa_max_queue_pdis = 32;
-
-/**
- * @brief Makes room on @p ctx's queue for a packet that runs @p pdi, owned by @p kernel.
- *
- * A queue holds at most @ref ggml_hsa_max_queue_pdis distinct PDIs for its lifetime. When @p pdi
- * would be one more, drains the queue and replaces it with a fresh one. Call before reserving the
- * packet's ring slot.
- *
- * @param[in,out] ctx backend context
- * @param[in] kernel kernel that owns @p pdi; must be owned by a @c std::shared_ptr. Kept alive
- *            until the queue is replaced or @p ctx is destroyed
- * @param[in] pdi address of the PDI the packet runs
- * @retval GGML_STATUS_SUCCESS the queue can take a packet running @p pdi
- * @retval GGML_STATUS_FAILED  the queue is suspended, or could not be replaced (then @p ctx has
- *         no queue and records the error in @c queue_error, failing every later dispatch)
- */
-[[nodiscard]] ggml_status ggml_hsa_reserve_pdi(ggml_backend_hsa_context & ctx,
-                                               const ggml_hsa_kernel & kernel,
-                                               const void * pdi);
