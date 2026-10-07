@@ -228,6 +228,15 @@ ggml_status ggml_hsa_assign(F && f, const ggml_tensor * src, ggml_tensor * dst) 
                                        __func__, dst->name, ggml_type_name(dst->type));
                     return GGML_STATUS_FAILED;
             }
+        case GGML_TYPE_I8:
+            switch (dst->type) {
+                case GGML_TYPE_I8:
+                    return std::forward<F>(f).template operator()<GGML_TYPE_I8>(src, dst);
+                default:
+                    GGML_HSA_LOG_ERROR("%s: unsupported type for destination tensor \"%s\" (%s)",
+                                       __func__, dst->name, ggml_type_name(dst->type));
+                    return GGML_STATUS_FAILED;
+            }
         case GGML_TYPE_I16:
             switch (dst->type) {
                 case GGML_TYPE_I8:
@@ -238,6 +247,15 @@ ggml_status ggml_hsa_assign(F && f, const ggml_tensor * src, ggml_tensor * dst) 
                 case GGML_TYPE_I32:
                     return std::forward<F>(f).template operator()<GGML_TYPE_I16, GGML_TYPE_I32>(
                         src, dst);
+                default:
+                    GGML_HSA_LOG_ERROR("%s: unsupported type for destination tensor \"%s\" (%s)",
+                                       __func__, dst->name, ggml_type_name(dst->type));
+                    return GGML_STATUS_FAILED;
+            }
+        case GGML_TYPE_I32:
+            switch (dst->type) {
+                case GGML_TYPE_I32:
+                    return std::forward<F>(f).template operator()<GGML_TYPE_I32>(src, dst);
                 default:
                     GGML_HSA_LOG_ERROR("%s: unsupported type for destination tensor \"%s\" (%s)",
                                        __func__, dst->name, ggml_type_name(dst->type));

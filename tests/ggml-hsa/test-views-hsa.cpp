@@ -1,0 +1,186 @@
+// Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <numeric>
+#include <vector>
+
+#include "ggml.h"
+
+#ifdef GGML_USE_CUDA
+#include "ggml-cuda.h"
+#endif
+
+#ifdef GGML_USE_HSA
+#include "ggml-hsa.h"
+#endif
+
+template <typename T>
+auto create_data(std::size_t N, T value) {
+    std::vector<T> v(N);
+    std::iota(std::begin(v), std::end(v), value);
+    return v;
+}
+
+template <typename T>
+std::ostream & operator<<(std::ostream & os, const std::vector<T> & v) {
+    os << "[";
+    for (const auto & t : v) {
+        os << ' ' << t;
+    }
+    return os << " ]";
+}
+
+int main(int argc, char * argv[]) {
+    std::size_t N = 32;
+    const char * op = "+";
+    if (argc > 1) {
+        N = std::atoi(argv[1]);
+    }
+    if (argc > 2) {
+        op = argv[2];
+    }
+    // with a single row the transpose only moves a dimension of size 1, so the data stays in
+    // order; with more rows it is a real permutation
+    std::size_t rows = 1;
+    if (argc > 3) {
+        rows = std::atoi(argv[3]);
+    }
+
+    std::cout << "Creating " << rows << "x" << N << " arrays and doing A^T " << op << " B^T.\n";
+
+    // create data
+    using value_type = std::int32_t;
+    constexpr auto ggml_type = GGML_TYPE_I32;
+    const std::vector<value_type> A = create_data<value_type>(N * rows, 10);
+    const std::vector<value_type> B = create_data<value_type>(N * rows, 2);
+
+    // initialize GGML backend and allocators
+    ggml_backend_t backend = {};
+
+#ifdef GGML_USE_HSA
+    std::cout << "Using HSA backend\n";
+    backend = ggml_backend_hsa_init(0);
+#endif
+
+#ifdef GGML_USE_CUDA
+    if (!backend) {
+        std::cout << "Using CUDA backend\n";
+        backend = ggml_backend_cuda_init(0); // init device 0
+    }
+#endif
+
+    if (backend == nullptr) {
+        std::cerr << "Could not create backend\n";
+        return EXIT_FAILURE;
+    }
+    const std::size_t tensor_count = 5;
+    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+
+    // allocate tensors on HSA memory
+    const std::size_t ctx_size =
+        tensor_count * ggml_tensor_overhead() + ggml_graph_overhead_custom(tensor_count, false);
+    ggml_init_params params = {/*.mem_size   =*/ctx_size,
+                               /*.mem_buffer =*/nullptr,
+                               /*.no_alloc   =*/true};
+    ggml_context * ctx = ggml_init(params);
+    ggml_tensor * tensor_a = ggml_new_tensor_2d(ctx, ggml_type, N, rows);
+    ggml_tensor * tensor_b = ggml_new_tensor_2d(ctx, ggml_type, N, rows);
+
+    ggml_tensor * tensor_a_trans = ggml_transpose(ctx, tensor_a);
+    ggml_tensor * tensor_b_trans = ggml_transpose(ctx, tensor_b);
+
+    // create graph
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, tensor_count, /*grads*/ false);
+
+    auto input_a = tensor_a_trans;
+    auto input_b = tensor_b_trans;
+
+    // add operation
+    ggml_tensor * tensor_result = nullptr;
+    if (std::strcmp(op, "+") == 0) {
+        tensor_result = ggml_add(ctx, input_a, input_b);
+    } else if (std::strcmp(op, "-") == 0) {
+        tensor_result = ggml_sub(ctx, input_a, input_b);
+    } else if (std::strcmp(op, "*") == 0) {
+        tensor_result = ggml_mul(ctx, input_a, input_b);
+    } else if (std::strcmp(op, "/") == 0) {
+        tensor_result = ggml_div(ctx, input_a, input_b);
+    } else {
+        std::cerr << "Unknown operation \"" << op << "\".\n";
+        return EXIT_FAILURE;
+    }
+
+    if (!ggml_backend_supports_op(backend, tensor_result)) {
+        std::cerr << "Operation not supported\n";
+        return EXIT_FAILURE;
+    }
+    ggml_build_forward_expand(gf, tensor_result);
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    if (buffer == nullptr) {
+        std::cerr << "Could not allocate tensors\n";
+        return EXIT_FAILURE;
+    }
+
+    if (!ggml_gallocr_alloc_graph(galloc, gf)) {
+        std::cerr << "Could not allocate graph\n";
+        return EXIT_FAILURE;
+    }
+
+    // copy data in (can be avoided if data created directly in tensors)
+    ggml_backend_tensor_set(tensor_a, std::data(A), 0, ggml_nbytes(tensor_a));
+    ggml_backend_tensor_set(tensor_b, std::data(B), 0, ggml_nbytes(tensor_b));
+
+    // execute
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        std::cerr << "Execution failed\n";
+        return EXIT_FAILURE;
+    }
+
+    // copy data out and print
+    std::vector<value_type> result(N * rows);
+    ggml_backend_tensor_get(tensor_result, std::data(result), 0, ggml_nbytes(tensor_result));
+    std::cout << "A =         " << A << '\n'
+              << "B =         " << B << '\n'
+              << "A^T " << op << " B^T = " << result << '\n';
+
+    // check result: the result is contiguous with rows elements per row, and element (r, i) of
+    // the transposes is element (i, r) of A and B
+    std::size_t errors = 0;
+    for (std::size_t i = 0; i < N * rows; ++i) {
+        const std::size_t j = (i % rows) * N + (i / rows);
+        value_type expected = {};
+        switch (op[0]) {
+            case '+':
+                expected = A[j] + B[j];
+                break;
+            case '-':
+                expected = A[j] - B[j];
+                break;
+            case '*':
+                expected = A[j] * B[j];
+                break;
+            case '/':
+                expected = A[j] / B[j];
+                break;
+        }
+        if (result[i] != expected) {
+            std::cerr << "Mismatch at " << i << ": got " << result[i] << ", expected " << expected
+                      << '\n';
+            ++errors;
+        }
+    }
+
+    // free resources
+    ggml_free(ctx);
+    ggml_backend_buffer_free(buffer);
+    ggml_gallocr_free(galloc);
+    ggml_backend_free(backend);
+
+    return (errors == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+}
