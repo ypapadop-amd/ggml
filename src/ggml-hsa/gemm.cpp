@@ -204,8 +204,8 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
         node.transform = ggml_backend_hsa_tensor_extra::output_transform_t::depad;
     }
 
-    // A trivial layout can still have arbitrary strides in dimensions of size 1; make the strides of
-    // the tensors the kernel sees canonical.
+    // A trivial layout can still have arbitrary strides in dimensions of size 1; make the strides
+    // of the tensors the kernel sees canonical.
     ggml_hsa_set_contiguous_strides(dst);
     for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
         ggml_hsa_set_contiguous_strides(sources[src_idx].tensor);
@@ -214,8 +214,8 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     return true;
 }
 
-bool ggml_hsa_mul_mat_f32_reads_in_bounds(const ggml_tensor & node,
-                                          const ggml_backend_hsa_tensor_extra::sources_t & sources) {
+bool ggml_hsa_mul_mat_f32_reads_in_bounds(
+    const ggml_tensor & node, const ggml_backend_hsa_tensor_extra::sources_t & sources) {
     if (node.op != GGML_OP_MUL_MAT || sources.count != 2) {
         return true;
     }
