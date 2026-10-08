@@ -2381,7 +2381,10 @@ struct test_conv_2d : public test_case {
                              dilation0, dilation1, cwhn);
     }
 
-    double max_nmse_err() override { return 5e-4; }
+    // Direct f32 convolution: each output sums K = KH*KW*IC products, so its relative error is at
+    // most ~K * 2^-24 (6e-6 for the 5x5x4 case), an NMSE of at most ~3.6e-11. Every case measured
+    // below 5e-10 on the device; 5e-4 used to let a dropped tap or a wrong edge column through.
+    double max_nmse_err() override { return 1e-9; }
 
     uint64_t op_flops(ggml_tensor * t) override {
         GGML_UNUSED(t);
@@ -2599,6 +2602,20 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         new test_conv_2d({14, 14, 8, 500}, {3, 3, 8, 16}, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
     // Conv2 bias + ReLU: [14, 14, 16, 500]
     test_cases.emplace_back(new test_unary(GGML_UNARY_OP_RELU, GGML_TYPE_F32, {14, 14, 16, 500}));
+    // CONV_2D beyond the MNIST shapes, one case per kernel path and edge (batch 2 to stay cheap):
+    // larger windows (taps not unrolled), dilation, no padding, a row narrower than one vector,
+    // a row of several vectors plus a partial one, a non-square window with asymmetric padding,
+    // padding wider than the row, stride 2 and a window wider than a vector (the fallback path).
+    test_cases.emplace_back(new test_conv_2d({14, 14, 4, 2}, {5, 5, 4, 3}, GGML_TYPE_F32, 1, 1, 2, 2, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({20, 20, 2, 2}, {7, 7, 2, 2}, GGML_TYPE_F32, 1, 1, 3, 3, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({16, 16, 3, 2}, {3, 3, 3, 4}, GGML_TYPE_F32, 1, 1, 2, 2, 2, 2));
+    test_cases.emplace_back(new test_conv_2d({17, 17, 2, 2}, {3, 3, 2, 3}, GGML_TYPE_F32, 1, 1, 0, 0, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({5, 5, 3, 2}, {3, 3, 3, 2}, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({33, 9, 2, 2}, {3, 3, 2, 2}, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({12, 10, 2, 2}, {5, 3, 2, 2}, GGML_TYPE_F32, 1, 1, 2, 0, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({1, 6, 1, 1}, {5, 3, 1, 2}, GGML_TYPE_F32, 1, 1, 5, 1, 2, 1));
+    test_cases.emplace_back(new test_conv_2d({15, 15, 3, 2}, {3, 3, 3, 4}, GGML_TYPE_F32, 2, 2, 1, 1, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({40, 6, 1, 1}, {9, 1, 1, 2}, GGML_TYPE_F32, 1, 1, 12, 0, 3, 1));
     // MaxPool2: [14, 14, 16, 500] with 2x2 kernel, stride=2, pad=0 -> [7, 7, 16, 500]
     test_cases.emplace_back(
         new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {14, 14, 16, 500}, 2, 2, 2, 2, 0, 0));
