@@ -160,6 +160,22 @@ void ggml_hsa_error(
 std::int32_t ggml_hsa_nsrcs(const ggml_tensor & tensor);
 
 /**
+ * @brief Returns if @p tensor has a trivial layout.
+ *
+ * A tensor with a trivial layout is contiguous. The strides of dimensions of size 1 are ignored, as
+ * they never address an element: e.g., a transposed 1D tensor has a trivial layout even though
+ * @ref ggml_is_permuted reports it as permuted.
+ */
+bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor);
+
+/**
+ * @brief Recomputes the strides of @p tensor from its shape for a contiguous, unpermuted layout.
+ *
+ * After this function is called, the @p tensor has a trivial layout.
+ */
+void ggml_hsa_set_contiguous_strides(ggml_tensor & tensor);
+
+/**
  * @brief Creates a string representation of the tensor shape.
  *
  * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `3x3x4`.
@@ -437,18 +453,30 @@ const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t 
  * with transformations applied (e.g., making them contiguous, flattening).
  */
 struct ggml_backend_hsa_tensor_extra {
+    /// @brief How the internal output is turned back into the parent tensor after the dispatch.
+    ///
+    /// This says what the transformation is, not where it runs: it runs on the device queue when
+    /// @c node_t::postprocess_kernel (a DEPAD or CONVERT kernel) could be built, and otherwise on
+    /// the host after a queue drain. @c convert and @c depad stay distinct because the host copy
+    /// differs: the output may have been flattened, so a conversion is an element-order copy while
+    /// a de-pad copies the parent's sub-block.
+    enum class output_transform_t {
+        none,    ///< The internal output is the parent tensor as-is.
+        convert, ///< Same shape, different dtype: converted element-wise into the parent.
+        depad,   ///< Zero-padded: the parent's sub-block is copied out.
+    };
+
     /// @brief Internal output graph node.
     struct node_t {
         ggml_tensor tensor{};      ///< Transformed tensor.
         std::size_t buffer_size{}; ///< Temporary storage size in bytes.
-        /// @brief Optional on-device post-processing kernel: converts the result to the parent
-        /// tensor's dtype, in place, on the device queue instead of on the host. Null when the
-        /// output needs no on-device post-processing.
+        /// @brief Optional on-device post-processing kernel for the result: transforms the internal
+        /// output buffer back into the parent tensor (e.g., de-padding and/or dtype conversion) on
+        /// the device queue instead of on the host. Null when the output needs no on-device
+        /// post-processing.
         std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
-        /// @brief True if the result is converted back into the parent's dtype after the dispatch:
-        /// on the device queue when @c postprocess_kernel was built, otherwise on the host after a
-        /// queue drain.
-        bool convert_dtype{};
+        /// @brief Transformation from the internal output back into the parent tensor.
+        output_transform_t transform{output_transform_t::none};
     };
 
     /// @brief Internal source graph node.
@@ -456,8 +484,8 @@ struct ggml_backend_hsa_tensor_extra {
         ggml_tensor tensor{};      ///< Transformed tensor.
         std::size_t buffer_size{}; ///< Temporary storage size in bytes.
         /// @brief Optional on-device pre-processing kernel: transforms the parent source tensor
-        /// into this internal buffer (dtype conversion) on the device queue instead of on the
-        /// host. Null when the source needs no on-device pre-processing.
+        /// into this internal buffer (e.g., dtype conversion and/or zero-padding) on the device
+        /// queue instead of on the host. Null when the source needs no on-device pre-processing.
         std::shared_ptr<ggml_hsa_kernel> preprocess_kernel;
     };
 
@@ -482,10 +510,14 @@ struct ggml_backend_hsa_tensor_extra {
         const source_node_t * end() const { return nodes.data() + count; }
     };
 
-    node_t node{};                           ///< Internal output graph node.
-    sources_t sources{};                     ///< Internal source graph nodes.
-    std::shared_ptr<ggml_hsa_kernel> kernel; ///< Kernel associated with the tensor.
-    ggml_hsa_unique_ptr<std::byte> buffer;   ///< Temporary storage for tensor data.
+    /// @brief Internal output graph node.
+    node_t node{};
+    /// @brief Internal source graph nodes.
+    sources_t sources{};
+    /// @brief Kernel associated with the tensor.
+    std::shared_ptr<ggml_hsa_kernel> kernel;
+    /// @brief Temporary storage for tensor data, allocated only if needed.
+    ggml_hsa_unique_ptr<std::byte> buffer;
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);

@@ -355,7 +355,7 @@ if (NOT GGML_BACKEND_DL)
     set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
 
     #
-    # ggml-hsa tests
+    # ggml-hsa tests (require the HSA backend)
     if (GGML_HSA)
         add_subdirectory(ggml-hsa)
     endif()

@@ -111,6 +111,11 @@ int main() {
         // (regression guard for the linear-transfer + in-kernel narrowing design)
         {500, 4, 512, 128, "large d0"},
         {8, 500, 128, 512, "large d1"},
+        // the im2col GEMM outputs behind MNIST-CNN's two CONV_2D layers: d0 is the whole
+        // batch*OH*OW extent, so one row is far larger than AIE L1 and the gather has to
+        // tile it. c1 needs no d0 padding at all, c2 does.
+        {392000, 8, 392000, 64, "mnist-cnn conv1 C"},
+        {98000, 16, 98048, 64, "mnist-cnn conv2 C"},
     };
 
     struct {

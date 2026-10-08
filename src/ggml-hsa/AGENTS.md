@@ -295,6 +295,12 @@ The implementation in `gemm.py` includes both a standalone CLI tool and a `gemm(
 callable from the dispatch layer. Key parameters include tile sizes (m, k, n), number of
 columns, data types, and layout (row-major vs column-major).
 
+**f32 operands.** The microkernel is bf16-only, so `ggml_hsa_prepare_mul_mat_f32` (in
+`gemm.cpp`) converts both f32 operands to bf16 and zero-pads them to the tile multiples, and pads
+C, de-padding the result afterwards. The transforms run on the device queue as `HSA_CONVERT_PAD`
+and `HSA_DEPAD` when those kernels build, and on the host otherwise; an operand or result that is
+already at the target dtype and shape is used in place.
+
 ### Broadcasting Support
 
 Binary operations (`ADD`, `SUB`, `MUL`, `DIV`) support multi-dimensional broadcasting
