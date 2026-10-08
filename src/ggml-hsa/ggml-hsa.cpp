@@ -76,12 +76,6 @@ static const std::size_t g_ggml_hsa_dispatch_batch_size =
 
 /// @brief Bytes every buffer the HSA buffer type allocates is allocated beyond its reported size.
 /// Buffers imported from another device are HSA buffers without this slack.
-///
-/// A GEMM that reads an f32 B unpadded (see @ref ggml_hsa_prepare_mul_mat_f32) streams whole K
-/// tiles, so its last K tile reads up to one K padding granule (under 8 elements) past the end of
-/// each column. For every column but the last that lands in the next column; for the last it can
-/// land past the tensor, and so past the buffer when the tensor ends it. The slack keeps that read
-/// inside the allocation. The GEMM zeroes those elements before using them.
 static constexpr std::size_t ggml_hsa_buffer_read_slack = 64;
 
 /// @brief How long teardown waits for packets that were in flight when the queue was suspended,
@@ -692,20 +686,8 @@ static void ggml_hsa_purge_unused_cached_kernels(std::int32_t device_id) {
  */
 static void ggml_hsa_shallow_copy(const ggml_tensor & src, ggml_tensor & dst) { dst = src; }
 
-/**
- * @brief Returns if @p tensor has a trivial layout.
- *
- * A tensor with a trivial layout is contiguous. The strides of dimensions of size 1 are ignored, as
- * they never address an element: e.g., a transposed 1D tensor has a trivial layout even though
- * @ref ggml_is_permuted reports it as permuted.
- */
 bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor) { return ggml_is_contiguous(&tensor); }
 
-/**
- * @brief Recomputes the strides of @p tensor from its shape for a contiguous, unpermuted layout.
- *
- * After this function is called, the @p tensor has a trivial layout.
- */
 void ggml_hsa_set_contiguous_strides(ggml_tensor & tensor) {
     tensor.nb[0] = ggml_type_size(tensor.type);
     tensor.nb[1] = tensor.nb[0] * (tensor.ne[0] / ggml_blck_size(tensor.type));
