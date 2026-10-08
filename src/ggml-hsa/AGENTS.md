@@ -301,8 +301,8 @@ the dense f32 destination directly; its C path is written by hand from the stati
 
 - **Clipped** (padded operands): the last row block / column group runs over the zero padding,
   and the mem tile's runtime MM2S tasks read back only the valid rows and columns.
-- **Shifted** (aie2 only, an unpadded f32 B): on aie2 an f32 B is streamed to the cores as f32
-  and converted there (`matmul_bf16_f32_bf32` in `aie2/mm.cc`). When B is at least one column
+- **Shifted** (an unpadded f32 B): an f32 B is streamed to the cores as f32 and converted there
+  (`matmul_bf16_f32_bf32` in `aie2/mm.cc` and `aie2p/mm.cc`). When B is at least one column
   group wide the GEMM reads it unpadded and shifts its last column group back to end at N, and,
   when M is at least one row block, its last row block up to end at M. They recompute
   columns/rows the previous group or block already wrote, with bit-identical values.

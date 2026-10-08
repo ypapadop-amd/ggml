@@ -23,7 +23,7 @@
  * already tile multiples (see @ref ggml_hsa_pad_gemm_operand for the measured cost of not doing
  * so).
  *
- * On aie2 an f32 B is not converted at all: the GEMM streams it as f32 and converts each tile on
+ * An f32 B is not converted at all: the GEMM streams it as f32 and converts each tile on
  * the core. Once B is at least one column group wide the GEMM also reads it unpadded: it shifts its
  * last column group back to end at N and zeroes the K tail on the core, and, when M is at least one
  * row block, it shifts its last row block up to end at M as well. Such a GEMM has no B

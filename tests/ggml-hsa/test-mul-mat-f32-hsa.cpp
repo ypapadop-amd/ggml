@@ -1,12 +1,12 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-// Standalone test for f32 x f32 MUL_MAT at shapes that are not tile multiples. On aie2 the GEMM
-// streams an f32 B unpadded and converts it on the core, and writes C in place when it is tall
-// enough: it shifts its last column group and row block back to end at N and M, and zeroes the K
-// tail the last K tile reads past each B column. Narrow or short shapes run over padding instead and
-// clip the result to the dense destination. Each case checks the whole result against a host reference; inputs are small
-// integers, so every product and partial sum is exact in bf16/f32 and the result must match bit
-// for bit.
+// Standalone test for f32 x f32 MUL_MAT at shapes that are not tile multiples. The GEMM streams an
+// f32 B unpadded and converts it on the core, and writes C in place when it is tall enough: it
+// shifts its last column group and row block back to end at N and M, and zeroes the K tail the last
+// K tile reads past each B column. Narrow or short shapes run over padding instead and clip the
+// result to the dense destination. Each case checks the whole result against a host reference;
+// inputs are small integers, so every product and partial sum is exact in bf16/f32 and the result
+// must match bit for bit.
 
 #include <cmath>
 #include <cstdint>
@@ -121,7 +121,9 @@ int main() {
         return 0;
     }
 
-    // On aie2 a column group and a row block are at least 64 wide/tall, and K pads to 8.
+    // A column group is at least 64 wide on aie2 and 128 on aie2p; a row block is at least 64 tall
+    // on aie2 and 32 on aie2p; K pads to 8 on both. Shapes below a column group take the padded
+    // path, so the K-tail cases are repeated with N past 128 to reach the unpadded path on aie2p.
     struct {
         int64_t M, N, K;
         int64_t nan_col;
@@ -138,6 +140,11 @@ int main() {
         {64, 100, 500, -1, "K tail"},
         {64, 70, 257, -1, "K tail, odd K"},
         {64, 100, 500, 50, "K tail, NaN in next col"},
+        {64, 200, 500, -1, "K tail, wide N"},
+        {64, 140, 257, -1, "K tail, odd K, wide N"},
+        {64, 200, 500, 150, "K tail, NaN, wide N"},
+        // a row block on aie2p but not on aie2: shifted rows on aie2p, clipped on aie2
+        {40, 200, 256, -1, "short M, wide N"},
         // M below one row block: B unpadded, last row block clipped
         {10, 500, 500, -1, "mnist fc2"},
         {33, 257, 129, -1, "short M"},

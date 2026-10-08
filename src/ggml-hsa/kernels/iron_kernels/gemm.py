@@ -644,8 +644,8 @@ def my_matmul(
         M_dense: Rows of the dense C written, at most M; also C's column stride. Defaults to M.
         N_dense: Columns of the dense C written, at most N. Defaults to N.
         dtype_b_str: Dtype name B is streamed in, if it differs from dtype_in_str. Only
-            "f32" with bf16 A on npu: each core converts its f32 B tile into a bf16 scratch
-            tile before the bf16 microkernel. Defaults to dtype_in_str.
+            "f32" with bf16 A, without bfp16 emulation: each core converts its f32 B tile into
+            a bf16 scratch tile before the bf16 microkernel. Defaults to dtype_in_str.
         b_ld: Column stride of the column-major B buffer, i.e. how many K elements it really
             holds. May be smaller than K by less than one k tile: the last K tile then reads
             past each column's end, into the next column (or the buffer's allocation slack),
@@ -671,9 +671,14 @@ def my_matmul(
     dtype_b = str_to_dtype(dtype_b_str) if dtype_b_str is not None else dtype_in
     convert_b = dtype_b != dtype_in
     if convert_b and not (
-        dev == "npu" and dtype_in_str == "bf16" and dtype_to_str(dtype_b) == "f32"
+        dtype_in_str == "bf16"
+        and dtype_to_str(dtype_b) == "f32"
+        and not emulate_bf16_mmul_with_bfp16
     ):
-        msg = f"Streaming B as {dtype_to_str(dtype_b)} is only supported for bf16 A on npu"
+        msg = (
+            f"Streaming B as {dtype_to_str(dtype_b)} is only supported for bf16 A "
+            "without bfp16 emulation"
+        )
         raise ValueError(msg)
 
     b_ld = K if b_ld is None else b_ld
@@ -1423,7 +1428,7 @@ def create_mat_mul_external_functions(
     dtype_b = input_tensors[1].dtype
     dtype_out = output_tensor.dtype
     dtype_in_str = dtype_to_str(dtype_in)
-    # An f32 B with bf16 A is streamed as f32 and converted to bf16 on each core (npu only).
+    # An f32 B with bf16 A is streamed as f32 and converted to bf16 on each core.
     convert_b = dtype_b != dtype_in
     r, s, t = resolve_mac_dims(dev, dtype_in_str)
     row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
@@ -1598,11 +1603,11 @@ def gemm(arch: str, input_tensors: list, output_tensor):
         raise ValueError(msg)
     # Only the f32-B path, which converts B on the core, has the K-tail kernel and the shifted
     # last column group, so only it reads B unpadded.
-    b_on_core = arch == "aie2" and B.dtype == np.float32 and A.dtype != B.dtype
+    b_on_core = B.dtype == np.float32 and A.dtype != B.dtype
     if B.shape[0] != A.shape[0] and not b_on_core:
         msg = (
             f"B's K ({B.shape[0]}) must match A's ({A.shape[0]}) unless it is an f32 B "
-            "streamed to a bf16 GEMM on aie2"
+            "streamed to a bf16 GEMM"
         )
         raise ValueError(msg)
 
@@ -1635,7 +1640,7 @@ def gemm(arch: str, input_tensors: list, output_tensor):
     if shift_cols and not b_on_core:
         msg = (
             f"B's {B.shape[1]} columns must be padded to {N} unless it is an f32 B streamed "
-            "to a bf16 GEMM on aie2"
+            "to a bf16 GEMM"
         )
         raise ValueError(msg)
 

@@ -126,7 +126,7 @@ LARGE = [
 ]
 
 
-# aie2's f32-B path (dense M, N, K): B streamed as f32 and converted on the core, read unpadded
+# The f32-B path (dense M, N, K): B streamed as f32 and converted on the core, read unpadded
 # with a K tail once it is a column group wide, and C written through the shifted last column
 # group and (once M is a row block) row block. 4096x512x4096 is upstream's timed f32-B shape.
 F32B_SHAPES = [
@@ -135,43 +135,47 @@ F32B_SHAPES = [
     (4096, 512, 4096),  # aligned
     (4000, 500, 4000),  # shifted, many row blocks
     (129, 300, 1000),
-    (64, 70, 257),  # K tail with odd K
+    (64, 70, 257),  # K tail with odd K (B padded on aie2p, whose column group is 128)
+    (64, 140, 257),  # K tail with odd K, B unpadded on both
     (300, 8, 256),  # N below a column group: B padded, clipped
 ]
 
 
-def _f32_b_module(shape):
+def _f32_b_module(arch, shape):
     from aie.iron import ExternalFunction
 
     ExternalFunction._instances.clear()
     M, N, K = shape
-    gm, gk, gn, cols = PAD["aie2"]
+    gm, gk, gn, cols = PAD[arch]
     Mp, Np, Kp = _pad(M, gm * 4), _pad(N, gn * cols), _pad(K, gk)
     b = (K, N) if N >= gn * cols else (Kp, Np)
     ops = [TD(BF16, (Kp, Mp, 1, 1)), TD(F32, (*b, 1, 1))]
-    return gemm("aie2", ops, TD(F32, (M, N, 1, 1)))
+    return gemm(arch, ops, TD(F32, (M, N, 1, 1)))
 
 
+@pytest.mark.parametrize("arch", list(PAD))
 @pytest.mark.parametrize("shape", F32B_SHAPES)
-def test_f32_b_module_verifies(shape):
-    """aie2's f32-B GEMM (shifted or clipped C) builds and verifies."""
-    assert _f32_b_module(shape).operation.verify()
+def test_f32_b_module_verifies(arch, shape):
+    """The f32-B GEMM (shifted or clipped C) builds and verifies."""
+    assert _f32_b_module(arch, shape).operation.verify()
 
 
-def test_unpadded_b_needs_the_f32_b_path():
-    """Only an f32 B converted on aie2's cores may be read unpadded."""
+@pytest.mark.parametrize("arch", list(PAD))
+def test_unpadded_b_needs_the_f32_b_path(arch):
+    """Only an f32 B converted on the cores may be read unpadded."""
     ops = [TD(BF16, (784, 512, 1, 1)), TD(BF16, (784, 500, 1, 1))]
     with pytest.raises(ValueError, match="f32 B"):
-        gemm("aie2", ops, TD(F32, (500, 500, 1, 1)))
+        gemm(arch, ops, TD(F32, (500, 500, 1, 1)))
 
 
 @pytest.mark.skipif(
     os.environ.get("RUN_AIECC_TESTS") != "1", reason="set RUN_AIECC_TESTS=1"
 )
+@pytest.mark.parametrize("arch", list(PAD))
 @pytest.mark.parametrize("shape", F32B_SHAPES)
-def test_f32_b_compiles_with_aiecc(shape):
-    """aie2's f32-B GEMM compiles to a PDI: BD ids, task queue and lock rules hold."""
-    _compile(_f32_b_module(shape), "aie2")
+def test_f32_b_compiles_with_aiecc(arch, shape):
+    """The f32-B GEMM compiles to a PDI: BD ids, task queue and lock rules hold."""
+    _compile(_f32_b_module(arch, shape), arch)
 
 
 @pytest.mark.parametrize(("arch", "shape"), LARGE)
