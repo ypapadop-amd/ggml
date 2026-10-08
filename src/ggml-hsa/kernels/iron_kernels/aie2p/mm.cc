@@ -654,17 +654,18 @@ combos(matmul_vectorized_c_func) combos(zero_vectorized_c_func)
 #ifdef AIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 #error "an f32 B is converted for the native 4x8x8 bf16 mmul, not the bfp16 emulation"
 #endif
-/**
- * @brief bf16 x f32 -> f32 matrix multiply: converts the f32 B tile to bf16, then multiplies.
- *
- * B arrives as f32 so the GEMM can consume an f32 operand without a separate conversion dispatch.
- *
- * @param[in]     a_in      A tile (bf16, DIM_M x DIM_K).
- * @param[in]     b_in      B tile (f32, DIM_K x DIM_N).
- * @param[out]    b_scratch B tile converted to bf16 (DIM_K x DIM_N).
- * @param[in,out] c_out     C tile (f32, DIM_M x DIM_N), accumulated.
- */
-void matmul_bf16_f32_bf32(bfloat16 * a_in, float * b_in, bfloat16 * b_scratch, float * c_out) {
+    /**
+     * @brief bf16 x f32 -> f32 matrix multiply: converts the f32 B tile to bf16, then multiplies.
+     *
+     * B arrives as f32 so the GEMM can consume an f32 operand without a separate conversion
+     * dispatch.
+     *
+     * @param[in]     a_in      A tile (bf16, DIM_M x DIM_K).
+     * @param[in]     b_in      B tile (f32, DIM_K x DIM_N).
+     * @param[out]    b_scratch B tile converted to bf16 (DIM_K x DIM_N).
+     * @param[in,out] c_out     C tile (f32, DIM_M x DIM_N), accumulated.
+     */
+    void matmul_bf16_f32_bf32(bfloat16 * a_in, float * b_in, bfloat16 * b_scratch, float * c_out) {
     convert_b_tile<DIM_K, DIM_N>(b_in, b_scratch);
     matmul_vectorized_4x8x8_bf16_f32<DIM_M, DIM_K, DIM_N>(a_in, b_scratch, c_out);
 }

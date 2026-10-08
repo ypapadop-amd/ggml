@@ -265,11 +265,7 @@ def select_gemm_tile(
             for n in range(gn, min(N, max_tile) + 1, gn):
                 if not valid(m, k, n):
                     continue
-                key = (
-                    (min(m, k), m * k * n, m)
-                    if convert_b
-                    else (m * k * n, m * n, k)
-                )
+                key = (min(m, k), m * k * n, m) if convert_b else (m * k * n, m * n, k)
                 if best_key is None or key > best_key:
                     best_key = key
                     best_tile = (m, k, n)

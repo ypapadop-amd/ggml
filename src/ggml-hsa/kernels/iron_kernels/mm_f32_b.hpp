@@ -46,8 +46,8 @@ inline void convert_b_tile(const float * __restrict b_in, bfloat16 * __restrict 
  *
  * On the last K tile of a GEMM whose B holds fewer than K elements per column, the DMA reads past
  * each column's end (into the next column, or the allocation's slack). Those elements must not
- * contribute, and zeroing them -- rather than relying on A's zero padding -- also keeps a NaN or inf
- * read from the next column out of this one.
+ * contribute, and zeroing them -- rather than relying on A's zero padding -- also keeps a NaN or
+ * inf read from the next column out of this one.
  *
  * gemm.py streams column-major B as (n/t, t*k), (k/s, s), (t, k), (s, 1), so the tile holds
  * [n/t][k/s][t][s] blocks and an element's K index within the tile is sb * s + jj.
