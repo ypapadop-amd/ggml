@@ -114,10 +114,11 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K, in
 } // namespace
 
 int main() {
-    ggml_backend_t backend = ggml_backend_hsa_init(0);
-    if (backend == nullptr) {
+    if (ggml_backend_t probe = ggml_backend_hsa_init(0); probe == nullptr) {
         printf("HSA backend unavailable; skipping.\n");
         return 0;
+    } else {
+        ggml_backend_free(probe);
     }
 
     // A column group is at least 64 wide on aie2 and 128 on aie2p; a row block is at least 64 tall
@@ -158,7 +159,11 @@ int main() {
     int passed = 0;
     int skipped = 0;
     for (const auto & c : cases) {
-        const case_result r = run_case(backend, c.M, c.N, c.K, c.nan_col);
+        // Each case runs on a backend, and so a queue, of its own: a queue holds at most 32
+        // distinct kernels, and the cases together load more than that.
+        std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> backend{
+            ggml_backend_hsa_init(0), ggml_backend_free};
+        const case_result r = run_case(backend.get(), c.M, c.N, c.K, c.nan_col);
         const char * label = r == case_result::pass   ? "PASSED"
                              : r == case_result::skip ? "SKIPPED"
                                                       : "FAILED";
@@ -168,7 +173,6 @@ int main() {
         passed += (r == case_result::pass);
         skipped += (r == case_result::skip);
     }
-    ggml_backend_free(backend);
 
     if (any_fail) {
         printf("SOME FAILED\n");
