@@ -889,6 +889,16 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         }
     }
 
+    // Graph-constant leaves (weights/biases) that need an internal buffer are transformed once and
+    // cached, whatever the op; see source_node_t::is_constant for the contract.
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+        const ggml_tensor * src = parent_tensor.src[src_idx];
+        if (sources[src_idx].buffer_size != 0 && src->op == GGML_OP_NONE &&
+            (src->flags & GGML_TENSOR_FLAG_INPUT) == 0) {
+            sources[src_idx].is_constant = true;
+        }
+    }
+
     // Build on-device pre-processing kernels for the sources that only change element type. These
     // run the parent -> internal conversion on the device queue in place of the host copy in
     // graph_compute, removing the queue drain that copy would otherwise force. A null kernel (the
@@ -1379,6 +1389,16 @@ bool ggml_hsa_buffer_has_read_slack(ggml_backend_buffer_t buffer) {
 }
 
 /**
+ * @brief Returns if a conversion of @p src may be cached: its data lives in a buffer this backend
+ * allocated, not in another backend's buffer or one imported from another device (which that
+ * device writes directly).
+ */
+static bool ggml_hsa_source_is_cacheable(const ggml_tensor * src) {
+    return ggml_hsa_buffer_is_allocated_here(src->view_src != nullptr ? src->view_src->buffer
+                                                                      : src->buffer);
+}
+
+/**
  * @brief Returns the base pointer of @p buffer.
  */
 static void * ggml_backend_hsa_buffer_get_base(ggml_backend_buffer_t buffer) {
@@ -1835,7 +1855,9 @@ ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool d
  * copied/scattered into its (padded) internal buffer on the host. The queue is drained once, before
  * the first host copy, since the host may not touch a buffer the device is still using; the queue
  * is in order, so device transforms enqueued before the drain are covered by it and the main kernel
- * is enqueued after every copy.
+ * is enqueued after every copy. Constant sources (weights / biases) are transformed once into the
+ * persistent buffer and skipped while their data pointer is unchanged (see
+ * @c source_node_t::is_constant).
  *
  * @param[in,out] ctx HSA backend context (queue used for drains and on-device dispatches)
  * @param[in,out] tensor_extra node metadata holding the internal source nodes
@@ -1853,6 +1875,14 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
         auto & src_node = tensor_extra.sources[src_idx];
         if (src_node.buffer_size == 0) {
             continue;
+        }
+        const bool cache =
+            src_node.is_constant && ggml_hsa_source_is_cacheable(node->src[src_idx]);
+        if (cache) {
+            if (src_node.converted_ptr == node->src[src_idx]->data) {
+                continue;
+            }
+            src_node.converted_ptr = nullptr; // invalid until this conversion is issued
         }
         ggml_status status = GGML_STATUS_SUCCESS;
         if (src_node.preprocess_kernel != nullptr) {
@@ -1884,6 +1914,14 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
             GGML_HSA_LOG_ERROR("%s: failed to prepare source %i for tensor \"%s (%s)\"", __func__,
                                src_idx, node->name, ggml_hsa_tensor_op_desc(*node));
             return status;
+        }
+        // Cache only a conversion that was issued: a device conversion that fails after this
+        // records a queue error, which fails this and every later graph_compute on this context.
+        // The cached pointer lives in the tensor extra, i.e. in the buffer, and is shared by every
+        // backend context: a fresh context created after such a queue error could still trust a
+        // conversion that never completed.
+        if (cache) {
+            src_node.converted_ptr = node->src[src_idx]->data;
         }
     }
     return GGML_STATUS_SUCCESS;

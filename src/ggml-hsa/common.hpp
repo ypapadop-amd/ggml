@@ -496,6 +496,16 @@ struct ggml_backend_hsa_tensor_extra {
         /// into this internal buffer (e.g., dtype conversion and/or zero-padding) on the device
         /// queue instead of on the host. Null when the source needs no on-device pre-processing.
         std::shared_ptr<ggml_hsa_kernel> preprocess_kernel;
+        /// @brief The parent data pointer whose converted contents currently sit in the internal
+        /// buffer, or null if there are none (no conversion yet, or the last one failed).
+        const void * converted_ptr{nullptr};
+        /// @brief True if the source is a graph-constant leaf (a weight or bias: op ==
+        /// GGML_OP_NONE, not a graph input). Its converted/padded contents are produced once into
+        /// the persistent internal buffer and reused while the parent's data pointer is unchanged
+        /// (@ref converted_ptr), so a constant must not be rewritten in place after its first use.
+        /// Only a source in a buffer this backend allocated is cached; one in another backend's
+        /// buffer or imported from another device is converted on every dispatch.
+        bool is_constant{};
     };
 
     /// @brief Internal source graph nodes plus their count.

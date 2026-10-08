@@ -299,7 +299,9 @@ columns, data types, and layout (row-major vs column-major).
 `gemm.cpp`) converts both f32 operands to bf16 and zero-pads them to the tile multiples, and pads
 C, de-padding the result afterwards. The transforms run on the device queue as `HSA_CONVERT_PAD`
 and `HSA_DEPAD` when those kernels build, and on the host otherwise; an operand or result that is
-already at the target dtype and shape is used in place.
+already at the target dtype and shape is used in place. A constant operand (a weight: a leaf not
+flagged with `ggml_set_input()`) is converted once and reused, as is any constant source of any op
+that needs an internal buffer; see `source_node_t::is_constant` in `common.hpp`.
 
 On aie2 an f32 B is instead streamed to the cores as f32 and converted there
 (`matmul_bf16_f32_bf32` in `aie2/mm.cc`), and when B is at least one column group wide the GEMM

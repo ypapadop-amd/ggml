@@ -28,7 +28,8 @@
  * the core. Once B is at least one column group wide the GEMM also reads it unpadded and, when M is
  * at least one row block and the output is f32, writes C in place: it shifts its last column group
  * and row block back to end at N and M, and zeroes the K tail on the core. Such a GEMM has neither
- * a B pre-processing nor a de-pad dispatch; only A is still converted and padded.
+ * a B pre-processing nor a de-pad dispatch; only the constant A is still converted and padded,
+ * once.
  *
  * Only the contiguous, non-batched, non-permuted f32 x f32 case is handled (the shapes exercised by
  * MNIST). Returns @c false for anything else, leaving the node untouched so the caller falls back
