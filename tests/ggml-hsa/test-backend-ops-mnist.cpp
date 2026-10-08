@@ -2605,7 +2605,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // CONV_2D beyond the MNIST shapes, one case per kernel path and edge (batch 2 to stay cheap):
     // larger windows (taps not unrolled), dilation, no padding, a row narrower than one vector,
     // a row of several vectors plus a partial one, a non-square window with asymmetric padding,
-    // padding wider than the row, stride 2 and a window wider than a vector (the fallback path).
+    // padding wider than the row, stride 2 and a window wider than a vector (the fallback path),
+    // and a vertical-only stride.
     test_cases.emplace_back(new test_conv_2d({14, 14, 4, 2}, {5, 5, 4, 3}, GGML_TYPE_F32, 1, 1, 2, 2, 1, 1));
     test_cases.emplace_back(new test_conv_2d({20, 20, 2, 2}, {7, 7, 2, 2}, GGML_TYPE_F32, 1, 1, 3, 3, 1, 1));
     test_cases.emplace_back(new test_conv_2d({16, 16, 3, 2}, {3, 3, 3, 4}, GGML_TYPE_F32, 1, 1, 2, 2, 2, 2));
@@ -2615,6 +2616,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_conv_2d({12, 10, 2, 2}, {5, 3, 2, 2}, GGML_TYPE_F32, 1, 1, 2, 0, 1, 1));
     test_cases.emplace_back(new test_conv_2d({1, 6, 1, 1}, {5, 3, 1, 2}, GGML_TYPE_F32, 1, 1, 5, 1, 2, 1));
     test_cases.emplace_back(new test_conv_2d({15, 15, 3, 2}, {3, 3, 3, 4}, GGML_TYPE_F32, 2, 2, 1, 1, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({12, 13, 2, 2}, {3, 3, 2, 2}, GGML_TYPE_F32, 1, 2, 1, 1, 1, 1));
     test_cases.emplace_back(new test_conv_2d({40, 6, 1, 1}, {9, 1, 1, 2}, GGML_TYPE_F32, 1, 1, 12, 0, 3, 1));
     // MaxPool2: [14, 14, 16, 500] with 2x2 kernel, stride=2, pad=0 -> [7, 7, 16, 500]
     test_cases.emplace_back(
