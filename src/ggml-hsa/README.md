@@ -48,6 +48,12 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 | `GGML_TYPE_F16`  | Supported via conversion to/from `BF16` |
 | `GGML_TYPE_F32`  | Emulated (slower than native types)    |
 
+A source an operation cannot read as-is (e.g., `F16` converted to `BF16`, or an `F32` `MUL_MAT`
+operand converted and padded) is copied into an internal buffer before the dispatch. For a leaf that
+is not flagged with `ggml_set_input()`, such as a weight or bias, that copy is made once and reused
+while the tensor's data pointer is unchanged. **Do not rewrite such a leaf in place after the first
+compute that uses it**; flag it with `ggml_set_input()` if its contents change between computes.
+
 ## Prerequisites
 
 ### Tested Configurations

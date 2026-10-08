@@ -829,15 +829,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // depad), so the generic dtype/layout/flatten handling below is skipped.
     const bool padded_gemm = ggml_hsa_prepare_mul_mat_f32(dev_info, node, sources);
     if (padded_gemm) {
-        // Graph-constant leaves (weights/biases) are converted once and cached; see
-        // source_node_t::is_constant for the contract.
-        for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-            const ggml_tensor * src = parent_tensor.src[src_idx];
-            if (sources[src_idx].buffer_size != 0 && src->op == GGML_OP_NONE &&
-                (src->flags & GGML_TENSOR_FLAG_INPUT) == 0) {
-                sources[src_idx].is_constant = true;
-            }
-        }
         // As on the generic path below: a trivial layout can still have arbitrary strides in
         // dimensions of size 1, so make the strides of the tensors the kernel sees canonical.
         ggml_hsa_set_contiguous_strides(node.tensor);
@@ -895,6 +886,16 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
                 src_node.tensor.data = nullptr;
                 src_node.buffer_size = GGML_PAD(ggml_nbytes(&src_node.tensor), dev_info.alignment);
             }
+        }
+    }
+
+    // Graph-constant leaves (weights/biases) that need an internal buffer are transformed once and
+    // cached, whatever the op; see source_node_t::is_constant for the contract.
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+        const ggml_tensor * src = parent_tensor.src[src_idx];
+        if (sources[src_idx].buffer_size != 0 && src->op == GGML_OP_NONE &&
+            (src->flags & GGML_TENSOR_FLAG_INPUT) == 0) {
+            sources[src_idx].is_constant = true;
         }
     }
 
