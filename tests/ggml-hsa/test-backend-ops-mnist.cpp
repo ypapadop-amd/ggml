@@ -2571,6 +2571,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {10, 500, 1, 1}));
     // Cross entropy loss on logits [10, 500]
     test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 500, 1, 1}));
+    // Row widths beyond MNIST's 10 classes: shorter than a 16-lane vector, exactly one vector, one
+    // vector plus a tail, and two vectors plus a tail. (Rows must be a whole number of 8 bytes.)
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {4, 64, 1, 1}));
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {16, 64, 1, 1}));
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {18, 64, 1, 1}));
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {40, 64, 1, 1}));
     // Softmax on logits [10, 500]
     test_cases.emplace_back(new test_soft_max(GGML_TYPE_F32, {10, 500, 1, 1}));
 
