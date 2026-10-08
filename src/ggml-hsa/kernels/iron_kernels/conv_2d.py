@@ -42,7 +42,7 @@ _MAX_WORKERS = 7
 # 3x3, 5x5, 7x7 and 11x11. If a future change raises the unroll bound, mlir-aie fails the build
 # with "stack_size = N is insufficient: this core needs M bytes", which is the signal to raise this
 # constant rather than a silent overrun.
-_STACK_SIZE_BYTES = 4096
+_STACK_SIZE_BYTES = 6144
 
 
 def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray):

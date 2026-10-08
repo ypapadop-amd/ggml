@@ -126,6 +126,103 @@ void conv_2d_impl(const T_in * __restrict in,
     const int32_t knl_plane = kh * kw;
     const int32_t knl_vol = ic * knl_plane; // KH*KW*IC per output channel
 
+#if __AIEARCH__ ==                                                                                 \
+    20 // aie2 only so far; aie2p keeps the border-peeled path below, unmeasured there.
+    // Padded rows held in a ring, for all input channels at once, so each input row is copied once
+    // per call (not once per output row that reads it) and every output chunk sums all channels
+    // in registers before one store (no zeroed plane, no per-channel reload). The per-row path
+    // further down does the same arithmetic one channel at a time, for shapes whose ring does not
+    // fit in 4 KB; see its comment for the padded-row layout and why the taps are shuffled.
+    if constexpr (s0 == 1 && (kw - 1) * d0 <= V) {
+        constexpr int32_t n_chunks = (ow + V - 1) / V;
+        constexpr int32_t pw = (n_chunks + 1) * V;
+        constexpr int32_t copy_lo = (p0 < pw) ? p0 : pw;
+        constexpr int32_t copy_hi = (p0 + iw < pw) ? p0 + iw : pw;
+        // One output row's taps read input rows base, base + d1, ..., base + (kh - 1) * d1, with
+        // base = oy * s1 - p1: a span of R rows, held in R slots. Slots are assigned relative to
+        // base_slot, the slot of row `base`, and advance with it, rather than computed as r % R:
+        // reducing by a constant that is not a power of two needs a 64-bit multiply, a runtime
+        // call on the aie2 scalar unit. Where the ring starts does not matter.
+        constexpr int32_t R = (kh - 1) * d1 + 1;
+        constexpr int32_t s1_mod_r = s1 % R;
+        if constexpr (R * ic * pw * static_cast<int32_t>(sizeof(T_in)) <= 4096) {
+            alignas(aie::vector_decl_align) T_in ring[ic][R][pw];
+            for (int32_t c = 0; c < ic; ++c) {
+                for (int32_t r = 0; r < R; ++r) {
+                    for (int32_t j = 0; j < copy_lo; ++j) {
+                        ring[c][r][j] = static_cast<T_in>(0.0f);
+                    }
+                    for (int32_t j = copy_hi; j < pw; ++j) {
+                        ring[c][r][j] = static_cast<T_in>(0.0f);
+                    }
+                }
+            }
+
+            const auto wrap = [](int32_t slot) { return slot >= R ? slot - R : slot; };
+            int32_t next_row = 0;  // lowest input row not yet copied
+            int32_t base_slot = 0; // slot of input row `base`
+            for (int32_t oy = 0; oy < oh; ++oy) {
+                const int32_t base = oy * s1 - p1;
+                if (oy > 0) {
+                    base_slot = wrap(base_slot + s1_mod_r);
+                }
+                const int32_t first = base > next_row ? base : next_row;
+                const int32_t last = (base + R < ih ? base + R : ih); // one past
+                for (int32_t r = first; r < last; ++r) {
+                    const int32_t slot = wrap(base_slot + (r - base)); // r - base in [0, R)
+                    for (int32_t c = 0; c < ic; ++c) {
+                        const T_in * __restrict srow = in + c * plane_size + r * iw;
+                        AIE_LOOP_NO_UNROLL
+                        for (int32_t j = copy_lo; j < copy_hi; ++j) {
+                            ring[c][slot][j] = srow[j - p0];
+                        }
+                    }
+                }
+                if (last > next_row) {
+                    next_row = last;
+                }
+
+                T_out * __restrict out_row = out + oy * ow;
+                for (int32_t ch = 0; ch < n_chunks; ++ch) {
+                    const int32_t ox = ch * V;
+                    const int32_t lanes = (ow - ox < V) ? ow - ox : V;
+                    aie::accum<accfloat, V> acc;
+                    acc.from_vector(aie::zeros<T_out, V>());
+                    for (int32_t c = 0; c < ic; ++c) {
+                        const T_in * __restrict wt_base = wts + c * knl_plane + oc_idx * knl_vol;
+                        GGML_CONV2D_UNROLL_TAPS
+                        for (int32_t ikh = 0; ikh < kh; ++ikh) {
+                            const int32_t r = base + ikh * d1;
+                            if (r < 0 || r >= ih) {
+                                continue;
+                            }
+                            const int32_t slot = wrap(base_slot + ikh * d1); // ikh * d1 < R
+                            const T_in * __restrict wrow = wt_base + ikh * kw;
+                            const aie::vector<T_in, V> lo = aie::load_v<V>(&ring[c][slot][ox]);
+                            const aie::vector<T_in, V> hi = aie::load_v<V>(&ring[c][slot][ox + V]);
+                            GGML_CONV2D_UNROLL_TAPS
+                            for (int32_t ikw = 0; ikw < kw; ++ikw) {
+                                const aie::vector<T_in, V> tap =
+                                    (ikw * d0 == 0) ? lo : aie::shuffle_down_fill(lo, hi, ikw * d0);
+                                acc = aie::mac(acc, aie::broadcast<T_in, V>(wrow[ikw]), tap);
+                            }
+                        }
+                    }
+                    alignas(aie::vector_decl_align) T_out chunk[V];
+                    aie::store_v(chunk, acc.template to_vector<T_out>());
+                    AIE_LOOP_NO_UNROLL
+                    for (int32_t l = 0; l < lanes; ++l) {
+                        out_row[ox + l] = chunk[l];
+                    }
+                }
+            }
+
+            event1();
+            return;
+        }
+    }
+#endif
+
     if (accumulate) {
         const int32_t n_out = oh * ow;
         for (int32_t i = 0; i < n_out; ++i) {
