@@ -108,6 +108,19 @@ def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         output_tensor=output_tensor,
         in_plane=in_plane,
         out_plane=out_plane,
+        shape={
+            "IW": iw,
+            "IH": ih,
+            "OW": ow,
+            "OH": oh,
+            "K0": k0,
+            "K1": k1,
+            "S0": s0,
+            "S1": s1,
+            "P0": p0,
+            "P1": p1,
+            "OP": op,
+        },
     )
 
     # AIE-array data movement with object fifos: one channel-plane per tile.
@@ -148,6 +161,7 @@ def _create_external_function(
     output_tensor,
     in_plane: int,
     out_plane: int,
+    shape: dict[str, int],
 ) -> ExternalFunction:
     """Create the ExternalFunction for the pooling core function.
 
@@ -157,6 +171,8 @@ def _create_external_function(
         output_tensor: Output tensor.
         in_plane: Input channel-plane size (IW * IH).
         out_plane: Output channel-plane size (OW * OH).
+        shape: Plane extents and op_params, passed as -DGGML_POOL_<key>=<value> as well as
+            at run time, so the kernel can be specialized for them (pool_2d.cc).
 
     Returns:
         The configured ExternalFunction.
@@ -184,5 +200,6 @@ def _create_external_function(
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            *(f"-DGGML_POOL_{key}={value}" for key, value in shape.items()),
         ],
     )

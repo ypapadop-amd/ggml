@@ -2603,6 +2603,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // MaxPool1 F16 input: [28, 28, 8, 500] with 2x2 kernel, stride=2, pad=0 -> [14, 14, 8, 500]
     test_cases.emplace_back(
         new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F16, {28, 28, 8, 500}, 2, 2, 2, 2, 0, 0));
+    // POOL_2D beyond the MNIST shapes: output rows wider than one 16-lane vector, odd extents,
+    // and a window that pools only vertically past 1 row (k1 3, s1 1, p1 1).
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {40, 6, 3, 2}, 2, 2, 2, 2, 0, 0));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {15, 9, 3, 2}, 2, 2, 2, 2, 0, 0));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {12, 10, 3, 2}, 2, 3, 2, 1, 0, 1));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {11, 7, 2, 2}, 3, 2, 1, 2, 1, 0));
     // Conv2: [14, 14, 8, 500] x conv2_kernel [3, 3, 8, 16], stride=1, pad=1 -> [14, 14, 16, 500]
     test_cases.emplace_back(
         new test_conv_2d({14, 14, 8, 500}, {3, 3, 8, 16}, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
