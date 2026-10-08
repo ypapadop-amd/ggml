@@ -544,12 +544,12 @@ def test_single_column_group_ignores_the_stride_bound(dev, mnk):
     assert m_pad * n * n_aie_cols > DMA_MAX_STRIDE
 
 
-def _f32_b_tile(M, N, K, n_limit=None, m_limit=None):
-    """Tile for the aie2 GEMM that streams an f32 B and converts it on the core."""
-    r, s, t = resolve_mac_dims("npu", "bf16")
-    row_expand, col_expand = resolve_expansion("npu", "bf16")
+def _f32_b_tile(M, N, K, n_limit=None, m_limit=None, dev="npu"):
+    """Tile for the GEMM that streams an f32 B and converts it on the core."""
+    r, s, t = resolve_mac_dims(dev, "bf16")
+    row_expand, col_expand = resolve_expansion(dev, "bf16")
     return select_gemm_tile(
-        "npu",
+        dev,
         M,
         N,
         K,
@@ -589,24 +589,30 @@ def test_f32_b_tile_balances_m_and_k(M, N, K, n_limit, m_limit, expected):
     assert _f32_b_tile(M, N, K, n_limit, m_limit) == expected
 
 
+# Shapes as the backend pads them for each device (M to 4 * gm, N to n_aie_cols * gn, K to 8).
 @pytest.mark.parametrize(
-    "M,N,K,n_limit,m_limit",
+    "dev,M,N,K,n_limit,m_limit",
     [
-        (512, 512, 784, 500, 500),  # MNIST fc1, padded
-        (64, 512, 504, 500, None),  # MNIST fc2, padded
-        (1024, 1024, 1000, 1000, 1000),
-        (128, 128, 264, 70, 100),
-        (4032, 512, 4000, 500, 4000),
+        ("npu", 512, 512, 784, 500, 500),  # MNIST fc1
+        ("npu", 64, 512, 504, 500, None),  # MNIST fc2
+        ("npu", 1024, 1024, 1000, 1000, 1000),
+        ("npu", 128, 128, 264, 70, 100),
+        ("npu", 4032, 512, 4000, 500, 4000),
+        ("npu2", 512, 512, 784, 500, 500),  # MNIST fc1
+        ("npu2", 32, 512, 504, 500, None),  # MNIST fc2
+        ("npu2", 1024, 1024, 1000, 1000, 1000),
+        ("npu2", 128, 256, 264, 140, 100),
+        ("npu2", 4000, 512, 4000, 500, None),
     ],
 )
-def test_f32_b_tile_fits_the_shift_limits_and_l1(M, N, K, n_limit, m_limit):
+def test_f32_b_tile_fits_the_shift_limits_and_l1(dev, M, N, K, n_limit, m_limit):
     """A shifted last column group / row block must fit inside the real B / C.
 
     The f32 B tile is double-buffered at 4 bytes and has a single bf16 scratch copy, so
     the L1 working set is larger than the bf16-B one ``_working_set`` models.
     """
-    m, k, n = _f32_b_tile(M, N, K, n_limit, m_limit)
-    assert n * 4 <= n_limit
+    m, k, n = _f32_b_tile(M, N, K, n_limit, m_limit, dev)
+    assert n * dict(DEVICES)[dev] <= n_limit
     if m_limit is not None:
         assert m * N_AIE_ROWS <= m_limit
     working_set = 2 * (

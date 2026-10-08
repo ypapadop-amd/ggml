@@ -303,9 +303,9 @@ already at the target dtype and shape is used in place. A constant operand (a we
 flagged with `ggml_set_input()`) is converted once and reused, as is any constant source of any op
 that needs an internal buffer; see `source_node_t::is_constant` in `common.hpp`.
 
-On aie2 an f32 B is instead streamed to the cores as f32 and converted there
-(`matmul_bf16_f32_bf32` in `aie2/mm.cc`), and when B is at least one column group wide the GEMM
-reads it unpadded and, for an f32 C at least one row block tall, writes C in place ("ragged" mode,
+An f32 B is instead streamed to the cores as f32 and converted there (`matmul_bf16_f32_bf32` in
+`aie2/mm.cc` and `aie2p/mm.cc`), and when B is at least one column group wide the GEMM reads it
+unpadded and, for an f32 C at least one row block tall, writes C in place ("ragged" mode,
 `b_ld`/`n_valid`/`m_valid` in `my_matmul`):
 
 - The last column group and row block are shifted back to end at N and M. They recompute
