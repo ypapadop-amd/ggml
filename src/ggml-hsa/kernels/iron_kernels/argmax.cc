@@ -5,8 +5,11 @@
  * @brief Argmax operation for AIE kernels.
  */
 
+#include <bit>
 #include <limits>
+#include <type_traits>
 
+#include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
 extern "C" {
@@ -68,6 +71,56 @@ void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict
                   "ggml_op_argmax seeds its running maximum with -infinity to match "
                   "ggml_vec_argmax_f32; INPUT_DTYPE must be a floating-point type");
 
+#if __AIEARCH__ == 20 // aie2 only so far; aie2p keeps the float loop below, unmeasured there.
+    static_assert(std::is_same_v<INPUT_DTYPE, float>,
+                  "ggml_op_argmax compares float bit patterns as int32");
+
+    // The AIE scalar unit has no float compare: `a > b` and `a == b` on float are runtime calls
+    // (__gtsf2, __eqsf2), which cost more than the rest of the loop and keep it from pipelining.
+    // So the loop above is evaluated on integer keys instead, with the same result:
+    //
+    // - key(x) is the signed magnitude, -|x| for a negative x: it orders non-NaN floats exactly
+    //   as `<` does, and maps -0 and +0 both to 0, as a tie must (-0 == +0).
+    // - In that order, "max = MAX(max, x); if (max == x) idx = i" takes index i exactly when
+    //   !(max > x), i.e. key(x) >= key(max), for non-NaN max and x.
+    // - NaN is tracked separately. A NaN x makes the maximum NaN and never takes the index
+    //   (NaN == NaN is false); a non-NaN x after a NaN maximum always takes it (NaN > x is false,
+    //   so MAX returns x, and x == x).
+    //
+    // The -infinity seed is key(-inf), non-NaN.
+    if (N > 0) {
+        int32_t max_key = -0x7f800000; // key(-inf)
+        bool max_is_nan = false;
+        int32_t argmax_idx = 0;
+
+        auto step = [&](int32_t i) {
+            const int32_t bits = std::bit_cast<int32_t>(in[i]);
+            const int32_t magnitude = bits & 0x7fffffff;
+            const bool is_nan = magnitude > 0x7f800000;
+            const int32_t key = (bits < 0) ? -magnitude : magnitude;
+
+            const bool take = !is_nan && (max_is_nan || key >= max_key);
+            max_key = take ? key : max_key;
+            argmax_idx = take ? i : argmax_idx;
+            // A NaN maximum is always displaced by the next non-NaN, so it is NaN iff x was.
+            max_is_nan = is_nan;
+        };
+        // A runtime trip count is not pipelined unless the compiler is promised a minimum. The
+        // loop is bound by the scalar unit's slots (MII 14-15 res, 5 rec), not by the chain.
+        if (N >= 4) {
+            AIE_LOOP_MIN_ITERATION_COUNT(4)
+            for (int32_t i = 0; i < N; i++) {
+                step(i);
+            }
+        } else {
+            for (int32_t i = 0; i < N; i++) {
+                step(i);
+            }
+        }
+
+        out[0] = static_cast<OUTPUT_DTYPE>(argmax_idx);
+    }
+#else
     if (N > 0) {
         auto max_val = -std::numeric_limits<INPUT_DTYPE>::infinity();
         int32_t argmax_idx = 0;
@@ -81,6 +134,7 @@ void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict
 
         out[0] = static_cast<OUTPUT_DTYPE>(argmax_idx);
     }
+#endif
 
     event1();
 }
