@@ -15,13 +15,12 @@
 #define REL_WRITE 0
 #define REL_READ 1
 
-#include "../aie_kernel_utils.h"
 #include "zero.cc"
 
 #include <aie_api/aie.hpp>
 
 #ifdef B_f32
-#include "../ggml-aie.hpp"
+#include "../mm_f32_b.hpp"
 #endif
 
 /**
@@ -655,65 +654,6 @@ combos(matmul_vectorized_c_func) combos(zero_vectorized_c_func)
 #ifdef AIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 #error "an f32 B is converted for the native 4x8x8 bf16 mmul, not the bfp16 emulation"
 #endif
-    /**
-     * @brief Converts the streamed f32 B tile to bf16.
-     *
-     * The conversion is the bit-exact round-to-nearest-even used by the host and the CONVERT_PAD
-     * kernel, so the product is identical to converting B beforehand. It is a flat element-wise
-     * pass: the DMA has already applied the mmul blocking to the f32 tile, and the conversion
-     * preserves element order.
-     *
-     * @param[in]  b_in      B tile (f32, DIM_K x DIM_N).
-     * @param[out] b_scratch B tile converted to bf16 (DIM_K x DIM_N).
-     */
-    static inline void convert_b_tile(const float * __restrict b_in,
-                                      bfloat16 * __restrict b_scratch) {
-    constexpr int32_t V = 512 / (sizeof(float) * 8);
-    constexpr int32_t nblk = (DIM_K * DIM_N) / V;
-    static_assert((DIM_K * DIM_N) % V == 0, "B tile must be a whole number of vectors");
-
-    AIE_PREPARE_FOR_PIPELINING
-    AIE_LOOP_RANGE(nblk, nblk)
-    for (int32_t b = 0; b < nblk; ++b) {
-        const aie::vector<float, V> fv = aie::load_v<V>(b_in + b * V);
-        aie::store_v(b_scratch + b * V, convert_f32_to_bf16_vector<V>(fv));
-    }
-}
-
-#ifdef B_K_VALID
-/**
- * @brief Zeroes the converted B tile's elements whose K index is B_K_VALID or more.
- *
- * On the last K tile of a GEMM whose B holds fewer than K elements per column, the DMA reads
- * past each column's end (into the next column, or the allocation's slack). Those elements
- * must not contribute, and zeroing them -- rather than relying on A's zero padding -- also
- * keeps a NaN or inf read from the next column out of this one.
- *
- * gemm.py streams column-major B as (n/t, t*k), (k/s, s), (t, k), (s, 1), so the tile holds
- * [n/t][k/s][t][s] blocks and an element's K index within the tile is sb * s + jj. The bf16
- * mmul here is 4x8x8, so s = t = 8 (aie2's is 4x8x4).
- *
- * @param[in,out] b_scratch Converted B tile (bf16, DIM_K x DIM_N).
- */
-static inline void zero_b_k_tail(bfloat16 * __restrict b_scratch) {
-    constexpr int32_t s = 8;
-    constexpr int32_t t = 8;
-    static_assert(B_K_VALID > 0 && B_K_VALID < DIM_K, "the K tail must be a partial tile");
-
-    for (int32_t tb = 0; tb < DIM_N / t; ++tb) {
-        for (int32_t sb = B_K_VALID / s; sb < DIM_K / s; ++sb) {
-            const int32_t first = sb == B_K_VALID / s ? B_K_VALID % s : 0;
-            for (int32_t i = 0; i < t; ++i) {
-                bfloat16 * block = b_scratch + ((tb * (DIM_K / s) + sb) * t + i) * s;
-                for (int32_t jj = first; jj < s; ++jj) {
-                    block[jj] = static_cast<bfloat16>(0.0f);
-                }
-            }
-        }
-    }
-}
-#endif
-
 /**
  * @brief bf16 x f32 -> f32 matrix multiply: converts the f32 B tile to bf16, then multiplies.
  *
@@ -725,7 +665,7 @@ static inline void zero_b_k_tail(bfloat16 * __restrict b_scratch) {
  * @param[in,out] c_out     C tile (f32, DIM_M x DIM_N), accumulated.
  */
 void matmul_bf16_f32_bf32(bfloat16 * a_in, float * b_in, bfloat16 * b_scratch, float * c_out) {
-    convert_b_tile(b_in, b_scratch);
+    convert_b_tile<DIM_K, DIM_N>(b_in, b_scratch);
     matmul_vectorized_4x8x8_bf16_f32<DIM_M, DIM_K, DIM_N>(a_in, b_scratch, c_out);
 }
 
@@ -743,8 +683,8 @@ void matmul_bf16_f32_bf32_ktail(bfloat16 * a_in,
                                 float * b_in,
                                 bfloat16 * b_scratch,
                                 float * c_out) {
-    convert_b_tile(b_in, b_scratch);
-    zero_b_k_tail(b_scratch);
+    convert_b_tile<DIM_K, DIM_N>(b_in, b_scratch);
+    zero_b_k_tail<DIM_K, DIM_N, 8, 8, B_K_VALID>(b_scratch);
     matmul_vectorized_4x8x8_bf16_f32<DIM_M, DIM_K, DIM_N>(a_in, b_scratch, c_out);
 }
 #endif

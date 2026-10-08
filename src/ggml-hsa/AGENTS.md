@@ -94,6 +94,7 @@ src/ggml-hsa/
 │       ├── cross_entropy_loss.py/cc  # Cross entropy loss IRON design + AIE core function
 │       ├── gemm.py              # Matrix multiplication IRON design
 │       ├── ggml-aie.hpp         # Common AIE type definitions
+│       ├── mm_f32_b.hpp         # f32-B conversion helpers shared by aie2/mm.cc and aie2p/mm.cc
 │       ├── aie_kernel_utils.h   # Loop optimization macros (AIE_LOOP_UNROLL, AIE_PREPARE_FOR_PIPELINING, etc.)
 │       ├── aie_kernel_math.h    # AIE math utility functions (scalar_exp, scalar_log, pow2, vec_exp)
 │       ├── aie2/                # aie2-specific core functions
