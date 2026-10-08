@@ -726,6 +726,86 @@ static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
     ggml_hsa_set_contiguous_strides(tensor);
 }
 
+/**
+ * @brief Prepares the internal nodes of an op for its kernel, for every op but the padded-GEMM
+ * @c MUL_MAT (see @ref ggml_hsa_prepare_mul_mat_f32).
+ *
+ * f16 tensors become bf16 (the output is converted back after the dispatch), every tensor gets a
+ * trivial layout with canonical strides, and the tensors are flattened when the op allows it so
+ * kernels are shared across shapes. A source that has to change gets an internal buffer.
+ *
+ * @param[in] dev_info device information
+ * @param[in,out] node internal output node
+ * @param[in,out] sources internal source nodes
+ * @return per source, whether it differs from its parent only in element type. Such a source can
+ *         be pre-processed on the device by the element-wise @c GGML_HSA_OP_CONVERT kernel; one
+ *         that also needs its layout rewritten cannot, because that kernel only streams contiguous
+ *         runs. Flattening erases the distinction from the tensors themselves, so it is recorded
+ *         here.
+ * @throws std::runtime_error if the output does not have a trivial layout
+ */
+static std::array<bool, GGML_MAX_SRC>
+ggml_hsa_prepare_generic(const ggml_hsa_device_info::device_info & dev_info,
+                         ggml_backend_hsa_tensor_extra::node_t & node,
+                         ggml_backend_hsa_tensor_extra::sources_t & sources) {
+    std::array<bool, GGML_MAX_SRC> update_src_buffer_size = {};
+    std::array<bool, GGML_MAX_SRC> src_dtype_only = {};
+
+    // convert tensor data types if needed
+    if (dev_info.substitute_fp16_bf16) {
+        // output tensor can be converted in-place
+        if (node.tensor.type == GGML_TYPE_F16) {
+            node.tensor.type = GGML_TYPE_BF16;
+            node.transform = ggml_backend_hsa_tensor_extra::output_transform_t::convert;
+        }
+
+        // inputs require temporary storage as they may be shared among tensors
+        for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+            auto & src_node = sources[src_idx];
+            if (src_node.tensor.type == GGML_TYPE_F16) {
+                update_src_buffer_size[src_idx] = true;
+                src_dtype_only[src_idx] = true;
+                src_node.tensor.type = GGML_TYPE_BF16;
+            }
+        }
+    }
+
+    // make tensor layouts trivial; tensors that do not have a trivial layout will need temporary
+    // storage, and the strides of all tensors are made canonical (a trivial layout can still have
+    // arbitrary strides in dimensions of size 1)
+    if (!ggml_hsa_has_trivial_layout(node.tensor)) {
+        throw std::runtime_error{"Output tensor does not have trivial layout."};
+    }
+    ggml_hsa_set_contiguous_strides(node.tensor);
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+        auto & src_node = sources[src_idx];
+        if (!ggml_hsa_has_trivial_layout(src_node.tensor)) {
+            update_src_buffer_size[src_idx] = true;
+            src_dtype_only[src_idx] = false;
+        }
+        ggml_hsa_set_contiguous_strides(src_node.tensor);
+    }
+
+    // flatten tensors to reuse kernels
+    if (ggml_hsa_can_flatten(node.tensor)) {
+        ggml_hsa_flatten_tensor(node.tensor);
+        for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+            ggml_hsa_flatten_tensor(sources[src_idx].tensor);
+        }
+    }
+
+    // update required tensor sizes
+    for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
+        if (update_src_buffer_size[src_idx]) {
+            auto & src_node = sources[src_idx];
+            src_node.tensor.data = nullptr;
+            src_node.buffer_size = GGML_PAD(ggml_nbytes(&src_node.tensor), dev_info.alignment);
+        }
+    }
+
+    return src_dtype_only;
+}
+
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) {
 
@@ -796,78 +876,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             break;
     }
 
-    std::array<bool, GGML_MAX_SRC> update_src_buffer_size = {};
-    // Tracks *why* a source needs a temporary buffer. A source whose only difference from its
-    // parent is the element type can be pre-processed on the device by the element-wise
-    // GGML_HSA_OP_CONVERT kernel; one that also needs its layout rewritten cannot, because that
-    // kernel only streams contiguous runs. The flatten step below erases the distinction from the
-    // tensors themselves, so it has to be recorded here.
-    std::array<bool, GGML_MAX_SRC> src_dtype_only = {};
-
     // F32 MUL_MAT is handled specially: the operands are converted to bf16 and zero-padded to the
     // GEMM tile multiples. This fully sets up the internal nodes (dtype, shape, buffer sizes,
-    // depad), so the generic dtype/layout/flatten handling below is skipped.
+    // depad), so the generic preparation is skipped.
     const bool padded_gemm = ggml_hsa_prepare_mul_mat_f32(dev_info, node, sources);
-    if (padded_gemm) {
-        // As on the generic path below: a trivial layout can still have arbitrary strides in
-        // dimensions of size 1, so make the strides of the tensors the kernel sees canonical.
-        ggml_hsa_set_contiguous_strides(node.tensor);
-        for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-            ggml_hsa_set_contiguous_strides(sources[src_idx].tensor);
-        }
-    } else {
-        // convert tensor data types if needed
-        if (dev_info.substitute_fp16_bf16) {
-            // output tensor can be converted in-place
-            if (node.tensor.type == GGML_TYPE_F16) {
-                node.tensor.type = GGML_TYPE_BF16;
-                node.transform = output_transform_t::convert;
-            }
-
-            // inputs require temporary storage as they may be shared among tensors
-            for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-                auto & src_node = sources[src_idx];
-                if (src_node.tensor.type == GGML_TYPE_F16) {
-                    update_src_buffer_size[src_idx] = true;
-                    src_dtype_only[src_idx] = true;
-                    src_node.tensor.type = GGML_TYPE_BF16;
-                }
-            }
-        }
-
-        // make tensor layouts trivial; tensors that do not have a trivial layout will need
-        // temporary storage, and the strides of all tensors are made canonical (a trivial layout
-        // can still have arbitrary strides in dimensions of size 1)
-        if (!ggml_hsa_has_trivial_layout(node.tensor)) {
-            throw std::runtime_error{"Output tensor does not have trivial layout."};
-        }
-        ggml_hsa_set_contiguous_strides(node.tensor);
-        for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-            auto & src_node = sources[src_idx];
-            if (!ggml_hsa_has_trivial_layout(src_node.tensor)) {
-                update_src_buffer_size[src_idx] = true;
-                src_dtype_only[src_idx] = false;
-            }
-            ggml_hsa_set_contiguous_strides(src_node.tensor);
-        }
-
-        // flatten tensors to reuse kernels
-        if (ggml_hsa_can_flatten(node.tensor)) {
-            ggml_hsa_flatten_tensor(node.tensor);
-            for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-                ggml_hsa_flatten_tensor(sources[src_idx].tensor);
-            }
-        }
-
-        // update required tensor sizes
-        for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-            if (update_src_buffer_size[src_idx]) {
-                auto & src_node = sources[src_idx];
-                src_node.tensor.data = nullptr;
-                src_node.buffer_size = GGML_PAD(ggml_nbytes(&src_node.tensor), dev_info.alignment);
-            }
-        }
-    }
+    const auto src_dtype_only = padded_gemm ? std::array<bool, GGML_MAX_SRC>{}
+                                            : ggml_hsa_prepare_generic(dev_info, node, sources);
 
     // Graph-constant leaves (weights/biases) that need an internal buffer are transformed once and
     // cached, whatever the op; see source_node_t::is_constant for the contract.
