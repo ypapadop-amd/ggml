@@ -176,6 +176,15 @@ bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor);
 void ggml_hsa_set_contiguous_strides(ggml_tensor & tensor);
 
 /**
+ * @brief Returns if @p buffer is an HSA buffer whose allocation extends past its reported size, so
+ * a kernel may read slightly past its last tensor.
+ *
+ * True only for buffers allocated by the HSA buffer type. A buffer imported from another device
+ * (@ref ggml_backend_hsa_buffer_import) maps memory it did not allocate, so it has no such slack.
+ */
+bool ggml_hsa_buffer_has_read_slack(ggml_backend_buffer_t buffer);
+
+/**
  * @brief Creates a string representation of the tensor shape.
  *
  * For a 3D tensor with dimensions `[3,3,4,1]`, the default representation is of the form `3x3x4`.

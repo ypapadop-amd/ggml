@@ -74,6 +74,16 @@ static const std::size_t g_ggml_hsa_dispatch_batch_size =
     static_cast<std::size_t>(ggml_hsa_getenv_int(
         "GGML_HSA_DISPATCH_BATCH_SIZE", 0, 1, std::numeric_limits<std::int64_t>::max()));
 
+/// @brief Bytes every buffer the HSA buffer type allocates is allocated beyond its reported size.
+/// Buffers imported from another device are HSA buffers without this slack.
+///
+/// A GEMM that reads an f32 B unpadded (see @ref ggml_hsa_prepare_mul_mat_f32) streams whole K
+/// tiles, so its last K tile reads up to one K padding granule (under 8 elements) past the end of
+/// each column. For every column but the last that lands in the next column; for the last it can
+/// land past the tensor, and so past the buffer when the tensor ends it. The slack keeps that read
+/// inside the allocation. The GEMM zeroes those elements before using them.
+static constexpr std::size_t ggml_hsa_buffer_read_slack = 64;
+
 /// @brief How long teardown waits for packets that were in flight when the queue was suspended,
 /// in milliseconds. Read once from @c GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS at startup; 0 means
 /// do not wait at all. See @c ggml_hsa_drain_after_queue_error for why the wait is bounded.
@@ -1328,7 +1338,10 @@ struct ggml_backend_hsa_buffer_context {
     std::int32_t device{};            ///< Device ID associated with this buffer context.
     ggml_hsa_vmem_allocation dev_mem; ///< Device memory.
     std::size_t base_offset{};        ///< Offset of the buffer's base within @ref dev_mem.
-    ggml_backend_buffer_t source{};   ///< Buffer this one was imported from, or @c nullptr.
+    /// @brief Buffer this one was imported from, or @c nullptr. A buffer that is not imported was
+    /// allocated by the HSA buffer type, so @ref dev_mem extends ggml_hsa_buffer_read_slack bytes
+    /// past it.
+    ggml_backend_buffer_t source{};
     std::vector<std::unique_ptr<ggml_backend_hsa_tensor_extra>> tensor_extras;
 
     explicit ggml_backend_hsa_buffer_context(std::int32_t device) : device{device} {}
@@ -1350,6 +1363,19 @@ static void ggml_backend_hsa_buffer_free_buffer(ggml_backend_buffer_t buffer) {
  */
 static bool ggml_backend_buffer_is_hsa(ggml_backend_buffer_t buffer) {
     return buffer->iface.free_buffer == ggml_backend_hsa_buffer_free_buffer;
+}
+
+/**
+ * @brief Returns if @p buffer was allocated by the HSA buffer type: an HSA buffer that is not
+ * imported from another device.
+ */
+static bool ggml_hsa_buffer_is_allocated_here(ggml_backend_buffer_t buffer) {
+    return buffer != nullptr && ggml_backend_buffer_is_hsa(buffer) &&
+           static_cast<const ggml_backend_hsa_buffer_context *>(buffer->context)->source == nullptr;
+}
+
+bool ggml_hsa_buffer_has_read_slack(ggml_backend_buffer_t buffer) {
+    return ggml_hsa_buffer_is_allocated_here(buffer);
 }
 
 /**
@@ -1529,9 +1555,12 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
     const auto & buft_ctx = *static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & dev_info = ggml_hsa_get_device_info(buft_ctx.device);
 
+    // The allocation is ggml_hsa_buffer_read_slack bytes longer than the buffer ggml sees, so a
+    // kernel may read slightly past the last tensor (see ggml_hsa_buffer_read_slack).
     try {
         auto buf_ctx = std::make_unique<ggml_backend_hsa_buffer_context>(buft_ctx.device);
-        if (auto status = buf_ctx->dev_mem.allocate(dev_info, size); status != HSA_STATUS_SUCCESS) {
+        if (auto status = buf_ctx->dev_mem.allocate(dev_info, size + ggml_hsa_buffer_read_slack);
+            status != HSA_STATUS_SUCCESS) {
             GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
                                (size / 1024.0 / 1024.0), dev_info.name.c_str(),
                                ggml_hsa_get_status_string(status));

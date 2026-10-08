@@ -301,6 +301,20 @@ C, de-padding the result afterwards. The transforms run on the device queue as `
 and `HSA_DEPAD` when those kernels build, and on the host otherwise; an operand or result that is
 already at the target dtype and shape is used in place.
 
+On aie2 an f32 B is instead streamed to the cores as f32 and converted there
+(`matmul_bf16_f32_bf32` in `aie2/mm.cc`), and when B is at least one column group wide the GEMM
+reads it unpadded and, for an f32 C at least one row block tall, writes C in place ("ragged" mode,
+`b_ld`/`n_valid`/`m_valid` in `my_matmul`):
+
+- The last column group and row block are shifted back to end at N and M. They recompute
+  columns/rows the previous group or block already wrote, with bit-identical values.
+- The last K tile reads past each column of B by up to 7 elements, and `matmul_*_ktail` zeroes
+  them on the core. HSA device buffers are over-allocated by `ggml_hsa_buffer_read_slack` so this
+  read never leaves the allocation.
+- Each C drain issues a completion token and each `dma_wait` consumes one, so a transfer block
+  that drains C in two runs (normal plus shifted group) needs two waits.
+- The tile selector ranks f32-B tiles by `min(m, k)` before volume (see `select_gemm_tile`).
+
 ### Broadcasting Support
 
 Binary operations (`ADD`, `SUB`, `MUL`, `DIV`) support multi-dimensional broadcasting

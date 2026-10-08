@@ -164,13 +164,35 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     // bf16 sources are just zero-padded to the tile multiples (handled by the pre-processing
     // kernel below, which is selected from the parent tensor's own dtype). An operand that needs
     // neither is left alone -- see ggml_hsa_pad_gemm_operand.
+    //
+    // The exception is an f32 B on aie2, which the GEMM converts on the core and, once B is at
+    // least one column group wide, reads unpadded (see gemm.hpp). Its K-tail read runs up to
+    // Kpad - K elements past B's last column, which only the read slack of a buffer the HSA buffer
+    // type allocated covers (ggml_hsa_buffer_has_read_slack); a B in an imported buffer is padded
+    // instead. A B without a buffer yet (the supports_op probe) is taken to read unpadded, since
+    // every buffer ggml's allocators create for it comes from the HSA buffer type. A manual,
+    // out-of-order allocation -- the consumer initialized first, B then aliased into an imported
+    // buffer -- keeps the unpadded kernel and can read up to 28 bytes past the dma-buf; unguarded.
+    const bool b_f32_on_core = dev_info.name == "aie2" && b.type == GGML_TYPE_F32;
+    const bool b_unpadded =
+        b_f32_on_core && N >= gn * n_aie_cols &&
+        (K == Kpad || b.buffer == nullptr || ggml_hsa_buffer_has_read_slack(b.buffer));
     ggml_hsa_pad_gemm_operand(dev_info, sources[0], Kpad, Mpad, GGML_TYPE_BF16);
-    ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad, GGML_TYPE_BF16);
+    if (!b_unpadded) {
+        ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad,
+                                  b_f32_on_core ? GGML_TYPE_F32 : GGML_TYPE_BF16);
+    }
 
     // Rewrite the output to a padded f32 temporary that must be de-padded back into the parent.
+    //
     // When the parent is already at exactly the padded shape there is nothing to de-pad, so the
     // kernel writes straight into it.
-    if (dst.ne[0] != Mpad || dst.ne[1] != Npad) {
+    //
+    // It also writes straight into a parent of any shape when B is read unpadded and M is at least
+    // one row block: the GEMM then shifts its last row block up to end at M, as it shifts its last
+    // column group to end at N, so it writes only the parent's real rows and columns.
+    const bool c_in_place = b_unpadded && M >= gm * n_aie_rows;
+    if (!c_in_place && (dst.ne[0] != Mpad || dst.ne[1] != Npad)) {
         dst.ne[0] = Mpad;
         dst.ne[1] = Npad;
         ggml_hsa_set_contiguous_strides(dst);
