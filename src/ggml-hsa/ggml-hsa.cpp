@@ -1924,9 +1924,9 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
         }
         ggml_backend_hsa_tensor_extra::conversion_t * conversion = nullptr;
         if (src_node.is_constant) {
-            conversion = ggml_hsa_get_conversion(ggml_hsa_get_device_info(ctx.device),
-                                                 *node->src[src_idx], *internal_node.src[src_idx],
-                                                 src_node.buffer_size);
+            conversion =
+                ggml_hsa_get_conversion(ggml_hsa_get_device_info(ctx.device), *node->src[src_idx],
+                                        *internal_node.src[src_idx], src_node.buffer_size);
             if (conversion == nullptr) {
                 GGML_HSA_LOG_ERROR("%s: no converted copy of source %i for tensor \"%s (%s)\"",
                                    __func__, src_idx, node->name, ggml_hsa_tensor_op_desc(*node));
