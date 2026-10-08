@@ -39,6 +39,39 @@ ctx_ptr make_ctx(std::size_t n_tensors) {
     return {ggml_init(params), ggml_free};
 }
 
+// A graph C = op(X, W) over a weight W that lives elsewhere, with its own context and allocator.
+struct graph_t {
+    ctx_ptr ctx{nullptr, ggml_free};
+    gallocr_ptr galloc{nullptr, ggml_gallocr_free};
+    ggml_tensor * x = nullptr;
+    ggml_tensor * c = nullptr;
+    ggml_cgraph * gf = nullptr;
+};
+
+// Builds and allocates C = @p op(ctx, X) for an input X of @p x_type and shape [@p ne0, @p ne1].
+// gf is null if the op is unsupported or the allocation failed.
+template <typename Op>
+graph_t make_graph(ggml_backend_t backend, ggml_type x_type, int64_t ne0, int64_t ne1, Op op) {
+    graph_t g;
+    g.ctx = make_ctx(4);
+    g.x = ggml_new_tensor_2d(g.ctx.get(), x_type, ne0, ne1);
+    ggml_set_name(g.x, "x");
+    ggml_set_input(g.x);
+    g.c = op(g.ctx.get(), g.x);
+    ggml_set_name(g.c, "c");
+    ggml_set_output(g.c);
+    if (!ggml_backend_supports_op(backend, g.c)) {
+        return g;
+    }
+    ggml_cgraph * gf = ggml_new_graph(g.ctx.get());
+    ggml_build_forward_expand(gf, g.c);
+    g.galloc.reset(ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)));
+    if (ggml_gallocr_alloc_graph(g.galloc.get(), gf)) {
+        g.gf = gf;
+    }
+    return g;
+}
+
 // Weight [K, M] in ggml layout; @p seed selects one of several distinct small-integer patterns.
 std::vector<float> make_weight(int64_t M, int64_t K, int seed) {
     std::vector<float> w(M * K);
@@ -93,25 +126,18 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K) {
         return case_result::fail;
     }
 
-    // C = W x X
-    ctx_ptr ctx = make_ctx(4);
-    ggml_tensor * x = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, K, N);
-    ggml_set_name(x, "x");
-    ggml_set_input(x);
-    ggml_tensor * c = ggml_mul_mat(ctx.get(), w, x); // [M, N] f32
-    ggml_set_name(c, "c");
-    ggml_set_output(c);
-
-    if (!ggml_backend_supports_op(backend, c)) {
+    // C = W x X, [M, N] f32
+    auto build = [&] {
+        return make_graph(backend, GGML_TYPE_F32, K, N, [w](ggml_context * ctx, ggml_tensor * x) {
+            return ggml_mul_mat(ctx, w, x);
+        });
+    };
+    graph_t g = build();
+    if (!ggml_backend_supports_op(backend, g.c)) {
         printf("  MUL_MAT not supported (skipped)\n");
         return case_result::skip;
     }
-
-    ggml_cgraph * gf = ggml_new_graph(ctx.get());
-    ggml_build_forward_expand(gf, c);
-    gallocr_ptr galloc{ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)),
-                       ggml_gallocr_free};
-    if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
+    if (g.gf == nullptr) {
         printf("  graph allocation failed\n");
         return case_result::fail;
     }
@@ -124,16 +150,16 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K) {
     }
     const std::vector<float> w1 = make_weight(M, K, 0);
     const std::vector<float> w2 = make_weight(M, K, 1);
-    ggml_backend_tensor_set(x, hx.data(), 0, ggml_nbytes(x));
     ggml_backend_tensor_set(w, w1.data(), 0, ggml_nbytes(w));
 
     std::vector<float> got(M * N);
     auto compute = [&](const char * label, const std::vector<float> & want_w) {
-        if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        ggml_backend_tensor_set(g.x, hx.data(), 0, ggml_nbytes(g.x));
+        if (ggml_backend_graph_compute(backend, g.gf) != GGML_STATUS_SUCCESS) {
             printf("  %s: graph compute failed\n", label);
             return false;
         }
-        ggml_backend_tensor_get(c, got.data(), 0, ggml_nbytes(c));
+        ggml_backend_tensor_get(g.c, got.data(), 0, ggml_nbytes(g.c));
         return check(label, got, want_w, hx, M, N, K);
     };
 
@@ -146,6 +172,10 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K) {
     // therefore did not re-convert the weight.
     std::memcpy(w->data, w2.data(), ggml_nbytes(w));
     ok = compute("compute 3 (after a store to W; expects cached W)", w1) && ok;
+    // The converted weight lives with W, not with the graph that first used it: a new graph over
+    // the same W, with its own allocation, still gets the first weight's result.
+    g = build();
+    ok = g.gf != nullptr && compute("compute 4 (new graph; expects cached W)", w1) && ok;
 
     return ok ? case_result::pass : case_result::fail;
 }
@@ -163,24 +193,17 @@ case_result run_add_case(ggml_backend_t backend, int64_t n) {
         return case_result::fail;
     }
 
-    ctx_ptr ctx = make_ctx(4);
-    ggml_tensor * x = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F16, n);
-    ggml_set_name(x, "x");
-    ggml_set_input(x);
-    ggml_tensor * c = ggml_add(ctx.get(), x, w);
-    ggml_set_name(c, "c");
-    ggml_set_output(c);
-
-    if (!ggml_backend_supports_op(backend, c)) {
+    auto build = [&] {
+        return make_graph(backend, GGML_TYPE_F16, n, 1, [w](ggml_context * ctx, ggml_tensor * x) {
+            return ggml_add(ctx, x, w);
+        });
+    };
+    graph_t g = build();
+    if (!ggml_backend_supports_op(backend, g.c)) {
         printf("  ADD not supported (skipped)\n");
         return case_result::skip;
     }
-
-    ggml_cgraph * gf = ggml_new_graph(ctx.get());
-    ggml_build_forward_expand(gf, c);
-    gallocr_ptr galloc{ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)),
-                       ggml_gallocr_free};
-    if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
+    if (g.gf == nullptr) {
         printf("  graph allocation failed\n");
         return case_result::fail;
     }
@@ -200,12 +223,12 @@ case_result run_add_case(ggml_backend_t backend, int64_t n) {
     std::vector<ggml_fp16_t> got(n);
     auto compute = [&](const char * label, const std::vector<ggml_fp16_t> & want_w) {
         // the allocator may place C over X (ADD can run in place), so X is set before every compute
-        ggml_backend_tensor_set(x, hx.data(), 0, ggml_nbytes(x));
-        if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        ggml_backend_tensor_set(g.x, hx.data(), 0, ggml_nbytes(g.x));
+        if (ggml_backend_graph_compute(backend, g.gf) != GGML_STATUS_SUCCESS) {
             printf("  %s: graph compute failed\n", label);
             return false;
         }
-        ggml_backend_tensor_get(c, got.data(), 0, ggml_nbytes(c));
+        ggml_backend_tensor_get(g.c, got.data(), 0, ggml_nbytes(g.c));
         int64_t mismatches = 0;
         for (int64_t i = 0; i < n; ++i) {
             const float want = ggml_fp16_to_fp32(hx[i]) + ggml_fp16_to_fp32(want_w[i]);
@@ -226,9 +249,12 @@ case_result run_add_case(ggml_backend_t backend, int64_t n) {
 
     bool ok = compute("compute 1", w1);
     ok = compute("compute 2", w1) && ok;
-    // as in run_case: a store the cache cannot see, so the cached W must still be used
+    // as in run_case: a store the cache cannot see, so the cached W must still be used, also by a
+    // new graph over the same W
     std::memcpy(w->data, w2.data(), ggml_nbytes(w));
     ok = compute("compute 3 (after a store to W; expects cached W)", w1) && ok;
+    g = build();
+    ok = g.gf != nullptr && compute("compute 4 (new graph; expects cached W)", w1) && ok;
 
     return ok ? case_result::pass : case_result::fail;
 }

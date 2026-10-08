@@ -496,15 +496,15 @@ struct ggml_backend_hsa_tensor_extra {
         /// into this internal buffer (e.g., dtype conversion and/or zero-padding) on the device
         /// queue instead of on the host. Null when the source needs no on-device pre-processing.
         std::shared_ptr<ggml_hsa_kernel> preprocess_kernel;
-        /// @brief The parent data pointer whose converted contents currently sit in the internal
-        /// buffer, or null if there are none (no conversion yet, or the last one failed).
-        const void * converted_ptr{nullptr};
         /// @brief True if the source is a graph-constant leaf (a weight or bias: op ==
-        /// GGML_OP_NONE, not a graph input). Its converted/padded contents are produced once into
-        /// the persistent internal buffer and reused while the parent's data pointer is unchanged
-        /// (@ref converted_ptr), so a constant must not be rewritten in place after its first use.
-        /// Only a source in a buffer this backend allocated is cached; one in another backend's
-        /// buffer or imported from another device is converted on every dispatch.
+        /// GGML_OP_NONE, not a graph input) in a buffer this backend allocated. Its converted/padded
+        /// copy is then kept in the parent's own extra (@ref conversions), not in an internal buffer
+        /// of this node: it is produced once and reused while the parent's data pointer is
+        /// unchanged, across every consumer that needs the same conversion and across re-allocations
+        /// of the consumers' graph. A constant must therefore not be rewritten in place after its
+        /// first use. Any other source that needs transforming (including a constant in another
+        /// backend's buffer, imported from another device, or not yet placed when this node is
+        /// built) gets an internal buffer and is converted on every dispatch.
         bool is_constant{};
         /// @brief True if the kernel reads past the end of the parent's data (a GEMM's unpadded f32
         /// B with a K tail), which stays inside the allocation only for a buffer with read slack
@@ -534,6 +534,16 @@ struct ggml_backend_hsa_tensor_extra {
         const source_node_t * end() const { return nodes.data() + count; }
     };
 
+    /// @brief A converted copy of a graph-constant tensor, made for consumers that cannot read the
+    /// tensor as-is (see @ref source_node_t::is_constant).
+    struct conversion_t {
+        ggml_tensor tensor{};                  ///< The converted tensor; its data is @c buffer.
+        ggml_hsa_unique_ptr<std::byte> buffer; ///< Device storage of the converted tensor.
+        /// @brief The parent data pointer whose converted contents @c buffer holds, or null if
+        /// none (no conversion yet, or the last one failed).
+        const void * converted_ptr{nullptr};
+    };
+
     /// @brief Internal output graph node.
     node_t node{};
     /// @brief Internal source graph nodes.
@@ -542,6 +552,10 @@ struct ggml_backend_hsa_tensor_extra {
     std::shared_ptr<ggml_hsa_kernel> kernel;
     /// @brief Temporary storage for tensor data, allocated only if needed.
     ggml_hsa_unique_ptr<std::byte> buffer;
+    /// @brief Converted copies of this tensor when it is a graph constant, one per distinct
+    /// conversion its consumers need. They live with the constant, whose buffer outlives its
+    /// consumers' graph allocations, rather than with each consumer.
+    std::vector<std::unique_ptr<conversion_t>> conversions;
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);

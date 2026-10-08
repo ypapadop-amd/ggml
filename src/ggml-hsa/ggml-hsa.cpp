@@ -805,6 +805,8 @@ ggml_hsa_prepare_generic(const ggml_hsa_device_info::device_info & dev_info,
     return src_dtype_only;
 }
 
+static bool ggml_hsa_source_is_cacheable(const ggml_tensor * src);
+
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) {
 
@@ -882,12 +884,12 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const auto src_dtype_only = padded_gemm ? std::array<bool, GGML_MAX_SRC>{}
                                             : ggml_hsa_prepare_generic(dev_info, node, sources);
 
-    // Graph-constant leaves (weights/biases) that need an internal buffer are transformed once and
-    // cached, whatever the op; see source_node_t::is_constant for the contract.
+    // Graph-constant leaves (weights/biases) that need transforming are converted once into a copy
+    // kept with the constant, whatever the op; see source_node_t::is_constant for the contract.
     for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
         const ggml_tensor * src = parent_tensor.src[src_idx];
         if (sources[src_idx].buffer_size != 0 && src->op == GGML_OP_NONE &&
-            (src->flags & GGML_TENSOR_FLAG_INPUT) == 0) {
+            (src->flags & GGML_TENSOR_FLAG_INPUT) == 0 && ggml_hsa_source_is_cacheable(src)) {
             sources[src_idx].is_constant = true;
         }
     }
@@ -972,9 +974,12 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
         return GGML_STATUS_ABORTED;
     }
 
+    // a constant's converted copy is kept with the constant (source_node_t::is_constant)
     std::size_t buffer_size = node.buffer_size;
     for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-        buffer_size += sources[src_idx].buffer_size;
+        if (!sources[src_idx].is_constant) {
+            buffer_size += sources[src_idx].buffer_size;
+        }
     }
 
     if (buffer_size == 0) {
@@ -1000,7 +1005,7 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     auto buffer_ptr = buffer.get();
     for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
         auto & src_node = sources[src_idx];
-        if (src_node.buffer_size > 0) {
+        if (src_node.buffer_size > 0 && !src_node.is_constant) {
             assert(src_node.tensor.data == nullptr);
             src_node.tensor.data = buffer_ptr;
             buffer_ptr += src_node.buffer_size;
@@ -1844,6 +1849,50 @@ ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool d
 }
 
 /**
+ * @brief Returns the converted copy of the graph constant @p parent that has the dtype, shape and
+ * strides of @p target, allocating it on first use.
+ *
+ * @param[in] dev_info device information (supplies the memory pool)
+ * @param[in] parent graph-constant source; its extra owns the copy
+ * @param[in] target internal source tensor the consumer's kernel reads
+ * @param[in] size bytes of storage the copy needs
+ * @return the copy, or @c nullptr if @p parent has no extra or the allocation failed
+ */
+static ggml_backend_hsa_tensor_extra::conversion_t *
+ggml_hsa_get_conversion(const ggml_hsa_device_info::device_info & dev_info,
+                        const ggml_tensor & parent,
+                        const ggml_tensor & target,
+                        std::size_t size) {
+    auto * owner = static_cast<ggml_backend_hsa_tensor_extra *>(parent.extra);
+    if (owner == nullptr) {
+        return nullptr;
+    }
+    for (auto & conversion : owner->conversions) {
+        if (conversion->tensor.type == target.type &&
+            ggml_are_same_shape(&conversion->tensor, &target) &&
+            ggml_are_same_stride(&conversion->tensor, &target)) {
+            return conversion.get();
+        }
+    }
+
+    void * ptr = nullptr;
+    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
+                                                   /* flags = */ 0, &ptr);
+        status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
+                           (size / 1024.0 / 1024.0), dev_info.name.c_str(),
+                           ggml_hsa_get_status_string(status));
+        return nullptr;
+    }
+    auto conversion = std::make_unique<ggml_backend_hsa_tensor_extra::conversion_t>();
+    conversion->buffer.reset(static_cast<std::byte *>(ptr));
+    conversion->tensor = target;
+    conversion->tensor.data = ptr;
+    owner->conversions.push_back(std::move(conversion));
+    return owner->conversions.back().get();
+}
+
+/**
  * @brief Pre-processes a node's sources into their internal buffers before the main kernel
  * dispatch.
  *
@@ -1852,8 +1901,8 @@ ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool d
  * copied/scattered into its (padded) internal buffer on the host. The queue is drained once, before
  * the first host copy, since the host may not touch a buffer the device is still using; the queue
  * is in order, so device transforms enqueued before the drain are covered by it and the main kernel
- * is enqueued after every copy. Constant sources (weights / biases) are transformed once into the
- * persistent buffer and skipped while their data pointer is unchanged (see
+ * is enqueued after every copy. Constant sources (weights / biases) are transformed once into a
+ * copy kept with the constant and skipped while their data pointer is unchanged (see
  * @c source_node_t::is_constant).
  *
  * @param[in,out] ctx HSA backend context (queue used for drains and on-device dispatches)
@@ -1873,12 +1922,21 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
         if (src_node.buffer_size == 0) {
             continue;
         }
-        const bool cache = src_node.is_constant && ggml_hsa_source_is_cacheable(node->src[src_idx]);
-        if (cache) {
-            if (src_node.converted_ptr == node->src[src_idx]->data) {
+        ggml_backend_hsa_tensor_extra::conversion_t * conversion = nullptr;
+        if (src_node.is_constant) {
+            conversion = ggml_hsa_get_conversion(ggml_hsa_get_device_info(ctx.device),
+                                                 *node->src[src_idx], *internal_node.src[src_idx],
+                                                 src_node.buffer_size);
+            if (conversion == nullptr) {
+                GGML_HSA_LOG_ERROR("%s: no converted copy of source %i for tensor \"%s (%s)\"",
+                                   __func__, src_idx, node->name, ggml_hsa_tensor_op_desc(*node));
+                return GGML_STATUS_ALLOC_FAILED;
+            }
+            internal_node.src[src_idx]->data = conversion->tensor.data;
+            if (conversion->converted_ptr == node->src[src_idx]->data) {
                 continue;
             }
-            src_node.converted_ptr = nullptr; // invalid until this conversion is issued
+            conversion->converted_ptr = nullptr; // invalid until this conversion is issued
         }
         ggml_status status = GGML_STATUS_SUCCESS;
         if (src_node.preprocess_kernel != nullptr) {
@@ -1913,11 +1971,11 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
         }
         // Cache only a conversion that was issued: a device conversion that fails after this
         // records a queue error, which fails this and every later graph_compute on this context.
-        // The cached pointer lives in the tensor extra, i.e. in the buffer, and is shared by every
-        // backend context: a fresh context created after such a queue error could still trust a
-        // conversion that never completed.
-        if (cache) {
-            src_node.converted_ptr = node->src[src_idx]->data;
+        // The cached pointer lives in the constant's extra, i.e. in its buffer, and is shared by
+        // every backend context: a fresh context created after such a queue error could still
+        // trust a conversion that never completed.
+        if (conversion != nullptr) {
+            conversion->converted_ptr = node->src[src_idx]->data;
         }
     }
     return GGML_STATUS_SUCCESS;
