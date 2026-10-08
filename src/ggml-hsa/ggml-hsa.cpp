@@ -699,9 +699,7 @@ static void ggml_hsa_shallow_copy(const ggml_tensor & src, ggml_tensor & dst) { 
  * they never address an element: e.g., a transposed 1D tensor has a trivial layout even though
  * @ref ggml_is_permuted reports it as permuted.
  */
-bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor) {
-    return ggml_is_contiguous(&tensor);
-}
+bool ggml_hsa_has_trivial_layout(const ggml_tensor & tensor) { return ggml_is_contiguous(&tensor); }
 
 /**
  * @brief Recomputes the strides of @p tensor from its shape for a contiguous, unpermuted layout.
@@ -942,13 +940,13 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             if (sources[src_idx].buffer_size == 0) {
                 continue;
             }
-            sources[src_idx].preprocess_kernel =
-                ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_CONVERT_PAD,
-                                                *parent_tensor.src[src_idx], sources[src_idx].tensor);
+            sources[src_idx].preprocess_kernel = ggml_hsa_build_transform_kernel(
+                dev_info, GGML_HSA_OP_CONVERT_PAD, *parent_tensor.src[src_idx],
+                sources[src_idx].tensor);
         }
         if (node.transform == output_transform_t::depad) {
-            node.postprocess_kernel = ggml_hsa_build_transform_kernel(
-                dev_info, GGML_HSA_OP_DEPAD, node.tensor, parent_tensor);
+            node.postprocess_kernel = ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_DEPAD,
+                                                                      node.tensor, parent_tensor);
         }
     }
 
@@ -1876,8 +1874,7 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
         if (src_node.buffer_size == 0) {
             continue;
         }
-        const bool cache =
-            src_node.is_constant && ggml_hsa_source_is_cacheable(node->src[src_idx]);
+        const bool cache = src_node.is_constant && ggml_hsa_source_is_cacheable(node->src[src_idx]);
         if (cache) {
             if (src_node.converted_ptr == node->src[src_idx]->data) {
                 continue;
@@ -2023,19 +2020,21 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         switch (node->op) {
             // implemented as host kernels, so no dispatch required
             case GGML_OP_DUP:
-            case GGML_OP_CPY: {
-                auto * cpy_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-                // A pure dtype-conversion copy dispatches on-device (no queue drain); other copies
-                // (including view destinations without an extra) fall back to the host path.
-                if (cpy_extra != nullptr && cpy_extra->kernel != nullptr) {
-                    status = cpy_extra->kernel->dispatch(ctx, node->src, 1, *node);
-                } else if (node->op == GGML_OP_DUP) {
-                    status = ggml_hsa_compute_dup(ctx, node);
-                } else {
-                    status = ggml_hsa_compute_cpy(ctx, node);
+            case GGML_OP_CPY:
+                {
+                    auto * cpy_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+                    // A pure dtype-conversion copy dispatches on-device (no queue drain); other
+                    // copies (including view destinations without an extra) fall back to the host
+                    // path.
+                    if (cpy_extra != nullptr && cpy_extra->kernel != nullptr) {
+                        status = cpy_extra->kernel->dispatch(ctx, node->src, 1, *node);
+                    } else if (node->op == GGML_OP_DUP) {
+                        status = ggml_hsa_compute_dup(ctx, node);
+                    } else {
+                        status = ggml_hsa_compute_cpy(ctx, node);
+                    }
+                    continue;
                 }
-                continue;
-            }
             case GGML_OP_CONT:
                 status = ggml_hsa_compute_cont(ctx, node);
                 continue;

@@ -30,8 +30,10 @@ static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
     // unconditionally regardless of its original type. The on-device CONVERT_PAD converts only an
     // f32 source, so its kernel build fails for an f16 operand and that operand takes the host
     // fallback (ggml_hsa_assign) instead, which drains the queue before copying.
-    const bool a_ok = a.type == GGML_TYPE_F32 || a.type == GGML_TYPE_BF16 || a.type == GGML_TYPE_F16;
-    const bool b_ok = b.type == GGML_TYPE_F32 || b.type == GGML_TYPE_BF16 || b.type == GGML_TYPE_F16;
+    const bool a_ok =
+        a.type == GGML_TYPE_F32 || a.type == GGML_TYPE_BF16 || a.type == GGML_TYPE_F16;
+    const bool b_ok =
+        b.type == GGML_TYPE_F32 || b.type == GGML_TYPE_BF16 || b.type == GGML_TYPE_F16;
     if (!a_ok || !b_ok) {
         return false;
     }
