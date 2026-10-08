@@ -9,7 +9,7 @@
 // must match bit for bit.
 //
 // The weight lives in a buffer of its own, as model weights do, apart from the input and the
-// result.
+// result. An f16 ADD case checks that the cache is not specific to MUL_MAT.
 
 #include <cstdint>
 #include <cstdio>
@@ -150,6 +150,89 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K) {
     return ok ? case_result::pass : case_result::fail;
 }
 
+// The cache is not specific to MUL_MAT: any source that needs an internal buffer is cached when it
+// is a constant. Here an f16 ADD, whose sources are converted to bf16, adds a constant weight W to
+// an input X; inputs are small integers, so the result is exact in f16 and bf16.
+case_result run_add_case(ggml_backend_t backend, int64_t n) {
+    ctx_ptr wctx = make_ctx(1);
+    ggml_tensor * w = ggml_new_tensor_1d(wctx.get(), GGML_TYPE_F16, n);
+    ggml_set_name(w, "w");
+    buffer_ptr wbuf{ggml_backend_alloc_ctx_tensors(wctx.get(), backend), ggml_backend_buffer_free};
+    if (wbuf == nullptr) {
+        printf("  weight allocation failed\n");
+        return case_result::fail;
+    }
+
+    ctx_ptr ctx = make_ctx(4);
+    ggml_tensor * x = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F16, n);
+    ggml_set_name(x, "x");
+    ggml_set_input(x);
+    ggml_tensor * c = ggml_add(ctx.get(), x, w);
+    ggml_set_name(c, "c");
+    ggml_set_output(c);
+
+    if (!ggml_backend_supports_op(backend, c)) {
+        printf("  ADD not supported (skipped)\n");
+        return case_result::skip;
+    }
+
+    ggml_cgraph * gf = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(gf, c);
+    gallocr_ptr galloc{ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)),
+                       ggml_gallocr_free};
+    if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
+        printf("  graph allocation failed\n");
+        return case_result::fail;
+    }
+
+    auto to_f16 = [n](auto && fn) {
+        std::vector<ggml_fp16_t> v(n);
+        for (int64_t i = 0; i < n; ++i) {
+            v[i] = ggml_fp32_to_fp16(static_cast<float>(fn(i)));
+        }
+        return v;
+    };
+    const auto hx = to_f16([](int64_t i) { return i % 7 - 3; });
+    const auto w1 = to_f16([](int64_t i) { return i % 5 - 2; });
+    const auto w2 = to_f16([](int64_t i) { return i % 3 + 10; });
+    ggml_backend_tensor_set(w, w1.data(), 0, ggml_nbytes(w));
+
+    std::vector<ggml_fp16_t> got(n);
+    auto compute = [&](const char * label, const std::vector<ggml_fp16_t> & want_w) {
+        // the allocator may place C over X (ADD can run in place), so X is set before every compute
+        ggml_backend_tensor_set(x, hx.data(), 0, ggml_nbytes(x));
+        if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+            printf("  %s: graph compute failed\n", label);
+            return false;
+        }
+        ggml_backend_tensor_get(c, got.data(), 0, ggml_nbytes(c));
+        int64_t mismatches = 0;
+        for (int64_t i = 0; i < n; ++i) {
+            const float want = ggml_fp16_to_fp32(hx[i]) + ggml_fp16_to_fp32(want_w[i]);
+            if (ggml_fp16_to_fp32(got[i]) != want) {
+                if (mismatches < 4) {
+                    printf("  %s: mismatch at %lld: got %g want %g\n", label, (long long)i,
+                           ggml_fp16_to_fp32(got[i]), want);
+                }
+                ++mismatches;
+            }
+        }
+        if (mismatches != 0) {
+            printf("  %s: %lld / %lld elements mismatched\n", label, (long long)mismatches,
+                   (long long)n);
+        }
+        return mismatches == 0;
+    };
+
+    bool ok = compute("compute 1", w1);
+    ok = compute("compute 2", w1) && ok;
+    // as in run_case: a store the cache cannot see, so the cached W must still be used
+    std::memcpy(w->data, w2.data(), ggml_nbytes(w));
+    ok = compute("compute 3 (after a store to W; expects cached W)", w1) && ok;
+
+    return ok ? case_result::pass : case_result::fail;
+}
+
 } // namespace
 
 int main() {
@@ -178,6 +261,16 @@ int main() {
                                                       : "FAILED";
         printf("MUL_MAT f32 %lldx%lldx%lld cached constant: %s\n", (long long)s.M,
                (long long)s.N, (long long)s.K, label);
+        any_fail = any_fail || (r == case_result::fail);
+        passed += (r == case_result::pass);
+        skipped += (r == case_result::skip);
+    }
+    for (const int64_t n : {1024, 4096}) {
+        const case_result r = run_add_case(backend, n);
+        const char * label = r == case_result::pass   ? "PASSED"
+                             : r == case_result::skip ? "SKIPPED"
+                                                      : "FAILED";
+        printf("ADD f16 %lld cached constant: %s\n", (long long)n, label);
         any_fail = any_fail || (r == case_result::fail);
         passed += (r == case_result::pass);
         skipped += (r == case_result::skip);
