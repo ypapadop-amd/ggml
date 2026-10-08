@@ -145,6 +145,9 @@ int main() {
         {"all -inf", {-kInf, -kInf, -kInf, -kInf, -kInf, -kInf, -kInf, -kInf, -kInf, -kInf}},
         {"negatives only", {-5.f, -4.f, -3.f, -2.f, -1.5f, -2.f, -3.f, -4.f, -5.f, -6.f}},
         {"signed zeros", {-0.f, 0.f, -0.f, 0.f, -0.f, 0.f, -0.f, 0.f, -0.f, 0.f}},
+        // -0 == +0, so -0 after a +0 maximum ties it and takes the index. "signed zeros" above
+        // ends in +0 and so cannot tell a kernel that orders -0 below +0 from one that doesn't.
+        {"-0 ties +0 max", {0.f, -0.f, -1.f, -1.f, -1.f, -1.f, -1.f, -1.f, -1.f, -1.f}},
     };
 
     // 16 wide: a different row length, to check nothing depends on the MNIST shape.
@@ -157,11 +160,22 @@ int main() {
          {kNaN, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f, 9.f, 10.f, 11.f, 12.f, 13.f, 14.f, 15.f}},
     };
 
+    // 3 wide: below argmax.cc's minimum trip count for its pipelined loop, so it takes the
+    // plain fallback loop, which the wider rows never reach.
+    const std::vector<test_row> rows3 = {
+        {"3-wide max at 1", {0.f, 9.f, 1.f}},
+        {"3-wide tie 0 and 2", {9.f, 1.f, 9.f}},
+        {"3-wide NaN discards max", {9.f, kNaN, -1.f}},
+        {"3-wide -0 ties +0 max", {0.f, -0.f, -1.f}},
+    };
+
     bool all_ok = true;
     printf("ARGMAX 10-wide:\n");
     all_ok = run_rows(backend, rows10) && all_ok;
     printf("ARGMAX 16-wide:\n");
     all_ok = run_rows(backend, rows16) && all_ok;
+    printf("ARGMAX 3-wide:\n");
+    all_ok = run_rows(backend, rows3) && all_ok;
 
     ggml_backend_free(backend);
     printf("%s\n", all_ok ? "ALL PASSED" : "FAILURES");
