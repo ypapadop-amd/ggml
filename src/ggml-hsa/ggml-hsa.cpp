@@ -2058,6 +2058,14 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             status = GGML_STATUS_FAILED;
             break;
         }
+        if (!ggml_hsa_mul_mat_f32_reads_in_bounds(*node, tensor_extra.sources)) {
+            GGML_HSA_LOG_ERROR("%s: tensor \"%s\" (%s) reads an unpadded f32 B past its K, but B's "
+                               "buffer has no read slack (e.g. it was imported after the node was "
+                               "initialized)",
+                               __func__, node->name, ggml_hsa_tensor_op_desc(*node));
+            status = GGML_STATUS_FAILED;
+            break;
+        }
         if (status = tensor_extra.kernel->dispatch(ctx, internal_node.src,
                                                    tensor_extra.sources.count, internal_node);
             status != GGML_STATUS_SUCCESS) {

@@ -43,3 +43,20 @@
 bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_info,
                                   ggml_backend_hsa_tensor_extra::node_t & node,
                                   ggml_backend_hsa_tensor_extra::sources_t & sources);
+
+/**
+ * @brief Returns if dispatching the GEMM of @p node reads only inside the allocations of its
+ * sources.
+ *
+ * A GEMM that reads an f32 B unpadded reads its last K tile up to Kpad - K elements past each
+ * column of B, which stays inside the allocation only for a buffer with read slack
+ * (@ref ggml_hsa_buffer_has_read_slack). @ref ggml_hsa_prepare_mul_mat_f32 picks that kernel when
+ * the node is initialized, possibly before B has its final buffer, so this is checked again at
+ * dispatch. Every other node returns @c true.
+ *
+ * @param[in] node parent graph node
+ * @param[in] sources internal source nodes of @p node
+ * @return @c false if the dispatch would read past B's allocation
+ */
+bool ggml_hsa_mul_mat_f32_reads_in_bounds(const ggml_tensor & node,
+                                          const ggml_backend_hsa_tensor_extra::sources_t & sources);

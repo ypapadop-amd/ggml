@@ -3,13 +3,16 @@
 // Standalone test for f32 x f32 MUL_MAT at shapes that are not tile multiples. The GEMM streams an
 // f32 B unpadded and converts it on the core, and writes C in place when it is tall enough: it
 // shifts its last column group and row block back to end at N and M, and zeroes the K tail the last
-// K tile reads past each B column. Narrow or short shapes fall back to padding and de-padding. Each case checks the whole result against a host reference; inputs are small
-// integers, so every product and partial sum is exact in bf16/f32 and the result must match bit
-// for bit.
+// K tile reads past each B column. Narrow or short shapes fall back to padding and de-padding. Each
+// case checks the whole result against a host reference; inputs are small integers, so every
+// product and partial sum is exact in bf16/f32 and the result must match bit for bit. Two more
+// cases place B after C, so the kernel is chosen before B's buffer is known, and check that a B
+// without read slack is refused rather than read past.
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -22,6 +25,57 @@
 namespace {
 
 enum class case_result { pass, fail, skip };
+
+// Fills A [K, M] and B [K, N] with small integers. Different periods per operand keep neighbouring
+// rows/columns distinct, so a result written to or read from the wrong row or column cannot
+// coincide with the right value.
+void fill_operands(std::vector<float> & fa, std::vector<float> & fb, int64_t M, int64_t N,
+                   int64_t K) {
+    fa.resize(M * K);
+    fb.resize(N * K);
+    for (int64_t i = 0; i < M; ++i) {
+        for (int64_t k = 0; k < K; ++k) {
+            fa[i * K + k] = static_cast<float>((i * 7 + k * 3) % 5 - 2);
+        }
+    }
+    for (int64_t j = 0; j < N; ++j) {
+        for (int64_t k = 0; k < K; ++k) {
+            fb[j * K + k] = static_cast<float>((j * 5 + k * 11) % 7 - 3);
+        }
+    }
+}
+
+// Checks C [M, N] against A x B bit for bit (a NaN must stay a NaN).
+case_result check_result(const std::vector<float> & got,
+                         const std::vector<float> & fa,
+                         const std::vector<float> & fb,
+                         int64_t M,
+                         int64_t N,
+                         int64_t K) {
+    int64_t mismatches = 0;
+    for (int64_t j = 0; j < N; ++j) {
+        for (int64_t i = 0; i < M; ++i) {
+            float want = 0.0f;
+            for (int64_t k = 0; k < K; ++k) {
+                want += fa[i * K + k] * fb[j * K + k];
+            }
+            const float g = got[j * M + i];
+            const bool same = std::isnan(want) ? std::isnan(g) : g == want;
+            if (!same) {
+                if (mismatches < 8) {
+                    printf("  mismatch at row %lld col %lld: got %g want %g\n", (long long)i,
+                           (long long)j, g, want);
+                }
+                ++mismatches;
+            }
+        }
+    }
+    if (mismatches != 0) {
+        printf("  %lld / %lld elements mismatched\n", (long long)mismatches, (long long)(M * N));
+        return case_result::fail;
+    }
+    return case_result::pass;
+}
 
 // Runs C = A x B for A [K, M] and B [K, N] (ggml layout). With @p nan_col >= 0, B's first element
 // in that column is NaN: that column's result is NaN, and no other column may be affected -- the
@@ -58,20 +112,9 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K, in
         return case_result::fail;
     }
 
-    // Different periods per operand keep neighbouring rows/columns distinct, so a result written
-    // to or read from the wrong row or column cannot coincide with the right value.
-    std::vector<float> fa(M * K);
-    std::vector<float> fb(N * K);
-    for (int64_t i = 0; i < M; ++i) {
-        for (int64_t k = 0; k < K; ++k) {
-            fa[i * K + k] = static_cast<float>((i * 7 + k * 3) % 5 - 2);
-        }
-    }
-    for (int64_t j = 0; j < N; ++j) {
-        for (int64_t k = 0; k < K; ++k) {
-            fb[j * K + k] = static_cast<float>((j * 5 + k * 11) % 7 - 3);
-        }
-    }
+    std::vector<float> fa;
+    std::vector<float> fb;
+    fill_operands(fa, fb, M, N, K);
     if (nan_col >= 0) {
         fb[nan_col * K] = std::numeric_limits<float>::quiet_NaN();
     }
@@ -86,29 +129,94 @@ case_result run_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K, in
     std::vector<float> got(M * N);
     ggml_backend_tensor_get(c, got.data(), 0, ggml_nbytes(c));
 
-    int64_t mismatches = 0;
-    for (int64_t j = 0; j < N; ++j) {
-        for (int64_t i = 0; i < M; ++i) {
-            float want = 0.0f;
-            for (int64_t k = 0; k < K; ++k) {
-                want += fa[i * K + k] * fb[j * K + k];
-            }
-            const float g = got[j * M + i];
-            const bool same = std::isnan(want) ? std::isnan(g) : g == want;
-            if (!same) {
-                if (mismatches < 8) {
-                    printf("  mismatch at row %lld col %lld: got %g want %g\n", (long long)i,
-                           (long long)j, g, want);
+    return check_result(got, fa, fb, M, N, K);
+}
+
+// The GEMM's kernel is chosen when C is placed (init_tensor), from B's buffer at that time. Placing
+// A and C before B, which has no buffer yet, selects the kernel that reads an f32 B unpadded and
+// reads its last K tile past each column. Then B is placed: in an HSA buffer, whose allocation has
+// read slack, the GEMM must compute C; in a buffer without slack, graph_compute must refuse to
+// dispatch it rather than read past B. The test uses a CPU buffer for that, standing in for one
+// imported from another device (which needs HIP). The device cannot reach a CPU buffer at all, so
+// a failed compute alone proves nothing; what shows the refusal is that nothing was dispatched and
+// the backend still runs a GEMM afterwards, where a dispatch would have suspended its queue. K = 500
+// is not a multiple of 8, and N = 200 is at least one column group on aie2 and aie2p.
+case_result run_out_of_order_case(ggml_backend_t backend, bool b_in_hsa_buffer) {
+    const int64_t M = 64;
+    const int64_t N = 200;
+    const int64_t K = 500;
+
+    const std::size_t ctx_size = 3 * ggml_tensor_overhead() + ggml_graph_overhead();
+    ggml_init_params params{
+        /*.mem_size   =*/ctx_size,
+        /*.mem_buffer =*/nullptr,
+        /*.no_alloc   =*/true,
+    };
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx{ggml_init(params), ggml_free};
+
+    ggml_tensor * a = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, K, M);
+    ggml_tensor * b = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, K, N);
+    ggml_tensor * c = ggml_mul_mat(ctx.get(), a, b);
+    if (!ggml_backend_supports_op(backend, c)) {
+        printf("  op not supported (skipped)\n");
+        return case_result::skip;
+    }
+
+    using buffer_ptr = std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)>;
+    auto alloc = [](ggml_backend_buffer_type_t buft, std::initializer_list<ggml_tensor *> tensors) {
+        std::size_t size = 0;
+        for (ggml_tensor * t : tensors) {
+            size += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t),
+                             ggml_backend_buft_get_alignment(buft));
+        }
+        buffer_ptr buf{ggml_backend_buft_alloc_buffer(buft, size), ggml_backend_buffer_free};
+        if (buf != nullptr) {
+            ggml_tallocr talloc = ggml_tallocr_new(buf.get());
+            for (ggml_tensor * t : tensors) {
+                if (ggml_tallocr_alloc(&talloc, t) != GGML_STATUS_SUCCESS) {
+                    buf.reset();
+                    break;
                 }
-                ++mismatches;
             }
         }
-    }
-    if (mismatches != 0) {
-        printf("  %lld / %lld elements mismatched\n", (long long)mismatches, (long long)(M * N));
+        return buf;
+    };
+
+    ggml_backend_buffer_type_t hsa_buft = ggml_backend_get_default_buffer_type(backend);
+    buffer_ptr ac_buf = alloc(hsa_buft, {a, c});
+    buffer_ptr b_buf = alloc(b_in_hsa_buffer ? hsa_buft : ggml_backend_cpu_buffer_type(), {b});
+    if (ac_buf == nullptr || b_buf == nullptr) {
+        printf("  allocation failed\n");
         return case_result::fail;
     }
-    return case_result::pass;
+
+    std::vector<float> fa;
+    std::vector<float> fb;
+    fill_operands(fa, fb, M, N, K);
+    ggml_backend_tensor_set(a, fa.data(), 0, ggml_nbytes(a));
+    ggml_backend_tensor_set(b, fb.data(), 0, ggml_nbytes(b));
+
+    ggml_cgraph * gf = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(gf, c);
+    const ggml_status status = ggml_backend_graph_compute(backend, gf);
+    if (!b_in_hsa_buffer) {
+        if (status == GGML_STATUS_SUCCESS) {
+            printf("  graph compute dispatched a GEMM that reads past B's buffer\n");
+            return case_result::fail;
+        }
+        if (run_case(backend, M, N, K, -1) != case_result::pass) {
+            printf("  the backend failed a GEMM after the refused one: it was dispatched\n");
+            return case_result::fail;
+        }
+        return case_result::pass;
+    }
+    if (status != GGML_STATUS_SUCCESS) {
+        printf("  graph compute failed\n");
+        return case_result::fail;
+    }
+    std::vector<float> got(M * N);
+    ggml_backend_tensor_get(c, got.data(), 0, ggml_nbytes(c));
+    return check_result(got, fa, fb, M, N, K);
 }
 
 } // namespace
@@ -169,6 +277,20 @@ int main() {
                                                       : "FAILED";
         printf("MUL_MAT f32 %4lldx%4lldx%4lld %-24s: %s\n", (long long)c.M, (long long)c.N,
                (long long)c.K, c.name, label);
+        any_fail = any_fail || (r == case_result::fail);
+        passed += (r == case_result::pass);
+        skipped += (r == case_result::skip);
+    }
+
+    for (const bool b_in_hsa_buffer : {true, false}) {
+        std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> backend{
+            ggml_backend_hsa_init(0), ggml_backend_free};
+        const case_result r = run_out_of_order_case(backend.get(), b_in_hsa_buffer);
+        const char * label = r == case_result::pass   ? "PASSED"
+                             : r == case_result::skip ? "SKIPPED"
+                                                      : "FAILED";
+        printf("MUL_MAT f32 B placed after C, %-18s: %s\n",
+               b_in_hsa_buffer ? "in an HSA buffer" : "without read slack", label);
         any_fail = any_fail || (r == case_result::fail);
         passed += (r == case_result::pass);
         skipped += (r == case_result::skip);

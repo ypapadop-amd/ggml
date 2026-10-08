@@ -174,7 +174,8 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     // instead. A B without a buffer yet (the supports_op probe) is taken to read unpadded, since
     // every buffer ggml's allocators create for it comes from the HSA buffer type. A manual,
     // out-of-order allocation -- the consumer initialized first, B then aliased into an imported
-    // buffer -- keeps the unpadded kernel and can read up to 28 bytes past the dma-buf; unguarded.
+    // buffer -- keeps the unpadded kernel, which would read up to 28 bytes past the dma-buf;
+    // graph_compute refuses to dispatch it instead (ggml_hsa_mul_mat_f32_reads_in_bounds).
     const bool b_f32_on_core = b.type == GGML_TYPE_F32;
     const bool b_unpadded =
         b_f32_on_core && N >= gn * n_aie_cols &&
@@ -211,4 +212,19 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     }
 
     return true;
+}
+
+bool ggml_hsa_mul_mat_f32_reads_in_bounds(const ggml_tensor & node,
+                                          const ggml_backend_hsa_tensor_extra::sources_t & sources) {
+    if (node.op != GGML_OP_MUL_MAT || sources.count != 2) {
+        return true;
+    }
+    const ggml_tensor & a = sources[0].tensor; // [Kpad, M]
+    const ggml_tensor & b = sources[1].tensor; // [K, N] when read unpadded
+    // Only an f32 B read in place, with fewer K elements per column than the GEMM's K, is read past
+    // its last column; a padded B lives in an internal buffer (buffer_size != 0) sized to Kpad.
+    if (b.type != GGML_TYPE_F32 || sources[1].buffer_size != 0 || b.ne[0] >= a.ne[0]) {
+        return true;
+    }
+    return ggml_hsa_buffer_has_read_slack(node.src[1]->buffer);
 }
