@@ -22,6 +22,7 @@ from iron_kernels.gemm import (  # noqa: E402
     DMA_MAX_SHIM_ITERATIONS,
     DMA_MAX_STRIDE,
     L1_TILE_BUDGET_BYTES,
+    ceildiv,
     microkernel_expansion_map,
     microkernel_mac_dim_map,
     resolve_expansion,
@@ -430,7 +431,7 @@ def test_expansion_is_at_least_two(dev, dtype_in_str):
 
 
 # ---------------------------------------------------------------------------
-# Coupling guard for the host-side padding in ggml-hsa.cpp
+# Coupling guard for the host-side padding in gemm.cpp
 # ---------------------------------------------------------------------------
 #
 # ggml_hsa_prepare_mul_mat_f32 pads a MUL_MAT's operands *before* any of this
@@ -449,17 +450,25 @@ CPP_PADDING_GRANULARITY = {
 CPP_N_AIE_ROWS = 4
 
 
+def _cpp_padded_shape(dev, M, N, K):
+    """(Mpad, Npad, Kpad) as ggml_hsa_prepare_mul_mat_f32 pads an M x N x K GEMM."""
+    gm, gk, gn, n_aie_cols = CPP_PADDING_GRANULARITY[dev]
+    return (
+        ceildiv(M, gm * CPP_N_AIE_ROWS) * gm * CPP_N_AIE_ROWS,
+        ceildiv(N, gn * n_aie_cols) * gn * n_aie_cols,
+        ceildiv(K, gk) * gk,
+    )
+
+
 @pytest.mark.parametrize("dev", ["npu", "npu2"])
 def test_cpp_padding_granularity_matches_gemm_py(dev):
     """The C++ padding granularity must equal (row_expand*r, s, col_expand*t)."""
-    r, s, t = resolve_mac_dims(dev, "bf16")
-    row_expand, col_expand = resolve_expansion(dev, "bf16")
-    expected = (row_expand * r, s, col_expand * t)
+    expected = _granular_minimum(dev)
     gm, gk, gn, _ = CPP_PADDING_GRANULARITY[dev]
     assert (gm, gk, gn) == expected, (
         f"ggml_hsa_prepare_mul_mat_f32 pads {dev} bf16 to {(gm, gk, gn)}, but "
         f"gemm.py's microkernel contract now requires {expected}; update the "
-        f"literals in ggml-hsa.cpp"
+        f"literals in gemm.cpp"
     )
 
 
@@ -467,7 +476,7 @@ def test_cpp_padding_granularity_matches_gemm_py(dev):
 def test_cpp_n_aie_cols_matches_gemm_py(dev):
     """The C++ column count must match the one select_gemm_tile assumes."""
     _, _, _, n_aie_cols = CPP_PADDING_GRANULARITY[dev]
-    assert n_aie_cols == (8 if dev == "npu2" else 4)
+    assert n_aie_cols == dict(DEVICES)[dev]
 
 
 @pytest.mark.parametrize("dev", ["npu", "npu2"])
@@ -492,14 +501,8 @@ def test_cpp_padding_always_admits_a_tile(dev, mnk):
     silently falls back to the CPU.
     """
     M, N, K = mnk
-    gm, gk, gn, n_aie_cols = CPP_PADDING_GRANULARITY[dev]
-
-    def pad(value, multiple):
-        return ((value + multiple - 1) // multiple) * multiple
-
-    m_pad = pad(M, gm * CPP_N_AIE_ROWS)
-    n_pad = pad(N, gn * n_aie_cols)
-    k_pad = pad(K, gk)
+    n_aie_cols = CPP_PADDING_GRANULARITY[dev][3]
+    m_pad, n_pad, k_pad = _cpp_padded_shape(dev, M, N, K)
 
     r, s, t = resolve_mac_dims(dev, "bf16")
     row_expand, col_expand = resolve_expansion(dev, "bf16")
@@ -525,14 +528,8 @@ def test_single_column_group_ignores_the_stride_bound(dev, mnk):
     multi-group shape reach aiecc and fail there.
     """
     M, N, K = mnk
-    gm, gk, gn, n_aie_cols = CPP_PADDING_GRANULARITY[dev]
-
-    def pad(value, multiple):
-        return ((value + multiple - 1) // multiple) * multiple
-
-    m_pad = pad(M, gm * CPP_N_AIE_ROWS)
-    n_pad = pad(N, gn * n_aie_cols)
-    k_pad = pad(K, gk)
+    n_aie_cols = CPP_PADDING_GRANULARITY[dev][3]
+    m_pad, n_pad, k_pad = _cpp_padded_shape(dev, M, N, K)
 
     r, s, t = resolve_mac_dims(dev, "bf16")
     row_expand, col_expand = resolve_expansion(dev, "bf16")

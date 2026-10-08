@@ -223,9 +223,10 @@ def select_gemm_tile(
 
     size_in = np.dtype(dtype_in).itemsize
     size_out = np.dtype(dtype_out).itemsize
-    size_b = np.dtype(dtype_b if dtype_b is not None else dtype_in).itemsize
+    convert_b = dtype_b is not None and np.dtype(dtype_b) != np.dtype(dtype_in)
+    size_b = np.dtype(dtype_b).itemsize if convert_b else size_in
     # single-buffered converted copy of B, only when B is streamed in another dtype
-    size_b_scratch = size_in if size_b != size_in else 0
+    size_b_scratch = size_in if convert_b else 0
 
     # Microkernel-granular step sizes for this wrapper's mmul expansion. Using a
     # blanket 2x2 here would under-constrain the aie2 bf16/i8 wrappers, which
@@ -266,7 +267,7 @@ def select_gemm_tile(
                     continue
                 key = (
                     (min(m, k), m * k * n, m)
-                    if size_b_scratch
+                    if convert_b
                     else (m * k * n, m * n, k)
                 )
                 if best_key is None or key > best_key:
@@ -815,16 +816,19 @@ def my_matmul(
         # Set up compute tiles
         for row in range(n_aie_rows):
             for col in range(n_aie_cols):
-                # Converted-B scratch: filled by the kernel from the streamed B tile on every
-                # call, so a single (not double) buffer suffices.
-                b_scratch = (
-                    buffer(
-                        core_tiles[row][col],
-                        B_l1_scratch_ty,
-                        name=f"B_scratch_{row}_{col}",
-                    )
+                # Converted-B scratch, passed to the matmul between B and C: filled by the
+                # kernel from the streamed B tile on every call, so a single (not double)
+                # buffer suffices.
+                scratch_args = (
+                    [
+                        buffer(
+                            core_tiles[row][col],
+                            B_l1_scratch_ty,
+                            name=f"B_scratch_{row}_{col}",
+                        )
+                    ]
                     if convert_b
-                    else None
+                    else []
                 )
 
                 # The stack size choice is a workaround explained here:
@@ -855,10 +859,7 @@ def my_matmul(
                                 elem_in_b = B_l2l1_fifos[col].acquire(
                                     ObjectFifoPort.Consume, 1
                                 )
-                                if convert_b:
-                                    fn(elem_in_a, elem_in_b, b_scratch, elem_out)
-                                else:
-                                    fn(elem_in_a, elem_in_b, elem_out)
+                                fn(elem_in_a, elem_in_b, *scratch_args, elem_out)
                                 A_l2l1_fifos[row].release(ObjectFifoPort.Consume, 1)
                                 B_l2l1_fifos[col].release(ObjectFifoPort.Consume, 1)
 
@@ -1161,7 +1162,7 @@ def create_mat_mul_external_functions(
     group_granule = col_expand * t * num_cols
     M = input_tensors[0].shape[1]
     K = input_tensors[0].shape[0]
-    N = -(-output_tensor.shape[1] // group_granule) * group_granule
+    N = ceildiv(output_tensor.shape[1], group_granule) * group_granule
     b_ld = input_tensors[1].shape[0]
     n_valid = input_tensors[1].shape[1]
     m_valid = output_tensor.shape[0]

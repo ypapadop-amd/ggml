@@ -10,7 +10,6 @@
 #include "ggml-hsa/kernel-discovery.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -933,7 +932,11 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // convert+pad on a node whose output happens to land at the padded shape already.
     if (padded_gemm) {
         for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-            if (sources[src_idx].buffer_size == 0) {
+            // CONVERT_PAD takes only an f32 or bf16 source; an f16 operand stays on the host path
+            // rather than attempting a kernel build that cannot succeed
+            const ggml_type src_type = parent_tensor.src[src_idx]->type;
+            if (sources[src_idx].buffer_size == 0 ||
+                (src_type != GGML_TYPE_F32 && src_type != GGML_TYPE_BF16)) {
                 continue;
             }
             sources[src_idx].preprocess_kernel = ggml_hsa_build_transform_kernel(
@@ -2010,18 +2013,14 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             continue;
         }
 
-        // Host-path ops require neither a compiled kernel nor an extra (they read node->src
-        // directly), so handle them before dereferencing node->extra: a CPY/DUP whose result is a
-        // view (e.g. a KV-cache write when the cache lives on this device) has no extra at all.
         switch (node->op) {
-            // implemented as host kernels, so no dispatch required
             case GGML_OP_DUP:
             case GGML_OP_CPY:
                 {
+                    // A pure dtype-conversion copy dispatches its HSA_CONVERT kernel on-device (no
+                    // queue drain). Any other copy runs on the host, including one into a view
+                    // (e.g. a KV-cache write), which has no extra at all.
                     auto * cpy_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-                    // A pure dtype-conversion copy dispatches on-device (no queue drain); other
-                    // copies (including view destinations without an extra) fall back to the host
-                    // path.
                     if (cpy_extra != nullptr && cpy_extra->kernel != nullptr) {
                         status = cpy_extra->kernel->dispatch(ctx, node->src, 1, *node);
                     } else if (node->op == GGML_OP_DUP) {
@@ -2031,6 +2030,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                     }
                     continue;
                 }
+            // implemented as host kernels, so no dispatch required
             case GGML_OP_CONT:
                 status = ggml_hsa_compute_cont(ctx, node);
                 continue;
@@ -2058,12 +2058,17 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             status = GGML_STATUS_FAILED;
             break;
         }
-        if (!ggml_hsa_mul_mat_f32_reads_in_bounds(*node, tensor_extra.sources)) {
-            GGML_HSA_LOG_ERROR("%s: tensor \"%s\" (%s) reads an unpadded f32 B past its K, but B's "
-                               "buffer has no read slack (e.g. it was imported after the node was "
-                               "initialized)",
-                               __func__, node->name, ggml_hsa_tensor_op_desc(*node));
-            status = GGML_STATUS_FAILED;
+        for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
+            if (tensor_extra.sources[src_idx].reads_past_end &&
+                !ggml_hsa_buffer_has_read_slack(node->src[src_idx]->buffer)) {
+                GGML_HSA_LOG_ERROR("%s: tensor \"%s\" (%s) reads past source %i, whose buffer has "
+                                   "no read slack (e.g. it was imported after the node was "
+                                   "initialized)",
+                                   __func__, node->name, ggml_hsa_tensor_op_desc(*node), src_idx);
+                status = GGML_STATUS_FAILED;
+            }
+        }
+        if (status != GGML_STATUS_SUCCESS) {
             break;
         }
         if (status = tensor_extra.kernel->dispatch(ctx, internal_node.src,

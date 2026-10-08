@@ -506,6 +506,11 @@ struct ggml_backend_hsa_tensor_extra {
         /// Only a source in a buffer this backend allocated is cached; one in another backend's
         /// buffer or imported from another device is converted on every dispatch.
         bool is_constant{};
+        /// @brief True if the kernel reads past the end of the parent's data (a GEMM's unpadded f32
+        /// B with a K tail), which stays inside the allocation only for a buffer with read slack
+        /// (@ref ggml_hsa_buffer_has_read_slack). Checked at dispatch, since the parent may be
+        /// placed in its buffer after this node is built.
+        bool reads_past_end{};
     };
 
     /// @brief Internal source graph nodes plus their count.

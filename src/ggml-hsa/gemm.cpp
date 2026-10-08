@@ -7,48 +7,6 @@
 #include "ggml-hsa/common.hpp"
 
 /**
- * @brief Eligibility for the padded bf16 GEMM path, over a raw tensor.
- *
- * Does not check @c mm.type; @c ggml_hsa_prepare_mul_mat_f32 additionally requires an f32
- * destination.
- *
- * @param[in] mm candidate MUL_MAT node.
- * @return @c true if @p mm is a 2-source MUL_MAT with f32/bf16 operands, trivial layout on both
- *         operands and the destination, and no batch/broadcast.
- */
-static bool ggml_hsa_mul_mat_is_padded_gemm(const ggml_tensor & mm) {
-    if (mm.op != GGML_OP_MUL_MAT || mm.src[0] == nullptr || mm.src[1] == nullptr ||
-        mm.src[2] != nullptr) {
-        return false;
-    }
-    const ggml_tensor & a = *mm.src[0]; // [K, M]
-    const ggml_tensor & b = *mm.src[1]; // [K, N]
-
-    // f16 is accepted alongside f32/bf16: ggml_conv_2d's im2col emits f16 whenever the conv kernel
-    // itself is not bf16 (see ggml_conv_2d in ggml.c), so the MUL_MAT it feeds would otherwise
-    // never qualify for the padded path. ggml_hsa_pad_gemm_operand retypes the operand to bf16
-    // unconditionally regardless of its original type. The on-device CONVERT_PAD converts only an
-    // f32 source, so its kernel build fails for an f16 operand and that operand takes the host
-    // fallback (ggml_hsa_assign) instead, which drains the queue before copying.
-    const bool a_ok =
-        a.type == GGML_TYPE_F32 || a.type == GGML_TYPE_BF16 || a.type == GGML_TYPE_F16;
-    const bool b_ok =
-        b.type == GGML_TYPE_F32 || b.type == GGML_TYPE_BF16 || b.type == GGML_TYPE_F16;
-    if (!a_ok || !b_ok) {
-        return false;
-    }
-    if (!ggml_hsa_has_trivial_layout(a) || !ggml_hsa_has_trivial_layout(b) ||
-        !ggml_hsa_has_trivial_layout(mm)) {
-        return false;
-    }
-    // no batching / broadcasting
-    if (a.ne[2] != 1 || a.ne[3] != 1 || b.ne[2] != 1 || b.ne[3] != 1) {
-        return false;
-    }
-    return true;
-}
-
-/**
  * @brief Points a padded-GEMM operand at an internal buffer of @p type, unless it already matches.
  *
  * An operand that is already @p type at exactly the padded shape needs neither conversion nor
@@ -90,26 +48,31 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
                                   ggml_backend_hsa_tensor_extra::sources_t & sources) {
     ggml_tensor & dst = node.tensor;
 
-    // The GEMM microkernel runs in bf16, so both operands must be f32 (converted to bf16 below) or
-    // already bf16 (cast in the graph). Eligibility is checked over the internal source tensors via
-    // the raw-tensor predicate; here we additionally require an f32 destination (ggml's native
-    // MUL_MAT output).
-    if (sources.count != 2) {
+    // The GEMM microkernel runs in bf16, so both operands are converted to bf16 below; the
+    // destination must be f32 (ggml's native MUL_MAT output).
+    if (dst.op != GGML_OP_MUL_MAT || dst.type != GGML_TYPE_F32 || sources.count != 2) {
         return false;
     }
     ggml_tensor & a = sources[0].tensor; // [K, M]
     ggml_tensor & b = sources[1].tensor; // [K, N]
 
-    // Build a raw view of the node/sources for the shared predicate: node_t.tensor already mirrors
-    // the parent's op/type/shape at this point in construction.
-    ggml_tensor probe = dst;
-    probe.src[0] = &a;
-    probe.src[1] = &b;
-    probe.src[2] = nullptr;
-    if (!ggml_hsa_mul_mat_is_padded_gemm(probe)) {
+    // f16 is accepted alongside f32/bf16: ggml_conv_2d's im2col emits f16 whenever the conv kernel
+    // itself is not bf16 (see ggml_conv_2d in ggml.c), so the MUL_MAT it feeds would otherwise
+    // never qualify for the padded path. The on-device CONVERT_PAD takes only an f32 or bf16
+    // source, so an f16 operand takes the host fallback (ggml_hsa_assign) instead, which drains
+    // the queue before copying.
+    const auto is_gemm_type = [](ggml_type type) {
+        return type == GGML_TYPE_F32 || type == GGML_TYPE_BF16 || type == GGML_TYPE_F16;
+    };
+    if (!is_gemm_type(a.type) || !is_gemm_type(b.type)) {
         return false;
     }
-    if (dst.type != GGML_TYPE_F32) {
+    if (!ggml_hsa_has_trivial_layout(a) || !ggml_hsa_has_trivial_layout(b) ||
+        !ggml_hsa_has_trivial_layout(dst)) {
+        return false;
+    }
+    // no batching / broadcasting
+    if (a.ne[2] != 1 || a.ne[3] != 1 || b.ne[2] != 1 || b.ne[3] != 1) {
         return false;
     }
 
@@ -134,25 +97,13 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     // raises and MUL_MAT falls back to the CPU: e.g. N = 8576 = 128*67 on aie2p. Padding N further
     // (to a q that factors) would keep such shapes on the NPU; not done yet.
     //
-    // The previous constants (tile=16 on aie2p, 32 on aie2, applied to all three dimensions)
-    // over-padded K and M: they were a single number standing in for three different granularities.
-    // tests/ggml-hsa/test_gemm_tiling.py pins these values against gemm.py's own tables.
+    // tests/ggml-hsa/python/test_gemm_tiling.py pins these values against gemm.py's own tables.
     constexpr std::int64_t n_aie_rows = 4;
-    std::int64_t gm = 0;
-    std::int64_t gk = 0;
-    std::int64_t gn = 0;
-    std::int64_t n_aie_cols = 0;
-    if (dev_info.name == "aie2p") {
-        gm = 8;
-        gk = 8;
-        gn = 16;
-        n_aie_cols = 8;
-    } else { // aie2
-        gm = 16;
-        gk = 8;
-        gn = 16;
-        n_aie_cols = 4;
-    }
+    constexpr std::int64_t gk = 8;
+    constexpr std::int64_t gn = 16;
+    const bool aie2p = dev_info.name == "aie2p";
+    const std::int64_t gm = aie2p ? 8 : 16;
+    const std::int64_t n_aie_cols = aie2p ? 8 : 4;
 
     const std::int64_t K = a.ne[0];
     const std::int64_t M = a.ne[1];
@@ -175,7 +126,7 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     // every buffer ggml's allocators create for it comes from the HSA buffer type. A manual,
     // out-of-order allocation -- the consumer initialized first, B then aliased into an imported
     // buffer -- keeps the unpadded kernel, which would read up to 28 bytes past the dma-buf;
-    // graph_compute refuses to dispatch it instead (ggml_hsa_mul_mat_f32_reads_in_bounds).
+    // graph_compute refuses to dispatch it instead (source_node_t::reads_past_end).
     const bool b_f32_on_core = b.type == GGML_TYPE_F32;
     const bool b_unpadded =
         b_f32_on_core && N >= gn * n_aie_cols &&
@@ -185,6 +136,7 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
         ggml_hsa_pad_gemm_operand(dev_info, sources[1], Kpad, Npad,
                                   b_f32_on_core ? GGML_TYPE_F32 : GGML_TYPE_BF16);
     }
+    sources[1].reads_past_end = b_unpadded && K != Kpad;
 
     // Rewrite the output to a padded f32 temporary that must be de-padded back into the parent.
     //
@@ -198,8 +150,8 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     if (!c_in_place && (dst.ne[0] != Mpad || dst.ne[1] != Npad)) {
         dst.ne[0] = Mpad;
         dst.ne[1] = Npad;
-        ggml_hsa_set_contiguous_strides(dst);
-        node.tensor.data = nullptr;
+        ggml_hsa_set_contiguous_strides(dst); // before ggml_nbytes, which reads the strides
+        dst.data = nullptr;
         node.buffer_size = GGML_PAD(ggml_nbytes(&dst), dev_info.alignment);
         node.transform = ggml_backend_hsa_tensor_extra::output_transform_t::depad;
     }
@@ -212,19 +164,4 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     }
 
     return true;
-}
-
-bool ggml_hsa_mul_mat_f32_reads_in_bounds(
-    const ggml_tensor & node, const ggml_backend_hsa_tensor_extra::sources_t & sources) {
-    if (node.op != GGML_OP_MUL_MAT || sources.count != 2) {
-        return true;
-    }
-    const ggml_tensor & a = sources[0].tensor; // [Kpad, M]
-    const ggml_tensor & b = sources[1].tensor; // [K, N] when read unpadded
-    // Only an f32 B read in place, with fewer K elements per column than the GEMM's K, is read past
-    // its last column; a padded B lives in an internal buffer (buffer_size != 0) sized to Kpad.
-    if (b.type != GGML_TYPE_F32 || sources[1].buffer_size != 0 || b.ne[0] >= a.ne[0]) {
-        return true;
-    }
-    return ggml_hsa_buffer_has_read_slack(node.src[1]->buffer);
 }
