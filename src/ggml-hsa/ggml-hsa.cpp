@@ -1891,11 +1891,13 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
                 }
                 drained = true;
             }
-            // A padded source has a different shape from its parent, so scatter the logical
-            // sub-block into the padded buffer, zero-filling the padding; otherwise the shapes
-            // match and a plain layout/dtype copy suffices. Decided per source from the shapes.
+            // A padded source has more elements than its parent, so scatter the logical sub-block
+            // into the padded buffer, zero-filling the padding; otherwise a plain layout/dtype
+            // copy suffices. The shapes alone cannot tell: a flattened source has the parent's
+            // elements in a different shape, and a sub-block copy would keep only their overlap.
+            // Decided per source from the element counts.
             const bool src_is_padded =
-                !ggml_are_same_shape(node->src[src_idx], internal_node.src[src_idx]);
+                ggml_nelements(node->src[src_idx]) != ggml_nelements(internal_node.src[src_idx]);
             status = ggml_hsa_copy_padded_or_plain(node->src[src_idx], internal_node.src[src_idx],
                                                    src_is_padded);
         }
