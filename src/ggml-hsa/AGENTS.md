@@ -22,7 +22,9 @@ The system supports both JIT and AOT compilation.
 
 Some operations run on the host CPU rather than the AIE:
 
-- **Host operations** (`DUP`, `CPY`, `CONT`): Implemented in `host-ops.cpp`, execute on the CPU
+- **Host operations** (`DUP`, `CPY`, `CONT`): Implemented in `host-ops.cpp`, execute on the CPU.
+  The exception is a `CPY`/`DUP` that only changes the dtype of a contiguous tensor: it runs on the
+  device as an `HSA_CONVERT` dispatch, so it stays batched on the queue.
 - **AIE kernels**: All other supported operations, compiled and dispatched to AIE tiles
 
 Host operations are handled separately in `ggml_backend_hsa_device_supports_op()` and bypass
@@ -575,7 +577,7 @@ These operations have complete AIE kernel implementations:
 | Unary (GGML_OP) | `SQR`, `SQRT`, `LOG` |
 | Pooling | `POOL_2D` (`MAX` and `AVG`, with padding) |
 | Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
-| Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE) |
+| Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE; a dtype-only `CPY`/`DUP` runs as `HSA_CONVERT`) |
 
 ### Registered but Not Implemented
 

@@ -705,6 +705,26 @@ static void ggml_hsa_set_contiguous_strides(ggml_tensor & tensor) {
 }
 
 /**
+ * @brief Returns whether a CPY/DUP node is a pure element-wise dtype conversion.
+ *
+ * True when the copy just changes dtype: source and destination are both contiguous, have the same
+ * element count, and differ only in type. Such a copy can run on-device via the HSA_CONVERT kernel
+ * (batched on the queue) instead of the host copy path (which drains the queue). Strided copies,
+ * reshapes-via-cont, and same-dtype copies are excluded (the last has nothing to convert).
+ */
+static bool ggml_hsa_is_convert_copy(const ggml_tensor & tensor) {
+    if (tensor.op != GGML_OP_CPY && tensor.op != GGML_OP_DUP) {
+        return false;
+    }
+    const ggml_tensor * src = tensor.src[0];
+    if (src == nullptr) {
+        return false;
+    }
+    return src->type != tensor.type && ggml_nelements(src) == ggml_nelements(&tensor) &&
+           ggml_is_contiguous(src) && ggml_is_contiguous(&tensor);
+}
+
+/**
  * @brief Flattens @p tensor.
  */
 static void ggml_hsa_flatten_tensor(ggml_tensor & tensor) {
@@ -767,9 +787,16 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     }
 
     switch (node.tensor.op) {
-        // implemented as host kernels; nothing to be done
         case GGML_OP_DUP:
         case GGML_OP_CPY:
+            // A pure dtype-conversion copy runs on-device via HSA_CONVERT (flattened element-wise
+            // cast), so it batches on the queue instead of the host copy path that drains it. Any
+            // other copy (strided, reshape) stays on the host.
+            if (ggml_hsa_is_convert_copy(node.tensor)) {
+                kernel = ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_CONVERT,
+                                                         *parent_tensor.src[0], parent_tensor);
+            }
+            return;
         case GGML_OP_CONT:
         case GGML_OP_GET_ROWS:
             return;
@@ -1823,6 +1850,13 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             continue;
         }
 
+        // A node whose result is a view (e.g. a KV-cache write CPY) is left without an extra by
+        // init_tensor; it carries no compiled kernel or internal sources to fix up, so skip it here
+        // (the dispatch loop below routes such copies through the host path).
+        if (node->extra == nullptr) {
+            continue;
+        }
+
         auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
         for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
             if (tensor_extra.sources[src_idx].tensor.data == nullptr) {
@@ -1839,14 +1873,25 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             continue;
         }
 
+        // Host-path ops require neither a compiled kernel nor an extra (they read node->src
+        // directly), so handle them before dereferencing node->extra: a CPY/DUP whose result is a
+        // view (e.g. a KV-cache write when the cache lives on this device) has no extra at all.
         switch (node->op) {
             // implemented as host kernels, so no dispatch required
             case GGML_OP_DUP:
-                status = ggml_hsa_compute_dup(ctx, node);
+            case GGML_OP_CPY: {
+                auto * cpy_extra = static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
+                // A pure dtype-conversion copy dispatches on-device (no queue drain); other copies
+                // (including view destinations without an extra) fall back to the host path.
+                if (cpy_extra != nullptr && cpy_extra->kernel != nullptr) {
+                    status = cpy_extra->kernel->dispatch(ctx, node->src, 1, *node);
+                } else if (node->op == GGML_OP_DUP) {
+                    status = ggml_hsa_compute_dup(ctx, node);
+                } else {
+                    status = ggml_hsa_compute_cpy(ctx, node);
+                }
                 continue;
-            case GGML_OP_CPY:
-                status = ggml_hsa_compute_cpy(ctx, node);
-                continue;
+            }
             case GGML_OP_CONT:
                 status = ggml_hsa_compute_cont(ctx, node);
                 continue;
@@ -1858,7 +1903,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
         }
 
         auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-        ggml_tensor & internal_node = tensor_extra.node.tensor;
 
         // break out of the node loop on failure so the trailing flush still runs
         if (status = ggml_hsa_dispatch_preprocess(ctx, tensor_extra, node);
@@ -1866,6 +1910,15 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             break;
         }
 
+        ggml_tensor & internal_node = tensor_extra.node.tensor;
+        // supports_op only schedules a compute op here once its kernel builds, so this should never
+        // fire; fail gracefully instead of dereferencing a null kernel if the invariant is broken.
+        if (tensor_extra.kernel == nullptr) {
+            GGML_HSA_LOG_ERROR("%s: null kernel for tensor \"%s\" (%s)", __func__, node->name,
+                               ggml_hsa_tensor_op_desc(*node));
+            status = GGML_STATUS_FAILED;
+            break;
+        }
         if (status = tensor_extra.kernel->dispatch(ctx, internal_node.src,
                                                    tensor_extra.sources.count, internal_node);
             status != GGML_STATUS_SUCCESS) {

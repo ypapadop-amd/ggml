@@ -24,7 +24,7 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 | Reduction | `ARGMAX`, `COUNT_EQUAL`                                        |
 | Loss      | `CROSS_ENTROPY_LOSS`                                           |
 | Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                   |
-| Host-only | `DUP`, `CPY`, `CONT` (CPU execution)                           |
+| Host-only | `DUP`, `CPY`, `CONT` (CPU execution; a dtype-only `CPY`/`DUP` runs on the NPU) |
 
 > **Note:** Operations like `SIN`, `COS`, `EXP`, `TANH`, `ELU`, `SIGMOID`, `SILU`,
 > `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` are registered but not yet implemented.
