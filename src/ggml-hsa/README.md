@@ -57,13 +57,13 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 | OS          | [Ubuntu 24.04.2], [Ubuntu 25.10]                                                   |
 | ROCR        | Built from rocm-systems `users/ypapadop-amd/aie-hsaco`                             |
 | XDNA Driver | [1.6][XDNA Driver 1.6]                                                             |
-| MLIR-AIE    | [1.4.4][MLIR-AIE 1.4.4]                                                            |
+| MLIR-AIE    | [`1.4.5.dev13+g3ceebff`][MLIR-AIE 1.4.5.dev13] (nightly)                           |
 | Triton-XDNA | `3.6.0.2026100504+694d60d` ([`requirements-triton.txt`](requirements-triton.txt))  |
 
 [Ubuntu 24.04.2]: https://releases.ubuntu.com/noble/
 [Ubuntu 25.10]: https://releases.ubuntu.com/questing/
 [XDNA Driver 1.6]: https://github.com/amd/xdna-driver/tree/1.6
-[MLIR-AIE 1.4.4]: https://github.com/Xilinx/mlir-aie/tree/v1.4.4
+[MLIR-AIE 1.4.5.dev13]: https://github.com/Xilinx/mlir-aie/tree/3ceebff581f
 
 ### ROCm
 
@@ -155,8 +155,8 @@ Install Triton dependencies (includes IRON):
 ```bash
 python3 -m pip install -r src/ggml-hsa/requirements-triton.txt
 python3 -m pip install --no-deps \
-  --extra-index-url https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.4 \
-  mlir_aie_no_rtti==1.4.4
+  --find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2 \
+  mlir_aie_no_rtti==1.4.5.dev13+g3ceebff
 ```
 
 The second command is needed because MLIR-AIR pins an MLIR-AIE (`1.4.4.dev82`) older than the hsaco
