@@ -165,7 +165,7 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     // kernel below, which is selected from the parent tensor's own dtype). An operand that needs
     // neither is left alone -- see ggml_hsa_pad_gemm_operand.
     //
-    // The exception is an f32 B on aie2, which the GEMM converts on the core and, once B is at
+    // The exception is an f32 B, which the GEMM converts on the core and, once B is at
     // least one column group wide, reads unpadded (see gemm.hpp). Its K-tail read runs up to
     // Kpad - K elements past B's last column, which only the read slack of a buffer the HSA buffer
     // type allocated covers (ggml_hsa_buffer_has_read_slack); a B in an imported buffer is padded
@@ -173,7 +173,7 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     // every buffer ggml's allocators create for it comes from the HSA buffer type. A manual,
     // out-of-order allocation -- the consumer initialized first, B then aliased into an imported
     // buffer -- keeps the unpadded kernel and can read up to 28 bytes past the dma-buf; unguarded.
-    const bool b_f32_on_core = dev_info.name == "aie2" && b.type == GGML_TYPE_F32;
+    const bool b_f32_on_core = b.type == GGML_TYPE_F32;
     const bool b_unpadded =
         b_f32_on_core && N >= gn * n_aie_cols &&
         (K == Kpad || b.buffer == nullptr || ggml_hsa_buffer_has_read_slack(b.buffer));

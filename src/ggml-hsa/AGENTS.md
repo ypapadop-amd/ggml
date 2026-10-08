@@ -295,10 +295,10 @@ columns, data types, and layout (row-major vs column-major).
 
 **f32 operands.** The microkernel is bf16-only, so `ggml_hsa_prepare_mul_mat_f32` (in
 `ggml-hsa.cpp`) converts and zero-pads an f32 A once (it is cached when constant) and pads
-C, de-padding the result afterwards. On aie2 an f32 B is instead streamed to the cores as f32
-and converted there (`matmul_bf16_f32_bf32` in `aie2/mm.cc`), and when B is at least one column
-group wide the GEMM reads it unpadded and, for an f32 C at least one row block tall, writes C in
-place ("ragged" mode, `b_ld`/`n_valid`/`m_valid` in `my_matmul`):
+C, de-padding the result afterwards. An f32 B is instead streamed to the cores as f32 and
+converted there (`matmul_bf16_f32_bf32` in `aie2/mm.cc` and `aie2p/mm.cc`), and when B is at least
+one column group wide the GEMM reads it unpadded and, for an f32 C at least one row block tall,
+writes C in place ("ragged" mode, `b_ld`/`n_valid`/`m_valid` in `my_matmul`):
 
 - The last column group and row block are shifted back to end at N and M. They recompute
   columns/rows the previous group or block already wrote, with bit-identical values.
