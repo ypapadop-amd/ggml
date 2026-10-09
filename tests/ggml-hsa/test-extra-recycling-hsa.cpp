@@ -2,7 +2,7 @@
 
 // Standalone test for the recycling of HSA tensor extras across graph allocations. Checks that a
 // rebuilt graph recycles the first graph's extras, that a graph allocated again keeps its extras,
-// and that each node has an extra of its own. The ops are f16 ADDs, whose sources use internal
+// that a graph can be allocated while another runs, and that each node has an extra of its own. The ops are f16 ADDs, whose sources use internal
 // buffers; inputs are small integers, so results must match exactly.
 
 #include <cstdint>
@@ -30,6 +30,10 @@ ctx_ptr make_ctx(std::size_t n_tensors) {
         /*.no_alloc   =*/true,
     };
     return {ggml_init(params), ggml_free};
+}
+
+gallocr_ptr make_galloc(ggml_backend_t backend) {
+    return {ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
 }
 
 std::vector<ggml_fp16_t> pattern(int seed) {
@@ -101,8 +105,7 @@ bool compute_add(ggml_backend_t backend,
 
 // Rebuilds C = X + Y over one allocator: each rebuild must recycle the first graph's extras.
 bool run_rebuild_case(ggml_backend_t backend) {
-    gallocr_ptr galloc{ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)),
-                       ggml_gallocr_free};
+    gallocr_ptr galloc = make_galloc(backend);
     std::set<const void *> first_extras;
     bool ok = true;
     for (int rebuild = 0; rebuild < 5; ++rebuild) {
@@ -128,8 +131,7 @@ bool run_rebuild_case(ggml_backend_t backend) {
 // Allocates one graph twice: the second allocation resets the buffer but initializes no tensor, so
 // every tensor must keep its extra intact.
 bool run_realloc_case(ggml_backend_t backend) {
-    gallocr_ptr galloc{ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)),
-                       ggml_gallocr_free};
+    gallocr_ptr galloc = make_galloc(backend);
     add_graph g;
     if (!ggml_gallocr_alloc_graph(galloc.get(), g.gf)) {
         printf("  graph allocation failed\n");
@@ -146,6 +148,33 @@ bool run_realloc_case(ggml_backend_t backend) {
         ok = false;
     }
     return compute_add(backend, g.gf, g.x, g.y, g.c, 1, "second allocation") && ok;
+}
+
+// Allocates a new graph while the previous one may still be running, as the scheduler does after
+// ggml_backend_sched_graph_compute_async: the recycled extras' storage must stay valid for the
+// running graph. Freed device memory usually stays mapped, so this checks that the path works, not
+// that nothing was freed early.
+bool run_async_case(ggml_backend_t backend) {
+    gallocr_ptr galloc = make_galloc(backend);
+    add_graph first;
+    if (!ggml_gallocr_alloc_graph(galloc.get(), first.gf)) {
+        printf("  graph allocation failed\n");
+        return false;
+    }
+    const auto hx = pattern(30);
+    const auto hy = pattern(31);
+    ggml_backend_tensor_set(first.x, hx.data(), 0, ggml_nbytes(first.x));
+    ggml_backend_tensor_set(first.y, hy.data(), 0, ggml_nbytes(first.y));
+    if (ggml_backend_graph_compute_async(backend, first.gf) != GGML_STATUS_SUCCESS) {
+        printf("  asynchronous graph compute failed\n");
+        return false;
+    }
+    add_graph second; // allocated, and its extras recycled, before the first graph is waited for
+    if (!ggml_gallocr_alloc_graph(galloc.get(), second.gf)) {
+        printf("  second graph allocation failed\n");
+        return false;
+    }
+    return compute_add(backend, second.gf, second.x, second.y, second.c, 32, "second graph");
 }
 
 // Two same-shaped ADDs in one graph have extras of their own.
@@ -165,8 +194,7 @@ bool run_distinct_case(ggml_backend_t backend) {
     ggml_cgraph * gf = ggml_new_graph(ctx.get());
     ggml_build_forward_expand(gf, c1);
     ggml_build_forward_expand(gf, c2);
-    gallocr_ptr galloc{ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)),
-                       ggml_gallocr_free};
+    gallocr_ptr galloc = make_galloc(backend);
     if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
         printf("  graph allocation failed\n");
         return false;
@@ -195,6 +223,7 @@ int main() {
     } cases[] = {
         {run_rebuild_case, "rebuilt graph recycles its extras"},
         {run_realloc_case, "reallocated graph keeps its extras"},
+        {run_async_case, "graph allocated while another runs"},
         {run_distinct_case, "each node has an extra of its own"},
     };
     bool any_fail = false;

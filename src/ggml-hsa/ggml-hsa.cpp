@@ -15,7 +15,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -884,7 +883,9 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
 }
 
 ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
-    const ggml_hsa_device_info::device_info & dev_info) {
+    const ggml_hsa_device_info::device_info & dev_info,
+    ggml_hsa_unique_ptr<std::byte> & spare,
+    std::size_t spare_capacity) {
     if (buffer != nullptr) {
         // already allocated
         return GGML_STATUS_ABORTED;
@@ -895,22 +896,28 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
         buffer_size += sources[src_idx].buffer_size;
     }
 
-    if (buffer_size == 0) {
-        // no temporary storage needed
-        return GGML_STATUS_SUCCESS;
+    // keep the spare if it is large enough, or no storage is needed (it is kept for later reuse)
+    if (spare_capacity >= buffer_size) {
+        buffer = std::move(spare);
+        buffer_capacity = spare_capacity;
+        if (buffer_size == 0) {
+            return GGML_STATUS_SUCCESS;
+        }
+    } else {
+        // grow geometrically, so the outgrown spares the caller keeps stay bounded
+        const std::size_t capacity = std::max(buffer_size, 2 * spare_capacity);
+        void * ptr = nullptr;
+        if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, capacity,
+                                                       /* flags = */ 0, &ptr);
+            status != HSA_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
+                               (buffer_size / 1024.0 / 1024.0), dev_info.name.c_str(),
+                               ggml_hsa_get_status_string(status));
+            return GGML_STATUS_ALLOC_FAILED;
+        }
+        buffer.reset(static_cast<std::byte *>(ptr));
+        buffer_capacity = capacity;
     }
-
-    // allocate storage for all tensors
-    void * ptr = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, buffer_size,
-                                                   /* flags = */ 0, &ptr);
-        status != HSA_STATUS_SUCCESS) {
-        GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
-                           (buffer_size / 1024.0 / 1024.0), dev_info.name.c_str(),
-                           ggml_hsa_get_status_string(status));
-        return GGML_STATUS_ALLOC_FAILED;
-    }
-    buffer.reset(static_cast<std::byte *>(ptr));
 
     auto buffer_ptr = buffer.get();
     for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
@@ -1257,15 +1264,19 @@ struct ggml_backend_hsa_buffer_context {
 
     /// @brief Slot holding one tensor extra; recycling rebuilds it in place, at the same address.
     using extra_slot = std::unique_ptr<std::optional<ggml_backend_hsa_tensor_extra>>;
-    /// @brief Extras of the tensors initialized since the last reset, one per tensor.
-    std::vector<extra_slot> tensor_extras;
-    /// @brief Extras retired by a reset, recycled by the tensors initialized next.
+    /// @brief One extra per tensor; the first @c used_extras belong to tensors initialized since
+    /// the last reset, the rest are recycled by the next ones.
     ///
     /// gallocr resets the buffer before each graph allocation and initializes only tensors without
-    /// data. A new graph's tensors take over the old graph's memory, so they can take its extras
-    /// too; a graph allocated again initializes nothing and keeps its extras intact. Extras are
-    /// thus bounded by the largest graph allocated in the buffer.
-    std::vector<extra_slot> free_extras;
+    /// data: a new graph's tensors take over the old graph's memory, and its extras with it, while a
+    /// graph allocated again keeps its extras. Extras are bounded by the largest graph allocated.
+    std::vector<extra_slot> tensor_extras;
+    /// @brief Number of extras in use since the last reset.
+    std::size_t used_extras{};
+    /// @brief Internal storage outgrown by recycled extras. A graph may still be running on it when
+    /// the next graph is allocated (ggml_backend_sched_graph_compute_async), so it is freed only
+    /// with the buffer; extras grow their storage geometrically, which keeps this bounded.
+    std::vector<ggml_hsa_unique_ptr<std::byte>> outgrown_scratch;
 
     explicit ggml_backend_hsa_buffer_context(std::int32_t device) : device{device} {}
 
@@ -1317,22 +1328,32 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
 
     try {
         // recycle a retired extra, or create one
-        ggml_backend_hsa_buffer_context::extra_slot slot;
-        if (buf_ctx.free_extras.empty()) {
-            slot = std::make_unique<std::optional<ggml_backend_hsa_tensor_extra>>();
-        } else {
-            slot = std::move(buf_ctx.free_extras.back());
-            buf_ctx.free_extras.pop_back();
+        if (buf_ctx.used_extras == buf_ctx.tensor_extras.size()) {
+            buf_ctx.tensor_extras.push_back(
+                std::make_unique<std::optional<ggml_backend_hsa_tensor_extra>>());
         }
-        auto & tensor_extra = slot->emplace(dev_info, *tensor);
-        if (auto status = tensor_extra.allocate_internal_storage(dev_info);
-            status != GGML_STATUS_SUCCESS) {
-            slot->reset();
-            buf_ctx.free_extras.push_back(std::move(slot));
+        auto & slot = *buf_ctx.tensor_extras[buf_ctx.used_extras];
+        // The recycled extra's storage may still be in use by earlier dispatches, so it is never
+        // freed here: the buffer holds it until the new extra takes it back, or for good if the new
+        // extra outgrows it (or its construction throws).
+        std::size_t spare_capacity = 0;
+        if (slot.has_value() && slot->buffer != nullptr) {
+            spare_capacity = slot->buffer_capacity;
+            buf_ctx.outgrown_scratch.push_back(std::move(slot->buffer));
+        }
+        auto & tensor_extra = slot.emplace(dev_info, *tensor);
+        ggml_hsa_unique_ptr<std::byte> no_spare;
+        const auto status = tensor_extra.allocate_internal_storage(
+            dev_info, spare_capacity > 0 ? buf_ctx.outgrown_scratch.back() : no_spare,
+            spare_capacity);
+        if (spare_capacity > 0 && buf_ctx.outgrown_scratch.back() == nullptr) {
+            buf_ctx.outgrown_scratch.pop_back(); // taken back
+        }
+        if (status != GGML_STATUS_SUCCESS) {
+            slot.reset();
             return status;
         }
-        // set only once the buffer owns the slot: if push_back throws, the slot is destroyed
-        buf_ctx.tensor_extras.push_back(std::move(slot));
+        ++buf_ctx.used_extras;
         tensor->extra = &tensor_extra;
     } catch (const std::exception & ex) {
         GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
@@ -1423,13 +1444,10 @@ static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t 
 
 /**
  * @brief Retires the extras of @p buffer for recycling, without destroying them (see
- * @c ggml_backend_hsa_buffer_context::free_extras).
+ * @c ggml_backend_hsa_buffer_context::tensor_extras).
  */
 static void ggml_backend_hsa_buffer_reset(ggml_backend_buffer_t buffer) {
-    auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
-    std::move(buf_ctx.tensor_extras.begin(), buf_ctx.tensor_extras.end(),
-              std::back_inserter(buf_ctx.free_extras));
-    buf_ctx.tensor_extras.clear();
+    static_cast<ggml_backend_hsa_buffer_context *>(buffer->context)->used_extras = 0;
 }
 
 /**
@@ -1846,29 +1864,6 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 
     const std::int32_t node_count = ggml_graph_n_nodes(cgraph);
 
-    // shallow copies may not have been fully initialized when the graph was created, so we need to
-    // make sure all nodes have their source tensor pointers set before we can start dispatching
-    // kernels
-    for (std::int32_t i = 0; i < node_count; ++i) {
-        ggml_tensor * node = ggml_graph_node(cgraph, i);
-
-        if (ggml_op_is_empty(node->op) || ggml_is_empty(node)) {
-            continue;
-        }
-
-        // a view result (e.g. a CPY into a KV cache) has no extra; it runs on the host path below
-        if (node->extra == nullptr) {
-            continue;
-        }
-
-        auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
-        for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
-            if (tensor_extra.sources[src_idx].tensor.data == nullptr) {
-                tensor_extra.sources[src_idx].tensor.data = node->src[src_idx]->data;
-            }
-        }
-    }
-
     for (std::int32_t i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
         ggml_tensor * node = ggml_graph_node(cgraph, i);
 
@@ -1897,6 +1892,13 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
 
         auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
         ggml_tensor & internal_node = tensor_extra.node.tensor;
+
+        // a source allocated after this node was initialized has its data pointer only now
+        for (auto src_idx = 0; src_idx < tensor_extra.sources.count; ++src_idx) {
+            if (tensor_extra.sources[src_idx].tensor.data == nullptr) {
+                tensor_extra.sources[src_idx].tensor.data = node->src[src_idx]->data;
+            }
+        }
 
         // break out of the node loop on failure so the trailing flush still runs
         if (status = ggml_hsa_dispatch_preprocess(ctx, tensor_extra, node);
