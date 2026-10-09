@@ -1282,7 +1282,40 @@ struct ggml_backend_hsa_buffer_context {
 
     /// @brief Returns the base address of the buffer.
     void * base() const { return static_cast<std::byte *>(dev_mem.get()) + base_offset; }
+
+    /// @brief Sets @p tensor 's extra, recycling one retired by a reset if there is one.
+    ggml_status attach_extra(ggml_tensor & tensor);
 };
+
+ggml_status ggml_backend_hsa_buffer_context::attach_extra(ggml_tensor & tensor) {
+    const auto & dev_info = ggml_hsa_get_device_info(device);
+    if (used_extras == tensor_extras.size()) {
+        tensor_extras.push_back(std::make_unique<std::optional<ggml_backend_hsa_tensor_extra>>());
+    }
+    auto & slot = *tensor_extras[used_extras];
+    // The recycled extra's storage may still be in use by earlier dispatches, so it is never freed
+    // here: the buffer holds it until the new extra takes it back, or for good if the new extra
+    // outgrows it (or its construction throws).
+    std::size_t spare_capacity = 0;
+    if (slot.has_value() && slot->buffer != nullptr) {
+        spare_capacity = slot->buffer_capacity;
+        outgrown_scratch.push_back(std::move(slot->buffer));
+    }
+    auto & tensor_extra = slot.emplace(dev_info, tensor);
+    ggml_hsa_unique_ptr<std::byte> no_spare;
+    const auto status = tensor_extra.allocate_internal_storage(
+        dev_info, spare_capacity > 0 ? outgrown_scratch.back() : no_spare, spare_capacity);
+    if (spare_capacity > 0 && outgrown_scratch.back() == nullptr) {
+        outgrown_scratch.pop_back(); // taken back
+    }
+    if (status != GGML_STATUS_SUCCESS) {
+        slot.reset();
+        return status;
+    }
+    ++used_extras;
+    tensor.extra = &tensor_extra;
+    return GGML_STATUS_SUCCESS;
+}
 
 /**
  * @brief Frees resources associated with @p buffer.
@@ -1324,37 +1357,10 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
     assert(tensor->extra == nullptr);
 
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
-    const auto & dev_info = ggml_hsa_get_device_info(buf_ctx.device);
-
     try {
-        // recycle a retired extra, or create one
-        if (buf_ctx.used_extras == buf_ctx.tensor_extras.size()) {
-            buf_ctx.tensor_extras.push_back(
-                std::make_unique<std::optional<ggml_backend_hsa_tensor_extra>>());
-        }
-        auto & slot = *buf_ctx.tensor_extras[buf_ctx.used_extras];
-        // The recycled extra's storage may still be in use by earlier dispatches, so it is never
-        // freed here: the buffer holds it until the new extra takes it back, or for good if the new
-        // extra outgrows it (or its construction throws).
-        std::size_t spare_capacity = 0;
-        if (slot.has_value() && slot->buffer != nullptr) {
-            spare_capacity = slot->buffer_capacity;
-            buf_ctx.outgrown_scratch.push_back(std::move(slot->buffer));
-        }
-        auto & tensor_extra = slot.emplace(dev_info, *tensor);
-        ggml_hsa_unique_ptr<std::byte> no_spare;
-        const auto status = tensor_extra.allocate_internal_storage(
-            dev_info, spare_capacity > 0 ? buf_ctx.outgrown_scratch.back() : no_spare,
-            spare_capacity);
-        if (spare_capacity > 0 && buf_ctx.outgrown_scratch.back() == nullptr) {
-            buf_ctx.outgrown_scratch.pop_back(); // taken back
-        }
-        if (status != GGML_STATUS_SUCCESS) {
-            slot.reset();
+        if (auto status = buf_ctx.attach_extra(*tensor); status != GGML_STATUS_SUCCESS) {
             return status;
         }
-        ++buf_ctx.used_extras;
-        tensor->extra = &tensor_extra;
     } catch (const std::exception & ex) {
         GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
         return GGML_STATUS_FAILED;
