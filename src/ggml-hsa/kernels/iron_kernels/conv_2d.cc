@@ -174,7 +174,8 @@ void conv_2d_impl(const T_in * __restrict in,
     // per call (not once per output row that reads it) and every output chunk sums all channels
     // in registers before one store (no zeroed plane, no per-channel reload). The per-row path
     // further down does the same arithmetic one channel at a time, for shapes whose ring does not
-    // fit in 4 KB; see its comment for the padded-row layout and why the taps are shuffled.
+    // fit in GGML_CONV2D_RING_BYTES (set by conv_2d.py from the stack size); see its comment for
+    // the padded-row layout and why the taps are shuffled.
     if constexpr (s0 == 1 && (kw - 1) * d0 <= V) {
         // One output row's taps read input rows base, base + d1, ..., base + (kh - 1) * d1, with
         // base = oy * s1 - p1: a span of R rows, held in R slots. Slots are assigned relative to
@@ -183,7 +184,10 @@ void conv_2d_impl(const T_in * __restrict in,
         // call on the aie2 scalar unit. Where the ring starts does not matter.
         constexpr int32_t R = (kh - 1) * d1 + 1;
         constexpr int32_t s1_mod_r = s1 % R;
-        if constexpr (R * ic * pw * static_cast<int32_t>(sizeof(T_in)) <= 4096) {
+#ifndef GGML_CONV2D_RING_BYTES
+#error "conv_2d.cc requires -DGGML_CONV2D_RING_BYTES, emitted by conv_2d.py"
+#endif
+        if constexpr (R * ic * pw * static_cast<int32_t>(sizeof(T_in)) <= GGML_CONV2D_RING_BYTES) {
             alignas(aie::vector_decl_align) T_in ring[ic][R][pw];
             for (int32_t c = 0; c < ic; ++c) {
                 for (int32_t r = 0; r < R; ++r) {

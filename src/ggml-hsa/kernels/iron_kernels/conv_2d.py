@@ -41,10 +41,16 @@ _MAX_WORKERS = 7
 # measures 2752 bytes. Larger windows compile without the unroll and need far less. Verified at
 # 3x3, 5x5, 7x7 and 11x11. If a future change raises the unroll bound, mlir-aie fails the build
 # with "stack_size = N is insufficient: this core needs M bytes", which is the signal to raise this
-# constant rather than a silent overrun. On aie2 the kernel's ring path (conv_2d.cc) adds up to 4 KB
+# constant rather than a silent overrun. On aie2 the kernel's ring path (conv_2d.cc) adds up to _RING_BYTES
 # of padded rows to the frame (3904 B for MNIST conv2), hence the larger aie2 size.
 _STACK_SIZE_BYTES = {"aie2": 6144}
 _DEFAULT_STACK_SIZE_BYTES = 4096
+
+# Bytes of padded rows the aie2 ring path may keep on the stack (GGML_CONV2D_RING_BYTES in
+# conv_2d.cc), derived from the aie2 stack so the two cannot disagree: the rest of that path's frame
+# measured at most 1344 B (MNIST conv1) and the core's main adds ~128 B, so 2048 B are left for them.
+# A shape that still overflows fails aiecc's stack check rather than running.
+_RING_BYTES = _STACK_SIZE_BYTES["aie2"] - 2048
 
 
 def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -301,5 +307,6 @@ def _create_external_function(
             f"-DINPUT_DTYPE={dtype_to_str(image_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
             *shape_defines("GGML_CONV2D", shape),
+            f"-DGGML_CONV2D_RING_BYTES={_RING_BYTES}",
         ],
     )
