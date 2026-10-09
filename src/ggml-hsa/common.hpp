@@ -416,6 +416,9 @@ const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t 
  * Holds metadata about a parent ggml_tensor used by the HSA backend to build an alternative graph
  * representation for run-time use. Copies are made of the parent and its source tensors' metadata,
  * with transformations applied (e.g., making them contiguous, flattening).
+ *
+ * Each tensor has its own extra, owned by its buffer and recycled after a buffer reset (see
+ * @c ggml_backend_hsa_buffer_context::tensor_extras).
  */
 struct ggml_backend_hsa_tensor_extra {
     /// @brief Internal output graph node.
@@ -467,6 +470,7 @@ struct ggml_backend_hsa_tensor_extra {
     sources_t sources{};                     ///< Internal source graph nodes.
     std::shared_ptr<ggml_hsa_kernel> kernel; ///< Kernel associated with the tensor.
     ggml_hsa_unique_ptr<std::byte> buffer;   ///< Temporary storage for tensor data.
+    std::size_t buffer_capacity{};           ///< Bytes allocated for @c buffer.
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);
@@ -480,8 +484,14 @@ struct ggml_backend_hsa_tensor_extra {
 
     /**
      * @brief Allocates storage for the internal tensor.
+     *
+     * Takes over @p spare (of @p spare_capacity bytes) if it is large enough or no storage is
+     * needed; otherwise allocates at least twice @p spare_capacity and leaves @p spare to the
+     * caller, so a recycled extra's storage is never freed while earlier dispatches may use it.
      */
-    ggml_status allocate_internal_storage(const ggml_hsa_device_info::device_info & dev_info);
+    ggml_status allocate_internal_storage(const ggml_hsa_device_info::device_info & dev_info,
+                                          ggml_hsa_unique_ptr<std::byte> & spare,
+                                          std::size_t spare_capacity);
 };
 
 /**
