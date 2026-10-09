@@ -1450,11 +1450,13 @@ bool ggml_hsa_buffer_has_read_slack(ggml_backend_buffer_t buffer) {
 /**
  * @brief Returns if a conversion of @p src may be cached: its data lives in a buffer this backend
  * allocated, not in another backend's buffer or one imported from another device (which that
- * device writes directly).
+ * device writes directly), nor in a graph allocator's compute buffer, whose leaves are commonly
+ * rewritten before every compute and whose extras are recycled on the next graph allocation.
  */
 static bool ggml_hsa_source_is_cacheable(const ggml_tensor * src) {
-    return ggml_hsa_buffer_is_allocated_here(src->view_src != nullptr ? src->view_src->buffer
-                                                                      : src->buffer);
+    ggml_backend_buffer_t buffer = src->view_src != nullptr ? src->view_src->buffer : src->buffer;
+    return ggml_hsa_buffer_is_allocated_here(buffer) &&
+           ggml_backend_buffer_get_usage(buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE;
 }
 
 /**
