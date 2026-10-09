@@ -17,12 +17,22 @@ from aie.ir import IntegerType
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
+    Program,
+    Runtime,
     Worker,
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
 
-from .utils import fill_drain_program, row_dimensions
+from .utils import (
+    arch_num_columns,
+    arch_to_device,
+    batch_slice_tap,
+    divisor_tile_size,
+    fill_drain_program,
+    partition_units,
+    row_dimensions,
+)
 
 # The scalar softmax core's frame exceeds the AIE core's 1024-byte default stack: aiecc measures
 # 1088 bytes for the plain variant, and the masked ones carry more live state. Without an explicit
@@ -30,6 +40,11 @@ from .utils import fill_drain_program, row_dimensions
 # Newer mlir-aie turns that into a build error ("stack_size is absent ... but it needs N bytes");
 # older toolchains built it and corrupted memory at run time. See gemm.py for the same pattern.
 _STACK_SIZE_BYTES = 2048
+
+# The plain variant's aie2 kernel runs exp() on 64 lanes of emulated fp32 multiplies, which keep
+# temporaries on the stack: the kernel's frame measures up to 3392 bytes over row lengths 1..32
+# (the narrow rows' lane path, largest at 3 to 5 elements), plus main's.
+_PLAIN_STACK_SIZE_BYTES = 4096
 
 
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -119,6 +134,9 @@ def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_bias):
     """Plain softmax without mask or sink (max_bias unused).
 
+    Streams tiles of whole rows, fanned out over workers in contiguous bands (see
+    _plain_tiling): the kernel is compute-bound, so the rows split across cores.
+
     Args:
         arch: Target AIE architecture.
         op_name: GGML op name.
@@ -130,12 +148,15 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
     Returns:
         The resolved IRON program.
     """
+    row_length, num_rows = row_dimensions(input_tensor)
+    rows_per_tile, n_workers = _plain_tiling(arch, input_tensor, output_tensor)
     function, num_elements, tile_size = _create_external_function(
         op_name=op_name,
         input_tensor=input_tensor,
         mask_tensor=None,
         sink_tensor=None,
         output_tensor=output_tensor,
+        rows_per_tile=rows_per_tile,
     )
 
     num_tiles = num_elements // tile_size
@@ -144,34 +165,50 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
     input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
     output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
 
-    of_in = ObjectFifo(input_tile_ty, name="in")
-    of_out = ObjectFifo(output_tile_ty, name="out")
+    tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
+    of_ins = [ObjectFifo(input_tile_ty, name=f"in{w}") for w in range(n_workers)]
+    of_outs = [ObjectFifo(output_tile_ty, name=f"out{w}") for w in range(n_workers)]
 
-    def ext_core_fn(of_in, of_out, function):
-        for _ in range_(num_tiles):
+    def ext_core_fn(of_in, of_out, function, n_tiles):
+        for _ in range_(n_tiles):
             elem_in = of_in.acquire(1)
             elem_out = of_out.acquire(1)
-            function(elem_in, elem_out, tile_size, scale, max_bias)
+            function(elem_in, elem_out, row_length, rows_per_tile, scale, max_bias)
             of_in.release(1)
             of_out.release(1)
 
-    worker = Worker(
-        ext_core_fn,
-        fn_args=[of_in.cons(), of_out.prod(), function],
-        stack_size=_STACK_SIZE_BYTES,
-    )
+    workers = [
+        Worker(
+            ext_core_fn,
+            fn_args=[of_ins[w].cons(), of_outs[w].prod(), function, tiles_per_worker[w]],
+            stack_size=_PLAIN_STACK_SIZE_BYTES,
+        )
+        for w in range(n_workers)
+    ]
+
+    def band(w):
+        return batch_slice_tap(num_tiles, tile_size, first_tiles[w], tiles_per_worker[w])
+
+    # One host buffer per ggml tensor, src then dst. Every drain is waited on: the bands can
+    # finish in any order.
+    def sequence(in_buf, out_buf, in_prods, out_conses):
+        for w in range(n_workers):
+            in_prods[w].fill(in_buf, band(w))
+        for w in range(n_workers):
+            out_conses[w].drain(out_buf, band(w), wait=True)
 
     input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
-
-    return fill_drain_program(
-        arch,
-        [worker],
-        input_tys=[input_tensor_ty],
-        output_ty=output_tensor_ty,
-        in_prods=[of_in.prod()],
-        out_cons=of_out.cons(),
+    rt = Runtime(
+        sequence,
+        [
+            input_tensor_ty,
+            output_tensor_ty,
+            [of_in.prod() for of_in in of_ins],
+            [of_out.cons() for of_out in of_outs],
+        ],
     )
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
 def create_binary_program(
@@ -384,12 +421,63 @@ def create_ternary_program(
     )
 
 
+# Rows the plain kernel computes together when they are this short: one per lane (softmax.cc).
+_LANE_ROWS = 32
+_LANE_ROWS_MAX_LENGTH = 32
+
+
+def _plain_tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
+    """Rows per tile and worker count for the plain softmax.
+
+    Each worker streams a contiguous band of tiles through its own shim DMA channel pair, so up
+    to two workers per column. Over the row counts that divide the rows and whose
+    double-buffered tiles fit half of L1, this takes the split whose busiest worker has the
+    least work, preferring larger tiles: rows up to _LANE_ROWS_MAX_LENGTH long cost about the
+    same per group of _LANE_ROWS rows however full (on aie2; elsewhere this only shapes the
+    split), longer ones cost per row. MNIST's 500
+    rows of 10 go as 20 tiles of 25 rows over 8 workers (3 groups for the busiest), not 4
+    tiles of 125 over 4 (4 groups).
+
+    Args:
+        arch: Target AIE architecture.
+        input_tensor: Input tensor.
+        output_tensor: Output tensor.
+
+    Returns:
+        The (rows_per_tile, n_workers) pair; rows_per_tile divides the row count.
+    """
+    row_length, num_rows = row_dimensions(input_tensor)
+    # One "element" per row: a row of row_length values as a numpy subarray dtype.
+    max_rows = divisor_tile_size(
+        arch,
+        num_rows,
+        fifo_dtypes=(
+            np.dtype((input_tensor.dtype, (row_length,))),
+            np.dtype((output_tensor.dtype, (row_length,))),
+        ),
+    )
+    lane_rows = _LANE_ROWS if row_length <= _LANE_ROWS_MAX_LENGTH else 1
+    max_workers = 2 * arch_num_columns(arch)
+
+    def busiest_worker_work(rows):
+        num_tiles = num_rows // rows
+        workers = min(max_workers, num_tiles)
+        return -(-num_tiles // workers) * -(-rows // lane_rows)
+
+    rows_per_tile = min(
+        (r for r in range(max_rows, 0, -1) if num_rows % r == 0),
+        key=busiest_worker_work,
+    )
+    return rows_per_tile, min(max_workers, num_rows // rows_per_tile)
+
+
 def _create_external_function(
     op_name: str,
     input_tensor,
     mask_tensor: Any | None,
     sink_tensor: Any | None,
     output_tensor,
+    rows_per_tile: int = 1,
 ) -> tuple:
     """Create an external function specification for softmax variants.
 
@@ -399,6 +487,7 @@ def _create_external_function(
         mask_tensor: Optional ALiBi mask tensor.
         sink_tensor: Optional per-head sink logits tensor.
         output_tensor: Output tensor.
+        rows_per_tile: Rows per tile; only the plain variant takes more than one.
 
     Returns:
         A variable-length tuple depending on which of mask_tensor/sink_tensor are set:
@@ -413,13 +502,14 @@ def _create_external_function(
     # Use actual row length - no padding. The host data is contiguous with
     # row_length elements per row, so tile_size must match.
     # The C++ kernel is a pure scalar implementation that works with any size.
-    tile_size_in = row_length_in
+    tile_size_in = row_length_in * rows_per_tile
 
-    num_elements_in = tile_size_in * num_rows_in
+    num_elements_in = row_length_in * num_rows_in
 
     arg_types = [np.ndarray[(tile_size_in,), np.dtype[input_tensor.dtype]]]
     compile_flags = [
         f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
+        f"-DGGML_SOFTMAX_ROW_LEN={row_length_in}",
     ]
 
     result_extra = []
@@ -460,7 +550,9 @@ def _create_external_function(
     arg_types.append(np.ndarray[(tile_size_in,), np.dtype[output_tensor.dtype]])
     compile_flags.append(f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}")
 
-    arg_types.append(np.int32)  # tile_size
+    arg_types.append(np.int32)  # tile_size (row length)
+    if mask_tensor is None and sink_tensor is None:
+        arg_types.append(np.int32)  # rows per tile
 
     # additional arguments for sink variant
     if sink_tensor is not None:
