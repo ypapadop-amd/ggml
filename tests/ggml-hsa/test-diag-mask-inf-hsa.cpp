@@ -114,6 +114,11 @@ int main() {
         {48, 16, 1, 5, "npast5"},
         {32, 32, 4, 0, "3d npast0"},
         {64, 32, 3, 12, "3d npast12"},
+        // Row lengths that are not a whole number of 16-lane vectors: a tail, one shorter than a
+        // vector, and one vector plus one element.
+        {40, 24, 1, 3, "tail npast3"},
+        {10, 12, 1, 0, "narrow npast0"},
+        {17, 20, 1, 2, "17 npast2"},
     };
 
     bool any_fail = false;
