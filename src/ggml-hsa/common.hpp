@@ -489,7 +489,7 @@ struct ggml_backend_hsa_tensor_extra {
     sources_t sources{};                     ///< Internal source graph nodes.
     std::shared_ptr<ggml_hsa_kernel> kernel; ///< Kernel associated with the tensor.
     ggml_hsa_unique_ptr<std::byte> buffer;   ///< Temporary storage for tensor data.
-    std::size_t buffer_capacity{}; ///< Bytes allocated for @c buffer.
+    std::size_t buffer_capacity{};           ///< Bytes allocated for @c buffer.
 
     ggml_backend_hsa_tensor_extra(const ggml_hsa_device_info::device_info & dev_info,
                                   const ggml_tensor & parent_tensor);

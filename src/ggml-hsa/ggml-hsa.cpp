@@ -1268,8 +1268,8 @@ struct ggml_backend_hsa_buffer_context {
     /// the last reset, the rest are recycled by the next ones.
     ///
     /// gallocr resets the buffer before each graph allocation and initializes only tensors without
-    /// data: a new graph's tensors take over the old graph's memory, and its extras with it, while a
-    /// graph allocated again keeps its extras. Extras are bounded by the largest graph allocated.
+    /// data: a new graph's tensors take over the old graph's memory, and its extras with it, while
+    /// a graph allocated again keeps its extras. Extras are bounded by the largest graph allocated.
     std::vector<extra_slot> tensor_extras;
     /// @brief Number of extras in use since the last reset.
     std::size_t used_extras{};
