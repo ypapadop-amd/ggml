@@ -968,6 +968,27 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // postprocess_kernel. The dispatch functions infer the queue drains the host paths need.
 }
 
+/**
+ * @brief Allocates @p size bytes of device memory from the data memory pool of @p dev_info into
+ * @p buffer, logging on failure.
+ */
+static ggml_status
+ggml_hsa_allocate_device_memory(const ggml_hsa_device_info::device_info & dev_info,
+                                std::size_t size,
+                                ggml_hsa_unique_ptr<std::byte> & buffer) {
+    void * ptr = nullptr;
+    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
+                                                   /* flags = */ 0, &ptr);
+        status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
+                           (size / 1024.0 / 1024.0), dev_info.name.c_str(),
+                           ggml_hsa_get_status_string(status));
+        return GGML_STATUS_ALLOC_FAILED;
+    }
+    buffer.reset(static_cast<std::byte *>(ptr));
+    return GGML_STATUS_SUCCESS;
+}
+
 ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     const ggml_hsa_device_info::device_info & dev_info,
     ggml_hsa_unique_ptr<std::byte> & spare,
@@ -995,16 +1016,10 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     } else {
         // grow geometrically, so the outgrown spares the caller keeps stay bounded
         const std::size_t capacity = std::max(buffer_size, 2 * spare_capacity);
-        void * ptr = nullptr;
-        if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, capacity,
-                                                       /* flags = */ 0, &ptr);
-            status != HSA_STATUS_SUCCESS) {
-            GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
-                               (buffer_size / 1024.0 / 1024.0), dev_info.name.c_str(),
-                               ggml_hsa_get_status_string(status));
-            return GGML_STATUS_ALLOC_FAILED;
+        if (auto status = ggml_hsa_allocate_device_memory(dev_info, capacity, buffer);
+            status != GGML_STATUS_SUCCESS) {
+            return status;
         }
-        buffer.reset(static_cast<std::byte *>(ptr));
         buffer_capacity = capacity;
     }
 
@@ -1934,19 +1949,13 @@ ggml_hsa_get_conversion(const ggml_hsa_device_info::device_info & dev_info,
         }
     }
 
-    void * ptr = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
-                                                   /* flags = */ 0, &ptr);
-        status != HSA_STATUS_SUCCESS) {
-        GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
-                           (size / 1024.0 / 1024.0), dev_info.name.c_str(),
-                           ggml_hsa_get_status_string(status));
+    auto conversion = std::make_unique<ggml_backend_hsa_tensor_extra::conversion_t>();
+    if (ggml_hsa_allocate_device_memory(dev_info, size, conversion->buffer) !=
+        GGML_STATUS_SUCCESS) {
         return nullptr;
     }
-    auto conversion = std::make_unique<ggml_backend_hsa_tensor_extra::conversion_t>();
-    conversion->buffer.reset(static_cast<std::byte *>(ptr));
     conversion->tensor = target;
-    conversion->tensor.data = ptr;
+    conversion->tensor.data = conversion->buffer.get();
     owner->conversions.push_back(std::move(conversion));
     return owner->conversions.back().get();
 }
