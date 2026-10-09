@@ -806,7 +806,7 @@ ggml_hsa_prepare_generic(const ggml_hsa_device_info::device_info & dev_info,
     return src_dtype_only;
 }
 
-static bool ggml_hsa_source_is_cacheable(const ggml_tensor * src);
+static bool ggml_hsa_source_is_constant(const ggml_tensor * src);
 
 ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     const ggml_hsa_device_info::device_info & dev_info, const ggml_tensor & parent_tensor) {
@@ -888,11 +888,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // Graph-constant leaves (weights/biases) that need transforming are converted once into a copy
     // kept with the constant, whatever the op; see source_node_t::is_constant for the contract.
     for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
-        const ggml_tensor * src = parent_tensor.src[src_idx];
-        if (sources[src_idx].buffer_size != 0 && src->op == GGML_OP_NONE &&
-            (src->flags & GGML_TENSOR_FLAG_INPUT) == 0 && ggml_hsa_source_is_cacheable(src)) {
-            sources[src_idx].is_constant = true;
-        }
+        sources[src_idx].is_constant = sources[src_idx].buffer_size != 0 &&
+                                       ggml_hsa_source_is_constant(parent_tensor.src[src_idx]);
     }
 
     // Build on-device pre-processing kernels for the sources that only change element type. These
@@ -1463,15 +1460,17 @@ bool ggml_hsa_buffer_has_read_slack(ggml_backend_buffer_t buffer) {
 }
 
 /**
- * @brief Returns if a conversion of @p src may be cached: its data lives in a buffer this backend
- * allocated, not in another backend's buffer or one imported from another device (which that
- * device writes directly), nor in a graph allocator's compute buffer, whose leaves are commonly
- * rewritten before every compute and whose extras are recycled on the next graph allocation.
+ * @brief Returns if @p src is a graph constant whose conversion may be cached in its extra (see
+ * @c source_node_t::is_constant): a leaf (a weight or bias) that is not a graph input and not a
+ * view, since views get no extra, whose data lives in a buffer this backend allocated. Not in
+ * another backend's buffer or one imported from another device (which that device writes
+ * directly), nor in a graph allocator's compute buffer, whose leaves are commonly rewritten before
+ * every compute and whose extras are recycled on the next graph allocation.
  */
-static bool ggml_hsa_source_is_cacheable(const ggml_tensor * src) {
-    ggml_backend_buffer_t buffer = src->view_src != nullptr ? src->view_src->buffer : src->buffer;
-    return ggml_hsa_buffer_is_allocated_here(buffer) &&
-           ggml_backend_buffer_get_usage(buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE;
+static bool ggml_hsa_source_is_constant(const ggml_tensor * src) {
+    return src->op == GGML_OP_NONE && (src->flags & GGML_TENSOR_FLAG_INPUT) == 0 &&
+           src->view_src == nullptr && ggml_hsa_buffer_is_allocated_here(src->buffer) &&
+           ggml_backend_buffer_get_usage(src->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE;
 }
 
 /**

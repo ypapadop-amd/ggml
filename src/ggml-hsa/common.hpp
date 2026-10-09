@@ -500,15 +500,15 @@ struct ggml_backend_hsa_tensor_extra {
         /// queue instead of on the host. Null when the source needs no on-device pre-processing.
         std::shared_ptr<ggml_hsa_kernel> preprocess_kernel;
         /// @brief True if the source is a graph-constant leaf (a weight or bias: op ==
-        /// GGML_OP_NONE, not a graph input) in a buffer this backend allocated that is not a graph
-        /// allocator's compute buffer. Its converted/padded copy is then kept in the parent's own
-        /// extra (@ref conversions), not in an internal buffer of this node: it is produced once
-        /// and reused while the parent's data pointer is unchanged, across every consumer that
-        /// needs the same conversion and across re-allocations of the consumers' graph. A constant
-        /// must therefore not be rewritten in place after its first use. Any other source that
-        /// needs transforming (including a constant in a compute buffer, in another backend's
-        /// buffer, imported from another device, or not yet placed when this node is built) gets
-        /// an internal buffer and is converted on every dispatch.
+        /// GGML_OP_NONE, not a graph input, not a view) in a buffer this backend allocated that is
+        /// not a graph allocator's compute buffer. Its converted/padded copy is then kept in the
+        /// parent's own extra (@ref conversions), not in an internal buffer of this node: it is
+        /// produced once and reused while the parent's data pointer is unchanged, across every
+        /// consumer that needs the same conversion and across re-allocations of the consumers'
+        /// graph. A constant must therefore not be rewritten in place after its first use. Any
+        /// other source that needs transforming (including a view, a constant in a compute buffer,
+        /// in another backend's buffer, imported from another device, or not yet placed when this
+        /// node is built) gets an internal buffer and is converted on every dispatch.
         bool is_constant{};
         /// @brief True if the kernel reads past the end of the parent's data (a GEMM's unpadded f32
         /// B with a K tail), which stays inside the allocation only for a buffer with read slack

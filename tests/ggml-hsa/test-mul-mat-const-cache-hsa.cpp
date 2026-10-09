@@ -11,7 +11,8 @@
 // The weight lives in a buffer of its own, as model weights do, apart from the input and the
 // result. An f16 ADD case checks that the cache is not specific to MUL_MAT. A last case places the
 // weight in the graph's own compute buffer, where it is not cached: it is rewritten between
-// computes at the same address and every compute must see its current contents.
+// computes at the same address and every compute must see its current contents. So is a plain view
+// of a weight, which has no extra to keep a converted copy in.
 
 #include <cstdint>
 #include <cstdio>
@@ -313,6 +314,66 @@ case_result run_compute_buffer_case(ggml_backend_t backend, int64_t M, int64_t N
     return ok ? case_result::pass : case_result::fail;
 }
 
+// A plain view of a weight (ggml_view_tensor) is a leaf too, but HSA buffers give views no extra
+// to keep a converted copy in, so it is not cached: every compute converts it.
+case_result run_view_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t K) {
+    ctx_ptr wctx = make_ctx(1);
+    ggml_tensor * w = ggml_new_tensor_2d(wctx.get(), GGML_TYPE_F32, K, M);
+    ggml_set_name(w, "w");
+    buffer_ptr wbuf{ggml_backend_alloc_ctx_tensors(wctx.get(), backend), ggml_backend_buffer_free};
+    if (wbuf == nullptr) {
+        printf("  weight allocation failed\n");
+        return case_result::fail;
+    }
+
+    graph_t g;
+    g.ctx = make_ctx(4);
+    g.x = ggml_new_tensor_2d(g.ctx.get(), GGML_TYPE_F32, K, N);
+    ggml_set_name(g.x, "x");
+    ggml_set_input(g.x);
+    g.c = ggml_mul_mat(g.ctx.get(), ggml_view_tensor(g.ctx.get(), w), g.x);
+    ggml_set_name(g.c, "c");
+    ggml_set_output(g.c);
+    if (!ggml_backend_supports_op(backend, g.c)) {
+        printf("  MUL_MAT not supported (skipped)\n");
+        return case_result::skip;
+    }
+    g.gf = ggml_new_graph(g.ctx.get());
+    // W is expanded too: the allocator sizes its hash set from the graph's tensors but also hashes
+    // the view's source, which a graph this small has no room for otherwise
+    ggml_build_forward_expand(g.gf, w);
+    ggml_build_forward_expand(g.gf, g.c);
+    g.galloc.reset(ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)));
+    if (!ggml_gallocr_alloc_graph(g.galloc.get(), g.gf)) {
+        printf("  graph allocation failed\n");
+        return case_result::fail;
+    }
+
+    std::vector<float> hx(N * K);
+    for (int64_t j = 0; j < N; ++j) {
+        for (int64_t k = 0; k < K; ++k) {
+            hx[j * K + k] = static_cast<float>((j * 5 + k * 11) % 7 - 3);
+        }
+    }
+
+    std::vector<float> got(M * N);
+    auto compute = [&](const char * label, const std::vector<float> & hw) {
+        ggml_backend_tensor_set(w, hw.data(), 0, ggml_nbytes(w));
+        ggml_backend_tensor_set(g.x, hx.data(), 0, ggml_nbytes(g.x));
+        if (ggml_backend_graph_compute(backend, g.gf) != GGML_STATUS_SUCCESS) {
+            printf("  %s: graph compute failed\n", label);
+            return false;
+        }
+        ggml_backend_tensor_get(g.c, got.data(), 0, ggml_nbytes(g.c));
+        return check(label, got, hw, hx, M, N, K);
+    };
+
+    bool ok = compute("compute 1", make_weight(M, K, 0));
+    ok = compute("compute 2 (W rewritten; expects the new W)", make_weight(M, K, 1)) && ok;
+
+    return ok ? case_result::pass : case_result::fail;
+}
+
 } // namespace
 
 int main() {
@@ -351,6 +412,17 @@ int main() {
                              : r == case_result::skip ? "SKIPPED"
                                                       : "FAILED";
         printf("MUL_MAT f32 %lldx%lldx%lld weight in compute buffer: %s\n", (long long)s.M,
+               (long long)s.N, (long long)s.K, label);
+        any_fail = any_fail || (r == case_result::fail);
+        passed += (r == case_result::pass);
+        skipped += (r == case_result::skip);
+    }
+    for (const auto & s : shapes) {
+        const case_result r = run_view_case(backend, s.M, s.N, s.K);
+        const char * label = r == case_result::pass   ? "PASSED"
+                             : r == case_result::skip ? "SKIPPED"
+                                                      : "FAILED";
+        printf("MUL_MAT f32 %lldx%lldx%lld view of a weight: %s\n", (long long)s.M,
                (long long)s.N, (long long)s.K, label);
         any_fail = any_fail || (r == case_result::fail);
         passed += (r == case_result::pass);
