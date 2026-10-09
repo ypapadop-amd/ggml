@@ -103,20 +103,6 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
     const auto in_tail = aie::mask<V>::from_uint32((uint32_t{1} << n_tail) - 1);
     const vec neg_inf = aie::broadcast<float, V>(-std::numeric_limits<float>::infinity());
 
-    const auto load_tail = [&](const float * p) {
-        alignas(aie::vector_decl_align) float buf[V] = {};
-        for (int32_t j = 0; j < n_tail; ++j) {
-            buf[j] = p[j];
-        }
-        return aie::load_v<V>(buf);
-    };
-    const auto store_tail = [&](float * p, vec v) {
-        alignas(aie::vector_decl_align) float buf[V];
-        aie::store_v(buf, v);
-        for (int32_t j = 0; j < n_tail; ++j) {
-            p[j] = buf[j];
-        }
-    };
     // x * 1.0f is x, and the emulated fp32 vector multiply is both slow and not exactly rounded,
     // so a unit scale (plain ggml_soft_max) skips it.
     const bool unit_scale = std::bit_cast<uint32_t>(scale) == std::bit_cast<uint32_t>(1.0f);
@@ -125,7 +111,8 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
     };
 
     // The tail is read once and kept in registers through all three passes.
-    const vec x_tail = n_tail > 0 ? load_tail(input + n_whole) : aie::zeros<float, V>();
+    const vec x_tail =
+        n_tail > 0 ? load_v_partial<V>(input + n_whole, n_tail) : aie::zeros<float, V>();
 
     // Pass 1: max of the scaled row (see the scalar passes for why it precedes exp()). Rounding
     // scale*x is monotone in x, so max(scale*x) is scale*max(x) for scale >= 0 and scale*min(x)
@@ -168,7 +155,8 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
             aie::mul(aie::load_unaligned_v<V>(output + i), sum_inv).template to_vector<float>());
     }
     if (n_tail > 0) {
-        store_tail(output + n_whole, aie::mul(e_tail, sum_inv).template to_vector<float>());
+        store_v_partial<V>(output + n_whole, aie::mul(e_tail, sum_inv).template to_vector<float>(),
+                           n_tail);
     }
 #else
     // Pass 1: max of the scaled row. Subtracting this below keeps every scalar_exp() argument

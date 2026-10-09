@@ -20,7 +20,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import fill_drain_program
+from .utils import fill_drain_program, shape_defines
 
 # GGML pooling op selector (matches enum ggml_op_pool in include/ggml.h).
 _GGML_OP_POOL_MAX = 0
@@ -200,6 +200,6 @@ def _create_external_function(
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            *(f"-DGGML_POOL_{key}={value}" for key, value in shape.items()),
+            *shape_defines("GGML_POOL", shape),
         ],
     )

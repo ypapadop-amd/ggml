@@ -79,8 +79,9 @@ void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict
     // (__gtsf2, __eqsf2), which cost more than the rest of the loop and keep it from pipelining.
     // So the loop above is evaluated on integer keys instead, with the same result:
     //
-    // - key(x) is the signed magnitude, -|x| for a negative x: it orders non-NaN floats exactly
-    //   as `<` does, and maps -0 and +0 both to 0, as a tie must (-0 == +0).
+    // - key(x) is the signed magnitude (float_order_key in ggml-aie.hpp, written out here: calling
+    //   it changed this loop's code): it orders non-NaN floats exactly as `<` does, and maps -0
+    //   and +0 both to 0, as a tie must (-0 == +0).
     // - In that order, "max = MAX(max, x); if (max == x) idx = i" takes index i exactly when
     //   !(max > x), i.e. key(x) >= key(max), for non-NaN max and x.
     // - NaN is tracked separately. A NaN x makes the maximum NaN and never takes the index
@@ -107,16 +108,7 @@ void ggml_op_argmax(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict
         };
         // A runtime trip count is not pipelined unless the compiler is promised a minimum. The
         // loop is bound by the scalar unit's slots (MII 14-15 res, 5 rec), not by the chain.
-        if (N >= 4) {
-            AIE_LOOP_MIN_ITERATION_COUNT(4)
-            for (int32_t i = 0; i < N; i++) {
-                step(i);
-            }
-        } else {
-            for (int32_t i = 0; i < N; i++) {
-                step(i);
-            }
-        }
+        GGML_AIE_LOOP_MIN_TRIPS(4, i, N, 1, step(i);)
 
         out[0] = static_cast<OUTPUT_DTYPE>(argmax_idx);
     }

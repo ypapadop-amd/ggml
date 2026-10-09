@@ -72,7 +72,7 @@ case_result run_case(ggml_backend_t backend, int64_t ne0, int64_t ne1, int64_t n
         return case_result::error;
     }
 
-    // Varied, deterministic input spanning a wide range (exercises the max-subtraction path).
+    // Deterministic inputs, per input_kind (see its comment).
     std::vector<float> src_host(n);
     std::mt19937 rng(static_cast<uint32_t>(ne0 * 7919 + ne1 * 31 + ne2));
     std::uniform_real_distribution<float> logit(-12.0f, 12.0f);
@@ -110,7 +110,7 @@ case_result run_case(ggml_backend_t backend, int64_t ne0, int64_t ne1, int64_t n
 
         double m = -1e30;
         for (int64_t i = 0; i < ne0; ++i) {
-            m = (scale * static_cast<double>(x[i]) > m) ? scale * static_cast<double>(x[i]) : m;
+            m = std::fmax(m, scale * static_cast<double>(x[i]));
         }
         double sum = 0.0;
         for (int64_t i = 0; i < ne0; ++i) {

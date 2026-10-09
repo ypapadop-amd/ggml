@@ -69,18 +69,7 @@ void ggml_op_diag_mask_inf(const float * __restrict in,
         aie::store_unaligned_v(out + i,
                                aie::select(aie::load_unaligned_v<V>(in + i), neg_inf, masked));
     };
-    // A minimum trip count lets Peano overlap iterations; it gets its own copy of the loop, taken
-    // only when it holds (a row narrower than 4 vectors takes the plain one).
-    if (vend >= 4 * V) {
-        AIE_LOOP_MIN_ITERATION_COUNT(4)
-        for (int32_t i = 0; i < vend; i += V) {
-            body(i);
-        }
-    } else {
-        for (int32_t i = 0; i < vend; i += V) {
-            body(i);
-        }
-    }
+    GGML_AIE_LOOP_MIN_TRIPS(4, i, vend, V, body(i);)
     for (int32_t i = vend; i < N; ++i) {
         out[i] = i < keep ? in[i] : -std::numeric_limits<float>::infinity();
     }

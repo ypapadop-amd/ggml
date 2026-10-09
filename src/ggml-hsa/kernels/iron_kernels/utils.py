@@ -370,6 +370,19 @@ def fill_drain_program(arch, workers, *, input_tys, output_ty, in_prods, out_con
     return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
+def shape_defines(prefix: str, shape: dict[str, int]) -> list[str]:
+    """Compile flags baking an op's shape into its kernel: one -D<prefix>_<key>=<value> per entry.
+
+    Args:
+        prefix: Macro prefix, e.g. "GGML_POOL".
+        shape: Extents and op_params by name.
+
+    Returns:
+        The -D flags, in the dict's order.
+    """
+    return [f"-D{prefix}_{key}={value}" for key, value in shape.items()]
+
+
 def batch_slice_tap(num_units, unit_size, start_unit, count):
     """DMA access pattern selecting a contiguous run of fixed-size units.
 
