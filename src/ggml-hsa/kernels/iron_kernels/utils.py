@@ -209,6 +209,31 @@ def tiled_tile_size(
     return max_tile_size(arch, dtype, num_elements)
 
 
+def divisor_tile_size(
+    arch: str, num_elements: int, fifo_dtypes: Sequence[np.dtype]
+) -> int:
+    """Largest divisor of num_elements whose tiles fit half the core data memory.
+
+    For kernels that take any tile width (a vector body plus a scalar tail): unlike
+    tiled_tile_size, the tile need not be a multiple of the vector width, so a count such
+    as 500 streams as one tile rather than as 125 tiles of 4. Tiles that are not a whole
+    number of vectors need not start 512-bit aligned; the kernel must load them unaligned.
+
+    Args:
+        arch: Target architecture.
+        num_elements: Total number of elements to tile.
+        fifo_dtypes: Element type of every object fifo streaming tiles through the core,
+            one entry per fifo, each double-buffered.
+
+    Returns:
+        The chosen tile size in elements; always divides num_elements.
+    """
+    budget = _arch_params(arch)["core_data_mem_bytes"] // 2
+    bytes_per_tile_element = 2 * sum(d.itemsize for d in fifo_dtypes)
+    cap = max(1, min(num_elements, budget // bytes_per_tile_element))
+    return next(t for t in range(cap, 0, -1) if num_elements % t == 0)
+
+
 # Minimum valid elements a worker must process for its share of the copy/convert to outweigh the
 # fixed per-worker cost (an extra shim-DMA fill+drain pair and its completion fence). Below this,
 # fanning out costs more than the single-core compute it saves; small ops (e.g. the MNIST FC
