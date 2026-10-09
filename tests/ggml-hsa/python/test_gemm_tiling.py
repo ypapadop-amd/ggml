@@ -8,6 +8,7 @@ miscompute or an ``aiecc`` failure on device.
 """
 
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -442,12 +443,35 @@ def test_expansion_is_at_least_two(dev, dtype_in_str):
 #
 # Both operands are converted to bf16 by that function, so only bf16 applies.
 
-# (gm, gk, gn, n_aie_cols) as hardcoded in ggml_hsa_prepare_mul_mat_f32.
-CPP_PADDING_GRANULARITY = {
-    "npu": (16, 8, 16, 4),   # aie2
-    "npu2": (8, 8, 16, 8),   # aie2p
-}
-CPP_N_AIE_ROWS = 4
+# The constants are read from gemm.cpp itself, so a change on either side alone
+# fails here; a change to how gemm.cpp spells them fails the parse below.
+GEMM_CPP = Path(__file__).resolve().parents[3] / "src" / "ggml-hsa" / "gemm.cpp"
+
+
+def _read_cpp_padding_constants():
+    """((gm, gk, gn, n_aie_cols) per device, n_aie_rows) from ggml_hsa_prepare_mul_mat_f32."""
+    src = GEMM_CPP.read_text()
+
+    def constant(name):
+        pattern = rf"constexpr std::int64_t {name} = (\d+);"
+        match = re.search(pattern, src)
+        assert match, f"gemm.cpp: no match for {pattern!r}; update this parser"
+        return int(match[1])
+
+    def per_device(name):
+        pattern = rf"const std::int64_t {name} = aie2p \? (\d+) : (\d+);"
+        match = re.search(pattern, src)
+        assert match, f"gemm.cpp: no match for {pattern!r}; update this parser"
+        return {"npu2": int(match[1]), "npu": int(match[2])}
+
+    gk, gn = constant("gk"), constant("gn")
+    gm, n_aie_cols = per_device("gm"), per_device("n_aie_cols")
+    granularity = {dev: (gm[dev], gk, gn, n_aie_cols[dev]) for dev in ("npu", "npu2")}
+    return granularity, constant("n_aie_rows")
+
+
+# (gm, gk, gn, n_aie_cols) per device, as ggml_hsa_prepare_mul_mat_f32 sets them.
+CPP_PADDING_GRANULARITY, CPP_N_AIE_ROWS = _read_cpp_padding_constants()
 
 
 def _cpp_padded_shape(dev, M, N, K):
