@@ -1688,11 +1688,16 @@ static size_t ggml_backend_hsa_buffer_type_get_alignment(ggml_backend_buffer_typ
 
 /**
  * @brief Returns the maximum allocation size for buffer type @p buft in bytes.
+ *
+ * Every buffer is allocated ggml_hsa_buffer_read_slack bytes larger than requested, so the pool's
+ * maximum is reduced by it: a buffer of the reported size must still be allocatable.
  */
 static size_t ggml_backend_hsa_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
     const auto & buft_ctx = *static_cast<ggml_backend_hsa_buffer_type_context *>(buft->context);
     const auto & dev_info = ggml_hsa_get_device_info(buft_ctx.device);
-    return dev_info.data_memory.max_alloc_size;
+    const std::size_t max_alloc_size = dev_info.data_memory.max_alloc_size;
+    return max_alloc_size > ggml_hsa_buffer_read_slack ? max_alloc_size - ggml_hsa_buffer_read_slack
+                                                       : 0;
 }
 
 /**
