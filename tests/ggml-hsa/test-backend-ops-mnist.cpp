@@ -2588,6 +2588,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
                                             {14, 14, 8, 500}, {3, 3, 8, 16}, 1, 1, 1, 1, 1, 1,
                                             true));
+    // IM2COL beyond the MNIST shapes (batch 2): stride 2, dilation 2, no padding, a non-square
+    // window with asymmetric padding, and a row wider than the MNIST ones.
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {15, 13, 3, 2}, {3, 3, 3, 4}, 2, 2, 1, 1, 1, 1, true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {16, 12, 2, 2}, {3, 3, 2, 4}, 1, 1, 2, 2, 2, 2, true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {11, 9, 2, 2}, {3, 3, 2, 4}, 1, 1, 0, 0, 1, 1, true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {12, 10, 2, 2}, {5, 3, 2, 4}, 1, 1, 2, 0, 1, 1, true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {40, 6, 1, 2}, {3, 3, 1, 4}, 1, 1, 1, 1, 1, 1, true));
     // Conv1: images [28, 28, 1, 500] x conv1_kernel [3, 3, 1, 8], stride=1, pad=1 -> [28, 28, 8,
     // 500]
     test_cases.emplace_back(
