@@ -378,6 +378,35 @@ inline void store_v_partial(T * p, const aie::vector<T, V> & v, std::int32_t n) 
 }
 
 /**
+ * @brief Stores the first @p N lanes of @p v at @p p, writing nothing past them.
+ *
+ * Aligned stores of @p v or of its halves, quarters, ... no wider than @p G bytes and no narrower
+ * than 128 bits, then scalar stores for what is left: no bounce buffer (unlike @ref
+ * store_v_partial) and no unaligned vector store (broken for 16-bit types). @p p must be aligned to
+ * min(@p G, the size of @p v).
+ */
+template <int N, int G = 64, unsigned V, typename T>
+inline void store_v_prefix(T * p, const aie::vector<T, V> & v) {
+    constexpr int bytes = static_cast<int>(V * sizeof(T));
+    static_assert(N >= 0 && N <= static_cast<int>(V), "store_v_prefix stores 0 to V lanes");
+    if constexpr (N == static_cast<int>(V) && bytes <= G) {
+        aie::store_v(p, v);
+    } else if constexpr (N > 0) {
+        constexpr unsigned H = V / 2;
+        if constexpr (bytes <= 16) {
+            for (int j = 0; j < N; ++j) {
+                p[j] = v[j];
+            }
+        } else if constexpr (N >= static_cast<int>(H)) {
+            store_v_prefix<H, G>(p, v.template extract<H>(0));
+            store_v_prefix<N - static_cast<int>(H), G>(p + H, v.template extract<H>(1));
+        } else {
+            store_v_prefix<N, G>(p, v.template extract<H>(0));
+        }
+    }
+}
+
+/**
  * @brief A float's order key: its signed magnitude, as int32.
  *
  * Orders non-NaN floats exactly as `<` does, with -0 and +0 equal (both 0), so kernels can compare
@@ -456,4 +485,38 @@ inline aie::vector<bf16, V> convert_f32_to_bf16_vector(const aie::vector<f32, V>
     const aie::vector<std::uint16_t, V> res16 =
         aie::filter_even(aie::vector_cast<std::uint16_t>(res32));
     return aie::vector_cast<bf16>(res16);
+}
+
+/**
+ * @brief Converts a vector of f32 to bf16 like @ref convert_f32_to_bf16_vector, bit for bit, in
+ * fewer vector operations.
+ *
+ * It never shifts the 32-bit lanes right (on aie2 that is a round trip through the accumulator,
+ * which also saves and restores the rounding mode): the result is the high 16-bit half of each
+ * rounded lane, taken with @c filter_odd; the NaN case sets the quiet bit in the high half
+ * (@c 0x400000); and the lane's bit 16, the rounding's tie-breaker, is moved to bit 0 by shifting
+ * the 16-bit view down one lane. aie2: 10 vector ALU operations per vector, II 14 -> 10 in
+ * convert_pad's row loop.
+ *
+ * @tparam V Vector width (number of f32 lanes).
+ * @param[in] fv The f32 vector to convert.
+ * @return The converted bf16 vector.
+ */
+template <int V>
+inline aie::vector<bf16, V> convert_f32_to_bf16_vector_hi16(const aie::vector<f32, V> & fv) {
+    const aie::vector<std::uint32_t, V> u = aie::vector_cast<std::uint32_t>(fv);
+
+    // (u >> 16) & 1, from the 16-bit view shifted down one lane (lane 2i then holds lane i's high
+    // half; the odd lanes are masked off)
+    const aie::vector<std::uint32_t, V> lsb = aie::bit_and(
+        1u,
+        aie::vector_cast<std::uint32_t>(aie::shuffle_down(aie::vector_cast<std::uint16_t>(u), 1)));
+
+    // RNE: u + (0x7fff + lsb); NaN: u | (64 << 16). The result is each lane's high half.
+    const aie::vector<std::uint32_t, V> rounded = aie::add(u, aie::add(lsb, 0x7fffu));
+    const aie::vector<std::uint32_t, V> nan_val = aie::bit_or(0x400000u, u);
+    const auto nan_mask = aie::gt(aie::bit_and(0x7fffffffu, u), 0x7f800000u);
+    const aie::vector<std::uint32_t, V> res32 = aie::select(rounded, nan_val, nan_mask);
+
+    return aie::vector_cast<bf16>(aie::filter_odd(aie::vector_cast<std::uint16_t>(res32)));
 }
