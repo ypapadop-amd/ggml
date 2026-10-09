@@ -7,6 +7,7 @@
 
 """IRON kernel implementation for the convert_pad operation."""
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,45 @@ from ml_dtypes import bfloat16
 
 from .utils import arch_to_device, fan_out_worker_count
 
+# Fewest valid elements worth a worker of its own. The convert is cheap per element, so a worker
+# pays off well below the shared default: fanning the MNIST FC operands ([784, 500], [500, 500])
+# out over 3-4 workers halved their time on aie2, while ops of a few thousand elements stay at the
+# dispatch floor either way.
+_MIN_ELEMS_PER_WORKER = 64 * 1024
+
+# Most bytes (input plus output) one ObjectFifo object of rows may hold. Each object costs a DMA
+# buffer descriptor and lock handshake at both ends and a core-function call, which dominate rows
+# of a few dozen bytes; batching rows amortizes that. Objects are double-buffered.
+_MAX_OBJECT_BYTES = 4096
+
+
+def _rows_per_object(
+    d0: int, d1: int, d0pad: int, d1pad: int, in_size: int, out_size: int
+) -> int:
+    """Rows to stream per ObjectFifo object.
+
+    The largest count that divides both the source rows and the padding rows (every object is
+    whole) and keeps an object within _MAX_OBJECT_BYTES. Rows are only batched when an output
+    row's byte size is a multiple of 16, so every row of an object starts 16-byte aligned for the
+    kernel's aligned stores.
+
+    Args:
+        d0: Valid elements per row.
+        d1: Source rows.
+        d0pad: Padded row width.
+        d1pad: Padded row count.
+        in_size: Bytes per input element.
+        out_size: Bytes per output element.
+
+    Returns:
+        The rows per object (>= 1).
+    """
+    if (d0pad * out_size) % 16 != 0:
+        return 1
+    common = math.gcd(d1, d1pad - d1)
+    cap = max(1, _MAX_OBJECT_BYTES // (d0 * in_size + d0pad * out_size))
+    return next(r for r in range(min(cap, common), 0, -1) if common % r == 0)
+
 
 def convert_pad(
     arch: str,
@@ -39,12 +79,11 @@ def convert_pad(
     rows [d1, d1pad), which have no source row, are zero-filled by the cores. The caller need not
     pre-zero the destination.
 
-    The d1 independent rows are fanned out across compute tiles: the convert is compute-bound per
-    core (full RNE f32 -> bf16 emulation), so distributing rows scales throughput until the
-    shim-DMA bandwidth saturates. Each worker owns an independent in/out ObjectFifo (its own
-    shim-DMA path). The worker count scales with the work (see ``fan_out_worker_count``) and is
-    capped at the array column count, so small ops (e.g. the MNIST FC operands) stay single-worker
-    and avoid per-worker DMA/fence overhead, while large ops fan out.
+    Rows travel in ObjectFifo objects of several rows when they are short (see
+    ``_rows_per_object``), and the objects are fanned out across compute tiles, each worker with
+    an independent in/out ObjectFifo (its own shim-DMA path), until the DMA bandwidth saturates.
+    The worker count scales with the work (see ``_MIN_ELEMS_PER_WORKER``) and is capped at the
+    array column count, so ops of a few thousand elements stay single-worker.
 
     Args:
         arch: Target architecture.
@@ -54,7 +93,7 @@ def convert_pad(
         op_params: unused (kept for the dispatch ABI).
         max_workers: Hard cap on compute tiles to fan the row loop across. Defaults to the array's
             column count (one worker per shim-DMA path); the actual count also scales with the work
-            and is capped at d1.
+            and is capped at the number of objects.
 
     Returns:
         The resolved IRON program (MLIR module).
@@ -112,40 +151,53 @@ def convert_pad(
         )
         raise ValueError(msg)
 
-    function, zero_function = _create_external_functions(
-        src=src, output_tensor=output_tensor, d0=d0, d0pad=d0pad
+    # Rows travel in objects of `rows` rows each, for source and padding rows alike.
+    rows = _rows_per_object(
+        d0,
+        d1,
+        d0pad,
+        d1pad,
+        np.dtype(src.dtype).itemsize,
+        np.dtype(output_tensor.dtype).itemsize,
     )
 
-    row_in_ty = np.ndarray[(d0,), np.dtype[src.dtype]]
-    row_out_ty = np.ndarray[(d0pad,), np.dtype[output_tensor.dtype]]
+    function, zero_function = _create_external_functions(
+        src=src, output_tensor=output_tensor, d0=d0, d0pad=d0pad, rows=rows
+    )
 
-    # Fan the d1 independent rows across compute tiles, scaled to the work (tiny ops stay
-    # single-worker). Each worker gets a contiguous band of rows; the first (d1 % n_workers)
-    # workers take one extra row so the bands cover d1 exactly.
-    n_workers = fan_out_worker_count(arch, d0 * d1, d1, max_workers)
-    base, rem = divmod(d1, n_workers)
-    rows_per_worker = [base + (1 if w < rem else 0) for w in range(n_workers)]
+    row_in_ty = np.ndarray[(rows * d0,), np.dtype[src.dtype]]
+    row_out_ty = np.ndarray[(rows * d0pad,), np.dtype[output_tensor.dtype]]
+
+    # Fan the d1 / rows independent objects across compute tiles, scaled to the work (tiny ops
+    # stay single-worker). Each worker gets a contiguous band of objects; the first
+    # (n_objects % n_workers) workers take one extra so the bands cover d1 exactly.
+    n_objects = d1 // rows
+    n_workers = fan_out_worker_count(
+        arch, d0 * d1, n_objects, max_workers, _MIN_ELEMS_PER_WORKER
+    )
+    base, rem = divmod(n_objects, n_workers)
+    rows_per_worker = [rows * (base + (1 if w < rem else 0)) for w in range(n_workers)]
     # The d1pad - d1 trailing padding rows have no source row; each worker also zero-fills a
-    # contiguous band of them. The last workers take the extra rows, balancing the first workers'
-    # extra source rows.
-    zbase, zrem = divmod(d1pad - d1, n_workers)
+    # contiguous band of them. The last workers take the extra objects, balancing the first
+    # workers' extra source objects.
+    zbase, zrem = divmod((d1pad - d1) // rows, n_workers)
     zero_rows_per_worker = [
-        zbase + (1 if w >= n_workers - zrem else 0) for w in range(n_workers)
+        rows * (zbase + (1 if w >= n_workers - zrem else 0)) for w in range(n_workers)
     ]
 
     of_ins = [ObjectFifo(row_in_ty, name=f"in{w}") for w in range(n_workers)]
     of_outs = [ObjectFifo(row_out_ty, name=f"out{w}") for w in range(n_workers)]
 
-    def core_fn(of_in, of_out, function, zero_function, n_rows, n_zero_rows):
-        for _ in range_(n_rows):
+    def core_fn(of_in, of_out, function, zero_function, n_objects, n_zero_objects):
+        for _ in range_(n_objects):
             row_in = of_in.acquire(1)
             row_out = of_out.acquire(1)
             function(row_in, row_out, d0, d0pad)
             of_in.release(1)
             of_out.release(1)
         # Then the worker's band of padding rows: output only, no input.
-        if n_zero_rows > 0:
-            for _ in range_(n_zero_rows):
+        if n_zero_objects > 0:
+            for _ in range_(n_zero_objects):
                 row_out = of_out.acquire(1)
                 zero_function(row_out)
                 of_out.release(1)
@@ -158,8 +210,8 @@ def convert_pad(
                 of_outs[w].prod(),
                 function,
                 zero_function,
-                rows_per_worker[w],
-                zero_rows_per_worker[w],
+                rows_per_worker[w] // rows,
+                zero_rows_per_worker[w] // rows,
             ],
         )
         for w in range(n_workers)
@@ -228,7 +280,7 @@ def convert_pad(
 
 
 def _create_external_functions(
-    src, output_tensor, d0: int, d0pad: int
+    src, output_tensor, d0: int, d0pad: int, rows: int
 ) -> tuple[ExternalFunction, ExternalFunction]:
     """Create the ExternalFunctions for the convert_pad core functions.
 
@@ -237,6 +289,7 @@ def _create_external_functions(
         output_tensor: Destination tensor.
         d0: Number of valid elements in one logical row.
         d0pad: Padded row width.
+        rows: Rows per call (per ObjectFifo object).
 
     Returns:
         The row convert/pad function and the padding-row zero-fill function, both built into one
@@ -250,6 +303,7 @@ def _create_external_functions(
         # as compile-time constants: lets Peano fold the trip count and pipeline the hot loop.
         f"-DCONVERT_PAD_D0={d0}",
         f"-DCONVERT_PAD_D0PAD={d0pad}",
+        f"-DCONVERT_PAD_ROWS={rows}",
     ]
     # A same-dtype pair selects the pad-only kernel body (no dtype conversion); f32 -> bf16 keeps
     # the default convert+pad body.
@@ -258,13 +312,13 @@ def _create_external_functions(
 
     object_file_name = "ggml_hsa_convert_pad_core_function.o"
     source_file = str(current_dir / "convert_pad.cc")
-    row_out_ty = np.ndarray[(d0pad,), np.dtype[output_tensor.dtype]]
+    row_out_ty = np.ndarray[(rows * d0pad,), np.dtype[output_tensor.dtype]]
     function = ExternalFunction(
         name="ggml_hsa_convert_pad",
         object_file_name=object_file_name,
         source_file=source_file,
         arg_types=[
-            np.ndarray[(d0,), np.dtype[src.dtype]],
+            np.ndarray[(rows * d0,), np.dtype[src.dtype]],
             row_out_ty,
             np.int32,  # d0
             np.int32,  # d0pad

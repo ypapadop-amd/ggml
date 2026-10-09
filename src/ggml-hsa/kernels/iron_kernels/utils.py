@@ -242,12 +242,16 @@ _MIN_ELEMS_PER_WORKER = 256 * 1024
 
 
 def fan_out_worker_count(
-    arch: str, total_elems: int, n_units: int, max_workers: int | None = None
+    arch: str,
+    total_elems: int,
+    n_units: int,
+    max_workers: int | None = None,
+    min_elems_per_worker: int = _MIN_ELEMS_PER_WORKER,
 ) -> int:
     """Number of data-parallel workers to fan a transform across, scaled to the work size.
 
     Capped by (a) the caller's max_workers (defaults to the array column count), (b) the number of
-    independent units to split (n_units), and (c) the work: at least _MIN_ELEMS_PER_WORKER valid
+    independent units to split (n_units), and (c) the work: at least min_elems_per_worker valid
     elements per worker, so tiny ops stay single-worker and avoid per-worker DMA/fence overhead.
 
     Args:
@@ -255,13 +259,14 @@ def fan_out_worker_count(
         total_elems: Total valid elements the transform processes.
         n_units: Number of independent units available to split across workers.
         max_workers: Hard cap on workers; defaults to the array's column count.
+        min_elems_per_worker: Fewest valid elements worth a worker of its own.
 
     Returns:
         The worker count (>= 1).
     """
     if max_workers is None:
         max_workers = arch_num_columns(arch)
-    by_work = max(1, total_elems // _MIN_ELEMS_PER_WORKER)
+    by_work = max(1, total_elems // min_elems_per_worker)
     return max(1, min(max_workers, n_units, by_work))
 
 
