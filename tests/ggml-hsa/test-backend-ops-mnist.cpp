@@ -2645,6 +2645,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_conv_2d({1, 6, 1, 1}, {5, 3, 1, 2}, GGML_TYPE_F32, 1, 1, 5, 1, 2, 1));
     test_cases.emplace_back(new test_conv_2d({15, 15, 3, 2}, {3, 3, 3, 4}, GGML_TYPE_F32, 2, 2, 1, 1, 1, 1));
     test_cases.emplace_back(new test_conv_2d({12, 13, 2, 2}, {3, 3, 2, 2}, GGML_TYPE_F32, 1, 2, 1, 1, 1, 1));
+    // A padded-row ring near conv_2d.py's cap (3 x 10 x 32 floats = 3840 B), so the core's
+    // stack check sees the largest frame that path builds.
+    test_cases.emplace_back(new test_conv_2d({16, 16, 10, 2}, {3, 3, 10, 2}, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
+    // The widest window the vector path takes: (KW - 1) * D0 == 16, so the last tap shifts by a
+    // whole vector, with the 15 taps not unrolled.
+    test_cases.emplace_back(new test_conv_2d({24, 8, 2, 2}, {5, 3, 2, 2}, GGML_TYPE_F32, 1, 1, 8, 1, 4, 1));
     test_cases.emplace_back(new test_conv_2d({40, 6, 1, 1}, {9, 1, 1, 2}, GGML_TYPE_F32, 1, 1, 12, 0, 3, 1));
     // MaxPool2: [14, 14, 16, 500] with 2x2 kernel, stride=2, pad=0 -> [7, 7, 16, 500]
     test_cases.emplace_back(
