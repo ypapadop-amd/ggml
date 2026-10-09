@@ -22,8 +22,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "ggml-alloc.h"
@@ -53,6 +55,19 @@ struct test_row {
     const char *       name;
     std::vector<float> values;
 };
+
+/// A row of n values -(i % 7) (all below 1), with the given (column, value) pairs set.
+test_row sparse_row(const char * name, std::size_t n,
+                    std::initializer_list<std::pair<std::size_t, float>> set) {
+    test_row row{name, std::vector<float>(n)};
+    for (std::size_t i = 0; i < n; ++i) {
+        row.values[i] = -static_cast<float>(i % 7);
+    }
+    for (const auto & [col, value] : set) {
+        row.values[col] = value;
+    }
+    return row;
+}
 
 /// Runs ARGMAX over `rows` (all the same length) as one [nc, nr] tensor and checks every row.
 bool run_rows(ggml_backend_t backend, const std::vector<test_row> & rows) {
@@ -160,13 +175,40 @@ int main() {
          {kNaN, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f, 9.f, 10.f, 11.f, 12.f, 13.f, 14.f, 15.f}},
     };
 
-    // 3 wide: below argmax.cc's minimum trip count for its pipelined loop, so it takes the
-    // plain fallback loop, which the wider rows never reach.
+    // 3 wide, 4 rows: the tile holds fewer elements than a vector, so every row takes the
+    // per-row search with loads cut at the tile's end, which the wider rows reach only for
+    // their last row.
     const std::vector<test_row> rows3 = {
         {"3-wide max at 1", {0.f, 9.f, 1.f}},
         {"3-wide tie 0 and 2", {9.f, 1.f, 9.f}},
         {"3-wide NaN discards max", {9.f, kNaN, -1.f}},
         {"3-wide -0 ties +0 max", {0.f, -0.f, -1.f}},
+    };
+
+    // 40 wide: two whole vectors and a tail of 8 per row, so a lane sees several columns.
+    const std::vector<test_row> rows40 = {
+        sparse_row("40-wide max at 0", 40, {{0, 9.f}}),
+        sparse_row("40-wide max in tail at 35", 40, {{35, 9.f}}),
+        sparse_row("40-wide tie 3, 19 (one lane)", 40, {{3, 9.f}, {19, 9.f}}),
+        sparse_row("40-wide tie 5, 26 (two lanes)", 40, {{5, 9.f}, {26, 9.f}}),
+        sparse_row("40-wide tie 30 and 38 (tail)", 40, {{30, 9.f}, {38, 9.f}}),
+        sparse_row("40-wide -0 at 39 ties +0", 40, {{2, 0.f}, {39, -0.f}}),
+        sparse_row("40-wide NaN at 20 discards", 40, {{2, 9.f}, {20, kNaN}}),
+        sparse_row("40-wide NaN in tail at 33", 40, {{2, 9.f}, {33, kNaN}, {36, 0.5f}}),
+        {"40-wide all -inf", std::vector<float>(40, -kInf)},
+    };
+
+    // 32 wide: whole vectors and no tail.
+    const std::vector<test_row> rows32 = {
+        sparse_row("32-wide tie 15 and 16", 32, {{15, 9.f}, {16, 9.f}}),
+        sparse_row("32-wide max at 31", 32, {{31, 9.f}}),
+        sparse_row("32-wide NaN at 31", 32, {{4, 9.f}, {31, kNaN}}),
+    };
+
+    // 1 wide: every row's answer is 0, whatever it holds.
+    const std::vector<test_row> rows1 = {
+        {"1-wide 3", {3.f}},      {"1-wide NaN", {kNaN}}, {"1-wide -inf", {-kInf}},
+        {"1-wide -0", {-0.f}},    {"1-wide +inf", {kInf}}, {"1-wide -2", {-2.f}},
     };
 
     bool all_ok = true;
@@ -176,6 +218,12 @@ int main() {
     all_ok = run_rows(backend, rows16) && all_ok;
     printf("ARGMAX 3-wide:\n");
     all_ok = run_rows(backend, rows3) && all_ok;
+    printf("ARGMAX 40-wide:\n");
+    all_ok = run_rows(backend, rows40) && all_ok;
+    printf("ARGMAX 32-wide:\n");
+    all_ok = run_rows(backend, rows32) && all_ok;
+    printf("ARGMAX 1-wide:\n");
+    all_ok = run_rows(backend, rows1) && all_ok;
 
     ggml_backend_free(backend);
     printf("%s\n", all_ok ? "ALL PASSED" : "FAILURES");

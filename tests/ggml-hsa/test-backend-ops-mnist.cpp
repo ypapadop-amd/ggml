@@ -2618,6 +2618,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         new test_bin_bcast(ggml_add, GGML_TYPE_F32, {10, 1, 1, 1}, {1, 500, 1, 1}));
     // Argmax of logits [10, 500] -> [500]
     test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {10, 500, 1, 1}));
+    // ARGMAX beyond MNIST: one-element rows, an odd row count (7 rows of 33: two vectors and a
+    // tail), rows of exactly one vector, rows longer than 16 in many tiles, 20 tiles of 250
+    // 10-wide rows, a prime row count (tiles of one row, shorter than a vector), and long rows.
+    test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {1, 100, 1, 1}));
+    test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {33, 7, 1, 1}));
+    test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {16, 64, 1, 1}));
+    test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {40, 300, 1, 1}));
+    test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {10, 5000, 1, 1}));
+    test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {10, 997, 1, 1}));
+    test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {1000, 3, 1, 1}));
+    test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {4096, 2, 1, 1}));
     // Correct predictions: count_equal of two argmax outputs [500]
     test_cases.emplace_back(new test_count_equal(500));
     // count_equal edges: under, at and over one vector, a tail, several tiles, an odd tile
