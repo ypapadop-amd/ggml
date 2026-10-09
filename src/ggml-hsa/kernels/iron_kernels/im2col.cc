@@ -53,6 +53,60 @@ void ggml_op_im2col(const INPUT_DTYPE * __restrict in,
 
     event0();
 
+#if __AIEARCH__ == 20 && defined(GGML_IM2COL_IW) // aie2 only so far; im2col.py passes the shape.
+    {
+        // The generic loops below keep every extent at run time, so each element pays four
+        // levels of tiny unpipelined loops and a bounds check. With the shape known, each
+        // (channel, window row, window column) is one output column slot, filled along ox with
+        // the padding columns split off at compile time: zeros, then a pipelined copy, then
+        // zeros. A window row in the padding is all zeros.
+        constexpr int32_t c_iw = GGML_IM2COL_IW, c_ih = GGML_IM2COL_IH, c_ic = GGML_IM2COL_IC;
+        constexpr int32_t c_kw = GGML_IM2COL_KW, c_kh = GGML_IM2COL_KH, c_ow = GGML_IM2COL_OW;
+        constexpr int32_t c_s0 = GGML_IM2COL_S0, c_s1 = GGML_IM2COL_S1, c_p0 = GGML_IM2COL_P0,
+                          c_p1 = GGML_IM2COL_P1, c_d0 = GGML_IM2COL_D0, c_d1 = GGML_IM2COL_D1;
+        constexpr int32_t cs = c_ic * c_kh * c_kw;
+        const auto zero = static_cast<OUTPUT_DTYPE>(0.0f);
+
+        // First and one-past-last ox whose input column ox * s0 + off lies in [0, iw).
+        constexpr auto ox_lo = [](int32_t off) {
+            const int32_t lo = off >= 0 ? 0 : (-off + c_s0 - 1) / c_s0;
+            return lo < c_ow ? lo : c_ow;
+        };
+        constexpr auto ox_hi = [](int32_t off, int32_t lo) {
+            const int32_t hi = (c_iw - 1 - off < 0) ? 0 : (c_iw - 1 - off) / c_s0 + 1;
+            return hi < lo ? lo : (hi > c_ow ? c_ow : hi);
+        };
+
+        for (int32_t iic = 0; iic < c_ic; ++iic) {
+            const INPUT_DTYPE * __restrict src_plane = in + iic * c_ih * c_iw;
+            for (int32_t ikh = 0; ikh < c_kh; ++ikh) {
+                const int32_t iih = oh * c_s1 + ikh * c_d1 - c_p1;
+                const bool y_in = iih >= 0 && iih < c_ih;
+                const INPUT_DTYPE * __restrict srow = src_plane + (y_in ? iih * c_iw : 0);
+                for (int32_t ikw = 0; ikw < c_kw; ++ikw) {
+                    OUTPUT_DTYPE * __restrict dst = out + (iic * c_kh + ikh) * c_kw + ikw;
+                    const int32_t off = ikw * c_d0 - c_p0;
+                    // Bounds selected on y_in, not a separate zero-only branch: with that branch
+                    // Peano no longer unrolled the copy loops, 6 cycles per element against ~3
+                    // (MNIST conv1 im2col 2.8 -> 3.9 ms). The cost: for some shapes (a 5x3
+                    // window, say) it computes these loops' trip counts with a 64-bit multiply
+                    // (__muldi3), once per loop, not per element.
+                    const int32_t lo = y_in ? ox_lo(off) : c_ow;
+                    const int32_t hi = y_in ? ox_hi(off, lo) : c_ow;
+                    for (int32_t ox = 0; ox < lo; ++ox) {
+                        dst[ox * cs] = zero;
+                    }
+                    for (int32_t ox = lo; ox < hi; ++ox) {
+                        dst[ox * cs] = static_cast<OUTPUT_DTYPE>(srow[ox * c_s0 + off]);
+                    }
+                    for (int32_t ox = hi; ox < c_ow; ++ox) {
+                        dst[ox * cs] = zero;
+                    }
+                }
+            }
+        }
+    }
+#else
     const int32_t col_stride = ic * kh * kw;
     const int32_t plane_size = ih * iw;
 
@@ -75,6 +129,7 @@ void ggml_op_im2col(const INPUT_DTYPE * __restrict in,
             }
         }
     }
+#endif
 
     event1();
 }

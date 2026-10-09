@@ -122,6 +122,20 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         output_tensor=output_tensor,
         image_size=image_size,
         row_size=row_size,
+        shape={
+            "IW": iw,
+            "IH": ih,
+            "IC": ic,
+            "KW": kw,
+            "KH": kh,
+            "OW": ow,
+            "S0": s0,
+            "S1": s1,
+            "P0": p0,
+            "P1": p1,
+            "D0": d0,
+            "D1": d1,
+        },
     )
 
     # The batch dimension is embarrassingly parallel: distribute the N images
@@ -209,6 +223,7 @@ def _create_external_function(
     output_tensor,
     image_size: int,
     row_size: int,
+    shape: dict[str, int],
 ) -> ExternalFunction:
     """Create the ExternalFunction for the im2col core function.
 
@@ -217,6 +232,9 @@ def _create_external_function(
         output_tensor: Output tensor.
         image_size: Elements in one input image (IC * IH * IW).
         row_size: Elements in one output row (OW * IC * KH * KW).
+        shape: Image and window extents, strides, padding and dilation, passed as
+            -DGGML_IM2COL_<key>=<value> as well as at run time, so the kernel can be
+            specialized for them (im2col.cc).
 
     Returns:
         The configured ExternalFunction.
@@ -247,5 +265,6 @@ def _create_external_function(
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(image_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+            *(f"-DGGML_IM2COL_{key}={value}" for key, value in shape.items()),
         ],
     )
