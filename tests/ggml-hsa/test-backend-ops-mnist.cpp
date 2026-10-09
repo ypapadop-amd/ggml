@@ -2381,7 +2381,10 @@ struct test_conv_2d : public test_case {
                              dilation0, dilation1, cwhn);
     }
 
-    double max_nmse_err() override { return 5e-4; }
+    // Direct f32 convolution: each output sums K = KH*KW*IC products, so its relative error is at
+    // most ~K * 2^-24 (6e-6 for the 5x5x4 case), an NMSE of at most ~3.6e-11. Every case measured
+    // below 5e-10 on the device; 5e-4 used to let a dropped tap or a wrong edge column through.
+    double max_nmse_err() override { return 1e-9; }
 
     uint64_t op_flops(ggml_tensor * t) override {
         GGML_UNUSED(t);
@@ -2568,6 +2571,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {10, 500, 1, 1}));
     // Cross entropy loss on logits [10, 500]
     test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 500, 1, 1}));
+    // Row widths beyond MNIST's 10 classes: shorter than a 16-lane vector, exactly one vector, one
+    // vector plus a tail, and two vectors plus a tail. (Rows must be a whole number of 8 bytes.)
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {4, 64, 1, 1}));
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {16, 64, 1, 1}));
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {18, 64, 1, 1}));
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {40, 64, 1, 1}));
     // Softmax on logits [10, 500]
     test_cases.emplace_back(new test_soft_max(GGML_TYPE_F32, {10, 500, 1, 1}));
 
@@ -2579,6 +2588,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
                                             {14, 14, 8, 500}, {3, 3, 8, 16}, 1, 1, 1, 1, 1, 1,
                                             true));
+    // IM2COL beyond the MNIST shapes (batch 2): stride 2, dilation 2, no padding, a non-square
+    // window with asymmetric padding, and a row wider than the MNIST ones.
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {15, 13, 3, 2}, {3, 3, 3, 4}, 2, 2, 1, 1, 1, 1, true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {16, 12, 2, 2}, {3, 3, 2, 4}, 1, 1, 2, 2, 2, 2, true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {11, 9, 2, 2}, {3, 3, 2, 4}, 1, 1, 0, 0, 1, 1, true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {12, 10, 2, 2}, {5, 3, 2, 4}, 1, 1, 2, 0, 1, 1, true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {40, 6, 1, 2}, {3, 3, 1, 4}, 1, 1, 1, 1, 1, 1, true));
     // Conv1: images [28, 28, 1, 500] x conv1_kernel [3, 3, 1, 8], stride=1, pad=1 -> [28, 28, 8,
     // 500]
     test_cases.emplace_back(
@@ -2594,11 +2615,43 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // MaxPool1 F16 input: [28, 28, 8, 500] with 2x2 kernel, stride=2, pad=0 -> [14, 14, 8, 500]
     test_cases.emplace_back(
         new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F16, {28, 28, 8, 500}, 2, 2, 2, 2, 0, 0));
+    // POOL_2D beyond the MNIST shapes: output rows wider than one 16-lane vector, odd extents,
+    // and a window that pools only vertically past 1 row (k1 3, s1 1, p1 1).
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {40, 6, 3, 2}, 2, 2, 2, 2, 0, 0));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {15, 9, 3, 2}, 2, 2, 2, 2, 0, 0));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {12, 10, 3, 2}, 2, 3, 2, 1, 0, 1));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {11, 7, 2, 2}, 3, 2, 1, 2, 1, 0));
     // Conv2: [14, 14, 8, 500] x conv2_kernel [3, 3, 8, 16], stride=1, pad=1 -> [14, 14, 16, 500]
     test_cases.emplace_back(
         new test_conv_2d({14, 14, 8, 500}, {3, 3, 8, 16}, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
     // Conv2 bias + ReLU: [14, 14, 16, 500]
     test_cases.emplace_back(new test_unary(GGML_UNARY_OP_RELU, GGML_TYPE_F32, {14, 14, 16, 500}));
+    // CONV_2D beyond the MNIST shapes, one case per kernel path and edge (batch 2 to stay cheap):
+    // larger windows (taps not unrolled), dilation, no padding, a row narrower than one vector,
+    // a row of several vectors plus a partial one, a non-square window with asymmetric padding,
+    // padding wider than the row, stride 2 and a window wider than a vector (the fallback path),
+    // and a vertical-only stride.
+    test_cases.emplace_back(new test_conv_2d({14, 14, 4, 2}, {5, 5, 4, 3}, GGML_TYPE_F32, 1, 1, 2, 2, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({20, 20, 2, 2}, {7, 7, 2, 2}, GGML_TYPE_F32, 1, 1, 3, 3, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({16, 16, 3, 2}, {3, 3, 3, 4}, GGML_TYPE_F32, 1, 1, 2, 2, 2, 2));
+    test_cases.emplace_back(new test_conv_2d({17, 17, 2, 2}, {3, 3, 2, 3}, GGML_TYPE_F32, 1, 1, 0, 0, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({5, 5, 3, 2}, {3, 3, 3, 2}, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({33, 9, 2, 2}, {3, 3, 2, 2}, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({12, 10, 2, 2}, {5, 3, 2, 2}, GGML_TYPE_F32, 1, 1, 2, 0, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({1, 6, 1, 1}, {5, 3, 1, 2}, GGML_TYPE_F32, 1, 1, 5, 1, 2, 1));
+    test_cases.emplace_back(new test_conv_2d({15, 15, 3, 2}, {3, 3, 3, 4}, GGML_TYPE_F32, 2, 2, 1, 1, 1, 1));
+    test_cases.emplace_back(new test_conv_2d({12, 13, 2, 2}, {3, 3, 2, 2}, GGML_TYPE_F32, 1, 2, 1, 1, 1, 1));
+    // A padded-row ring near conv_2d.py's cap (3 x 10 x 32 floats = 3840 B), so the core's
+    // stack check sees the largest frame that path builds.
+    test_cases.emplace_back(new test_conv_2d({16, 16, 10, 2}, {3, 3, 10, 2}, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
+    // The widest window the vector path takes: (KW - 1) * D0 == 16, so the last tap shifts by a
+    // whole vector, with the 15 taps not unrolled.
+    test_cases.emplace_back(new test_conv_2d({24, 8, 2, 2}, {5, 3, 2, 2}, GGML_TYPE_F32, 1, 1, 8, 1, 4, 1));
+    test_cases.emplace_back(new test_conv_2d({40, 6, 1, 1}, {9, 1, 1, 2}, GGML_TYPE_F32, 1, 1, 12, 0, 3, 1));
     // MaxPool2: [14, 14, 16, 500] with 2x2 kernel, stride=2, pad=0 -> [7, 7, 16, 500]
     test_cases.emplace_back(
         new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {14, 14, 16, 500}, 2, 2, 2, 2, 0, 0));

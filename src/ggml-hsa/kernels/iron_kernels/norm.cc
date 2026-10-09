@@ -79,10 +79,24 @@ void ggml_op_norm(const float * __restrict in,
     }
     variance /= static_cast<float>(N);
 
+#if __AIEARCH__ == 20 // aie2 only so far; aie2p keeps scalar_exp/scalar_log, unmeasured there.
+    // The vector aie::invsqrt does compile on aie2 (only the scalar form fails, see below), with
+    // no runtime calls, where scalar_exp(scalar_log()) is ~20 of them: ablating it took 20% off a
+    // 768-wide row. It is an approximation (measured up to 6e-4 relative), so one Newton step,
+    // y * (1.5 - 0.5 * a * y * y), squares its error away. One lane of it is used.
+    const aie::vector<float, V> a = aie::broadcast<float, V>(variance + eps);
+    const aie::vector<float, V> y0 = aie::invsqrt(a);
+    const aie::vector<float, V> half_a_y2 = aie::mul(aie::mul(a, 0.5f).template to_vector<float>(),
+                                                     aie::mul(y0, y0).template to_vector<float>())
+                                                .template to_vector<float>();
+    const float scale = aie::mul(y0, aie::sub(aie::broadcast<float, V>(1.5f), half_a_y2))
+                            .template to_vector<float>()[0];
+#else
     // Reciprocal sqrt via exp/log: 1/sqrt(a) = exp(-0.5 * log(a)). Reuses the
     // scalar_exp/scalar_log helpers, which compile cleanly on the AIE scalar path
     // (the aie::invsqrt intrinsic does not). Evaluated once per row, so it stays scalar.
     const float scale = scalar_exp(-0.5f * scalar_log(variance + eps));
+#endif
 
     // Pass 3: out = (in - mean) * scale.
     const aie::vector<float, V> vscale = aie::broadcast<float, V>(scale);

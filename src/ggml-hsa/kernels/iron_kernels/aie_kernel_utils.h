@@ -185,6 +185,29 @@
 #define AIE_LOOP_FLATTEN
 #endif
 
+/**
+ * @def GGML_AIE_LOOP_MIN_TRIPS(min_trips, var, end, step, ...)
+ * @brief Runs `for (int32_t var = 0; var < end; var += step) { __VA_ARGS__ }`, promising the
+ * compiler at least @p min_trips iterations when that holds.
+ *
+ * Peano leaves a loop with a run-time trip count unpipelined (one iteration at a time) unless it
+ * is promised a minimum, and the promise must not be made when it can fail (a loop that may run
+ * fewer times would have its pipelined prologue run the body too often), so the promise gets its
+ * own copy of the loop, taken only when end >= min_trips * step. @p min_trips must be a literal:
+ * the pragma stringifies it.
+ */
+#define GGML_AIE_LOOP_MIN_TRIPS(min_trips, var, end, step, ...)                                    \
+    if ((end) >= (min_trips) * (step)) {                                                           \
+        AIE_LOOP_MIN_ITERATION_COUNT(min_trips)                                                    \
+        for (int32_t var = 0; var < (end); var += (step)) {                                        \
+            __VA_ARGS__                                                                            \
+        }                                                                                          \
+    } else {                                                                                       \
+        for (int32_t var = 0; var < (end); var += (step)) {                                        \
+            __VA_ARGS__                                                                            \
+        }                                                                                          \
+    }
+
 /** @} */ /* End of loop_macros group */
 
 #endif /* _AIE_KERNEL_UTILS_ */

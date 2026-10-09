@@ -9,6 +9,7 @@
  * This header provides type aliases and type traits used across AIE kernels.
  */
 
+#include <bit>
 #include <cstdint>
 #include <type_traits>
 
@@ -291,6 +292,136 @@ convert_bf16_to_f16_vector(const aie::vector<std::uint16_t, V> & b) {
 
     // select(v, a, m) yields a where m holds: a zero magnitude keeps only its sign
     return aie::bit_or(sign, aie::select(packed, std::uint16_t{0}, aie::eq(mag, std::uint16_t{0})));
+}
+
+/**
+ * @brief Lanes that @ref convert_f16_bits_to_bf16_vector converts correctly.
+ *
+ * A normal f16 (biased exponent in [1, 30]) and a signed zero. An f16 subnormal, infinity or NaN
+ * is left to the scalar path, which is the reference for those.
+ *
+ * @tparam V Vector width (number of 16-bit lanes).
+ * @param[in] h The raw f16 bit patterns.
+ * @return Mask of the lanes the vector path handles.
+ */
+template <int V>
+inline aie::mask<V>
+convert_f16_bits_to_bf16_vector_covers(const aie::vector<std::uint16_t, V> & h) {
+    const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, h);
+    const aie::vector<std::uint16_t, V> exponent = aie::logical_downshift(mag, 10);
+    return (aie::ge(exponent, std::uint16_t{1}) & aie::le(exponent, std::uint16_t{30})) |
+           aie::eq(mag, std::uint16_t{0});
+}
+
+/**
+ * @brief Converts a vector of @p V f16 bit patterns to bf16 bits, for the lanes the predicate
+ * covers.
+ *
+ * Lane-wise replica of @c convert_f32_to_bf16_scalar(convert_f16_bits_to_f32(h)) for a normal f16
+ * or a zero: widening to f32 is exact, so the f32 is the sign, the exponent rebiased by 112 and the
+ * 10 mantissa bits m at the top of the f32 mantissa, and narrowing to bf16 keeps m >> 3 and rounds
+ * to nearest even on the 3 bits dropped: up exactly when (m & 7) + ((m >> 3) & 1) > 4. A carry
+ * out of the mantissa increments the exponent, as it does in the scalar arithmetic.
+ *
+ * Lanes outside @ref convert_f16_bits_to_bf16_vector_covers get a meaningless value here; the
+ * caller must not use the result unless the mask is full.
+ *
+ * @tparam V Vector width (number of 16-bit lanes).
+ * @param[in] h The raw f16 bit patterns.
+ * @return The bf16 bit patterns.
+ */
+template <int V>
+inline aie::vector<std::uint16_t, V>
+convert_f16_bits_to_bf16_vector(const aie::vector<std::uint16_t, V> & h) {
+    const aie::vector<std::uint16_t, V> sign = aie::bit_and(std::uint16_t{0x8000}, h);
+    const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, h);
+    const aie::vector<std::uint16_t, V> exponent = aie::logical_downshift(mag, 10);
+    const aie::vector<std::uint16_t, V> mantissa = aie::bit_and(std::uint16_t{0x3ff}, mag);
+
+    const aie::vector<std::uint16_t, V> kept = aie::logical_downshift(mantissa, 3);
+    const aie::vector<std::uint16_t, V> packed =
+        aie::bit_or(aie::upshift(aie::add(exponent, std::uint16_t{112}), 7), kept);
+    const aie::vector<std::uint16_t, V> round =
+        aie::add(aie::bit_and(std::uint16_t{7}, mantissa), aie::bit_and(std::uint16_t{1}, kept));
+    const aie::vector<std::uint16_t, V> rounded = aie::add(
+        packed, aie::select(aie::zeros<std::uint16_t, V>(), aie::broadcast<std::uint16_t, V>(1),
+                            aie::gt(round, std::uint16_t{4})));
+
+    // select(v, a, m) yields a where m holds: a zero magnitude keeps only its sign
+    return aie::bit_or(sign,
+                       aie::select(rounded, std::uint16_t{0}, aie::eq(mag, std::uint16_t{0})));
+}
+
+/**
+ * @brief Loads the first @p n (< V) elements at @p p into a vector whose other lanes are zero.
+ *
+ * Reads exactly @p n elements, so nothing past the end of a row or buffer is touched: the neighbour
+ * may be the other half of a ping-pong ObjectFifo. Goes through an aligned bounce buffer.
+ */
+template <int V, typename T>
+inline aie::vector<T, V> load_v_partial(const T * p, std::int32_t n) {
+    alignas(aie::vector_decl_align) T buf[V] = {};
+    for (std::int32_t j = 0; j < n; ++j) {
+        buf[j] = p[j];
+    }
+    return aie::load_v<V>(buf);
+}
+
+/// Stores the first @p n (< V) lanes of @p v at @p p, writing nothing past them.
+template <int V, typename T>
+inline void store_v_partial(T * p, const aie::vector<T, V> & v, std::int32_t n) {
+    alignas(aie::vector_decl_align) T buf[V];
+    aie::store_v(buf, v);
+    for (std::int32_t j = 0; j < n; ++j) {
+        p[j] = buf[j];
+    }
+}
+
+/**
+ * @brief A float's order key: its signed magnitude, as int32.
+ *
+ * Orders non-NaN floats exactly as `<` does, with -0 and +0 equal (both 0), so kernels can compare
+ * floats on the integer unit: the aie2 scalar unit has no float compare, and `a < b` on float is a
+ * runtime call there. A NaN's key lies beyond +inf's or -inf's; callers that can see one must
+ * handle it themselves (@ref float_is_nan).
+ */
+inline std::int32_t float_order_key(float f) {
+    const std::int32_t bits = std::bit_cast<std::int32_t>(f);
+    const std::int32_t magnitude = bits & 0x7fffffff;
+    return bits < 0 ? -magnitude : magnitude;
+}
+
+/// Whether @p f is a NaN, on the integer unit.
+inline bool float_is_nan(float f) {
+    return (std::bit_cast<std::int32_t>(f) & 0x7fffffff) > 0x7f800000;
+}
+
+/// The float whose @ref float_order_key is @p k (+0 for key 0).
+inline float float_from_order_key(std::int32_t k) {
+    return std::bit_cast<float>(k < 0 ? (-k | INT32_MIN) : k);
+}
+
+/// @ref float_order_key lane-wise.
+template <int V>
+inline aie::vector<std::int32_t, V> float_order_keys(const aie::vector<float, V> & v) {
+    const auto bits = v.template cast_to<std::int32_t>();
+    const auto magnitude = aie::bit_and(0x7fffffff, bits);
+    return aie::select(magnitude, aie::neg(magnitude),
+                       aie::lt(bits, aie::zeros<std::int32_t, V>()));
+}
+
+/// @ref float_is_nan lane-wise.
+template <int V>
+inline aie::mask<V> floats_are_nan(const aie::vector<float, V> & v) {
+    return aie::gt(aie::bit_and(0x7fffffff, v.template cast_to<std::int32_t>()), 0x7f800000);
+}
+
+/// @ref float_from_order_key lane-wise.
+template <int V>
+inline aie::vector<float, V> floats_from_order_keys(const aie::vector<std::int32_t, V> & k) {
+    const auto bits = aie::select(k, aie::bit_or(INT32_MIN, aie::neg(k)),
+                                  aie::lt(k, aie::zeros<std::int32_t, V>()));
+    return bits.template cast_to<float>();
 }
 
 /**

@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include <bit>
 #include <limits>
 #include <type_traits>
 
@@ -88,6 +89,76 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
     const float * input = reinterpret_cast<const float *>(in);
     float * output = reinterpret_cast<float *>(out);
 
+#if __AIEARCH__ == 20 // aie2 only so far; aie2p keeps the scalar passes below, unmeasured there.
+    // The scalar passes below call a runtime routine for every float multiply and compare (the
+    // scalar unit has neither), so they run in vectors: whole vectors in place, and the last
+    // N % V elements through a bounce buffer, so nothing past the row is read or written (the
+    // row's neighbour may be the other half of a ping-pong ObjectFifo). Rows need not start
+    // 512-bit aligned, so whole vectors use the unaligned accesses.
+    constexpr int32_t V = 16;
+    using vec = aie::vector<float, V>;
+
+    const int32_t n_whole = static_cast<int32_t>(static_cast<uint32_t>(N) & ~uint32_t{V - 1});
+    const int32_t n_tail = N - n_whole;
+    const auto in_tail = aie::mask<V>::from_uint32((uint32_t{1} << n_tail) - 1);
+    const vec neg_inf = aie::broadcast<float, V>(-std::numeric_limits<float>::infinity());
+
+    // x * 1.0f is x, and the emulated fp32 vector multiply is both slow and not exactly rounded,
+    // so a unit scale (plain ggml_soft_max) skips it.
+    const bool unit_scale = std::bit_cast<uint32_t>(scale) == std::bit_cast<uint32_t>(1.0f);
+    const auto scaled = [&](vec x) {
+        return unit_scale ? x : aie::mul(x, scale).template to_vector<float>();
+    };
+
+    // The tail is read once and kept in registers through all three passes.
+    const vec x_tail =
+        n_tail > 0 ? load_v_partial<V>(input + n_whole, n_tail) : aie::zeros<float, V>();
+
+    // Pass 1: max of the scaled row (see the scalar passes for why it precedes exp()). Rounding
+    // scale*x is monotone in x, so max(scale*x) is scale*max(x) for scale >= 0 and scale*min(x)
+    // for scale < 0, exactly: the row is reduced unscaled and scaled once.
+    vec vmax = neg_inf;
+    vec vmin = aie::neg(neg_inf);
+    for (int32_t i = 0; i < n_whole; i += V) {
+        const vec x = aie::load_unaligned_v<V>(input + i);
+        vmax = aie::max(vmax, x);
+        vmin = aie::min(vmin, x);
+    }
+    if (n_tail > 0) {
+        vmax = aie::max(vmax, aie::select(neg_inf, x_tail, in_tail));
+        vmin = aie::min(vmin, aie::select(aie::neg(neg_inf), x_tail, in_tail));
+    }
+    const vec vextreme = aie::broadcast<float, V>(
+        std::bit_cast<int32_t>(scale) < 0 ? aie::reduce_min(vmin) : aie::reduce_max(vmax));
+    const vec vrow_max = scaled(vextreme);
+
+    // Pass 2: exp(scale*x - max) into out, and its sum (tail lanes past the row excluded).
+    vec vsum = aie::zeros<float, V>();
+    for (int32_t i = 0; i < n_whole; i += V) {
+        vec x = aie::sub(scaled(aie::load_unaligned_v<V>(input + i)), vrow_max);
+        const vec e = vec_exp<V>(x);
+        aie::store_unaligned_v(output + i, e);
+        vsum = aie::add(vsum, e);
+    }
+    vec e_tail = aie::zeros<float, V>();
+    if (n_tail > 0) {
+        vec x = aie::sub(scaled(x_tail), vrow_max);
+        e_tail = aie::select(aie::zeros<float, V>(), vec_exp<V>(x), in_tail);
+        vsum = aie::add(vsum, e_tail);
+    }
+
+    // Pass 3: normalize. One exact divide per row; aie::inv is approximate.
+    const float sum_inv = 1.0f / aie::reduce_add(vsum);
+    for (int32_t i = 0; i < n_whole; i += V) {
+        aie::store_unaligned_v(
+            output + i,
+            aie::mul(aie::load_unaligned_v<V>(output + i), sum_inv).template to_vector<float>());
+    }
+    if (n_tail > 0) {
+        store_v_partial<V>(output + n_whole, aie::mul(e_tail, sum_inv).template to_vector<float>(),
+                           n_tail);
+    }
+#else
     // Pass 1: max of the scaled row. Subtracting this below keeps every scalar_exp() argument
     // <= 0, so exp() can't overflow no matter how large the (scaled) logits are.
     float global_max = std::numeric_limits<float>::lowest();
@@ -112,6 +183,7 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
     for (int32_t i = 0; i < N; ++i) {
         output[i] *= sum_inv;
     }
+#endif
 
     event1();
 }

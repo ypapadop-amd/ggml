@@ -143,16 +143,24 @@ void transform_vector_n(TOut * __restrict out,
         constexpr int32_t V = 512 / (sizeof(TOut) * 8);
         vend = (N / V) * V; // division by constexpr V -> inline shift, once
 
-        // No AIE_LOOP_MIN_ITERATION_COUNT: a tile narrower than V leaves vend 0, and promising
-        // >= 1 iteration would make the pipelined prologue run the body on too few elements.
-        AIE_PREPARE_FOR_PIPELINING
-        for (int32_t i = 0; i < vend; i += V) {
+        const auto body = [&](int32_t i) {
             if constexpr (Aligned) {
                 aie::store_v(out + i, vec_op(aie::load_v<V>(in + i)...));
             } else {
                 aie::store_unaligned_v(out + i, vec_op(aie::load_unaligned_v<V>(in + i)...));
             }
+        };
+#if __AIEARCH__ == 20 // aie2 only so far; aie2p keeps the single loop below, unmeasured there.
+        // A tile narrower than V leaves vend 0, so the minimum trip count is versioned.
+        GGML_AIE_LOOP_MIN_TRIPS(4, i, vend, V, body(i);)
+#else
+        // No AIE_LOOP_MIN_ITERATION_COUNT: a tile narrower than V leaves vend 0, and promising
+        // >= 1 iteration would make the pipelined prologue run the body on too few elements.
+        AIE_PREPARE_FOR_PIPELINING
+        for (int32_t i = 0; i < vend; i += V) {
+            body(i);
         }
+#endif
     }
 
     // Tail of the vector loop, or the whole range when there is no vector path.
