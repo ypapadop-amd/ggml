@@ -11,9 +11,12 @@ import struct
 from pathlib import Path
 
 import numpy as np
+from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
+    Program,
+    Runtime,
     Worker,
     dtype_to_str,
 )
@@ -21,8 +24,11 @@ from aie.iron.controlflow import range_
 
 from .utils import (
     arch_aligned_num_elements,
-    fill_drain_program,
-    max_tile_size,
+    arch_to_device,
+    divisor_tile_size,
+    fan_out_worker_count,
+    partition_units,
+    vector_lanes,
 )
 
 
@@ -34,8 +40,9 @@ def _create_external_function(
 ) -> tuple[ExternalFunction, int, int]:
     """Create the clamp ExternalFunction.
 
-    Tile size is the largest power-of-two vector width that evenly divides the
-    arch-aligned element count, so tiles need no remainder/tail iteration.
+    The kernel has a vector body and a scalar tail, so it streams the largest tile that
+    divides the element count and fits L1, rather than one vector register per object-fifo
+    round trip.
 
     Args:
         arch: Target architecture.
@@ -47,7 +54,18 @@ def _create_external_function(
         (func, num_elements, tile_size) where num_elements is arch-aligned.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
-    tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
+    tile_size = divisor_tile_size(
+        arch, num_elements, fifo_dtypes=(input_tensor.dtype, output_tensor.dtype)
+    )
+
+    compile_flags = [
+        f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
+        f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        "-DGGML_VECTORIZED_TILING=1",
+    ]
+    # Aligned vector accesses are only legal when every tile boundary is a whole vector.
+    if tile_size % vector_lanes(arch, output_tensor.dtype) == 0:
+        compile_flags.append("-DGGML_TILE_VECTOR_ALIGNED=1")
 
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
@@ -61,10 +79,7 @@ def _create_external_function(
             np.float32,
             np.float32,
         ],
-        compile_flags=[
-            f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
-            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-        ],
+        compile_flags=compile_flags,
     )
     return func, num_elements, tile_size
 
@@ -110,27 +125,61 @@ def clamp(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
 
     input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
     output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-    of_in = ObjectFifo(input_tile_ty, name="in")
-    of_out = ObjectFifo(output_tile_ty, name="out")
 
-    def ext_core_fn(of_in, of_out, function):
-        for _ in range_(num_tiles):
+    # Fan the tiles out across columns, one worker each with its own shim DMA, in contiguous
+    # bands moved linearly. One column streams about 6 GB/s, which with the vector body is
+    # what bounds a large clamp; small ones stay on one worker.
+    n_workers = fan_out_worker_count(arch, num_elements, num_tiles)
+    tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
+    of_ins = [ObjectFifo(input_tile_ty, name=f"in{w}") for w in range(n_workers)]
+    of_outs = [ObjectFifo(output_tile_ty, name=f"out{w}") for w in range(n_workers)]
+
+    def ext_core_fn(of_in, of_out, function, n_tiles):
+        for _ in range_(n_tiles):
             elem_in = of_in.acquire(1)
             elem_out = of_out.acquire(1)
             function(elem_in, elem_out, tile_size, min_val, max_val)
             of_in.release(1)
             of_out.release(1)
 
-    worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+    workers = [
+        Worker(
+            ext_core_fn,
+            fn_args=[
+                of_ins[w].cons(),
+                of_outs[w].prod(),
+                function,
+                tiles_per_worker[w],
+            ],
+        )
+        for w in range(n_workers)
+    ]
+
+    def band(w):
+        return TensorAccessPattern(
+            (num_elements,),
+            first_tiles[w] * tile_size,
+            [1, 1, tiles_per_worker[w], tile_size],
+            [0, 0, tile_size, 1],
+        )
+
+    # One host buffer per ggml tensor, src then dst. Every drain is waited on: the bands can
+    # finish in any order.
+    def sequence(in_buf, out_buf, in_prods, out_conses):
+        for w in range(n_workers):
+            in_prods[w].fill(in_buf, band(w))
+        for w in range(n_workers):
+            out_conses[w].drain(out_buf, band(w), wait=True)
 
     input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
-
-    return fill_drain_program(
-        arch,
-        [worker],
-        input_tys=[input_tensor_ty],
-        output_ty=output_tensor_ty,
-        in_prods=[of_in.prod()],
-        out_cons=of_out.cons(),
+    rt = Runtime(
+        sequence,
+        [
+            input_tensor_ty,
+            output_tensor_ty,
+            [of_in.prod() for of_in in of_ins],
+            [of_out.cons() for of_out in of_outs],
+        ],
     )
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
