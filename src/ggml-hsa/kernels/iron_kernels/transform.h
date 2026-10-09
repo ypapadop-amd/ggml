@@ -151,19 +151,8 @@ void transform_vector_n(TOut * __restrict out,
             }
         };
 #if __AIEARCH__ == 20 // aie2 only so far; aie2p keeps the single loop below, unmeasured there.
-        // Peano leaves a runtime-count loop unpipelined (one iteration at a time) unless it is
-        // promised a minimum trip count, and a tile narrower than V leaves vend 0, so the promise
-        // gets its own copy of the loop, taken only when it holds.
-        if (vend >= 4 * V) {
-            AIE_LOOP_MIN_ITERATION_COUNT(4)
-            for (int32_t i = 0; i < vend; i += V) {
-                body(i);
-            }
-        } else {
-            for (int32_t i = 0; i < vend; i += V) {
-                body(i);
-            }
-        }
+        // A tile narrower than V leaves vend 0, so the minimum trip count is versioned.
+        GGML_AIE_LOOP_MIN_TRIPS(4, i, vend, V, body(i);)
 #else
         // No AIE_LOOP_MIN_ITERATION_COUNT: a tile narrower than V leaves vend 0, and promising
         // >= 1 iteration would make the pipelined prologue run the body on too few elements.

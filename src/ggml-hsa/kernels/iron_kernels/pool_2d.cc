@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-#include <bit>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -16,31 +15,18 @@ constexpr int32_t GGML_OP_POOL_MAX = 0;
 namespace {
 
 // Max pooling on integer keys: the aie2 scalar unit has no float compare, so the float loop
-// below paid a runtime call (__gtsf2) for every tap. key() orders non-NaN floats exactly as `<`
-// does (the signed magnitude), so the max key is the key of the max. A NaN gets the lowest key
-// and never wins, as `(v > res) ? v : res` never takes one. -0 and +0 share key 0, so a window
-// whose maximum is a zero returns +0.
+// below paid a runtime call (__gtsf2) for every tap. key() is float_order_key (ggml-aie.hpp),
+// which orders non-NaN floats exactly as `<` does, so the max key is the key of the max. A NaN gets
+// the lowest key and never wins, as `(v > res) ? v : res` never takes one. -0 and +0 share key 0,
+// so a window whose maximum is a zero returns +0.
 constexpr int32_t kLowestKey = -0x7f7fffff; // key(-FLT_MAX), the float loop's starting value
 
-inline int32_t key(float f) {
-    const int32_t bits = std::bit_cast<int32_t>(f);
-    const int32_t magnitude = bits & 0x7fffffff;
-    if (magnitude > 0x7f800000) {
-        return INT32_MIN;
-    }
-    return bits < 0 ? -magnitude : magnitude;
-}
-
-inline float from_key(int32_t k) { return std::bit_cast<float>(k < 0 ? (-k | INT32_MIN) : k); }
+inline int32_t key(float f) { return float_is_nan(f) ? INT32_MIN : float_order_key(f); }
 
 template <int32_t V>
 inline aie::vector<int32_t, V> keys(aie::vector<float, V> v) {
-    const auto bits = v.template cast_to<int32_t>();
-    const auto magnitude = aie::bit_and(0x7fffffff, bits);
-    const auto signed_magnitude =
-        aie::select(magnitude, aie::neg(magnitude), aie::lt(bits, aie::zeros<int32_t, V>()));
-    return aie::select(signed_magnitude, aie::broadcast<int32_t, V>(INT32_MIN),
-                       aie::gt(magnitude, 0x7f800000));
+    return aie::select(float_order_keys<V>(v), aie::broadcast<int32_t, V>(INT32_MIN),
+                       floats_are_nan<V>(v));
 }
 
 template <typename T_in>
@@ -82,11 +68,8 @@ void pool_2d_max(const T_in * __restrict in, float * __restrict out) {
                 }
                 const auto pairs = aie::concat(lo, hi);
                 const auto best = aie::max(aie::filter_even(pairs), aie::filter_odd(pairs));
-                const auto magnitude = aie::neg(best);
-                const auto bits = aie::select(best, aie::bit_or(INT32_MIN, magnitude),
-                                              aie::lt(best, aie::zeros<int32_t, V>()));
                 alignas(aie::vector_decl_align) float chunk[V];
-                aie::store_v(chunk, bits.template cast_to<float>());
+                aie::store_v(chunk, floats_from_order_keys<V>(best));
                 const int32_t ox = c * V;
                 const int32_t lanes = (ow - ox < V) ? ow - ox : V;
                 for (int32_t l = 0; l < lanes; ++l) {
@@ -112,7 +95,7 @@ void pool_2d_max(const T_in * __restrict in, float * __restrict out) {
                         best = k > best ? k : best;
                     }
                 }
-                out[oy * ow + ox] = from_key(best);
+                out[oy * ow + ox] = float_from_order_key(best);
             }
         }
     }

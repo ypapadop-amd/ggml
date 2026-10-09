@@ -22,7 +22,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_to_device, batch_slice_tap, partition_units
+from .utils import arch_to_device, batch_slice_tap, partition_units, shape_defines
 
 # Cap on data-parallel workers (compute tiles). Beyond this the per-worker shim/
 # mem-tile DMA channels exhaust the array's routing budget on NPU1 (aie2).
@@ -265,6 +265,6 @@ def _create_external_function(
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(image_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            *(f"-DGGML_IM2COL_{key}={value}" for key, value in shape.items()),
+            *shape_defines("GGML_IM2COL", shape),
         ],
     )
