@@ -15,8 +15,9 @@
 // The padded-GEMM MUL_MAT has its own host fallback: HSA_CONVERT_PAD declines an f16 source, so f16
 // operands are scattered into their zero-padded bf16 internal buffers on the host. The internal
 // buffers are not zeroed at allocation, so that scatter must write the padding itself. Fresh device
-// allocations happen to read as zero, though, so this checks the fallback path and its result; it
-// cannot by itself catch a scatter that skips the padding.
+// allocations happen to read as zero, so the case first dirties the storage: a larger MUL_MAT with
+// no zero inputs runs on the same allocator, and the padded case's extra, recycled from it, takes
+// over its internal storage, so a scatter that skips the padding leaves nonzero values there.
 //
 // Inputs are small integers, which are exact in f16 and in bf16, and so are their sums. That makes
 // the expected result an exact integer regardless of how many times the value is round-tripped
@@ -144,7 +145,7 @@ case_result run_case(ggml_backend_t backend,
 // tile multiples so every operand is padded in both dimensions. Both operands take the host
 // fallback (asserted), so the padding gaps the GEMM reads are written only by the host scatter.
 case_result run_mul_mat_case(ggml_backend_t backend, int64_t K, int64_t M, int64_t N) {
-    const std::size_t ctx_size = 5 * ggml_tensor_overhead() + ggml_graph_overhead();
+    const std::size_t ctx_size = 8 * ggml_tensor_overhead() + 2 * ggml_graph_overhead();
     ggml_init_params params{
         /*.mem_size   =*/ctx_size,
         /*.mem_buffer =*/nullptr,
@@ -177,11 +178,43 @@ case_result run_mul_mat_case(ggml_backend_t backend, int64_t K, int64_t M, int64
         }
     }
 
-    ggml_cgraph * gf = ggml_new_graph(ctx.get());
-    ggml_build_forward_expand(gf, dst);
-
     std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)> galloc{
         ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
+
+    // Dirty the internal storage first: a MUL_MAT at tile multiples on aie2 and aie2p, with no zero
+    // inputs, whose operands' bf16 copies alone outsize all of the padded case's internal storage.
+    // It is larger, so the allocator keeps its buffer for the padded case and recycles its extras;
+    // the padded MUL_MAT takes the same extra slot and reuses its storage.
+    {
+        const int64_t dK = 64, dM = 512, dN = 128;
+        ggml_tensor * da = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, dK, dM);
+        ggml_tensor * db = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, dK, dN);
+        ggml_tensor * ddst = ggml_mul_mat(ctx.get(), da, db);
+        if (!ggml_backend_supports_op(backend, ddst)) {
+            printf("  dirtying MUL_MAT not supported\n");
+            return case_result::fail;
+        }
+        ggml_cgraph * dgf = ggml_new_graph(ctx.get());
+        ggml_build_forward_expand(dgf, ddst);
+        if (!ggml_gallocr_alloc_graph(galloc.get(), dgf)) {
+            printf("  dirtying graph allocation failed\n");
+            return case_result::fail;
+        }
+        for (ggml_tensor * t : {da, db}) {
+            std::vector<uint8_t> bytes(ggml_nbytes(t));
+            for (int64_t i = 0; i < ggml_nelements(t); ++i) {
+                store_val(GGML_TYPE_F16, bytes.data(), i, static_cast<float>(i % 7 + 1));
+            }
+            ggml_backend_tensor_set(t, bytes.data(), 0, bytes.size());
+        }
+        if (ggml_backend_graph_compute(backend, dgf) != GGML_STATUS_SUCCESS) {
+            printf("  dirtying graph compute failed\n");
+            return case_result::fail;
+        }
+    }
+
+    ggml_cgraph * gf = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(gf, dst);
     if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
         printf("  graph allocation failed\n");
         return case_result::fail;
