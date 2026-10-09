@@ -170,3 +170,89 @@ void transform_vector_n(TOut * __restrict out,
 
     event1();
 }
+
+/**
+ * @brief @ref transform_vector_n with walking pointers, and aligned accesses whenever the
+ * pointers allow them.
+ *
+ * Same contract as @ref transform_vector_n (vector body only when every input shares the output
+ * type, scalar tail), with two differences in the vector body:
+ *
+ * - Each operand is a cursor advanced one vector per iteration, instead of base + i. Peano does
+ *   not strength-reduce base + i, and recomputing three addresses through one pointer register
+ *   each iteration serialized the loop.
+ * - Without the Python builder's guarantee (Aligned false), the pointers are checked at run time:
+ *   when all of them are aligned for a vector load/store (aie::vector_ldst_align_v), the body uses
+ *   aligned accesses, and unaligned ones otherwise. An unaligned store is a read-modify-write of
+ *   the vectors it straddles, so it costs several times an aligned one.
+ *
+ * @tparam Aligned      As in @ref transform_vector_n: true only when the builder guaranteed it.
+ * @tparam EnableVector As in @ref transform_vector_n.
+ */
+template <bool Aligned = false,
+          bool EnableVector = true,
+          typename TOut,
+          typename VecOp,
+          typename ScalarOp,
+          typename... TIn>
+void transform_vector_walk_n(TOut * __restrict out,
+                             int32_t N,
+                             VecOp vec_op,
+                             ScalarOp scalar_op,
+                             const TIn * __restrict... in) {
+    static_assert(!Aligned || tile_vector_aligned_v<TOut>,
+                  "Aligned=true needs every tile boundary 512-bit aligned: see transform_vector_n");
+    static_assert(vectorized_tiling_v<TOut>,
+                  "this op has a vectorized body but was compiled without GGML_VECTORIZED_TILING: "
+                  "see transform_vector_n");
+
+    event0();
+
+    int32_t vend = 0;
+
+    if constexpr (EnableVector && (std::is_same_v<TIn, TOut> && ...)) {
+        constexpr int32_t V = 512 / (sizeof(TOut) * 8);
+        vend = (N / V) * V;
+
+        const auto loop = [&](auto aligned) {
+            TOut * __restrict o = out;
+            [&](auto... p) {
+                const auto body = [&](int32_t) {
+                    if constexpr (decltype(aligned)::value) {
+                        aie::store_v(o, vec_op(aie::load_v<V>(p)...));
+                    } else {
+                        aie::store_unaligned_v(o, vec_op(aie::load_unaligned_v<V>(p)...));
+                    }
+                    o += V;
+                    ((p += V), ...);
+                };
+#if __AIEARCH__ == 20 // As in transform_vector_n: the promise is measured on aie2 only.
+                GGML_AIE_LOOP_MIN_TRIPS(4, i, vend, V, body(i);)
+#else
+                for (int32_t i = 0; i < vend; i += V) {
+                    body(i);
+                }
+#endif
+            }(in...);
+        };
+
+        if constexpr (Aligned) {
+            loop(std::true_type{});
+        } else if (vend > 0) { // a row narrower than V skips the check
+            constexpr uintptr_t mask = aie::vector_ldst_align_v<TOut, V> - 1;
+            if (((reinterpret_cast<uintptr_t>(out) | ... | reinterpret_cast<uintptr_t>(in)) &
+                 mask) == 0) {
+                loop(std::true_type{});
+            } else {
+                loop(std::false_type{});
+            }
+        }
+    }
+
+    // Tail of the vector loop, or the whole range when there is no vector path.
+    for (int32_t i = vend; i < N; ++i) {
+        out[i] = scalar_op(in[i]...);
+    }
+
+    event1();
+}

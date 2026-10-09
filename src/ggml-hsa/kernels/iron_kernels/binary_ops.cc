@@ -104,7 +104,7 @@ void ggml_op_add(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_vector_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::add(a, b); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); }, in0, in1);
 }
@@ -125,7 +125,7 @@ void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_vector_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::sub(a, b); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); }, in0, in1);
 }
@@ -151,7 +151,7 @@ void ggml_op_mul(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_vector_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); }, in0, in1);
 }
@@ -341,7 +341,7 @@ void ggml_op_div_broadcast(const INPUT0_DTYPE * __restrict in0,
 
 // Row-broadcast fast paths: src1 is a single row (ne0 elements) reused across every dst
 // row. The Python dispatch gates all four on matching input/output types (see
-// the shared transform_vector_n) and falls back to the generic broadcast kernels otherwise.
+// the shared transform_vector_walk_n) and falls back to the generic broadcast kernels otherwise.
 
 #ifdef GGML_OP_ADD_ROW
 
@@ -357,7 +357,7 @@ void ggml_op_add_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    transform_vector_n(
+    transform_vector_walk_n(
         out, N, [](auto a, auto b) { return aie::add(a, b); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); }, src0, src1);
 }
@@ -378,7 +378,7 @@ void ggml_op_sub_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    transform_vector_n(
+    transform_vector_walk_n(
         out, N, [](auto a, auto b) { return aie::sub(a, b); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); }, src0, src1);
 }
@@ -409,7 +409,7 @@ void ggml_op_mul_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    transform_vector_n(
+    transform_vector_walk_n(
         out, N, [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); }, src0, src1);
 }
