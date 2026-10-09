@@ -244,7 +244,7 @@ int main() {
         // src1_nr == nr with nz == 1 makes src1 the same shape as src0, so no broadcast is
         // involved at all and dispatch lands on the plain ggml_op_add/sub/mul/div kernels --
         // a different body from every case above, and the one the shared vectorized
-        // transform_vector_n serves. Only these four ops have a vector body there; DIV stays
+        // transform_vector_walk_n serves. Only these four ops have a vector body there; DIV stays
         // scalar deliberately.
         {op_kind::add, 768, 64, 1, 64, "add elementwise"},
         {op_kind::sub, 768, 64, 1, 64, "sub elementwise"},

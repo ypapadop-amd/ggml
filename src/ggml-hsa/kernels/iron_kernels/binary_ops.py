@@ -217,7 +217,7 @@ def _create_external_function(
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            # L1-budgeted tile, so the shared transform_vector_n may use its vector body.
+            # L1-budgeted tile, so the shared transform_vector_walk_n may use its vector body.
             # This builder serves ADD/SUB/MUL/DIV; DIV has no vector body and simply ignores
             # the flag. The generic broadcast path keeps the one-register tile and is
             # deliberately left without it.
@@ -382,7 +382,7 @@ def _create_row_external_function(
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            # Tile is one whole dst row, so the shared transform_vector_n may use its vector
+            # Tile is one whole dst row, so the shared transform_vector_walk_n may use its vector
             # body. (For a narrow row that tile is still below one vector register; the body
             # then degrades to its scalar tail.) The generic broadcast path keeps the
             # one-register tile and is deliberately left without this flag.
