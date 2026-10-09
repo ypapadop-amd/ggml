@@ -301,6 +301,79 @@ inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
     return result;
 }
 
+/// @ref vec_exp_nonpositive on up to 32 lanes, always inlined so that its caller can interleave
+/// independent calls.
+template <int32_t VecSize>
+__attribute__((always_inline)) inline aie::vector<float, VecSize>
+vec_exp_nonpositive_lanes(aie::vector<float, VecSize> x) {
+    using vec = aie::vector<float, VecSize>;
+    constexpr float log2e = 1.4426950408889634f;
+    // Cody-Waite split of ln(2): n * ln2_hi is exact for the n here.
+    constexpr float ln2_hi = 6.93145751953125e-1f;
+    constexpr float ln2_lo = 1.4286068203094172321e-6f;
+    constexpr float magic = 12582912.0f; // 1.5 * 2^23
+
+    x = aie::max(x, aie::broadcast<float, VecSize>(-86.0f));
+
+    // n = floor(t), t = x * log2(e) + 1/2: round with the magic number, then step down where that
+    // rounded up.
+    aie::accum<accfloat, VecSize> t_acc;
+    t_acc.from_vector(aie::broadcast<float, VecSize>(0.5f));
+    const vec t = aie::mac(t_acc, x, log2e).template to_vector<float>();
+    const vec v_magic = aie::broadcast<float, VecSize>(magic);
+    vec n_f = aie::sub(aie::add(t, v_magic), v_magic);
+    n_f = aie::sub(n_f, aie::select(aie::zeros<float, VecSize>(),
+                                    aie::broadcast<float, VecSize>(1.0f), aie::lt(t, n_f)));
+
+    vec r = aie::sub(x, aie::mul(n_f, ln2_hi).template to_vector<float>());
+    r = aie::sub(r, aie::mul(n_f, ln2_lo).template to_vector<float>());
+
+    // exp(r) by Horner's rule, 1/7! down to 1/0!.
+    constexpr float coeffs[] = {1.0f / 5040.0f, 1.0f / 720.0f, 1.0f / 120.0f, 1.0f / 24.0f,
+                                1.0f / 6.0f,    0.5f,          1.0f,          1.0f};
+    vec poly = aie::broadcast<float, VecSize>(coeffs[0]);
+    AIE_LOOP_UNROLL_FULL
+    for (int32_t i = 1; i < static_cast<int32_t>(sizeof(coeffs) / sizeof(coeffs[0])); ++i) {
+        aie::accum<accfloat, VecSize> acc;
+        acc.from_vector(aie::broadcast<float, VecSize>(coeffs[i]));
+        poly = aie::mac(acc, poly, r).template to_vector<float>();
+    }
+
+    // poly * 2^n: n << 23 added to the exponent field (n_f is a whole number, so exact).
+    return aie::add(poly.template cast_to<int32_t>(), aie::to_fixed<int32_t>(n_f, 23))
+        .template cast_to<float>();
+}
+
+/**
+ * @brief Computes exp(x) for x <= 0, the arguments of softmax and log-sum-exp once the row
+ * maximum is subtracted, in fewer steps than @ref vec_exp.
+ *
+ * exp(x) = 2^n * exp(r) with n = floor(x * log2(e) + 1/2), so r = x - n * ln(2) lies in
+ * [-ln2/2, ln2/2], where a degree-7 Taylor polynomial is within 6e-9 of exp(r) (against degree 13
+ * on [0, ln2) in @ref vec_exp). 2^n is applied by adding n to the result's exponent field. Every
+ * fp32 multiply here is emulated and dominates the cost: 10 of them, against 17 in @ref vec_exp.
+ *
+ * Each step waits on the previous one, so one call leaves most of the core idle: 64 lanes run as
+ * two independent 32-lane halves, which the scheduler interleaves (887 bundles against 674 for 32
+ * lanes on aie2; 32 is the widest fp32 accumulator).
+ *
+ * @tparam VecSize The SIMD vector width: up to 32, or 64.
+ * @param[in] x Arguments, <= 0. Below -86 they are taken as -86: exp(-86) ~ 4.5e-38 is still a
+ *              normal float, so the exponent field cannot underflow. A positive argument is
+ *              outside the contract.
+ * @return exp(x) in each lane.
+ */
+template <int32_t VecSize>
+inline aie::vector<float, VecSize> vec_exp_nonpositive(const aie::vector<float, VecSize> & x) {
+    if constexpr (VecSize > 32) {
+        static_assert(VecSize == 64, "vec_exp_nonpositive takes up to 32 lanes, or 64");
+        return aie::concat(vec_exp_nonpositive_lanes<32>(x.template extract<32>(0)),
+                           vec_exp_nonpositive_lanes<32>(x.template extract<32>(1)));
+    } else {
+        return vec_exp_nonpositive_lanes<VecSize>(x);
+    }
+}
+
 /**
  * @brief Applies the GELU activation (tanh approximation) to every lane.
  *

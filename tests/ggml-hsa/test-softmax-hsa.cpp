@@ -160,6 +160,21 @@ int main() {
         // Negative scale: the row max of scale*x is scale*min(x). Taking the wrong extreme only
         // shows up when exp() overflows, hence the wide inputs.
         {40, 16, 1, "40 wide s=-1", -1.0f, input_kind::wide},
+        // Rows of up to 32 run 32 rows at a time, one per lane, two columns per exp() call: one
+        // column, an odd count, the widest, the narrowest wider one, a group cut short (7 rows),
+        // a negative and a fractional scale, and 8 tiles of 125 rows over 8 workers.
+        {1, 40, 1, "1 rnd", 1.0f, input_kind::random},
+        {5, 96, 1, "5 rnd", 1.0f, input_kind::random},
+        {31, 64, 1, "31 rnd", 1.0f, input_kind::random},
+        {32, 64, 1, "32 rnd", 1.0f, input_kind::random},
+        {33, 64, 1, "33 rnd", 1.0f, input_kind::random},
+        {10, 7, 1, "10x7 rnd", 1.0f, input_kind::random},
+        {20, 48, 1, "20 wide s=-1", -1.0f, input_kind::wide},
+        {12, 80, 1, "12 rnd s=0.125", 0.125f, input_kind::random},
+        {10, 1000, 1, "10x1000 rnd", 1.0f, input_kind::random},
+        // Bands of unequal length: 11 tiles of 11 rows, and 9 single-row tiles, over 8 workers.
+        {10, 121, 1, "10x121 rnd", 1.0f, input_kind::random},
+        {40, 9, 1, "40x9 rnd", 1.0f, input_kind::random},
         // NOTE: the full-context [1024,1024,12] shape is intentionally omitted for now:
         // the current single-worker kernel overruns the per-dispatch watchdog and aborts
         // the process (uncatchable). Re-add it once the kernel is fanned across compute

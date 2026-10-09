@@ -56,39 +56,15 @@ inline float compute_alibi_slope(float max_bias, int32_t n_head, int32_t head_id
     return slope;
 }
 
-extern "C" {
-
 #ifdef GGML_OP_SOFT_MAX
 
-/**
- * @brief Computes softmax without mask or sink tensors.
- *
- * Implements the numerically stable softmax: softmax(x_i) = exp(x_i - max) / sum(exp(x_j - max))
- *
- * Algorithm:
- * 1. Find global maximum of scaled inputs for numerical stability.
- * 2. Compute exp(scale*x - max) for each element and accumulate sum.
- * 3. Normalize by dividing each exp value by the sum.
- *
- * @param[in]  in       Input tensor of size N elements.
- * @param[out] out      Output tensor of size N elements (can alias in).
- * @param[in]  N        Number of elements in the row.
- * @param[in]  scale    Scale factor applied to input before softmax.
- * @param[in]  max_bias Unused in this variant (kept for API consistency).
- */
-void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
-                      OUTPUT_DTYPE * __restrict out,
-                      int32_t N,
-                      float scale,
-                      float max_bias) {
-    static_assert(std::is_same<INPUT_DTYPE, float>::value, "INPUT_DTYPE must be float");
-    static_assert(std::is_same<OUTPUT_DTYPE, float>::value, "OUTPUT_DTYPE must be float");
+namespace {
 
-    event0();
-
-    const float * input = reinterpret_cast<const float *>(in);
-    float * output = reinterpret_cast<float *>(out);
-
+/// Softmax of one row of @p N elements: see ggml_op_soft_max.
+inline void soft_max_row(const float * __restrict input,
+                         float * __restrict output,
+                         int32_t N,
+                         float scale) {
 #if __AIEARCH__ == 20 // aie2 only so far; aie2p keeps the scalar passes below, unmeasured there.
     // The scalar passes below call a runtime routine for every float multiply and compare (the
     // scalar unit has neither), so they run in vectors: whole vectors in place, and the last
@@ -182,6 +158,161 @@ void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
     float sum_inv = 1.0f / sum_total;
     for (int32_t i = 0; i < N; ++i) {
         output[i] *= sum_inv;
+    }
+#endif
+}
+
+#if __AIEARCH__ == 20 && defined(GGML_SOFTMAX_ROW_LEN) && GGML_SOFTMAX_ROW_LEN <= 32
+#define GGML_SOFTMAX_LANE_ROWS 1
+
+// Rows this short leave most lanes of a row's vectors idle, and a row is one serial chain of
+// dependent vector steps (two reductions, exp(), a divide) that nothing else overlaps. So
+// kLaneRows rows run together with one row per lane: column c of the group is one vector, each
+// pass is lane-wise and needs no reduction, exp() runs on full vectors, and the group shares one
+// reciprocal.
+constexpr int32_t kLaneRows = 32;
+
+/// Columns per exp() call: two 32-lane columns as one 64-lane vector, whose halves the scheduler
+/// interleaves (see vec_exp_nonpositive).
+constexpr int32_t kExpColumns = 2;
+
+/// Columns, rounded up to whole exp() calls.
+constexpr int32_t kLaneRowsColumns =
+    (GGML_SOFTMAX_ROW_LEN + kExpColumns - 1) / kExpColumns * kExpColumns;
+
+/// The group transposed: column c of its rows at [c * kLaneRows, (c + 1) * kLaneRows). A column
+/// past the row (odd lengths) is computed and never read.
+alignas(aie::vector_decl_align) float lane_rows_columns[kLaneRowsColumns * kLaneRows];
+
+/// Softmax of each of @p n_rows rows of GGML_SOFTMAX_ROW_LEN elements: see ggml_op_soft_max.
+inline void soft_max_lane_rows(const float * __restrict input,
+                               float * __restrict output,
+                               int32_t n_rows,
+                               float scale) {
+    constexpr int32_t N = GGML_SOFTMAX_ROW_LEN;
+    constexpr int32_t L = kLaneRows;
+    using vec = aie::vector<float, L>;
+    float * __restrict cols = lane_rows_columns;
+
+    // As in soft_max_row: a unit scale skips the emulated fp32 multiply, and the row max is the
+    // scaled maximum (or, for a negative scale, minimum) of the unscaled row.
+    const bool unit_scale = std::bit_cast<uint32_t>(scale) == std::bit_cast<uint32_t>(1.0f);
+    const bool negative_scale = std::bit_cast<int32_t>(scale) < 0;
+    const auto scaled = [&](vec x) {
+        return unit_scale ? x : aie::mul(x, scale).template to_vector<float>();
+    };
+
+    for (int32_t r0 = 0; r0 < n_rows; r0 += L) {
+        // In the last group, lanes past its rows hold the previous group's columns (or whatever
+        // the buffer held): every pass is lane-wise, so they are computed and never stored.
+        const int32_t rows = n_rows - r0 < L ? n_rows - r0 : L;
+
+        // Transpose in, a column at a time, as 32-bit words: no float operation touches the data.
+        uint32_t * __restrict cols_bits = reinterpret_cast<uint32_t *>(cols);
+        AIE_LOOP_NO_UNROLL
+        for (int32_t c = 0; c < N; ++c) {
+            const uint32_t * __restrict src = reinterpret_cast<const uint32_t *>(input + r0 * N) + c;
+            uint32_t * __restrict col = cols_bits + c * L;
+            GGML_AIE_LOOP_MIN_TRIPS(8, r, rows, 1, {
+                *col++ = *src;
+                src += N;
+            })
+        }
+
+        // Pass 1: the extreme of each row (lane), over its columns.
+        vec extreme = aie::load_v<L>(cols);
+        if (negative_scale) {
+            for (int32_t c = 1; c < N; ++c) {
+                extreme = aie::min(extreme, aie::load_v<L>(cols + c * L));
+            }
+        } else {
+            for (int32_t c = 1; c < N; ++c) {
+                extreme = aie::max(extreme, aie::load_v<L>(cols + c * L));
+            }
+        }
+        const vec row_max = scaled(extreme);
+
+        // Pass 2: exp(scale*x - max) in place, two columns at a time, and each row's sum.
+        vec sum = aie::zeros<float, L>();
+        for (int32_t c = 0; c < N; c += kExpColumns) {
+            const vec x0 = aie::sub(scaled(aie::load_v<L>(cols + c * L)), row_max);
+            const vec x1 = aie::sub(scaled(aie::load_v<L>(cols + (c + 1) * L)), row_max);
+            const aie::vector<float, kExpColumns * L> e =
+                vec_exp_nonpositive<kExpColumns * L>(aie::concat(x0, x1));
+            aie::store_v(cols + c * L, e);
+            sum = aie::add(sum, e.template extract<L>(0));
+            if (c + 1 < N) {
+                sum = aie::add(sum, e.template extract<L>(1));
+            }
+        }
+
+        // Pass 3: normalize by 1/sum. aie::inv on fp32 ends in a Newton step of its own: a
+        // further one moved the outputs' error vs a double reference by at most 2e-7.
+        const vec sum_inv = aie::inv(sum);
+        for (int32_t c = 0; c < N; ++c) {
+            aie::store_v(cols + c * L,
+                         aie::mul(aie::load_v<L>(cols + c * L), sum_inv).template to_vector<float>());
+        }
+
+        // Transpose out, a column at a time.
+        AIE_LOOP_NO_UNROLL
+        for (int32_t c = 0; c < N; ++c) {
+            const uint32_t * __restrict col = cols_bits + c * L;
+            uint32_t * __restrict dst = reinterpret_cast<uint32_t *>(output + r0 * N) + c;
+            GGML_AIE_LOOP_MIN_TRIPS(8, r, rows, 1, {
+                *dst = *col++;
+                dst += N;
+            })
+        }
+    }
+}
+#endif
+
+} // namespace
+
+#endif // GGML_OP_SOFT_MAX
+
+extern "C" {
+
+#ifdef GGML_OP_SOFT_MAX
+
+/**
+ * @brief Computes softmax without mask or sink tensors over a tile of rows.
+ *
+ * Implements the numerically stable softmax: softmax(x_i) = exp(x_i - max) / sum(exp(x_j - max))
+ * for each of the tile's @p n_rows rows of @p N elements.
+ *
+ * Algorithm, per row:
+ * 1. Find global maximum of scaled inputs for numerical stability.
+ * 2. Compute exp(scale*x - max) for each element and accumulate sum.
+ * 3. Normalize by dividing each exp value by the sum.
+ *
+ * @param[in]  in       Input tile of n_rows * N elements.
+ * @param[out] out      Output tile of n_rows * N elements.
+ * @param[in]  N        Number of elements in a row.
+ * @param[in]  n_rows   Number of rows in the tile.
+ * @param[in]  scale    Scale factor applied to input before softmax.
+ * @param[in]  max_bias Unused in this variant (kept for API consistency).
+ */
+void ggml_op_soft_max(const INPUT_DTYPE * __restrict in,
+                      OUTPUT_DTYPE * __restrict out,
+                      int32_t N,
+                      int32_t n_rows,
+                      float scale,
+                      float max_bias) {
+    static_assert(std::is_same<INPUT_DTYPE, float>::value, "INPUT_DTYPE must be float");
+    static_assert(std::is_same<OUTPUT_DTYPE, float>::value, "OUTPUT_DTYPE must be float");
+
+    event0();
+
+    const float * input = reinterpret_cast<const float *>(in);
+    float * output = reinterpret_cast<float *>(out);
+
+#ifdef GGML_SOFTMAX_LANE_ROWS
+    soft_max_lane_rows(input, output, n_rows, scale);
+#else
+    for (int32_t r = 0; r < n_rows; ++r) {
+        soft_max_row(input + r * N, output + r * N, N, scale);
     }
 #endif
 
