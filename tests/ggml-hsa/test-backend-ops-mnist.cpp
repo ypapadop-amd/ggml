@@ -1922,6 +1922,46 @@ struct test_argmax : public test_case {
     double max_nmse_err() override { return 0.0; }
 };
 
+// GGML_OP_COUNT_EQUAL
+// MNIST eval counts correct predictions as count_equal(argmax(logits), argmax(labels)); the
+// inputs here are those [N] I32 vectors directly, half of the elements equal.
+struct test_count_equal : public test_case {
+    const int64_t n;
+
+    std::string vars() override { return VARS_TO_STR1(n); }
+
+    test_count_equal(int64_t n = 500) : n(n) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * a = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n);
+        ggml_set_name(a, "a");
+
+        ggml_tensor * b = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n);
+        ggml_set_name(b, "b");
+
+        ggml_tensor * out = ggml_count_equal(ctx, a, b);
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        std::random_device rd;
+        std::default_random_engine rng(rd());
+        std::uniform_int_distribution<int32_t> dist(0, 1);
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL;
+             t = ggml_get_next_tensor(ctx, t)) {
+            std::vector<int32_t> data(ggml_nelements(t));
+            for (auto & v : data) {
+                v = dist(rng);
+            }
+            ggml_backend_tensor_set(t, data.data(), 0, ggml_nbytes(t));
+        }
+    }
+
+    double max_nmse_err() override { return 0.0; }
+};
+
 // GGML_OP_ADD
 // GGML_OP_SUB
 // GGML_OP_MUL
@@ -2578,6 +2618,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         new test_bin_bcast(ggml_add, GGML_TYPE_F32, {10, 1, 1, 1}, {1, 500, 1, 1}));
     // Argmax of logits [10, 500] -> [500]
     test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {10, 500, 1, 1}));
+    // Correct predictions: count_equal of two argmax outputs [500]
+    test_cases.emplace_back(new test_count_equal(500));
+    // count_equal edges: under, at and over one vector, a tail, several tiles, an odd tile
+    for (int64_t n : {15, 16, 17, 40, 2049, 5000, 10000}) {
+        test_cases.emplace_back(new test_count_equal(n));
+    }
     // Cross entropy loss on logits [10, 500]
     test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 500, 1, 1}));
     // Row widths beyond MNIST's 10 classes: shorter than a 16-lane vector, exactly one vector, one
@@ -2712,6 +2758,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                                               GGML_TYPE_F32, {1, 1}, 1.0f, 0.0f));
     // MNIST-MLP: argmax of logits [10, 500]
     test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {10, 500, 1, 1}));
+    // MNIST: count_equal of the predicted and true labels [500]
+    test_cases.emplace_back(new test_count_equal(500));
     // MNIST-MLP: FC1 ReLU [500, 500]
     test_cases.emplace_back(new test_unary(GGML_UNARY_OP_RELU, GGML_TYPE_F32, {500, 500, 1, 1}));
     // MNIST-MLP: FC2 bias broadcast add [10, 500] + [10]

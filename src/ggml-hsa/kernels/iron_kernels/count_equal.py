@@ -20,7 +20,7 @@ from aie.iron import (
 )
 from aie.iron.controlflow import range_
 
-from .utils import fill_drain_program, max_tile_size
+from .utils import divisor_tile_size, fill_drain_program
 
 
 def count_equal_op(arch: str, input_tensors: list, output_tensor):
@@ -87,9 +87,11 @@ def count_equal_op(arch: str, input_tensors: list, output_tensor):
 
     total_elements = input_tensor0.numel()
 
-    # Largest power-of-two width dividing total_elements, so every tile is full-width
-    # and the kernel tail loop only handles the sub-vector remainder, not a short tile.
-    tile_size = max_tile_size(arch, input_tensor0.dtype, total_elements)
+    # Largest tile dividing total_elements that L1 holds: every acquire/call costs a fixed
+    # overhead, so the count streams in as few tiles as possible (MNIST's 500 labels in one).
+    tile_size = divisor_tile_size(
+        arch, total_elements, [input_tensor0.dtype, input_tensor1.dtype]
+    )
     num_tiles = total_elements // tile_size
 
     function = _create_external_function(
