@@ -12,7 +12,8 @@
 // result. An f16 ADD case checks that the cache is not specific to MUL_MAT. A last case places the
 // weight in the graph's own compute buffer, where it is not cached: it is rewritten between
 // computes at the same address and every compute must see its current contents. So is a plain view
-// of a weight, which has no extra to keep a converted copy in.
+// of a weight, which has no extra to keep a converted copy in. The last case checks that a
+// conversion that never ran, because its queue was suspended, is not reused by another backend.
 
 #include <cstdint>
 #include <cstdio>
@@ -374,6 +375,84 @@ case_result run_view_case(ggml_backend_t backend, int64_t M, int64_t N, int64_t 
     return ok ? case_result::pass : case_result::fail;
 }
 
+// Suspends @p backend 's queue: a queue holds at most 32 distinct kernels and the next dispatch
+// fails, so this casts at distinct sizes until a compute fails. Returns false if none did.
+bool suspend_queue(ggml_backend_t backend) {
+    for (int64_t i = 1; i <= 64; ++i) {
+        graph_t g = make_graph(backend, GGML_TYPE_F32, 1024 * i, 1, [](ggml_context * ctx,
+                                                                       ggml_tensor * x) {
+            return ggml_cast(ctx, x, GGML_TYPE_BF16);
+        });
+        if (g.gf == nullptr) {
+            return false;
+        }
+        if (ggml_backend_graph_compute(backend, g.gf) != GGML_STATUS_SUCCESS) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A constant's conversion that never ran must not be trusted later. On a suspended queue the
+// conversion is only written to the queue, so it seems to succeed, but it never runs and the
+// compute fails. A second backend, on a queue of its own, must then convert the weight again
+// rather than read a copy that was never written.
+case_result run_failed_conversion_case(int64_t M, int64_t N, int64_t K) {
+    ggml_backend_t failing = ggml_backend_hsa_init(0);
+    ggml_backend_t fresh = ggml_backend_hsa_init(0);
+    if (failing == nullptr || fresh == nullptr) {
+        ggml_backend_free(failing);
+        ggml_backend_free(fresh);
+        printf("  backend initialization failed\n");
+        return case_result::fail;
+    }
+    case_result result = case_result::fail;
+    {
+        ctx_ptr wctx = make_ctx(1);
+        ggml_tensor * w = ggml_new_tensor_2d(wctx.get(), GGML_TYPE_F32, K, M);
+        ggml_set_name(w, "w");
+        buffer_ptr wbuf{ggml_backend_alloc_ctx_tensors(wctx.get(), fresh),
+                        ggml_backend_buffer_free};
+        graph_t g =
+            make_graph(fresh, GGML_TYPE_F32, K, N, [w](ggml_context * ctx, ggml_tensor * x) {
+                return ggml_mul_mat(ctx, w, x);
+            });
+        std::vector<float> hx(N * K);
+        for (int64_t j = 0; j < N; ++j) {
+            for (int64_t k = 0; k < K; ++k) {
+                hx[j * K + k] = static_cast<float>((j * 5 + k * 11) % 7 - 3);
+            }
+        }
+        const std::vector<float> hw = make_weight(M, K, 0);
+        if (wbuf == nullptr || g.gf == nullptr) {
+            printf("  allocation failed\n");
+        } else if (!ggml_backend_supports_op(fresh, g.c)) {
+            printf("  MUL_MAT not supported (skipped)\n");
+            result = case_result::skip;
+        } else if (!suspend_queue(failing)) {
+            printf("  could not suspend a queue (skipped)\n");
+            result = case_result::skip;
+        } else {
+            ggml_backend_tensor_set(w, hw.data(), 0, ggml_nbytes(w));
+            ggml_backend_tensor_set(g.x, hx.data(), 0, ggml_nbytes(g.x));
+            if (ggml_backend_graph_compute(failing, g.gf) == GGML_STATUS_SUCCESS) {
+                printf("  compute on a suspended queue succeeded\n");
+            } else if (ggml_backend_graph_compute(fresh, g.gf) != GGML_STATUS_SUCCESS) {
+                printf("  compute on a fresh backend failed\n");
+            } else {
+                std::vector<float> got(M * N);
+                ggml_backend_tensor_get(g.c, got.data(), 0, ggml_nbytes(g.c));
+                result = check("compute on a fresh backend", got, hw, hx, M, N, K)
+                             ? case_result::pass
+                             : case_result::fail;
+            }
+        }
+    }
+    ggml_backend_free(failing);
+    ggml_backend_free(fresh);
+    return result;
+}
+
 } // namespace
 
 int main() {
@@ -439,6 +518,17 @@ int main() {
         skipped += (r == case_result::skip);
     }
     ggml_backend_free(backend);
+
+    {
+        const case_result r = run_failed_conversion_case(500, 500, 784);
+        const char * label = r == case_result::pass   ? "PASSED"
+                             : r == case_result::skip ? "SKIPPED"
+                                                      : "FAILED";
+        printf("MUL_MAT f32 500x500x784 conversion on a suspended queue: %s\n", label);
+        any_fail = any_fail || (r == case_result::fail);
+        passed += (r == case_result::pass);
+        skipped += (r == case_result::skip);
+    }
 
     if (any_fail) {
         printf("SOME FAILED\n");

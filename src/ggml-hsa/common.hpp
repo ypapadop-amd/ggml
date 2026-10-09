@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <hsa/hsa.h>
@@ -605,6 +606,13 @@ struct ggml_backend_hsa_context {
     /// The void event interface cannot report that, so @c ggml_backend_hsa_graph_compute reads it
     /// instead. Sticky like @ref queue_error: the dependency is never satisfied later.
     std::atomic<bool> dependency_failed{false};
+
+    /// @brief Constant conversions issued on the device queue and not yet known to have run, each
+    /// with the parent data pointer it converts. @ref ggml_hsa_wait_dispatches publishes them (sets
+    /// @c conversion_t::converted_ptr) once the queue drains, and drops them if it is suspended: a
+    /// packet that is written but never runs must not be trusted by any context.
+    std::vector<std::pair<ggml_backend_hsa_tensor_extra::conversion_t *, const void *>>
+        pending_conversions;
 
     explicit ggml_backend_hsa_context(const ggml_hsa_device_info::device_info & dev_info);
 

@@ -1220,6 +1220,7 @@ ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
     // suspended queue never releases its completion signals either, so report instead of waiting.
     // Callers must not read device buffers after a non-success return.
     if (const ggml_status status = ggml_hsa_flush_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
+        ctx.pending_conversions.clear();
         return status;
     }
 
@@ -1228,6 +1229,13 @@ ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
         val != 0) {
         GGML_ABORT("%s: unexpected signal value (%ld)\n", __func__, val);
     }
+
+    // every packet ran, so the constant conversions among them may now be reused by any context;
+    // a later conversion of the same constant comes later in the list and wins
+    for (const auto & [conversion, converted_ptr] : ctx.pending_conversions) {
+        conversion->converted_ptr = converted_ptr;
+    }
+    ctx.pending_conversions.clear();
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2000,10 +2008,16 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
                 return GGML_STATUS_ALLOC_FAILED;
             }
             internal_node.src[src_idx]->data = conversion->tensor.data;
-            if (conversion->converted_ptr == node->src[src_idx]->data) {
+            // A conversion still pending on this context runs before anything enqueued after it,
+            // so it can be reused here, though not yet by another context.
+            const void * parent_ptr = node->src[src_idx]->data;
+            if (conversion->converted_ptr == parent_ptr ||
+                std::find(ctx.pending_conversions.rbegin(), ctx.pending_conversions.rend(),
+                          std::make_pair(conversion, parent_ptr)) !=
+                    ctx.pending_conversions.rend()) {
                 continue;
             }
-            conversion->converted_ptr = nullptr; // invalid until this conversion is issued
+            conversion->converted_ptr = nullptr; // invalid until this conversion has run
         }
         ggml_status status = GGML_STATUS_SUCCESS;
         if (src_node.preprocess_kernel != nullptr) {
@@ -2036,13 +2050,16 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
                                src_idx, node->name, ggml_hsa_tensor_op_desc(*node));
             return status;
         }
-        // Cache only a conversion that was issued: a device conversion that fails after this
-        // records a queue error, which fails this and every later graph_compute on this context.
         // The cached pointer lives in the constant's extra, i.e. in its buffer, and is shared by
-        // every backend context: a fresh context created after such a queue error could still
-        // trust a conversion that never completed.
+        // every backend context, so it is set only for a conversion that ran: a host copy has, but
+        // a device conversion has only been written to the queue, which may yet be suspended
+        // before it runs. It is published by the next successful ggml_hsa_wait_dispatches.
         if (conversion != nullptr) {
-            conversion->converted_ptr = node->src[src_idx]->data;
+            if (src_node.preprocess_kernel != nullptr) {
+                ctx.pending_conversions.emplace_back(conversion, node->src[src_idx]->data);
+            } else {
+                conversion->converted_ptr = node->src[src_idx]->data;
+            }
         }
     }
     return GGML_STATUS_SUCCESS;
