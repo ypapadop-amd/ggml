@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <random>
 #include <vector>
 
 #include "ggml-alloc.h"
@@ -21,7 +22,7 @@
 namespace {
 
 bool run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz, float eps,
-              const char * name) {
+              const char * name, bool random = false, float spread = 8.0f) {
     const int64_t n = nc * nr * nz;
 
     const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
@@ -52,11 +53,15 @@ bool run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz, float 
         return false;
     }
 
-    // Varied, deterministic input pattern with a per-row offset so rows differ.
+    // Varied, deterministic input pattern with a per-row offset so rows differ; or seeded uniform
+    // values with a full random mantissa, which the ramp's few distinct values cannot stand in for.
     std::vector<float> src_host(n);
+    std::mt19937 rng(static_cast<uint32_t>(nc * 7919 + nr * 31 + nz));
+    std::uniform_real_distribution<float> value(-spread, spread);
     for (int64_t r = 0; r < nr * nz; ++r) {
         for (int64_t i = 0; i < nc; ++i) {
-            src_host[r * nc + i] = static_cast<float>(i % 97) * 0.5f - 13.0f +
+            src_host[r * nc + i] =
+                random ? value(rng) : static_cast<float>(i % 97) * 0.5f - 13.0f +
                                    static_cast<float>(r) * 0.25f;
         }
     }
@@ -71,8 +76,13 @@ bool run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz, float 
     ggml_backend_tensor_get(dst, dst_host.data(), 0, ggml_nbytes(dst));
 
     // CPU reference, per row.
-    const float tol = 1e-3f;
+    // Outputs are normalized (|y| of a few units here). The kernel's own arithmetic -- the mean, the
+    // centered sum of squares and the reciprocal square root, all in f32 -- measured at most
+    // 1.3e-6 off this double reference on the random rows; 1e-5 leaves ~8x for that, while a
+    // dropped or wrong element moves a row's mean or variance by far more.
+    const float tol = 1e-5f;
     bool ok = true;
+    double max_err = 0.0;
     for (int64_t r = 0; r < nr * nz && ok; ++r) {
         const float * x = src_host.data() + r * nc;
 
@@ -93,13 +103,16 @@ bool run_case(ggml_backend_t backend, int64_t nc, int64_t nr, int64_t nz, float 
         for (int64_t i = 0; i < nc && ok; ++i) {
             const float want = static_cast<float>((x[i] - mean) * scale);
             const float got = dst_host[r * nc + i];
-            if (std::fabs(got - want) > tol) {
+            max_err = std::fmax(max_err, std::fabs(static_cast<double>(got) - want));
+            // Written so a NaN fails: NaN compares false, so `err > tol` would let it through.
+            if (!(std::fabs(got - want) <= tol)) {
                 printf("  %-18s: mismatch at row %lld col %lld got %g want %g\n", name,
                        (long long)r, (long long)i, got, want);
                 ok = false;
             }
         }
     }
+    printf("  %-18s: max abs error %.3g\n", name, max_err);
     return ok;
 }
 
@@ -117,6 +130,8 @@ int main() {
     struct {
         int64_t nc, nr, nz;
         const char * name;
+        bool random = false;
+        float spread = 8.0f;
     } cases[] = {
         {32, 1, 1, "single row"},
         {64, 8, 1, "wide"},
@@ -130,11 +145,18 @@ int main() {
         // boundary: 70 vectorizes 64 elements and leaves a 6-element tail, 100 leaves 4.
         {70, 3, 1, "tail (64 + 6)"},
         {100, 2, 1, "tail (96 + 4)"},
+        // Seeded random rows: shorter than one vector, a tail, and the GPT-2 width.
+        {10, 32, 1, "10 rnd", true},
+        {50, 16, 1, "50 rnd", true},
+        {768, 8, 1, "768 rnd", true},
+        // A variance near eps (values 1e-3 apart), so the result depends on eps and on the
+        // reciprocal square root of a small number.
+        {64, 8, 1, "variance ~ eps", true, 1e-3f},
     };
 
     bool all_ok = true;
     for (const auto & c : cases) {
-        bool ok = run_case(backend, c.nc, c.nr, c.nz, eps, c.name);
+        bool ok = run_case(backend, c.nc, c.nr, c.nz, eps, c.name, c.random, c.spread);
         printf("NORM %-18s: %s\n", c.name, ok ? "PASSED" : "FAILED");
         all_ok = all_ok && ok;
     }
