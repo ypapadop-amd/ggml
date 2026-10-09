@@ -52,7 +52,35 @@ void ggml_hsa_convert(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restri
         // Widen each to f32 exactly (no rounding is possible in that direction), then apply the
         // same bit-exact RNE narrowing the f32 -> bf16 path uses, which makes the composition
         // identical to the host's GGML_FP32_TO_BF16(GGML_FP16_TO_FP32(v)).
-        for (int32_t i = 0; i < Nv; ++i) {
+        int32_t vstart = 0;
+#if __AIEARCH__ == 20 // aie2 only so far; aie2p keeps the scalar loop, unmeasured there.
+        // Blocks of normal f16s and zeros convert in vectors (convert_f16_bits_to_bf16_vector),
+        // any other block through the scalar loop, so the result is bit-identical either way. As
+        // in the bf16 -> f16 direction below, each streamed tile starts vector-aligned.
+        {
+            constexpr int32_t V = 512 / (sizeof(uint16_t) * 8);
+            const int32_t nblk = Nv / V;
+            for (int32_t blk = 0; blk < nblk; ++blk) {
+                const int32_t base = blk * V;
+                const aie::vector<uint16_t, V> bits =
+                    aie::vector_cast<uint16_t>(aie::load_v<V>(in + base));
+                if (convert_f16_bits_to_bf16_vector_covers<V>(bits).full()) {
+                    aie::store_v(out + base, aie::vector_cast<OUTPUT_DTYPE>(
+                                                 convert_f16_bits_to_bf16_vector<V>(bits)));
+                } else {
+                    for (int32_t i = base; i < base + V; ++i) {
+                        uint16_t h = 0;
+                        std::memcpy(&h, &in[i], sizeof(h));
+                        const uint16_t lo =
+                            ::convert_f32_to_bf16_scalar(::convert_f16_bits_to_f32(h));
+                        std::memcpy(&out[i], &lo, sizeof(bf16));
+                    }
+                }
+            }
+            vstart = nblk * V;
+        }
+#endif
+        for (int32_t i = vstart; i < Nv; ++i) {
             uint16_t h = 0;
             std::memcpy(&h, &in[i], sizeof(h));
             const uint16_t lo = ::convert_f32_to_bf16_scalar(::convert_f16_bits_to_f32(h));
