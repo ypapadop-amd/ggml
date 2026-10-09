@@ -1255,19 +1255,16 @@ struct ggml_backend_hsa_buffer_context {
     std::size_t base_offset{};        ///< Offset of the buffer's base within @ref dev_mem.
     ggml_backend_buffer_t source{};   ///< Buffer this one was imported from, or @c nullptr.
 
-    /// @brief Slot holding one tensor extra. An extra is rebuilt in place when its slot is
-    /// recycled, so a slot's address, which @c tensor->extra holds, never changes.
+    /// @brief Slot holding one tensor extra; recycling rebuilds it in place, at the same address.
     using extra_slot = std::unique_ptr<std::optional<ggml_backend_hsa_tensor_extra>>;
     /// @brief Extras of the tensors initialized since the last reset, one per tensor.
     std::vector<extra_slot> tensor_extras;
-    /// @brief Extras retired by the last resets, recycled by the next tensors initialized.
+    /// @brief Extras retired by a reset, recycled by the tensors initialized next.
     ///
-    /// gallocr resets a buffer before every graph allocation in it and then initializes only the
-    /// tensors without data. Tensors it initializes belong to a graph laid out over the buffer's
-    /// memory, which the earlier graph's tensors no longer own, so their extras can be rebuilt for
-    /// the new tensors. Tensors it does not initialize (the same graph allocated again) keep their
-    /// extras, which stay intact here until a new tensor recycles them. Memory is therefore bounded
-    /// by the largest graph allocated in the buffer, not by how often graphs are allocated in it.
+    /// gallocr resets the buffer before each graph allocation and initializes only tensors without
+    /// data. A new graph's tensors take over the old graph's memory, so they can take its extras
+    /// too; a graph allocated again initializes nothing and keeps its extras intact. Extras are
+    /// thus bounded by the largest graph allocated in the buffer.
     std::vector<extra_slot> free_extras;
 
     explicit ggml_backend_hsa_buffer_context(std::int32_t device) : device{device} {}
@@ -1319,7 +1316,7 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
     const auto & dev_info = ggml_hsa_get_device_info(buf_ctx.device);
 
     try {
-        // recycle an extra retired by a reset, or create one
+        // recycle a retired extra, or create one
         ggml_backend_hsa_buffer_context::extra_slot slot;
         if (buf_ctx.free_extras.empty()) {
             slot = std::make_unique<std::optional<ggml_backend_hsa_tensor_extra>>();
@@ -1327,7 +1324,6 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
             slot = std::move(buf_ctx.free_extras.back());
             buf_ctx.free_extras.pop_back();
         }
-        // destroys the previous tensor's extra, if any, and builds this tensor's in its place
         auto & tensor_extra = slot->emplace(dev_info, *tensor);
         if (auto status = tensor_extra.allocate_internal_storage(dev_info);
             status != GGML_STATUS_SUCCESS) {
@@ -1335,8 +1331,9 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
             buf_ctx.free_extras.push_back(std::move(slot));
             return status;
         }
-        tensor->extra = &tensor_extra;
+        // set only once the buffer owns the slot: if push_back throws, the slot is destroyed
         buf_ctx.tensor_extras.push_back(std::move(slot));
+        tensor->extra = &tensor_extra;
     } catch (const std::exception & ex) {
         GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
         return GGML_STATUS_FAILED;
@@ -1425,10 +1422,8 @@ static void ggml_backend_hsa_buffer_clear(ggml_backend_buffer_t buffer, uint8_t 
 }
 
 /**
- * @brief Retires the tensor extras of @p buffer, to be recycled by the tensors initialized next.
- *
- * Nothing is destroyed here: a tensor the allocator does not initialize again keeps using its extra
- * (see @c ggml_backend_hsa_buffer_context::free_extras).
+ * @brief Retires the extras of @p buffer for recycling, without destroying them (see
+ * @c ggml_backend_hsa_buffer_context::free_extras).
  */
 static void ggml_backend_hsa_buffer_reset(ggml_backend_buffer_t buffer) {
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
@@ -1861,8 +1856,7 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
             continue;
         }
 
-        // a node whose result is a view (e.g. a CPY into a KV cache) has no extra and runs on the
-        // host path below
+        // a view result (e.g. a CPY into a KV cache) has no extra; it runs on the host path below
         if (node->extra == nullptr) {
             continue;
         }

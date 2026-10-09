@@ -1,16 +1,9 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
-// Standalone test for the recycling of HSA tensor extras. Every tensor initialized in an HSA buffer
-// gets an extra of its own. gallocr resets the buffer before every graph allocation; the reset
-// retires the buffer's extras and the tensors initialized next recycle them, so allocating new
-// graphs over and over does not grow the buffer's state. This checks that:
-//  - a graph rebuilt with new tensors over the same allocator uses exactly the extras of the
-//    first graph, recycled;
-//  - the same graph allocated again (a reset with no tensor initialized) keeps its extras intact
-//    and still computes correctly;
-//  - two nodes of the same op and shapes in one graph have extras of their own.
-// The ops are f16 ADDs, whose sources are converted to bf16 in internal buffers held by the extra.
-// Inputs are small integers, exact in f16 and bf16, so results must match exactly.
+// Standalone test for the recycling of HSA tensor extras across graph allocations. Checks that a
+// rebuilt graph recycles the first graph's extras, that a graph allocated again keeps its extras,
+// and that each node has an extra of its own. The ops are f16 ADDs, whose sources use internal
+// buffers; inputs are small integers, so results must match exactly.
 
 #include <cstdint>
 #include <cstdio>
@@ -106,8 +99,7 @@ bool compute_add(ggml_backend_t backend,
     return mismatches == 0;
 }
 
-// Builds C = X + Y on new tensors several times over one allocator: each rebuilt graph must use
-// exactly the first graph's extras, recycled.
+// Rebuilds C = X + Y over one allocator: each rebuild must recycle the first graph's extras.
 bool run_rebuild_case(ggml_backend_t backend) {
     gallocr_ptr galloc{ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)),
                        ggml_gallocr_free};
@@ -133,8 +125,8 @@ bool run_rebuild_case(ggml_backend_t backend) {
     return ok;
 }
 
-// Allocates one graph twice. The second allocation resets the buffer but initializes no tensor,
-// since all of them already have data, so every tensor must keep its extra intact.
+// Allocates one graph twice: the second allocation resets the buffer but initializes no tensor, so
+// every tensor must keep its extra intact.
 bool run_realloc_case(ggml_backend_t backend) {
     gallocr_ptr galloc{ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)),
                        ggml_gallocr_free};
@@ -156,7 +148,7 @@ bool run_realloc_case(ggml_backend_t backend) {
     return compute_add(backend, g.gf, g.x, g.y, g.c, 1, "second allocation") && ok;
 }
 
-// Two ADDs of the same shapes and types in one graph have extras of their own.
+// Two same-shaped ADDs in one graph have extras of their own.
 bool run_distinct_case(ggml_backend_t backend) {
     ctx_ptr ctx = make_ctx(6);
     ggml_tensor * x1 = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F16, n);

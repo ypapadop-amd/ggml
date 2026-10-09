@@ -436,10 +436,8 @@ const ggml_hsa_device_info::device_info & ggml_hsa_get_device_info(std::int32_t 
  * representation for run-time use. Copies are made of the parent and its source tensors' metadata,
  * with transformations applied (e.g., making them contiguous, flattening).
  *
- * Each tensor initialized in an HSA buffer has an extra of its own, owned by the buffer. A buffer
- * reset retires the buffer's extras and the tensors initialized next rebuild them in place, so an
- * extra lives until its buffer is freed or it is recycled for a tensor of a later graph (see
- * @c ggml_backend_hsa_buffer_context::free_extras in ggml-hsa.cpp).
+ * Each tensor has its own extra, owned by its buffer and recycled after a buffer reset (see
+ * @c ggml_backend_hsa_buffer_context::free_extras).
  */
 struct ggml_backend_hsa_tensor_extra {
     /// @brief Internal output graph node.
