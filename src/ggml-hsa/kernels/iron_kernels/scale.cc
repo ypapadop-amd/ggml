@@ -10,6 +10,7 @@
 #include "aie_kernel_math.h"
 #include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
+#include "transform.h"
 
 extern "C" {
 
@@ -28,27 +29,14 @@ extern "C" {
  */
 void ggml_op_scale(
     const float * __restrict in, float * __restrict out, int32_t N, float scale, float bias) {
-    event0();
-
-    constexpr int32_t V = 512 / (sizeof(float) * 8);
-    const int32_t vend = (N / V) * V;
-
-    // Aligned load/store: scale.py streams whole power-of-two tiles, so in/out are
-    // vector-aligned (unlike row-tiled kernels, e.g. the binary_ops row-broadcast
-    // kernels, whose per-row stride isn't). MIN_ITERATION_COUNT(1): N (== tile_size) is at least V.
-    AIE_PREPARE_FOR_PIPELINING
-    AIE_LOOP_MIN_ITERATION_COUNT(1)
-    for (int32_t i = 0; i < vend; i += V) {
-        aie::vector<float, V> v = aie::load_v<V>(in + i);
-        aie::vector<float, V> r = aie::mul(v, scale).to_vector<float>();
-        aie::store_v(out + i, aie::add(r, bias));
-    }
-
-    for (int32_t i = vend; i < N; ++i) {
-        out[i] = in[i] * scale + bias;
-    }
-
-    event1();
+    // scale.py streams the largest tile dividing the element count, which need not be a whole
+    // number of vectors; aligned accesses only when the builder says it is.
+    transform_vector_n<tile_vector_aligned_v<float>>(
+        out, N,
+        [scale, bias](auto v) {
+            return aie::add(aie::mul(v, scale).template to_vector<float>(), bias);
+        },
+        [scale, bias](float v) { return v * scale + bias; }, in);
 }
 
 } // extern "C"
