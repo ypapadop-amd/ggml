@@ -88,6 +88,32 @@ void transform_binary_broadcast_n(const T0 * __restrict in0,
     event1();
 }
 
+#if defined(GGML_OP_ADD_ROWS) || defined(GGML_OP_SUB_ROWS) || defined(GGML_OP_MUL_ROWS) ||         \
+    defined(GGML_OP_DIV_ROWS)
+
+/**
+ * @brief The src1 row that dst row @p row reads, for a src1 of several rows.
+ *
+ * GGML repeats src1 along every dimension it is shorter in: dst row (i1, i2, i3) reads src1 row
+ * (i1 % ne1, i2 % ne2, i3 % ne3). The shapes are compile-time (-DGGML_BCAST_*), so the divisions
+ * are by constants; this runs once per row, not per element.
+ *
+ * @param[in] row dst row index (over dims 1..3).
+ * @return src1 row index.
+ */
+inline int32_t bcast_src1_row(int32_t row) {
+    const auto r = static_cast<uint32_t>(row);
+    const uint32_t i1 = r % GGML_BCAST_DST_NE1;
+    const uint32_t i2 = (r / GGML_BCAST_DST_NE1) % GGML_BCAST_DST_NE2;
+    const uint32_t i3 = r / (GGML_BCAST_DST_NE1 * GGML_BCAST_DST_NE2);
+    return static_cast<int32_t>(
+        i1 % GGML_BCAST_SRC1_NE1 +
+        GGML_BCAST_SRC1_NE1 *
+            (i2 % GGML_BCAST_SRC1_NE2 + GGML_BCAST_SRC1_NE2 * (i3 % GGML_BCAST_SRC1_NE3)));
+}
+
+#endif
+
 extern "C" {
 
 #ifdef GGML_OP_ADD
@@ -445,5 +471,86 @@ void ggml_op_div_row(const INPUT0_DTYPE * __restrict src0,
 }
 
 #endif // GGML_OP_DIV_ROW
+
+// Row-tiled broadcast of a src1 with several rows of ne0 elements (each dst row reads the src1
+// row bcast_src1_row gives). Unlike the _ROW kernels above, src1 may differ in type: the walk
+// then runs its scalar path. The vector body is limited to floating point, as in the
+// element-wise kernels, since aie::mul saturates integers where `a * b` wraps.
+
+#ifdef GGML_OP_ADD_ROWS
+
+/**
+ * @brief out[i] = src0[i] + src1[src1 row of this dst row][i], for one dst row.
+ *
+ * @param[in]  src0 dst row's src0 row of N elements.
+ * @param[in]  src1 All of src1 (rows of N elements).
+ * @param[out] out  Output row of N elements.
+ * @param[in]  N    Elements per row (== ne0).
+ * @param[in]  row0 First dst row of this worker's band.
+ * @param[in]  i    Row within the band.
+ */
+void ggml_op_add_rows(const INPUT0_DTYPE * __restrict src0,
+                      const INPUT1_DTYPE * __restrict src1,
+                      OUTPUT_DTYPE * __restrict out,
+                      int32_t N,
+                      int32_t row0,
+                      int32_t i) {
+    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+        out, N, [](auto a, auto b) { return aie::add(a, b); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); }, src0,
+        src1 + bcast_src1_row(row0 + i) * N);
+}
+
+#endif // GGML_OP_ADD_ROWS
+
+#ifdef GGML_OP_SUB_ROWS
+
+/// As ggml_op_add_rows, for out[i] = src0[i] - src1 row[i].
+void ggml_op_sub_rows(const INPUT0_DTYPE * __restrict src0,
+                      const INPUT1_DTYPE * __restrict src1,
+                      OUTPUT_DTYPE * __restrict out,
+                      int32_t N,
+                      int32_t row0,
+                      int32_t i) {
+    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+        out, N, [](auto a, auto b) { return aie::sub(a, b); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); }, src0,
+        src1 + bcast_src1_row(row0 + i) * N);
+}
+
+#endif // GGML_OP_SUB_ROWS
+
+#ifdef GGML_OP_MUL_ROWS
+
+/// As ggml_op_add_rows, for out[i] = src0[i] * src1 row[i] (accuracy as ggml_op_mul_row).
+void ggml_op_mul_rows(const INPUT0_DTYPE * __restrict src0,
+                      const INPUT1_DTYPE * __restrict src1,
+                      OUTPUT_DTYPE * __restrict out,
+                      int32_t N,
+                      int32_t row0,
+                      int32_t i) {
+    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+        out, N, [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
+        [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); }, src0,
+        src1 + bcast_src1_row(row0 + i) * N);
+}
+
+#endif // GGML_OP_MUL_ROWS
+
+#ifdef GGML_OP_DIV_ROWS
+
+/// As ggml_op_add_rows, for out[i] = src0[i] / src1 row[i]; scalar, as ggml_op_div_row.
+void ggml_op_div_rows(const INPUT0_DTYPE * __restrict src0,
+                      const INPUT1_DTYPE * __restrict src1,
+                      OUTPUT_DTYPE * __restrict out,
+                      int32_t N,
+                      int32_t row0,
+                      int32_t i) {
+    transform_n(
+        out, N, [](auto a, auto b) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(a / b); },
+        src0, src1 + bcast_src1_row(row0 + i) * N);
+}
+
+#endif // GGML_OP_DIV_ROWS
 
 } // extern "C"

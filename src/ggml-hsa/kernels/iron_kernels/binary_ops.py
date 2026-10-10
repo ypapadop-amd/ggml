@@ -34,6 +34,7 @@ from .utils import (
     fill_drain_program,
     max_tile_size,
     partition_units,
+    shape_defines,
     tiled_tile_size,
     vector_lanes,
 )
@@ -458,17 +459,21 @@ def _create_row_external_function(
     op_name: str,
     input_tensors: list,
     output_tensor,
+    src1_rows: bool = False,
 ) -> CoreFunctionSpec:
     """Create the CoreFunctionSpec for a row-tiled broadcast kernel.
 
-    src1 is a single row (ne0 elements) reused across all dst rows. The tile
-    is exactly one dst row, so tile_size == ne0.
+    src1 is a single row (ne0 elements) reused across all dst rows, or with src1_rows, a src1
+    of several ne0-element rows, each dst row reading the one GGML's repeat maps it to. The
+    tile is exactly one dst row, so tile_size == ne0.
 
     Args:
         arch: Target architecture.
         op_name: Name of the binary operation (e.g. "GGML_OP_ADD").
         input_tensors: Two input tensors [src0, src1].
         output_tensor: Output tensor.
+        src1_rows: src1 has several rows (the GGML_OP_<op>_ROWS kernels, which also take the
+            dst row index).
 
     Returns:
         The configured CoreFunctionSpec.
@@ -491,7 +496,24 @@ def _create_row_external_function(
     # reads only the first N == ne0 elements, N being a separate runtime argument.
     num_elements_src1 = arch_aligned_num_elements(arch=arch, tensor=input_tensors[1])
 
-    row_op_name = f"{op_name}_ROW"
+    row_op_name = f"{op_name}_ROWS" if src1_rows else f"{op_name}_ROW"
+    # The shapes that map a dst row to its src1 row, baked in so the kernel's divisions are by
+    # constants.
+    src1_ne, dst_ne = input_tensors[1].shape, output_tensor.shape
+    row_defines = (
+        shape_defines(
+            "GGML_BCAST",
+            {
+                "DST_NE1": dst_ne[1],
+                "DST_NE2": dst_ne[2],
+                "SRC1_NE1": src1_ne[1],
+                "SRC1_NE2": src1_ne[2],
+                "SRC1_NE3": src1_ne[3],
+            },
+        )
+        if src1_rows
+        else []
+    )
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
         name=row_op_name.lower(),
@@ -502,9 +524,11 @@ def _create_row_external_function(
             np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]],
             np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
             np.int32,
+            *([np.int32, np.int32] if src1_rows else []),
         ],
         compile_flags=[
             f"-D{row_op_name}=1",
+            *row_defines,
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
@@ -528,14 +552,19 @@ def _binary_op_row(
     input_tensors: list,
     function_spec: CoreFunctionSpec,
     output_tensor,
+    src1_rows: bool = False,
 ):
     """Row-tiled broadcast: out[row] = op(src0[row], src1) (one src1 row reused).
 
+    With src1_rows, src1 holds several rows and the kernel also gets the dst row index, to
+    pick the src1 row GGML's repeat maps that dst row to.
+
     Args:
         arch: Target architecture.
-        input_tensors: Input tensors [src0, src1]; src1 is one ne0-element row.
+        input_tensors: Input tensors [src0, src1]; src1 is one ne0-element row, or several.
         function_spec: Core function specification (tile_size == ne0).
         output_tensor: Output tensor.
+        src1_rows: src1 has several rows (the GGML_OP_<op>_ROWS kernels).
 
     Returns:
         The resolved IRON program (MLIR module).
@@ -566,12 +595,17 @@ def _binary_op_row(
 
     function = function_spec.external_function
 
-    def ext_core_fn(of_src0, of_src1, of_out, function, n_tiles):
-        src1_buf = of_src1.acquire(1)  # one src1 row, reused across all tiles
-        for _ in range_(n_tiles):
+    def ext_core_fn(of_src0, of_src1, of_out, function, n_tiles, first_tile):
+        src1_buf = of_src1.acquire(1)  # src1, reused across all tiles
+        for tile_idx in range_(n_tiles):
             src0_tile = of_src0.acquire(1)
             out_tile = of_out.acquire(1)
-            function(src0_tile, src1_buf, out_tile, tile_size)
+            if src1_rows:
+                # dst row = first_tile + tile_idx, added in the kernel
+                tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
+                function(src0_tile, src1_buf, out_tile, tile_size, first_tile, tile_idx_i32)
+            else:
+                function(src0_tile, src1_buf, out_tile, tile_size)
             of_src0.release(1)
             of_out.release(1)
         of_src1.release(1)
@@ -585,6 +619,7 @@ def _binary_op_row(
                 of_outs[w].prod(),
                 function,
                 tiles_per_worker[w],
+                first_tiles[w],
             ],
             stack_size=_STACK_SIZE_BYTES,
         )
@@ -783,6 +818,36 @@ def binary_op(
             input_tensors=input_tensors,
             function_spec=function_spec,
             output_tensor=output_tensor,
+        )
+
+    # src1 rows as long as dst's, repeated along the other dimensions: tile by dst row, with
+    # each row reading its whole src1 row, rather than mapping every element to src1 (the
+    # generic path below, which divides per element). A row whose bytes are not a whole number
+    # of 4-byte words for some operand cannot be one DMA tile, and takes the generic path.
+    rows_tileable = all(
+        (dst_shape[0] * dtype.itemsize) % 4 == 0
+        for dtype in (input_tensors[0].dtype, input_tensors[1].dtype, output_tensor.dtype)
+    )
+    if (
+        op_name in _ROW_BROADCAST_OPS
+        and needs_broadcast
+        and src1_shape[0] == dst_shape[0]
+        and rows_tileable
+        and _ggml_can_repeat(src1_shape, dst_shape)
+    ):
+        function_spec = _create_row_external_function(
+            arch=arch,
+            op_name=op_name,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            src1_rows=True,
+        )
+        return _binary_op_row(
+            arch=arch,
+            input_tensors=input_tensors,
+            function_spec=function_spec,
+            output_tensor=output_tensor,
+            src1_rows=True,
         )
 
     if needs_broadcast:
