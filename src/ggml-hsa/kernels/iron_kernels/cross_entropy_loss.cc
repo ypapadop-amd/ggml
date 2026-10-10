@@ -11,137 +11,139 @@
 extern "C" {
 
 /**
- * @brief Computes cross-entropy loss using numerically stable log-softmax.
+ * @brief Adds the cross-entropy loss of @p rows rows to @p loss_out[0].
  *
- * Computes: loss = -sum(labels * log_softmax(logits))
- * where:   log_softmax(x_i) = (x_i - max) - log(sum(exp(x_j - max)))
+ * Per row: loss = -sum(labels * log_softmax(logits)), where
+ *          log_softmax(x_i) = (x_i - max) - log(sum(exp(x_j - max)))
  *
- * Three-pass algorithm for numerical stability:
+ * Three passes per row, for numerical stability:
  * 1. Find max(logits) to prevent overflow in exp().
  * 2. Compute sum_exp = sum(exp(logits - max)).
  * 3. Compute loss = -sum(labels * ((logits - max) - log(sum_exp))).
  *
- * @param[in]  logits   Input logits array of N elements (unnormalized scores).
- * @param[in]  labels   Target labels array of N elements (typically one-hot or probabilities).
- * @param[out] loss_out Single-element output array receiving the total loss.
- * @param[in]  N        Number of elements (arbitrary length).
+ * The rows' losses are added to @p loss_out[0] one at a time, in row order.
+ *
+ * @param[in]     logits   rows x N logits (unnormalized scores), rows contiguous.
+ * @param[in]     labels   rows x N labels (typically one-hot or probabilities).
+ * @param[in,out] loss_out Single-element array: the running total, to which the rows' losses are
+ *                         added.
+ * @param[in]     N        Elements per row (arbitrary length).
+ * @param[in]     rows     Number of rows.
  */
 void ggml_op_cross_entropy_loss(const float * __restrict logits,
                                 const float * __restrict labels,
                                 float * __restrict loss_out,
-                                int32_t N) {
+                                int32_t N,
+                                int32_t rows) {
     event0();
 
-#if __AIEARCH__ == 20 // aie2 only so far; aie2p keeps the passes below, unmeasured there.
-    // As below, but 16 lanes, and the last N % 16 elements in vectors too, through a bounce
-    // buffer (nothing past the row is read), instead of scalar loops that call a runtime routine
-    // for every float multiply and compare and for scalar_exp's arithmetic. One scalar_log per
-    // row remains. Lanes past the row are excluded from the max and the exp sum, and contribute
-    // label 0 * finite to the loss.
-    {
-        constexpr int32_t V = 16;
-        using vec = aie::vector<float, V>;
-        const int32_t n_whole = static_cast<int32_t>(static_cast<uint32_t>(N) & ~uint32_t{V - 1});
-        const int32_t n_tail = N - n_whole;
-        const auto in_tail = aie::mask<V>::from_uint32((uint32_t{1} << n_tail) - 1);
-        const vec neg_inf = aie::broadcast<float, V>(-std::numeric_limits<float>::infinity());
-        const vec x_tail =
-            n_tail > 0 ? load_v_partial<V>(logits + n_whole, n_tail) : aie::zeros<float, V>();
-        const vec l_tail =
-            n_tail > 0 ? load_v_partial<V>(labels + n_whole, n_tail) : aie::zeros<float, V>();
+    // 16-lane vectors, with the last N % 16 elements of a row in vectors too: no scalar float
+    // compare or multiply, each a runtime call on the scalar unit. Lanes past the row are excluded
+    // from the max and the exp sum, and contribute label 0 times a finite value to the loss. Rows
+    // go in groups of up to 16, so that one vector log serves the whole group: scalar_log's float
+    // arithmetic is a run of runtime calls, and took half the time when it ran once per row.
+    constexpr int32_t V = 16;
+    using vec = aie::vector<float, V>;
+    const int32_t n_whole = static_cast<int32_t>(static_cast<uint32_t>(N) & ~uint32_t{V - 1});
+    const int32_t n_tail = N - n_whole;
+    const auto in_tail = aie::mask<V>::from_uint32((uint32_t{1} << n_tail) - 1);
+    const vec neg_inf = aie::broadcast<float, V>(-std::numeric_limits<float>::infinity());
+    const vec zeros = aie::zeros<float, V>();
 
-        // Pass 1: max(logits).
+    // The last N % 16 elements of the row at p, row r of the tile, lanes past them zero. One
+    // vector load when the buffer holds a whole vector from there on (the lanes past the row are
+    // the next rows'), else a bounce buffer, so nothing past the buffer is read: its neighbour may
+    // be the other half of a ping-pong fifo.
+    const auto load_tail = [&](const float * p, int32_t r) {
+        if ((rows - r) * N - n_whole >= V) {
+            return aie::select(zeros, aie::load_unaligned_v<V>(p + n_whole), in_tail);
+        }
+        return load_v_partial<V>(p + n_whole, n_tail);
+    };
+
+    using vec2 = aie::vector<float, 2 * V>;
+    const auto in_tail2 = aie::mask<2 * V>::from_uint32(((uint32_t{1} << n_tail) - 1) |
+                                                        (((uint32_t{1} << n_tail) - 1) << V));
+
+    // max(logits) of the row at x_row, whose last N % 16 elements are x_tail.
+    const auto max_of_row = [&](const float * x_row, const vec & x_tail) {
         vec vmax = neg_inf;
         for (int32_t i = 0; i < n_whole; i += V) {
-            vmax = aie::max(vmax, aie::load_unaligned_v<V>(logits + i));
+            vmax = aie::max(vmax, aie::load_unaligned_v<V>(x_row + i));
         }
         vmax = aie::max(vmax, aie::select(neg_inf, x_tail, in_tail));
-        const vec vrow_max = aie::broadcast<float, V>(aie::reduce_max(vmax));
+        return aie::reduce_max(vmax);
+    };
 
-        // Pass 2: sum(exp(logits - max)).
-        vec vsum = aie::zeros<float, V>();
-        for (int32_t i = 0; i < n_whole; i += V) {
-            vec x = aie::sub(aie::load_unaligned_v<V>(logits + i), vrow_max);
-            vsum = aie::add(vsum, vec_exp<V>(x));
+    float total = loss_out[0];
+    for (int32_t g = 0; g < rows; g += V) {
+        const int32_t g_rows = rows - g < V ? rows - g : V;
+        alignas(aie::vector_decl_align) float row_max[V];
+        alignas(aie::vector_decl_align) float row_sum[V];
+        alignas(aie::vector_decl_align) float row_lse[V];
+
+        // Passes 1 and 2, two rows at a time: max(logits), then sum(exp(logits - max)). An exp is
+        // one long dependency chain per vector; running the two rows' vectors through one 32-lane
+        // call overlaps their chains (four rows in 64 lanes overflowed aie2's program memory). An
+        // odd last row is paired with itself.
+        for (int32_t j = 0; j < g_rows; j += 2) {
+            const int32_t j1 = j + 1 < g_rows ? j + 1 : j;
+            const float * xa = logits + (g + j) * N;
+            const float * xb = logits + (g + j1) * N;
+            const vec ta = n_tail > 0 ? load_tail(xa, g + j) : zeros;
+            const vec tb = n_tail > 0 ? load_tail(xb, g + j1) : zeros;
+            const float ma = max_of_row(xa, ta);
+            const float mb = max_of_row(xb, tb);
+            const vec2 vm = aie::concat(aie::broadcast<float, V>(ma), aie::broadcast<float, V>(mb));
+
+            vec2 vsum = aie::zeros<float, 2 * V>();
+            for (int32_t i = 0; i < n_whole; i += V) {
+                vec2 x = aie::sub(
+                    aie::concat(aie::load_unaligned_v<V>(xa + i), aie::load_unaligned_v<V>(xb + i)),
+                    vm);
+                vsum = aie::add(vsum, vec_exp_nonpositive<2 * V>(x));
+            }
+            if (n_tail > 0) {
+                // Lanes past a row may be positive here, outside vec_exp_nonpositive's contract;
+                // their results are dropped.
+                vec2 x = aie::sub(aie::concat(ta, tb), vm);
+                vsum = aie::add(vsum, aie::select(aie::zeros<float, 2 * V>(),
+                                                  vec_exp_nonpositive<2 * V>(x), in_tail2));
+            }
+            row_max[j] = ma;
+            row_sum[j] = aie::reduce_add(vsum.template extract<V>(0));
+            row_max[j1] = mb;
+            row_sum[j1] = aie::reduce_add(vsum.template extract<V>(1));
         }
-        if (n_tail > 0) {
-            vec x = aie::sub(x_tail, vrow_max);
-            vsum = aie::add(vsum, aie::select(aie::zeros<float, V>(), vec_exp<V>(x), in_tail));
-        }
-        const vec vlse = aie::broadcast<float, V>(scalar_log(aie::reduce_add(vsum)));
 
-        // Pass 3: loss = -sum(labels * ((logits - max) - log_sum_exp)).
-        const auto row_term = [&](vec x, vec l) {
-            return aie::mul(l, aie::sub(aie::sub(x, vrow_max), vlse)).template to_vector<float>();
-        };
-        vec vloss = aie::zeros<float, V>();
-        for (int32_t i = 0; i < n_whole; i += V) {
-            vloss = aie::add(vloss, row_term(aie::load_unaligned_v<V>(logits + i),
-                                             aie::load_unaligned_v<V>(labels + i)));
-        }
-        if (n_tail > 0) {
-            vloss = aie::add(vloss, row_term(x_tail, l_tail));
-        }
-        loss_out[0] = -aie::reduce_add(vloss);
-    }
-#else
-    // The three passes below are vectorized over KERN_VEC lanes with a scalar tail. The win is
-    // pass 2: an ablation that removed the transcendentals took this kernel from 4084 us to 594
-    // us, so ~85% of its cost was the per-element scalar_exp. A row is only ~10 elements here
-    // (one per class), which is under the 16-lane f32 vector, so the tail still runs a couple of
-    // scalar iterations -- the vector body is what removes the bulk of the exp calls.
-    constexpr int32_t V = KERN_VEC_SIZE;
-    const int32_t vend = (N / V) * V;
+        // log(sum_exp) of the group's rows at once. A sum is >= 1 (the max's own term is
+        // exp(0)), so in vec_log's domain; lanes past the group's rows are given 1.
+        const auto in_group = aie::mask<V>::from_uint32((uint32_t{1} << g_rows) - 1);
+        aie::store_v(row_lse, vec_log<V>(aie::select(aie::broadcast<float, V>(1.0f),
+                                                     aie::load_v<V>(row_sum), in_group)));
 
-    // Pass 1: max(logits), so pass 2's exp() argument (logits - max) stays <= 0 and can't
-    // overflow, no matter how large the logits are.
-    auto global_max = std::numeric_limits<float>::lowest();
-    if (vend > 0) {
-        aie::vector<float, V> vmax = aie::broadcast<float, V>(global_max);
-        for (int32_t i = 0; i < vend; i += V) {
-            vmax = aie::max(vmax, aie::load_unaligned_v<V>(logits + i));
-        }
-        global_max = aie::reduce_max(vmax);
-    }
-    for (int32_t i = vend; i < N; i++) {
-        if (logits[i] > global_max) {
-            global_max = logits[i];
+        // Pass 3 per row: loss = -sum(labels * ((logits - max) - log_sum_exp)).
+        const float * x_row = logits + g * N;
+        const float * l_row = labels + g * N;
+        for (int32_t j = 0; j < g_rows; ++j, x_row += N, l_row += N) {
+            const vec vrow_max = aie::broadcast<float, V>(row_max[j]);
+            const vec vlse = aie::broadcast<float, V>(row_lse[j]);
+            const auto row_term = [&](vec x, vec l) {
+                return aie::mul(l, aie::sub(aie::sub(x, vrow_max), vlse))
+                    .template to_vector<float>();
+            };
+            vec vloss = zeros;
+            for (int32_t i = 0; i < n_whole; i += V) {
+                vloss = aie::add(vloss, row_term(aie::load_unaligned_v<V>(x_row + i),
+                                                 aie::load_unaligned_v<V>(l_row + i)));
+            }
+            if (n_tail > 0) {
+                vloss = aie::add(vloss, row_term(load_tail(x_row, g + j), load_tail(l_row, g + j)));
+            }
+            total = total + -aie::reduce_add(vloss);
         }
     }
-
-    // Pass 2: sum(exp(logits - max)), the log-softmax denominator (unnormalized).
-    float sum_exp = 0.0f;
-    const aie::vector<float, V> vmax_b = aie::broadcast<float, V>(global_max);
-    for (int32_t i = 0; i < vend; i += V) {
-        aie::vector<float, V> x = aie::sub(aie::load_unaligned_v<V>(logits + i), vmax_b);
-        sum_exp += aie::reduce_add(vec_exp<V>(x));
-    }
-    for (int32_t i = vend; i < N; i++) {
-        sum_exp += scalar_exp(logits[i] - global_max);
-    }
-
-    // log(sum_exp) computed once and reused for every element in pass 3, instead of computing
-    // softmax probabilities per element (which would need an extra division and a second log).
-    const auto log_sum_exp = scalar_log(sum_exp);
-
-    // Pass 3: log_softmax(x_i) = (x_i - max) - log_sum_exp; loss = -sum(labels * log_softmax).
-    float total_loss = 0.0f;
-    const aie::vector<float, V> vlse_b = aie::broadcast<float, V>(log_sum_exp);
-    for (int32_t i = 0; i < vend; i += V) {
-        aie::vector<float, V> ls =
-            aie::sub(aie::sub(aie::load_unaligned_v<V>(logits + i), vmax_b), vlse_b);
-        aie::vector<float, V> p =
-            aie::mul(aie::load_unaligned_v<V>(labels + i), ls).template to_vector<float>();
-        total_loss += aie::reduce_add(p);
-    }
-    for (int32_t i = vend; i < N; i++) {
-        float log_softmax = (logits[i] - global_max) - log_sum_exp;
-        total_loss += labels[i] * log_softmax;
-    }
-
-    // Store negated loss (cross entropy is -sum)
-    loss_out[0] = -total_loss;
-#endif
+    loss_out[0] = total;
 
     event1();
 }

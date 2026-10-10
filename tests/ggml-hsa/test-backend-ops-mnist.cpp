@@ -2643,6 +2643,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {16, 64, 1, 1}));
     test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {18, 64, 1, 1}));
     test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {40, 64, 1, 1}));
+    // Row counts that split differently: one worker with a vector-log group of 16 rows and a
+    // group of one (an odd row paired with itself); three workers of 21 rows (a group of 5); four
+    // workers of four tiles each; long rows (62 vectors plus a tail) in tiles of two rows.
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 17, 1, 1}));
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 63, 1, 1}));
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {10, 2000, 1, 1}));
+    test_cases.emplace_back(new test_cross_entropy_loss(GGML_TYPE_F32, {1000, 64, 1, 1}));
     // Softmax on logits [10, 500]
     test_cases.emplace_back(new test_soft_max(GGML_TYPE_F32, {10, 500, 1, 1}));
 

@@ -135,6 +135,68 @@ inline float scalar_log(float x) {
 }
 
 /**
+ * @brief Computes the natural logarithm of every lane, for positive normal finite lanes.
+ *
+ * Vector form of @ref scalar_log without its special cases, so it calls no runtime routine:
+ * ln(x) = ln(m) + e * ln(2), with x = m * 2^e and m folded into [sqrt(1/2), sqrt(2)), and ln(m)
+ * by the Cephes logf polynomial in f = m - 1 (no divide); ln(2) is split in two parts so that the
+ * large part of e * ln(2) is exact.
+ *
+ * Zero, negative, subnormal, infinite and NaN lanes give unspecified values; callers that can see
+ * them must handle them (@ref scalar_log does).
+ *
+ * @tparam V Vector width.
+ * @param[in] x The input vector.
+ * @return The element-wise natural logarithm.
+ */
+template <unsigned V>
+inline aie::vector<float, V> vec_log(const aie::vector<float, V> & x) {
+    using fvec = aie::vector<float, V>;
+    using ivec = aie::vector<int32_t, V>;
+    const auto mul = [](const fvec & a, const auto & b) {
+        return aie::mul(a, b).template to_vector<float>();
+    };
+
+    const ivec bits = aie::vector_cast<int32_t>(x);
+    const ivec mantissa = aie::bit_and(int32_t{0x007FFFFF}, bits);
+    // m >= sqrt(2) (mantissa bits >= 0x3504F3) is halved into [sqrt(1/2), 1) and its exponent
+    // raised by one. Adds build the bit patterns rather than bit_or: aie2p cannot legalize the
+    // vector OR.
+    const auto halve = aie::ge(mantissa, aie::broadcast<int32_t, V>(0x003504F3));
+    const fvec m = aie::vector_cast<float>(
+        aie::add(mantissa, aie::select(aie::broadcast<int32_t, V>(0x3F800000),
+                                       aie::broadcast<int32_t, V>(0x3F000000), halve)));
+    const ivec e_int =
+        aie::add(aie::sub(aie::downshift(bits, 23), aie::broadcast<int32_t, V>(127)),
+                 aie::select(aie::zeros<int32_t, V>(), aie::broadcast<int32_t, V>(1), halve));
+    // int -> float of the small exponent by the 1.5 * 2^23 magic number (exact for |e| < 2^22).
+    constexpr int32_t magic_bits = 0x4B400000; // 1.5 * 2^23
+    const fvec e =
+        aie::sub(aie::vector_cast<float>(aie::add(e_int, aie::broadcast<int32_t, V>(magic_bits))),
+                 aie::broadcast<float, V>(12582912.0f));
+
+    const fvec f = aie::sub(m, aie::broadcast<float, V>(1.0f));
+    const fvec z = mul(f, f);
+
+    constexpr float log_coeffs[] = {7.0376836292e-2f,  -1.1514610310e-1f, 1.1676998740e-1f,
+                                    -1.2420140846e-1f, 1.4249322787e-1f,  -1.6668057665e-1f,
+                                    2.0000714765e-1f,  -2.4999993993e-1f, 3.3333331174e-1f};
+    constexpr int32_t NUM_LOG_COEFFS = sizeof(log_coeffs) / sizeof(log_coeffs[0]);
+    fvec poly = aie::broadcast<float, V>(log_coeffs[0]);
+    AIE_LOOP_UNROLL_FULL
+    for (int32_t i = 1; i < NUM_LOG_COEFFS; ++i) {
+        poly = aie::add(mul(poly, f), aie::broadcast<float, V>(log_coeffs[i]));
+    }
+
+    constexpr float ln2_lo = -2.12194440e-4f; // ln(2) = ln2_hi + ln2_lo
+    constexpr float ln2_hi = 0.693359375f;    // exact in 9 bits, so e * ln2_hi is exact
+    fvec y = mul(mul(poly, f), z);
+    y = aie::add(y, mul(e, ln2_lo));
+    y = aie::sub(y, mul(z, 0.5f));
+    return aie::add(aie::add(f, y), mul(e, ln2_hi));
+}
+
+/**
  * @brief Computes floor(log2(x)) for positive integers.
  *
  * Finds the position of the most significant bit set in x.
