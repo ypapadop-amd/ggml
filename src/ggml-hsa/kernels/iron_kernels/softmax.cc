@@ -108,23 +108,38 @@ inline void soft_max_row(const float * __restrict input,
         std::bit_cast<int32_t>(scale) < 0 ? aie::reduce_min(vmin) : aie::reduce_max(vmax));
     const vec vrow_max = scaled(vextreme);
 
-    // Pass 2: exp(scale*x - max) into out, and its sum (tail lanes past the row excluded).
+    // Pass 2: exp(scale*x - max) into out, and its sum (tail lanes past the row excluded). Each
+    // exp() call takes kExpVectors vectors (see vec_exp_nonpositive); in the last call, lanes past
+    // the row are computed and dropped.
+    constexpr int32_t kExpVectors = 4;
     vec vsum = aie::zeros<float, V>();
-    for (int32_t i = 0; i < n_whole; i += V) {
-        vec x = aie::sub(scaled(aie::load_unaligned_v<V>(input + i)), vrow_max);
-        const vec e = vec_exp<V>(x);
-        aie::store_unaligned_v(output + i, e);
-        vsum = aie::add(vsum, e);
-    }
     vec e_tail = aie::zeros<float, V>();
-    if (n_tail > 0) {
-        vec x = aie::sub(scaled(x_tail), vrow_max);
-        e_tail = aie::select(aie::zeros<float, V>(), vec_exp<V>(x), in_tail);
-        vsum = aie::add(vsum, e_tail);
+    for (int32_t i = 0; i < N; i += kExpVectors * V) {
+        vec x[kExpVectors];
+        AIE_LOOP_UNROLL_FULL
+        for (int32_t k = 0; k < kExpVectors; ++k) {
+            const int32_t j = i + k * V;
+            x[k] = aie::sub(scaled(j < n_whole ? aie::load_unaligned_v<V>(input + j) : x_tail),
+                            vrow_max);
+        }
+        const aie::vector<float, kExpVectors * V> e =
+            vec_exp_nonpositive<kExpVectors * V>(aie::concat(x[0], x[1], x[2], x[3]));
+        AIE_LOOP_UNROLL_FULL
+        for (int32_t k = 0; k < kExpVectors; ++k) {
+            const int32_t j = i + k * V;
+            if (j < n_whole) {
+                aie::store_unaligned_v(output + j, e.template extract<V>(k));
+                vsum = aie::add(vsum, e.template extract<V>(k));
+            } else if (j < N) {
+                e_tail = aie::select(aie::zeros<float, V>(), e.template extract<V>(k), in_tail);
+                vsum = aie::add(vsum, e_tail);
+            }
+        }
     }
 
-    // Pass 3: normalize. One exact divide per row; aie::inv is approximate.
-    const float sum_inv = 1.0f / aie::reduce_add(vsum);
+    // Pass 3: normalize. aie::inv on fp32 ends in a Newton step of its own (see
+    // soft_max_lane_rows); it replaces a runtime divide.
+    const vec sum_inv = aie::inv(aie::broadcast<float, V>(aie::reduce_add(vsum)));
     for (int32_t i = 0; i < n_whole; i += V) {
         aie::store_unaligned_v(
             output + i,
