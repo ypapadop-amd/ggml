@@ -520,3 +520,26 @@ inline aie::vector<bf16, V> convert_f32_to_bf16_vector_hi16(const aie::vector<f3
 
     return aie::vector_cast<bf16>(aie::filter_odd(aie::vector_cast<std::uint16_t>(res32)));
 }
+
+/**
+ * @brief 1 / sqrt(a) per lane, for positive normal @p a, within 8e-7 relative.
+ *
+ * The bit-trick estimate aie2's aie::invsqrt uses for f32 (http://rrrola.wz.cz/inv_sqrt.html, up to
+ * 6.5e-4 relative), written with the portable aie API so it builds for every target (the aie2p
+ * f32 aie::invsqrt is a scalar call per lane), then one Newton step, y * (1.5 - 0.5 * a * y * y),
+ * which squares that error. Checked in f32 numpy over 1e-30..1e30: at most 7.6e-7 relative.
+ */
+template <unsigned N>
+inline aie::vector<float, N> invsqrt_newton(const aie::vector<float, N> & a) {
+    constexpr std::int32_t c1 = 0x5F1FFFF9;
+    constexpr float c2 = 0.703952253f;
+    constexpr float c3 = 2.38924456f;
+    const auto mul = [](const aie::vector<float, N> & x, const auto & y) {
+        return aie::mul(x, y).template to_vector<float>();
+    };
+    const aie::vector<float, N> y0 = aie::vector_cast<float>(aie::sub(
+        aie::broadcast<std::int32_t, N>(c1), aie::downshift(aie::vector_cast<std::int32_t>(a), 1)));
+    const aie::vector<float, N> y =
+        mul(y0, aie::sub(aie::broadcast<float, N>(c2 * c3), mul(mul(a, c2), mul(y0, y0))));
+    return mul(y, aie::sub(aie::broadcast<float, N>(1.5f), mul(mul(a, 0.5f), mul(y, y))));
+}
