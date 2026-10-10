@@ -22,7 +22,7 @@ extern "C" {
  * @param[in]  N   Number of elements to process.
  */
 void ggml_op_sqr(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
-    transform_vector_n(
+    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
         out, N, [](auto v) { return aie::mul(v, v).template to_vector<OUTPUT_DTYPE>(); },
         [](auto v) { return static_cast<OUTPUT_DTYPE>(v * v); }, in);
 }
@@ -65,7 +65,8 @@ void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
 
     // vec_sqrt is f32-only; other element types are promoted per element by the scalar path.
     if constexpr (std::is_same_v<INPUT_DTYPE, f32> && std::is_same_v<OUTPUT_DTYPE, f32>) {
-        transform_vector_n(out, N, [](auto v) { return vec_sqrt(v); }, scalar_op, in);
+        transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
+            out, N, [](auto v) { return vec_sqrt(v); }, scalar_op, in);
     } else {
         transform_n(out, N, scalar_op, in);
     }
@@ -85,7 +86,7 @@ void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
 void ggml_unary_op_abs(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
-    transform_vector_n(
+    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
         out, N, [](auto v) { return vec_abs(v); },
         [](auto v) { return static_cast<OUTPUT_DTYPE>(scalar_abs(v)); }, in);
 }
@@ -109,7 +110,7 @@ void ggml_unary_op_sgn(const INPUT_DTYPE * __restrict in,
     // Two selects rather than a branch: aie::select(a, b, m) yields b where m holds. The
     // comparisons and the constants are exact, so the vector body matches the scalar tail bit
     // for bit.
-    transform_vector_n(
+    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
         out, N,
         [](auto v) {
             using V = std::decay_t<decltype(v)>;
@@ -141,7 +142,7 @@ void ggml_unary_op_sgn(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_neg(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
-    transform_vector_n(
+    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
         out, N, [](auto v) { return vec_neg(v); },
         [](auto v) { return static_cast<OUTPUT_DTYPE>(-v); }, in);
 }
@@ -160,7 +161,7 @@ void ggml_unary_op_neg(const INPUT_DTYPE * __restrict in,
 void ggml_unary_op_step(const INPUT_DTYPE * __restrict in,
                         OUTPUT_DTYPE * __restrict out,
                         int32_t N) {
-    transform_vector_n(
+    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
         out, N,
         [](auto v) {
             using V = std::decay_t<decltype(v)>;
@@ -197,9 +198,30 @@ void ggml_unary_op_relu(const INPUT_DTYPE * __restrict in,
     // a guarantee that does not hold -- which transform_vector_n's static_assert rejects, so
     // the kernel fails to compile rather than running unaligned. Deriving it keeps both shapes
     // working and still leaves the assert to catch a hardcoded true elsewhere.
-    transform_vector_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
-        out, N, [](auto v) { return aie::max(v, static_cast<INPUT_DTYPE>(0)); },
-        [](auto v) { return std::max<OUTPUT_DTYPE>(v, 0); }, in);
+    //
+    // ggml's (x > 0) ? x : 0, decided on the bits of x read as a signed integer: x > 0 exactly when
+    // that integer is positive and not above +inf's (above it are the positive NaNs). Everything
+    // else -- negatives, both zeros, -inf, every NaN -- gives +0.0, as on the CPU. One integer max
+    // plus a compare and select per vector, where aie::max on f32 is emulated on aie2 (a subtract,
+    // a bf16 compare and a select, ~3x the loop's II), and the scalar tail needs no float compare.
+    static_assert(is_floating_point_v<OUTPUT_DTYPE>, "ReLU requires a floating point type");
+    using I = std::make_signed_t<same_width_uint_t<OUTPUT_DTYPE>>;
+    constexpr I kInfBits = static_cast<I>(I{0x7F80} << (8 * sizeof(I) - 16));
+    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
+        out, N,
+        [](auto v) {
+            using IV = aie::vector<I, decltype(v)::size()>;
+            const IV bits = aie::vector_cast<I>(v);
+            const IV kept = aie::max(bits, I{0});
+            return aie::vector_cast<OUTPUT_DTYPE>(
+                aie::select(kept, aie::zeros<I, IV::size()>(), aie::gt(bits, kInfBits)));
+        },
+        [](auto v) {
+            // Bit casts, not memcpy: Peano emits a call to memcpy for that here.
+            const I bits = __builtin_bit_cast(I, v);
+            return __builtin_bit_cast(OUTPUT_DTYPE, (bits > 0 && bits <= kInfBits) ? bits : I{0});
+        },
+        in);
 }
 
 #endif // GGML_UNARY_OP_RELU
@@ -248,7 +270,8 @@ void ggml_unary_op_gelu(const INPUT_DTYPE * __restrict in,
     };
 
     if constexpr (std::is_same_v<INPUT_DTYPE, f32> && std::is_same_v<OUTPUT_DTYPE, f32>) {
-        transform_vector_n(out, N, [](auto v) { return vec_gelu(v); }, scalar_gelu, in);
+        transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
+            out, N, [](auto v) { return vec_gelu(v); }, scalar_gelu, in);
     } else {
         transform_n(out, N, scalar_gelu, in);
     }

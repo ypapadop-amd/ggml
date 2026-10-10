@@ -403,9 +403,12 @@ inline aie::vector<float, VecSize> vec_gelu(const aie::vector<float, VecSize> & 
     const aie::vector<float, VecSize> inner =
         aie::add(x, aie::mul(x3, kCoefA).template to_vector<float>());
 
-    // t = -2y, then exp(t); vec_exp clamps, so no overflow guard is needed here
+    // t = -2y, then exp(t). vec_exp clamps t at 88, but 1 + e^88 is too large for aie::inv: on aie2
+    // it returned NaN for every x <= -11, where GELU is -0. At t = 80 the reciprocal is still a
+    // normal float, so the result is a tiny negative number instead.
     aie::vector<float, VecSize> t =
         aie::mul(inner, -2.0f * kSqrt2OverPi).template to_vector<float>();
+    t = aie::min(t, 80.0f);
     const aie::vector<float, VecSize> e = vec_exp<static_cast<int32_t>(VecSize)>(t);
 
     return aie::mul(x, aie::inv(aie::add(e, 1.0f))).template to_vector<float>();
