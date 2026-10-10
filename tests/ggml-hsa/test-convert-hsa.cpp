@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -189,6 +190,98 @@ case_result run_exhaustive(ggml_backend_t backend, ggml_type src_type, ggml_type
     return case_result::pass;
 }
 
+// Host reference on raw bit patterns, for any supported pair (16- or 32-bit on either side).
+uint32_t host_convert_raw(ggml_type src_type, ggml_type dst_type, uint32_t bits) {
+    if (src_type == dst_type) {
+        return bits;
+    }
+    float f = 0.0f;
+    if (src_type == GGML_TYPE_F32) {
+        std::memcpy(&f, &bits, sizeof(f));
+    } else if (src_type == GGML_TYPE_F16) {
+        f = ggml_fp16_to_fp32(static_cast<ggml_fp16_t>(bits));
+    } else {
+        f = ggml_bf16_to_fp32(ggml_bf16_t{static_cast<uint16_t>(bits)});
+    }
+    if (dst_type == GGML_TYPE_F32) {
+        uint32_t out = 0;
+        std::memcpy(&out, &f, sizeof(out));
+        return out;
+    }
+    return dst_type == GGML_TYPE_F16 ? ggml_fp32_to_fp16(f) : ggml_fp32_to_bf16(f).bits;
+}
+
+// Converts a [d0, d1] tensor whose element i holds the bit pattern pattern(i) and compares the raw
+// result bits against the host. Unlike run_case this pins down rounding (ties of both parities),
+// NaN payloads and signed zeros in every direction, at shapes chosen for their tiling: tiles of a
+// half vector, no vector at all, and several workers with uneven shares of the tiles.
+template <typename Pattern>
+case_result run_bits(ggml_backend_t backend, ggml_type src_type, ggml_type dst_type, int64_t d0,
+                     int64_t d1, Pattern pattern) {
+    const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
+    ggml_init_params params{
+        /*.mem_size   =*/ctx_size,
+        /*.mem_buffer =*/nullptr,
+        /*.no_alloc   =*/true,
+    };
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx{ggml_init(params), ggml_free};
+
+    ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), src_type, d0, d1);
+    ggml_tensor * dst = ggml_hsa_convert(ctx.get(), src, dst_type);
+    if (!ggml_backend_supports_op(backend, dst)) {
+        printf("  op not supported (skipped)\n");
+        return case_result::skip;
+    }
+
+    ggml_cgraph * gf = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(gf, dst);
+    std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)> galloc{
+        ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
+    if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
+        printf("  graph allocation failed\n");
+        return case_result::fail;
+    }
+
+    const int64_t n = d0 * d1;
+    const std::size_t src_size = ggml_type_size(src_type);
+    const std::size_t dst_size = ggml_type_size(dst_type);
+    std::vector<uint8_t> src_bytes(ggml_nbytes(src));
+    for (int64_t i = 0; i < n; ++i) {
+        const uint32_t bits = pattern(i);
+        std::memcpy(&src_bytes[i * src_size], &bits, src_size); // little-endian: the low bytes
+    }
+    ggml_backend_tensor_set(src, src_bytes.data(), 0, src_bytes.size());
+
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        printf("  graph compute failed\n");
+        return case_result::fail;
+    }
+
+    std::vector<uint8_t> dst_bytes(ggml_nbytes(dst));
+    ggml_backend_tensor_get(dst, dst_bytes.data(), 0, dst_bytes.size());
+
+    int64_t mismatches = 0;
+    for (int64_t i = 0; i < n; ++i) {
+        uint32_t in = 0;
+        uint32_t got = 0;
+        std::memcpy(&in, &src_bytes[i * src_size], src_size);
+        std::memcpy(&got, &dst_bytes[i * dst_size], dst_size);
+        const uint32_t want = host_convert_raw(src_type, dst_type, in);
+        if (got != want) {
+            if (mismatches < 8) {
+                printf("  mismatch at %lld: src bits 0x%08x -> got 0x%08x want 0x%08x\n",
+                       (long long)i, in, got, want);
+            }
+            ++mismatches;
+        }
+    }
+    if (mismatches != 0) {
+        printf("  %lld / %lld elements mismatched\n", (long long)mismatches, (long long)n);
+        return case_result::fail;
+    }
+    return case_result::pass;
+}
+
 } // namespace
 
 int main() {
@@ -272,6 +365,86 @@ int main() {
                              : r == case_result::skip ? "SKIPPED"
                                                       : "FAILED";
         printf("%s all 65536 bit patterns: %s\n", e.label, label);
+        any_fail = any_fail || (r == case_result::fail);
+        passed += (r == case_result::pass);
+        skipped += (r == case_result::skip);
+        ggml_backend_free(backend);
+    }
+
+    // Raw-bit cases. Each element's pattern: a 16-bit source cycles through all 65536 patterns; an
+    // f32 source pairs every high half with low halves at and around the bf16 rounding tie.
+    const auto all16 = [](int64_t i) { return static_cast<uint32_t>(i & 0xffff); };
+    const auto f32_ties = [](int64_t i) {
+        static const uint32_t lows[] = {0x0000, 0x0001, 0x7fff, 0x8000, 0x8001, 0xffff, 0x4000, 0xc000};
+        return (static_cast<uint32_t>(i & 0xffff) << 16) | lows[(i >> 16) & 7];
+    };
+    // Every 16-bit pattern alone among normal values (1.0): one per 32 elements, so the vector
+    // holding it has no other lane outside the vector path's range. With the patterns in order
+    // (all16), a pattern at the edge of that range always shares its vector with one outside it,
+    // and the scalar fix-up of that vector would hide a wrong edge.
+    const auto isolated = [](ggml_type type) {
+        const uint32_t one = type == GGML_TYPE_F16 ? 0x3c00 : 0x3f80;
+        return [one](int64_t i) {
+            return (i & 31) == 7 ? static_cast<uint32_t>((i >> 5) & 0xffff) : one;
+        };
+    };
+    struct bits_case {
+        ggml_type src_type, dst_type;
+        int64_t d0, d1;
+        bool f32_source_ties;
+        const char * label;
+    };
+    const bits_case bits_cases[] = {
+        // several workers, whole-vector tiles
+        {GGML_TYPE_F32, GGML_TYPE_BF16, 2048, 256, true, "f32->bf16 ties x8, several workers"},
+        // 10 x 500: a multiple of 8 but not 16, so tiles of half vectors
+        {GGML_TYPE_F32, GGML_TYPE_BF16, 10, 500, true, "f32->bf16 half-vector tiles"},
+        // 14 elements: no vector path
+        {GGML_TYPE_F32, GGML_TYPE_BF16, 14, 1, true, "f32->bf16 scalar"},
+        {GGML_TYPE_BF16, GGML_TYPE_F32, 256, 256, false, "bf16->f32 all patterns"},
+        {GGML_TYPE_BF16, GGML_TYPE_F32, 500, 500, false, "bf16->f32 half-vector tiles"},
+        {GGML_TYPE_BF16, GGML_TYPE_F32, 33, 2, false, "bf16->f32 scalar"},
+        // 500 x 500 16-bit: a multiple of 16 but not 32
+        {GGML_TYPE_F16, GGML_TYPE_BF16, 500, 500, false, "f16->bf16 half-vector tiles"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, 500, 500, false, "bf16->f16 half-vector tiles"},
+        {GGML_TYPE_F16, GGML_TYPE_BF16, 33, 2, false, "f16->bf16 scalar"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, 33, 2, false, "bf16->f16 scalar"},
+        // 4000 x 17: 17 tiles of 4000 over 4 workers (5, 4, 4, 4)
+        {GGML_TYPE_F16, GGML_TYPE_BF16, 4000, 17, false, "f16->bf16 uneven workers"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, 4000, 17, false, "bf16->f16 uneven workers"},
+        {GGML_TYPE_F32, GGML_TYPE_F32, 2048, 256, true, "f32->f32 several workers"},
+        {GGML_TYPE_BF16, GGML_TYPE_BF16, 500, 500, false, "bf16->bf16 half-vector tiles"},
+    };
+    struct {
+        ggml_type src_type, dst_type;
+        const char * label;
+    } isolated_cases[] = {
+        {GGML_TYPE_F16, GGML_TYPE_BF16, "f16->bf16 isolated patterns"},
+        {GGML_TYPE_BF16, GGML_TYPE_F16, "bf16->f16 isolated patterns"},
+    };
+    for (const auto & c : isolated_cases) {
+        ggml_backend_t backend = ggml_backend_hsa_init(0);
+        const case_result r =
+            run_bits(backend, c.src_type, c.dst_type, 2048, 1024, isolated(c.src_type));
+        const char * label = r == case_result::pass   ? "PASSED"
+                             : r == case_result::skip ? "SKIPPED"
+                                                      : "FAILED";
+        printf("HSA_CONVERT %s (raw bits): %s\n", c.label, label);
+        any_fail = any_fail || (r == case_result::fail);
+        passed += (r == case_result::pass);
+        skipped += (r == case_result::skip);
+        ggml_backend_free(backend);
+    }
+
+    for (const auto & c : bits_cases) {
+        ggml_backend_t backend = ggml_backend_hsa_init(0);
+        const case_result r =
+            c.f32_source_ties ? run_bits(backend, c.src_type, c.dst_type, c.d0, c.d1, f32_ties)
+                              : run_bits(backend, c.src_type, c.dst_type, c.d0, c.d1, all16);
+        const char * label = r == case_result::pass   ? "PASSED"
+                             : r == case_result::skip ? "SKIPPED"
+                                                      : "FAILED";
+        printf("HSA_CONVERT %s (raw bits): %s\n", c.label, label);
         any_fail = any_fail || (r == case_result::fail);
         passed += (r == case_result::pass);
         skipped += (r == case_result::skip);

@@ -256,9 +256,10 @@ inline std::uint16_t convert_f32_to_f16_scalar(f32 v) {
  */
 template <int V>
 inline aie::mask<V> convert_bf16_to_f16_vector_covers(const aie::vector<std::uint16_t, V> & b) {
+    // A biased exponent in [113, 142] is a magnitude in [0x3880, 0x477f]: one unsigned compare
+    // after an offset that wraps everything below the range to the top.
     const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, b);
-    const aie::vector<std::uint16_t, V> exponent = aie::logical_downshift(mag, 7);
-    return (aie::ge(exponent, std::uint16_t{113}) & aie::le(exponent, std::uint16_t{142})) |
+    return aie::le(aie::sub(mag, std::uint16_t{0x3880}), std::uint16_t{0x477f - 0x3880}) |
            aie::eq(mag, std::uint16_t{0});
 }
 
@@ -267,9 +268,9 @@ inline aie::mask<V> convert_bf16_to_f16_vector_covers(const aie::vector<std::uin
  *
  * bf16 keeps 7 stored mantissa bits and f16 keeps 10, so a result that lands in the normal f16
  * range loses nothing: the conversion is a pure re-pack of the sign, a rebiased exponent and a
- * left-shifted mantissa, with no rounding to get wrong. That is what makes this direction
- * vectorizable with uniform shifts alone, unlike the general f32 -> f16 narrowing, whose subnormal
- * case needs a per-lane variable shift that aie_api cannot express.
+ * left-shifted mantissa, with no rounding to get wrong. Rebiasing the exponent field (127 -> 15) is
+ * subtracting 112 << 7 from the magnitude, and moving the fields up by 3 bits is three doublings,
+ * so no vector shift is needed (on aie2 each one is a round trip through an accumulator).
  *
  * Lanes outside @ref convert_bf16_to_f16_vector_covers get a meaningless value here; the caller
  * must not use the result unless the mask is full.
@@ -283,12 +284,11 @@ inline aie::vector<std::uint16_t, V>
 convert_bf16_to_f16_vector(const aie::vector<std::uint16_t, V> & b) {
     const aie::vector<std::uint16_t, V> sign = aie::bit_and(std::uint16_t{0x8000}, b);
     const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, b);
-    const aie::vector<std::uint16_t, V> exponent = aie::logical_downshift(mag, 7);
-    const aie::vector<std::uint16_t, V> mantissa = aie::bit_and(std::uint16_t{0x7f}, mag);
 
-    // rebias 127 -> 15, and move the 7 mantissa bits up to the top of the f16 field
-    const aie::vector<std::uint16_t, V> packed = aie::bit_or(
-        aie::upshift(aie::sub(exponent, std::uint16_t{112}), 10), aie::upshift(mantissa, 3));
+    const aie::vector<std::uint16_t, V> x1 = aie::sub(mag, std::uint16_t{112 << 7});
+    const aie::vector<std::uint16_t, V> x2 = aie::add(x1, x1);
+    const aie::vector<std::uint16_t, V> x4 = aie::add(x2, x2);
+    const aie::vector<std::uint16_t, V> packed = aie::add(x4, x4);
 
     // select(v, a, m) yields a where m holds: a zero magnitude keeps only its sign
     return aie::bit_or(sign, aie::select(packed, std::uint16_t{0}, aie::eq(mag, std::uint16_t{0})));
@@ -297,8 +297,8 @@ convert_bf16_to_f16_vector(const aie::vector<std::uint16_t, V> & b) {
 /**
  * @brief Lanes that @ref convert_f16_bits_to_bf16_vector converts correctly.
  *
- * A normal f16 (biased exponent in [1, 30]) and a signed zero. An f16 subnormal, infinity or NaN
- * is left to the scalar path, which is the reference for those.
+ * A normal f16 (biased exponent in [1, 30], a magnitude in [0x0400, 0x7bff]) and a signed zero.
+ * An f16 subnormal, infinity or NaN is left to the scalar path, which is the reference for those.
  *
  * @tparam V Vector width (number of 16-bit lanes).
  * @param[in] h The raw f16 bit patterns.
@@ -308,8 +308,7 @@ template <int V>
 inline aie::mask<V>
 convert_f16_bits_to_bf16_vector_covers(const aie::vector<std::uint16_t, V> & h) {
     const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, h);
-    const aie::vector<std::uint16_t, V> exponent = aie::logical_downshift(mag, 10);
-    return (aie::ge(exponent, std::uint16_t{1}) & aie::le(exponent, std::uint16_t{30})) |
+    return aie::le(aie::sub(mag, std::uint16_t{0x0400}), std::uint16_t{0x7bff - 0x0400}) |
            aie::eq(mag, std::uint16_t{0});
 }
 
@@ -319,9 +318,11 @@ convert_f16_bits_to_bf16_vector_covers(const aie::vector<std::uint16_t, V> & h) 
  *
  * Lane-wise replica of @c convert_f32_to_bf16_scalar(convert_f16_bits_to_f32(h)) for a normal f16
  * or a zero: widening to f32 is exact, so the f32 is the sign, the exponent rebiased by 112 and the
- * 10 mantissa bits m at the top of the f32 mantissa, and narrowing to bf16 keeps m >> 3 and rounds
- * to nearest even on the 3 bits dropped: up exactly when (m & 7) + ((m >> 3) & 1) > 4. A carry
- * out of the mantissa increments the exponent, as it does in the scalar arithmetic.
+ * 10 mantissa bits at the top of the f32 mantissa, and narrowing to bf16 drops the low 3 of them,
+ * rounding to nearest even. The magnitude's exponent and mantissa fields are contiguous, so that
+ * is the magnitude divided by 8 and rounded to nearest even -- one shift out of an accumulator in
+ * the conv_even rounding mode, set here and restored on return -- plus the rebias, 112 << 7. A
+ * carry out of the mantissa increments the exponent, as it does in the scalar arithmetic.
  *
  * Lanes outside @ref convert_f16_bits_to_bf16_vector_covers get a meaningless value here; the
  * caller must not use the result unless the mask is full.
@@ -335,21 +336,16 @@ inline aie::vector<std::uint16_t, V>
 convert_f16_bits_to_bf16_vector(const aie::vector<std::uint16_t, V> & h) {
     const aie::vector<std::uint16_t, V> sign = aie::bit_and(std::uint16_t{0x8000}, h);
     const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, h);
-    const aie::vector<std::uint16_t, V> exponent = aie::logical_downshift(mag, 10);
-    const aie::vector<std::uint16_t, V> mantissa = aie::bit_and(std::uint16_t{0x3ff}, mag);
 
-    const aie::vector<std::uint16_t, V> kept = aie::logical_downshift(mantissa, 3);
-    const aie::vector<std::uint16_t, V> packed =
-        aie::bit_or(aie::upshift(aie::add(exponent, std::uint16_t{112}), 7), kept);
-    const aie::vector<std::uint16_t, V> round =
-        aie::add(aie::bit_and(std::uint16_t{7}, mantissa), aie::bit_and(std::uint16_t{1}, kept));
-    const aie::vector<std::uint16_t, V> rounded = aie::add(
-        packed, aie::select(aie::zeros<std::uint16_t, V>(), aie::broadcast<std::uint16_t, V>(1),
-                            aie::gt(round, std::uint16_t{4})));
+    aie::vector<std::uint16_t, V> rounded;
+    {
+        aie::scoped_mode rnd{aie::rounding_mode::conv_even};
+        rounded = aie::accum<acc32, V>(mag).template to_vector<std::uint16_t>(3);
+    }
+    const aie::vector<std::uint16_t, V> packed = aie::add(rounded, std::uint16_t{112 << 7});
 
     // select(v, a, m) yields a where m holds: a zero magnitude keeps only its sign
-    return aie::bit_or(sign,
-                       aie::select(rounded, std::uint16_t{0}, aie::eq(mag, std::uint16_t{0})));
+    return aie::bit_or(sign, aie::select(packed, std::uint16_t{0}, aie::eq(mag, std::uint16_t{0})));
 }
 
 /**
