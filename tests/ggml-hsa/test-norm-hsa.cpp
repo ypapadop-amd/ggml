@@ -152,6 +152,18 @@ int main() {
         // A variance near eps (values 1e-3 apart), so the result depends on eps and on the
         // reciprocal square root of a small number.
         {64, 8, 1, "variance ~ eps", true, 1e-3f},
+        // Tiles of several rows over 8 workers (norm.py's _tiling), each tile's rows in groups of
+        // 16 sharing one reciprocal square root, and a tail read in place except on a tile's last
+        // row: 50 tiles of 10 rows, 10 wide (all tail); 50 tiles of 10, 100 wide (unaligned rows,
+        // 6 vectors and a 4-element tail); 8 tiles of 50 rows (four groups, the last of 2), 20
+        // wide (unaligned, 4-element tail); 24 wide (aligned rows with an 8-element tail); 1025
+        // wide (unrolled loops, their remainders and a 1-element tail); 32-row tiles, 64 wide.
+        {10, 500, 1, "10 x 500 rnd", true},
+        {100, 500, 1, "100 x 500 rnd", true},
+        {20, 400, 1, "20 x 400 rnd", true},
+        {24, 40, 1, "24 x 40 rnd", true},
+        {1025, 12, 1, "1025 x 12 rnd", true},
+        {64, 2048, 1, "64 x 2048 rnd", true},
     };
 
     bool all_ok = true;
