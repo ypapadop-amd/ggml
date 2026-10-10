@@ -44,6 +44,209 @@
 
 namespace {
 
+#if __AIEARCH__ == 20
+// f32 MACs on bf16 limbs, for the aie2 vector paths (f32 only; conv_2d.py builds no other dtype).
+//
+// aie2 has no f32 multiplier: aie::mac on f32 vectors splits both operands into three bf16 limbs
+// (hi, mid, lo: truncating conversions, each limb taken from the exact residual of the ones before,
+// so the three sum to the f32 value exactly) and sums the nine limb products, on every call. A conv
+// reads each input element KH * KW times per output channel and each weight once per output
+// chunk, so nearly all of those splits are repeated work. Here each input row is split once per
+// image (or per call, on the ring path) and each weight once per call, the same way.
+//
+// The products are then summed with aie2's bf16 multiply, which adds two products per output
+// lane: lanes i and i + 16 of its 32-lane operands. Pairing the two larger tap limbs, [hi | mid],
+// against a broadcast weight limb takes two products per multiply, so a tap's nine products take
+// six multiplies, not nine with half of every operand zero. As in aie::mac's emulation they are
+// summed apart from the running sum, smallest first, and added to it once per tap: every product
+// is exact and the running sum is rounded once per tap, as before, but the products' partial sums
+// round differently, so results are not bit-identical to aie::mac (same error against a double
+// reference on every gate shape, measured).
+namespace limb {
+
+constexpr int32_t V = 16; // f32 lanes in a 512-bit register, and lanes of each bf16 limb vector
+constexpr int32_t n_chunks = (GGML_CONV2D_OW + V - 1) / V;
+// Padded row: input column j - P0 at index j, zeros elsewhere; a chunk at ox reads the aligned
+// vectors at ox and ox + V and shifts each tap's window out of them, hence (KW - 1) * D0 <= V.
+constexpr int32_t pw = (n_chunks + 1) * V;
+constexpr int32_t copy_lo = (GGML_CONV2D_P0 < pw) ? GGML_CONV2D_P0 : pw; // first copied column
+constexpr int32_t copy_hi = (GGML_CONV2D_P0 + GGML_CONV2D_IW < pw) ? GGML_CONV2D_P0 + GGML_CONV2D_IW
+                                                                   : pw;    // one past the last
+constexpr int32_t n_wts = GGML_CONV2D_IC * GGML_CONV2D_KH * GGML_CONV2D_KW; // per output channel
+constexpr int32_t n_wts_pad = (n_wts + V - 1) / V * V;
+// A split row is three limb rows of pw bf16, pw apart: hi, mid, lo.
+constexpr int32_t row_elems = 3 * pw;
+
+using wlimbs = bfloat16[3][n_wts_pad];
+using pair_t = aie::vector<bfloat16, 2 * V>;
+
+// Splits the V floats at src into limbs at dst, dst + stride and dst + 2 * stride. The caller sets
+// floor rounding (the emulation's truncating conversions).
+inline void split(bfloat16 * __restrict dst, int32_t stride, const float * __restrict src) {
+    const aie::vector<bfloat16, V> one = aie::broadcast<bfloat16, V>(1.0f);
+    aie::accum<accfloat, V> r;
+    r.from_vector(aie::load_v<V>(src));
+    const aie::vector<bfloat16, V> hi = r.template to_vector<bfloat16>();
+    r = aie::msc(r, hi, one);
+    const aie::vector<bfloat16, V> mid = r.template to_vector<bfloat16>();
+    r = aie::msc(r, mid, one);
+    aie::store_v(dst, hi);
+    aie::store_v(dst + stride, mid);
+    aie::store_v(dst + 2 * stride, r.template to_vector<bfloat16>());
+}
+
+// Splits output channel oc_idx's weights into wl; `stage` is V aligned floats of scratch.
+inline void
+split_weights(wlimbs & wl, const float * __restrict wts, int32_t oc_idx, float * stage) {
+    const float * __restrict wsrc = wts + oc_idx * n_wts;
+    const aie::rounding_mode rnd = aie::get_rounding();
+    aie::set_rounding(aie::rounding_mode::floor);
+    for (int32_t k = 0; k < n_wts_pad; k += V) {
+        AIE_LOOP_NO_UNROLL
+        for (int32_t l = 0; l < V; ++l) {
+            stage[l] = (k + l < n_wts) ? wsrc[k + l] : 0.0f;
+        }
+        split(wl[0] + k, n_wts_pad, stage);
+    }
+    aie::set_rounding(rnd);
+}
+
+// Zeroes the padding columns of a pw-float row.
+inline void zero_pad(float * row) {
+    for (int32_t j = 0; j < copy_lo; ++j) {
+        row[j] = 0.0f;
+    }
+    for (int32_t j = copy_hi; j < pw; ++j) {
+        row[j] = 0.0f;
+    }
+}
+
+// Splits input row srow into the split row dst, through stage: a pw-float row whose padding
+// columns are zero. The caller sets floor rounding.
+inline void split_row(bfloat16 * __restrict dst, const float * __restrict srow, float * stage) {
+    AIE_LOOP_NO_UNROLL
+    for (int32_t j = copy_lo; j < copy_hi; ++j) {
+        stage[j] = srow[j - GGML_CONV2D_P0];
+    }
+    for (int32_t j = 0; j < pw; j += V) {
+        split(dst + j, pw, stage + j);
+    }
+}
+
+// The split row at xrow, as the aligned limb vectors at ox and ox + V that the taps of the V
+// columns at ox are shifted out of.
+struct row_limbs {
+    aie::vector<bfloat16, V> h_lo, h_hi, m_lo, m_hi, l_lo, l_hi;
+
+    __attribute__((always_inline)) row_limbs(const bfloat16 * xrow, int32_t ox) :
+        h_lo(aie::load_v<V>(xrow + ox)),
+        h_hi(aie::load_v<V>(xrow + ox + V)),
+        m_lo(aie::load_v<V>(xrow + pw + ox)),
+        m_hi(aie::load_v<V>(xrow + pw + ox + V)),
+        l_lo(aie::load_v<V>(xrow + 2 * pw + ox)),
+        l_hi(aie::load_v<V>(xrow + 2 * pw + ox + V)) {}
+};
+
+// One weight's limbs (a, b, c), each broadcast to all 32 lanes of a pair operand.
+struct weight_limbs {
+    pair_t a, b, c;
+
+    __attribute__((always_inline)) weight_limbs(const wlimbs & wl, int32_t k) :
+        a(aie::broadcast<bfloat16, 2 * V>(wl[0][k])),
+        b(aie::broadcast<bfloat16, 2 * V>(wl[1][k])),
+        c(aie::broadcast<bfloat16, 2 * V>(wl[2][k])) {}
+};
+
+// acc[i] + x[i] * w[i] + x[i + V] * w[i + V].
+__attribute__((always_inline)) inline aie::accum<accfloat, V>
+mac2(const aie::accum<accfloat, V> & acc, const pair_t & x, const pair_t & w) {
+    return aie::accum<accfloat, V>(::mac_elem_16_2(x, w, acc));
+}
+
+// Adds tap ikw of split row x, weight w, to acc: with tap limbs (d, e, f), the products cf, bf
+// and af (f against a zero half), then cd + ce, bd + be and ad + ae, summed apart from acc.
+__attribute__((always_inline)) inline void
+mac_tap(aie::accum<accfloat, V> & acc, const row_limbs & x, int32_t ikw, const weight_limbs & w) {
+    const int32_t sh = ikw * GGML_CONV2D_D0;
+    const aie::vector<bfloat16, V> d =
+        sh == 0 ? x.h_lo : aie::shuffle_down_fill(x.h_lo, x.h_hi, sh);
+    const aie::vector<bfloat16, V> e =
+        sh == 0 ? x.m_lo : aie::shuffle_down_fill(x.m_lo, x.m_hi, sh);
+    const aie::vector<bfloat16, V> f =
+        sh == 0 ? x.l_lo : aie::shuffle_down_fill(x.l_lo, x.l_hi, sh);
+    const pair_t de = aie::concat(d, e);
+    const pair_t f0 = aie::concat(f, aie::zeros<bfloat16, V>());
+    aie::accum<accfloat, V> p(::mul_elem_16_2(f0, w.c));
+    p = mac2(p, f0, w.b);
+    p = mac2(p, f0, w.a);
+    p = mac2(p, de, w.c);
+    p = mac2(p, de, w.b);
+    p = mac2(p, de, w.a);
+    acc = aie::add(p, acc);
+}
+
+// Adds the KW taps of split row xrow, weights from wl[.][kb], to the V columns at ox.
+__attribute__((always_inline)) inline void mac_taps(aie::accum<accfloat, V> & acc,
+                                                    const bfloat16 * xrow,
+                                                    int32_t ox,
+                                                    const wlimbs & wl,
+                                                    int32_t kb) {
+    const row_limbs x(xrow, ox);
+    GGML_CONV2D_UNROLL_TAPS
+    for (int32_t ikw = 0; ikw < GGML_CONV2D_KW; ++ikw) {
+        mac_tap(acc, x, ikw, weight_limbs(wl, kb + ikw));
+    }
+}
+
+// mac_taps for two output rows at once (split rows xrow0 and xrow1): independent sums to overlap,
+// and one set of weight broadcasts for both.
+__attribute__((always_inline)) inline void mac_taps2(aie::accum<accfloat, V> & acc0,
+                                                     aie::accum<accfloat, V> & acc1,
+                                                     const bfloat16 * xrow0,
+                                                     const bfloat16 * xrow1,
+                                                     int32_t ox,
+                                                     const wlimbs & wl,
+                                                     int32_t kb) {
+    const row_limbs x0(xrow0, ox);
+    const row_limbs x1(xrow1, ox);
+    GGML_CONV2D_UNROLL_TAPS
+    for (int32_t ikw = 0; ikw < GGML_CONV2D_KW; ++ikw) {
+        const weight_limbs w(wl, kb + ikw);
+        mac_tap(acc0, x0, ikw, w);
+        mac_tap(acc1, x1, ikw, w);
+    }
+}
+
+// Stores acc's first L lanes at dst. Through an aligned bounce: unaligned 512-bit stores corrupt
+// their neighbours here (see vec_chunk in conv_2d_impl), and a partial last chunk must not touch
+// memory past the row. L is a constant so the copy unrolls.
+template <int32_t L>
+inline void store_lanes(float * __restrict dst, const aie::accum<accfloat, V> & acc) {
+    alignas(aie::vector_decl_align) float chunk[V];
+    aie::store_v(chunk, acc.template to_vector<float>());
+    AIE_LOOP_UNROLL_FULL
+    for (int32_t l = 0; l < L; ++l) {
+        dst[l] = chunk[l];
+    }
+}
+
+// Computes and stores one output row: chunk(ox) returns the accumulator of the V columns at ox.
+// Callers pass an always_inline lambda: called out of line, the closure produced wrong values in
+// every output row after the first (seen at IC = 1 with two chunks per row, llvm-aie b0d37423).
+template <typename F>
+__attribute__((always_inline)) inline void store_row(float * __restrict out_row, F && chunk) {
+    for (int32_t ch = 0; ch < GGML_CONV2D_OW / V; ++ch) {
+        store_lanes<V>(out_row + ch * V, chunk(ch * V));
+    }
+    if constexpr (GGML_CONV2D_OW % V != 0) {
+        constexpr int32_t ox = GGML_CONV2D_OW / V * V;
+        store_lanes<GGML_CONV2D_OW % V>(out_row + ox, chunk(ox));
+    }
+}
+
+} // namespace limb
+#endif
+
 /**
  * @brief Direct 2D convolution over one output plane.
  *
@@ -187,13 +390,17 @@ void conv_2d_impl(const T_in * __restrict in,
 #ifndef GGML_CONV2D_RING_BYTES
 #error "conv_2d.cc requires -DGGML_CONV2D_RING_BYTES, emitted by conv_2d.py"
 #endif
-        if constexpr (R * ic * pw * static_cast<int32_t>(sizeof(T_in)) <= GGML_CONV2D_RING_BYTES) {
-            alignas(aie::vector_decl_align) T_in ring[ic][R][pw];
-            for (int32_t c = 0; c < ic; ++c) {
-                for (int32_t r = 0; r < R; ++r) {
-                    zero_pad(ring[c][r]);
-                }
-            }
+        // The ring holds each row already split into limbs (see namespace limb), so each input
+        // element is split once per call rather than once per tap that reads it.
+        if constexpr (std::is_same_v<T_in, float> && std::is_same_v<T_out, float> &&
+                      (R * ic * limb::row_elems + 3 * limb::n_wts_pad) *
+                              static_cast<int32_t>(sizeof(bfloat16)) <=
+                          GGML_CONV2D_RING_BYTES) {
+            alignas(aie::vector_decl_align) bfloat16 ring[ic][R][limb::row_elems];
+            alignas(aie::vector_decl_align) limb::wlimbs wl;
+            alignas(aie::vector_decl_align) float stage[pw];
+            limb::split_weights(wl, wts, oc_idx, stage);
+            limb::zero_pad(stage);
 
             const auto wrap = [](int32_t slot) { return slot >= R ? slot - R : slot; };
             int32_t next_row = 0;  // lowest input row not yet copied
@@ -205,28 +412,23 @@ void conv_2d_impl(const T_in * __restrict in,
                 }
                 const int32_t first = base > next_row ? base : next_row;
                 const int32_t last = (base + R < ih ? base + R : ih); // one past
+                const aie::rounding_mode rnd = aie::get_rounding();
+                aie::set_rounding(aie::rounding_mode::floor);
                 for (int32_t r = first; r < last; ++r) {
                     const int32_t slot = wrap(base_slot + (r - base)); // r - base in [0, R)
                     for (int32_t c = 0; c < ic; ++c) {
-                        const T_in * __restrict srow = in + c * plane_size + r * iw;
-                        AIE_LOOP_NO_UNROLL
-                        for (int32_t j = copy_lo; j < copy_hi; ++j) {
-                            ring[c][slot][j] = srow[j - p0];
-                        }
+                        limb::split_row(ring[c][slot], in + c * plane_size + r * iw, stage);
                     }
                 }
+                aie::set_rounding(rnd);
                 if (last > next_row) {
                     next_row = last;
                 }
 
-                T_out * __restrict out_row = out + oy * ow;
-                for (int32_t ch = 0; ch < n_chunks; ++ch) {
-                    const int32_t ox = ch * V;
-                    const int32_t lanes = (ow - ox < V) ? ow - ox : V;
+                limb::store_row(out + oy * ow, [&](int32_t ox) __attribute__((always_inline)) {
                     aie::accum<accfloat, V> acc;
                     acc.from_vector(aie::zeros<T_out, V>());
                     for (int32_t c = 0; c < ic; ++c) {
-                        const T_in * __restrict wt_base = wts + c * knl_plane + oc_idx * knl_vol;
                         GGML_CONV2D_UNROLL_TAPS
                         for (int32_t ikh = 0; ikh < kh; ++ikh) {
                             const int32_t r = base + ikh * d1;
@@ -234,11 +436,11 @@ void conv_2d_impl(const T_in * __restrict in,
                                 continue;
                             }
                             const int32_t slot = wrap(base_slot + ikh * d1); // ikh * d1 < R
-                            mac_row(acc, ring[c][slot], ox, wt_base + ikh * kw);
+                            limb::mac_taps(acc, ring[c][slot], ox, wl, (c * kh + ikh) * kw);
                         }
                     }
-                    store_lanes(out_row + ox, acc, lanes);
-                }
+                    return acc;
+                });
             }
 
             event1();
@@ -501,9 +703,126 @@ void conv_2d_impl(const T_in * __restrict in,
     event1();
 }
 
+#if __AIEARCH__ == 20 && defined(GGML_CONV2D_SPLIT_IMAGE)
+namespace limb {
+
+// The split image: for each input channel, split row rr holds input row rr - P1 (zeros where that
+// is outside the image), for every row an output row's taps read: rr = oy * S1 + ikh * D1.
+constexpr int32_t image_rows =
+    (GGML_CONV2D_OH - 1) * GGML_CONV2D_S1 + (GGML_CONV2D_KH - 1) * GGML_CONV2D_D1 + 1;
+static_assert(GGML_CONV2D_IC * image_rows * row_elems == GGML_CONV2D_SPLIT_IMAGE,
+              "conv_2d.py sized the split image differently");
+
+} // namespace limb
+#endif
+
 } // namespace
 
 extern "C" {
+
+#if __AIEARCH__ == 20 && defined(GGML_CONV2D_SPLIT_IMAGE)
+/**
+ * @brief Split one input image into bf16 limbs, for every output channel's ggml_op_conv_2d_split.
+ *
+ * conv_2d.py calls this once per image and then ggml_op_conv_2d_split once per output channel,
+ * so each element is split once per image rather than once per output channel (or per tap).
+ *
+ * @param[in]  in   Input image: IC planes of IH * IW f32 elements.
+ * @param[out] img  Split image: IC x limb::image_rows split rows of limb::row_elems bf16.
+ */
+void ggml_op_conv_2d_split_image(const float * __restrict in, bfloat16 * __restrict img) {
+    alignas(aie::vector_decl_align) float stage[limb::pw];
+    limb::zero_pad(stage);
+    const aie::rounding_mode rnd = aie::get_rounding();
+    aie::set_rounding(aie::rounding_mode::floor);
+    for (int32_t c = 0; c < GGML_CONV2D_IC; ++c) {
+        for (int32_t rr = 0; rr < limb::image_rows; ++rr) {
+            bfloat16 * __restrict dst = img + (c * limb::image_rows + rr) * limb::row_elems;
+            const int32_t r = rr - GGML_CONV2D_P1;
+            if (r < 0 || r >= GGML_CONV2D_IH) {
+                for (int32_t j = 0; j < limb::row_elems; j += limb::V) {
+                    aie::store_v(dst + j, aie::zeros<bfloat16, limb::V>());
+                }
+            } else {
+                limb::split_row(dst, in + (c * GGML_CONV2D_IH + r) * GGML_CONV2D_IW, stage);
+            }
+        }
+    }
+    aie::set_rounding(rnd);
+}
+
+/**
+ * @brief Compute one output plane from an image split by ggml_op_conv_2d_split_image.
+ *
+ * The same arithmetic, in the same order, as ggml_op_conv_2d's aie2 ring path, so the same
+ * results: rows outside the image are zero rows here, whose taps add +0 or -0 to an accumulator
+ * that started at +0 (and so is never -0), which leaves it unchanged, as skipping them does.
+ *
+ * @param[in]  img     Split image.
+ * @param[in]  wts     Weight tensor: KW*KH*IC*OC f32 elements, layout [KW,KH,IC,OC].
+ * @param[out] out     Output plane: OW * OH f32 elements (row-major).
+ * @param[in]  oc_idx  Output channel index.
+ */
+void ggml_op_conv_2d_split(const bfloat16 * __restrict img,
+                           const float * __restrict wts,
+                           float * __restrict out,
+                           int32_t oc_idx) {
+    event0();
+    alignas(aie::vector_decl_align) limb::wlimbs wl;
+    alignas(aie::vector_decl_align) float stage[limb::V];
+    limb::split_weights(wl, wts, oc_idx, stage);
+    const auto rows_of = [&](int32_t c, int32_t oy) __attribute__((always_inline)) {
+        return img + (c * limb::image_rows + oy * GGML_CONV2D_S1) * limb::row_elems;
+    };
+    // Two output rows at a time (see mac_taps2), then the last one if OH is odd.
+    int32_t oy = 0;
+    for (; oy + 1 < GGML_CONV2D_OH; oy += 2) {
+        float * __restrict out0 = out + oy * GGML_CONV2D_OW;
+        float * __restrict out1 = out0 + GGML_CONV2D_OW;
+        const auto chunk2 = [&]<int32_t L>(int32_t ox) __attribute__((always_inline)) {
+            aie::accum<accfloat, limb::V> acc0;
+            aie::accum<accfloat, limb::V> acc1;
+            acc0.from_vector(aie::zeros<float, limb::V>());
+            acc1.from_vector(aie::zeros<float, limb::V>());
+            for (int32_t c = 0; c < GGML_CONV2D_IC; ++c) {
+                const bfloat16 * rows0 = rows_of(c, oy);
+                const bfloat16 * rows1 = rows_of(c, oy + 1);
+                GGML_CONV2D_UNROLL_TAPS
+                for (int32_t ikh = 0; ikh < GGML_CONV2D_KH; ++ikh) {
+                    limb::mac_taps2(acc0, acc1, rows0 + ikh * GGML_CONV2D_D1 * limb::row_elems,
+                                    rows1 + ikh * GGML_CONV2D_D1 * limb::row_elems, ox, wl,
+                                    (c * GGML_CONV2D_KH + ikh) * GGML_CONV2D_KW);
+                }
+            }
+            limb::store_lanes<L>(out0 + ox, acc0);
+            limb::store_lanes<L>(out1 + ox, acc1);
+        };
+        for (int32_t ch = 0; ch < GGML_CONV2D_OW / limb::V; ++ch) {
+            chunk2.template operator()<limb::V>(ch * limb::V);
+        }
+        if constexpr (GGML_CONV2D_OW % limb::V != 0) {
+            chunk2.template operator()<GGML_CONV2D_OW % limb::V>(GGML_CONV2D_OW / limb::V *
+                                                                 limb::V);
+        }
+    }
+    if (oy < GGML_CONV2D_OH) {
+        limb::store_row(out + oy * GGML_CONV2D_OW, [&](int32_t ox) __attribute__((always_inline)) {
+            aie::accum<accfloat, limb::V> acc;
+            acc.from_vector(aie::zeros<float, limb::V>());
+            for (int32_t c = 0; c < GGML_CONV2D_IC; ++c) {
+                const bfloat16 * rows = rows_of(c, oy);
+                GGML_CONV2D_UNROLL_TAPS
+                for (int32_t ikh = 0; ikh < GGML_CONV2D_KH; ++ikh) {
+                    limb::mac_taps(acc, rows + ikh * GGML_CONV2D_D1 * limb::row_elems, ox, wl,
+                                   (c * GGML_CONV2D_KH + ikh) * GGML_CONV2D_KW);
+                }
+            }
+            return acc;
+        });
+    }
+    event1();
+}
+#else
 
 /**
  * @brief Compute one output plane of a 2D convolution for one batch element.
@@ -522,5 +841,6 @@ void ggml_op_conv_2d(const INPUT_DTYPE * __restrict in,
                      int32_t oc_idx) {
     conv_2d_impl<INPUT_DTYPE, OUTPUT_DTYPE>(in, wts, out, oc_idx);
 }
+#endif
 
 } // extern "C"
