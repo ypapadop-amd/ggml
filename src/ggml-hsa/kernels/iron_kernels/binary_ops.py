@@ -12,10 +12,13 @@ from pathlib import Path
 
 import numpy as np
 from aie.dialects.arith import index_cast
+from aie.helpers.taplib import TensorAccessPattern
 from aie.ir import IntegerType
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
+    Program,
+    Runtime,
     Worker,
     dtype_to_str,
 )
@@ -25,9 +28,12 @@ from .utils import (
     CoreFunctionSpec,
     align_to_arch,
     arch_aligned_num_elements,
+    arch_num_columns,
+    arch_to_device,
     core_function_object,
     fill_drain_program,
     max_tile_size,
+    partition_units,
     tiled_tile_size,
     vector_lanes,
 )
@@ -50,6 +56,29 @@ from .utils import (
 _STACK_SIZE_BYTES = 4096
 
 
+# Fewest tiles worth a worker of their own. The shared fan_out_worker_count asks for 256K
+# elements per worker, which a binary op passes only well above MNIST sizes; but these designs are
+# DMA- and per-tile-bound once the kernel is vectorized, and spreading tiles over columns paid off
+# far below that. Measured on aie2, ADD, min us, 1 -> 4 workers: 500 rows of 10 (500 tiles)
+# 263 -> 166, 512 rows of 100 242 -> 167, 256x256 element-wise (64 tiles) 212 -> 169, 16 tiles of
+# 1024 143 -> 139; but 8 rows of 32 117 -> 131 and 16 rows of 64 123 -> 133, the fixed cost of
+# the extra fills, drains and cores showing.
+_MIN_TILES_PER_WORKER = 16
+
+
+def _worker_count(arch: str, num_tiles: int) -> int:
+    """Workers (one per column) to spread num_tiles tiles over, at least _MIN_TILES_PER_WORKER each.
+
+    Args:
+        arch: Target architecture.
+        num_tiles: Tiles the op streams.
+
+    Returns:
+        The worker count (>= 1).
+    """
+    return max(1, min(arch_num_columns(arch), num_tiles // _MIN_TILES_PER_WORKER))
+
+
 def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
     """Whether t0 can be repeated to fill t1 (GGML broadcast: t1[i] % t0[i] == 0).
 
@@ -61,6 +90,73 @@ def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
         True if t0 can be broadcast to t1.
     """
     return all(t1_shape[i] % t0_shape[i] == 0 for i in range(4))
+
+
+def _banded_program(
+    arch: str,
+    workers: list,
+    *,
+    num_elements: int,
+    tile_size: int,
+    tiles_per_worker: list[int],
+    first_tiles: list[int],
+    input_tys: list,
+    output_ty,
+    in_prods: list[list],
+    out_conses: list,
+    banded: list[bool],
+):
+    """Program for workers that each stream a contiguous band of the tiles.
+
+    Worker w handles tiles [first_tiles[w], first_tiles[w] + tiles_per_worker[w]) of every
+    banded input and of the output, each moved linearly by its own column's shim DMA. A
+    non-banded input is filled whole into every worker (an operand each worker reuses).
+
+    Args:
+        arch: Target architecture.
+        workers: One Worker per band.
+        num_elements: Elements in each banded tensor.
+        tile_size: Elements per tile.
+        tiles_per_worker: Tiles in each worker's band.
+        first_tiles: Index of each worker's first tile.
+        input_tys: Host buffer type per input tensor, in src order.
+        output_ty: Host buffer type for the output tensor.
+        in_prods: in_prods[i][w] is worker w's producer for input i.
+        out_conses: Output consumer per worker.
+        banded: Per input, whether it is split in bands (else filled whole into each worker).
+
+    Returns:
+        The resolved IRON program (MLIR module).
+    """
+    num_inputs = len(input_tys)
+    n_workers = len(workers)
+
+    def band(w):
+        return TensorAccessPattern(
+            (num_elements,),
+            first_tiles[w] * tile_size,
+            [1, 1, tiles_per_worker[w], tile_size],
+            [0, 0, tile_size, 1],
+        )
+
+    # Bound positionally by Runtime: (*input buffers, output buffer, *producer lists,
+    # consumer list). Every drain is waited on: the bands can finish in any order.
+    def sequence(*args):
+        in_bufs = args[:num_inputs]
+        out_buf = args[num_inputs]
+        prods = args[num_inputs + 1 : -1]
+        conses = args[-1]
+        for i in range(num_inputs):
+            for w in range(n_workers):
+                if banded[i]:
+                    prods[i][w].fill(in_bufs[i], band(w))
+                else:
+                    prods[i][w].fill(in_bufs[i])
+        for w in range(n_workers):
+            conses[w].drain(out_buf, band(w), wait=True)
+
+    rt = Runtime(sequence, [*input_tys, output_ty, *in_prods, out_conses])
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
 def _binary_op(
@@ -96,21 +192,32 @@ def _binary_op(
         (np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]])
         for input_tensor in input_tensors
     ]
-    of_ins = [
-        ObjectFifo(input_tile_ty, name=f"in{index}")
-        for index, input_tile_ty in enumerate(input_tile_tys)
-    ]
     output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-    of_out = ObjectFifo(output_tile_ty, name="out")
 
-    # Create a worker to run the task on a compute tile
-    worker = None
+    # Fan the tiles out across columns in contiguous bands, one worker and shim DMA each: with
+    # the vector body, one column's DMA and the per-tile round trips are what bound the op.
+    n_workers = _worker_count(arch, num_tiles)
+    tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
+
+    def suffix(w):
+        return "" if n_workers == 1 else f"_{w}"
+
+    of_ins = [
+        [
+            ObjectFifo(input_tile_ty, name=f"in{index}{suffix(w)}")
+            for index, input_tile_ty in enumerate(input_tile_tys)
+        ]
+        for w in range(n_workers)
+    ]
+    of_outs = [
+        ObjectFifo(output_tile_ty, name=f"out{suffix(w)}") for w in range(n_workers)
+    ]
     function = function_spec.external_function
 
     # Task for the core to perform with an external function
-    def ext_core_fn(of_in0, of_in1, of_out, function):
+    def ext_core_fn(of_in0, of_in1, of_out, function, n_tiles):
         # Number of sub-vector "tile" iterations
-        for _ in range_(num_tiles):
+        for _ in range_(n_tiles):
             elem_in0 = of_in0.acquire(1)
             elem_in1 = of_in1.acquire(1)
             elem_out = of_out.acquire(1)
@@ -119,11 +226,16 @@ def _binary_op(
             of_in1.release(1)
             of_out.release(1)
 
-    worker = Worker(
-        ext_core_fn,
-        fn_args=[x.cons() for x in of_ins] + [of_out.prod(), function],
-        stack_size=_STACK_SIZE_BYTES,
-    )
+    # Create a worker per band to run the task on a compute tile
+    workers = [
+        Worker(
+            ext_core_fn,
+            fn_args=[x.cons() for x in of_ins[w]]
+            + [of_outs[w].prod(), function, tiles_per_worker[w]],
+            stack_size=_STACK_SIZE_BYTES,
+        )
+        for w in range(n_workers)
+    ]
 
     # Runtime operations to move data to/from the AIE-array
     input_tensor_tys = [
@@ -133,13 +245,27 @@ def _binary_op(
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return fill_drain_program(
+    if n_workers == 1:
+        return fill_drain_program(
+            arch,
+            workers,
+            input_tys=input_tensor_tys,
+            output_ty=output_tensor_ty,
+            in_prods=[of_in.prod() for of_in in of_ins[0]],
+            out_cons=of_outs[0].cons(),
+        )
+    return _banded_program(
         arch,
-        [worker],
+        workers,
+        num_elements=num_elements,
+        tile_size=tile_size,
+        tiles_per_worker=tiles_per_worker,
+        first_tiles=first_tiles,
         input_tys=input_tensor_tys,
         output_ty=output_tensor_ty,
-        in_prods=[of_in.prod() for of_in in of_ins],
-        out_cons=of_out.cons(),
+        in_prods=[[of_ins[w][i].prod() for w in range(n_workers)] for i in range(2)],
+        out_conses=[of_out.cons() for of_out in of_outs],
+        banded=[True, True],
     )
 
 
@@ -423,15 +549,26 @@ def _binary_op_row(
     src1_row_ty = np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]]
     out_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
 
-    of_src0 = ObjectFifo(src0_tile_ty, name="src0")
-    of_src1 = ObjectFifo(src1_row_ty, depth=1, name="src1")  # loaded once, reused
-    of_out = ObjectFifo(out_tile_ty, name="out")
+    # Rows fan out across columns in contiguous bands, as in _binary_op; each worker gets its
+    # own copy of the src1 row.
+    n_workers = _worker_count(arch, num_tiles)
+    tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
+
+    def suffix(w):
+        return "" if n_workers == 1 else f"_{w}"
+
+    of_src0s = [ObjectFifo(src0_tile_ty, name=f"src0{suffix(w)}") for w in range(n_workers)]
+    # loaded once, reused
+    of_src1s = [
+        ObjectFifo(src1_row_ty, depth=1, name=f"src1{suffix(w)}") for w in range(n_workers)
+    ]
+    of_outs = [ObjectFifo(out_tile_ty, name=f"out{suffix(w)}") for w in range(n_workers)]
 
     function = function_spec.external_function
 
-    def ext_core_fn(of_src0, of_src1, of_out, function):
+    def ext_core_fn(of_src0, of_src1, of_out, function, n_tiles):
         src1_buf = of_src1.acquire(1)  # one src1 row, reused across all tiles
-        for _ in range_(num_tiles):
+        for _ in range_(n_tiles):
             src0_tile = of_src0.acquire(1)
             out_tile = of_out.acquire(1)
             function(src0_tile, src1_buf, out_tile, tile_size)
@@ -439,24 +576,47 @@ def _binary_op_row(
             of_out.release(1)
         of_src1.release(1)
 
-    worker = Worker(
-        ext_core_fn,
-        fn_args=[of_src0.cons(), of_src1.cons(), of_out.prod(), function],
-        stack_size=_STACK_SIZE_BYTES,
-    )
+    workers = [
+        Worker(
+            ext_core_fn,
+            fn_args=[
+                of_src0s[w].cons(),
+                of_src1s[w].cons(),
+                of_outs[w].prod(),
+                function,
+                tiles_per_worker[w],
+            ],
+            stack_size=_STACK_SIZE_BYTES,
+        )
+        for w in range(n_workers)
+    ]
 
     # Buffers in src order then dst (kernarg layout contract).
     src0_ty = np.ndarray[(num_elements,), np.dtype[input_tensors[0].dtype]]
     src1_ty = np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]]
     out_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
 
-    return fill_drain_program(
+    if n_workers == 1:
+        return fill_drain_program(
+            arch,
+            workers,
+            input_tys=[src0_ty, src1_ty],
+            output_ty=out_ty,
+            in_prods=[of_src0s[0].prod(), of_src1s[0].prod()],
+            out_cons=of_outs[0].cons(),
+        )
+    return _banded_program(
         arch,
-        [worker],
+        workers,
+        num_elements=num_elements,
+        tile_size=tile_size,
+        tiles_per_worker=tiles_per_worker,
+        first_tiles=first_tiles,
         input_tys=[src0_ty, src1_ty],
         output_ty=out_ty,
-        in_prods=[of_src0.prod(), of_src1.prod()],
-        out_cons=of_out.cons(),
+        in_prods=[[of.prod() for of in of_src0s], [of.prod() for of in of_src1s]],
+        out_conses=[of.cons() for of in of_outs],
+        banded=[True, False],
     )
 
 
