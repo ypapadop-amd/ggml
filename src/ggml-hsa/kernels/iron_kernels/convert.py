@@ -12,25 +12,41 @@ Both tensors are dense and contiguous with the same number of elements; only the
 tiles,
 so the same design serves any shape. This runs a pure cast on the device queue instead of the host copy
 path (which drains the queue), letting the cast batch with surrounding dispatches.
+
+Tiles are as large as half of L1 allows, and a large tensor's tiles are fanned out over one worker
+per column in contiguous bands, each moved by its own shim DMA.
 """
 
 from pathlib import Path
 
 import numpy as np
+from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
+    Program,
+    Runtime,
     Worker,
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import fill_drain_program, max_tile_size
+from .utils import (
+    arch_to_device,
+    divisor_tile_size,
+    fan_out_worker_count,
+    partition_units,
+)
 
 # Shim-DMA transfers are issued in whole 4-byte words (see align_to_arch), so a tensor whose
 # byte size is not a multiple of this cannot be streamed in full.
 _DMA_ALIGNMENT_BYTES = 4
+
+# Fewest elements worth a worker (and a shim DMA) of its own. A single column streams about
+# 5 GB/s, so even a few tens of thousands of elements gain from all four columns on aie2 (a
+# 250000-element f32 -> bf16 measured 465 us on one worker, 283 on four).
+_MIN_ELEMS_PER_WORKER = 8 * 1024
 
 
 def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -116,7 +132,9 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     # Flatten to 1D: a cast is element-wise, so any shape streams as one contiguous run.
     num_elements = src.numel()
-    tile_size = max_tile_size(arch, src_iron_dtype, num_elements)
+    lanes, tile_size = _lanes_and_tile_size(
+        arch, num_elements, (src_iron_dtype, dst_iron_dtype)
+    )
     num_tiles = num_elements // tile_size
 
     function = _create_external_function(
@@ -125,39 +143,106 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         output_tensor=output_tensor,
         dst_iron_dtype=dst_iron_dtype,
         tile_size=tile_size,
+        lanes=lanes,
     )
 
     in_tile_ty = np.ndarray[(tile_size,), np.dtype[src_iron_dtype]]
     out_tile_ty = np.ndarray[(tile_size,), np.dtype[dst_iron_dtype]]
 
-    of_in = ObjectFifo(in_tile_ty, name="in")
-    of_out = ObjectFifo(out_tile_ty, name="out")
+    # Fan the tiles out across columns, one worker each with its own shim DMA, in contiguous
+    # bands moved linearly; small casts stay on one worker.
+    n_workers = fan_out_worker_count(
+        arch, num_elements, num_tiles, min_elems_per_worker=_MIN_ELEMS_PER_WORKER
+    )
+    tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
+    of_ins = [ObjectFifo(in_tile_ty, name=f"in{w}") for w in range(n_workers)]
+    of_outs = [ObjectFifo(out_tile_ty, name=f"out{w}") for w in range(n_workers)]
 
-    def core_fn(of_in, of_out, function):
-        for _ in range_(num_tiles):
+    def core_fn(of_in, of_out, function, n_tiles):
+        for _ in range_(n_tiles):
             tile_in = of_in.acquire(1)
             tile_out = of_out.acquire(1)
             function(tile_in, tile_out, tile_size)
             of_in.release(1)
             of_out.release(1)
 
-    worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+    workers = [
+        Worker(
+            core_fn,
+            fn_args=[
+                of_ins[w].cons(),
+                of_outs[w].prod(),
+                function,
+                tiles_per_worker[w],
+            ],
+        )
+        for w in range(n_workers)
+    ]
+
+    def band(w):
+        return TensorAccessPattern(
+            (num_elements,),
+            first_tiles[w] * tile_size,
+            [1, 1, tiles_per_worker[w], tile_size],
+            [0, 0, tile_size, 1],
+        )
+
+    # One host buffer per ggml tensor, src then dst. Every drain is waited on: the bands can
+    # finish in any order. A band's tiles are written back only after they were read, and no
+    # band reads another's elements, so the backend may convert in place (dst aliasing src).
+    def sequence(in_buf, out_buf, in_prods, out_conses):
+        for w in range(n_workers):
+            in_prods[w].fill(in_buf, band(w))
+        for w in range(n_workers):
+            out_conses[w].drain(out_buf, band(w), wait=True)
 
     src_ty = np.ndarray[(num_elements,), np.dtype[src_iron_dtype]]
     dst_ty = np.ndarray[(num_elements,), np.dtype[dst_iron_dtype]]
-
-    return fill_drain_program(
-        arch,
-        [worker],
-        input_tys=[src_ty],
-        output_ty=dst_ty,
-        in_prods=[of_in.prod()],
-        out_cons=of_out.cons(),
+    rt = Runtime(
+        sequence,
+        [
+            src_ty,
+            dst_ty,
+            [of_in.prod() for of_in in of_ins],
+            [of_out.cons() for of_out in of_outs],
+        ],
     )
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
+
+
+def _lanes_and_tile_size(
+    arch: str, num_elements: int, fifo_dtypes: tuple[np.dtype, np.dtype]
+) -> tuple[int, int]:
+    """Vector width and tile length for streaming num_elements through convert.cc.
+
+    The kernel only makes aligned vector accesses (an unaligned store rewrites the 32-byte
+    blocks around it, which can reach past the tile into a buffer the DMA is using), so a tile
+    must be a whole number of vectors. The vector holds one 512-bit register of the wider type,
+    or half of one when only that divides num_elements (a bf16 [500, 500] has 250000 elements, a
+    multiple of 16 but not of 32); anything narrower runs the scalar loop (lanes 1).
+
+    Args:
+        arch: Target architecture.
+        num_elements: Total number of elements to convert.
+        fifo_dtypes: The streamed source and destination element types.
+
+    Returns:
+        (lanes, tile_size): the vector width in elements (1 for no vector path), and the largest
+        multiple of it that divides num_elements and fits half of L1 double-buffered.
+    """
+    full = 512 // (8 * max(d.itemsize for d in fifo_dtypes))
+    lanes = next(v for v in (full, full // 2, 1) if num_elements % v == 0)
+    if lanes == 1:
+        return 1, divisor_tile_size(arch, num_elements, fifo_dtypes)
+    # A tile of t vectors is t elements of a lanes-wide subarray type.
+    vectors = divisor_tile_size(
+        arch, num_elements // lanes, [np.dtype((d, (lanes,))) for d in fifo_dtypes]
+    )
+    return lanes, vectors * lanes
 
 
 def _create_external_function(
-    src, src_iron_dtype, output_tensor, dst_iron_dtype, tile_size: int
+    src, src_iron_dtype, output_tensor, dst_iron_dtype, tile_size: int, lanes: int
 ) -> ExternalFunction:
     """Create the ExternalFunction for the convert core function.
 
@@ -169,6 +254,7 @@ def _create_external_function(
         dst_iron_dtype: Element type the destination is streamed as. Equal to
             ``output_tensor.dtype`` except for f16, which rides as ``np.int16``.
         tile_size: Number of elements per streamed tile.
+        lanes: Vector width in elements, dividing tile_size; 1 for no vector path.
 
     Returns:
         The configured ExternalFunction.
@@ -183,17 +269,19 @@ def _create_external_function(
         # Tile length is fixed per kernel instance (each shape JITs its own .o), so pass it as a
         # compile-time constant: lets Peano fold the trip count and pipeline the hot loop.
         f"-DCONVERT_N={tile_size}",
+        f"-DCONVERT_LANES={lanes}",
     ]
     # Select the kernel body by preprocessor (not if constexpr): the dtype macros expand to concrete
     # types, so both branches of an if constexpr would still be compiled and the unused one fails to
-    # type-check. f32 -> bf16 and bf16 -> f16 get vectorized bit-exact paths; f16 -> bf16 gets a
-    # scalar bit-exact path.
+    # type-check. Each direction has its own bit-exact body; the same-dtype copies share one.
     if src.dtype == bfloat16 and output_tensor.dtype == np.float16:
         compile_flags.append("-DCONVERT_BF16_TO_F16=1")
     elif src.dtype == np.float16 and output_tensor.dtype == bfloat16:
         compile_flags.append("-DCONVERT_F16_TO_BF16=1")
     elif src.dtype == np.float32 and output_tensor.dtype == bfloat16:
         compile_flags.append("-DCONVERT_F32_TO_BF16=1")
+    elif src.dtype == bfloat16 and output_tensor.dtype == np.float32:
+        compile_flags.append("-DCONVERT_BF16_TO_F32=1")
 
     return ExternalFunction(
         name="ggml_hsa_convert",
