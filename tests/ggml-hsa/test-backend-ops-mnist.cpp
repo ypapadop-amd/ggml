@@ -2691,6 +2691,27 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {12, 10, 3, 2}, 2, 3, 2, 1, 0, 1));
     test_cases.emplace_back(
         new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {11, 7, 2, 2}, 3, 2, 1, 2, 1, 0));
+    // Several planes per tile and uneven bands over the workers (104 planes: 26 tiles of 4);
+    // 3-chunk rows at stride 1 with both borders padded; stride 3 (the scalar path).
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {28, 28, 8, 13}, 2, 2, 2, 2, 0, 0));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {40, 6, 3, 2}, 3, 3, 1, 1, 1, 1));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {15, 9, 3, 2}, 4, 4, 3, 3, 1, 1));
+    // Average pooling over the same paths.
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_AVG, GGML_TYPE_F32, {28, 28, 8, 13}, 2, 2, 2, 2, 0, 0));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_AVG, GGML_TYPE_F32, {15, 9, 3, 2}, 2, 2, 2, 2, 0, 0));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_AVG, GGML_TYPE_F32, {11, 7, 2, 2}, 3, 2, 1, 2, 1, 0));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_AVG, GGML_TYPE_F32, {40, 6, 3, 2}, 3, 3, 1, 1, 1, 1));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_AVG, GGML_TYPE_F32, {28, 28, 8, 500}, 3, 3, 2, 2, 1, 1));
+    test_cases.emplace_back(
+        new test_pool2d(GGML_OP_POOL_AVG, GGML_TYPE_F32, {15, 9, 3, 2}, 4, 4, 3, 3, 1, 1));
     // Conv2: [14, 14, 8, 500] x conv2_kernel [3, 3, 8, 16], stride=1, pad=1 -> [14, 14, 16, 500]
     test_cases.emplace_back(
         new test_conv_2d({14, 14, 8, 500}, {3, 3, 8, 16}, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));

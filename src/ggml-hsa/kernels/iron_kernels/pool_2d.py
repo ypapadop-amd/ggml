@@ -14,17 +14,30 @@ import numpy as np
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
+    Program,
+    Runtime,
     Worker,
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import fill_drain_program, shape_defines
+from .utils import (
+    arch_num_columns,
+    arch_to_device,
+    batch_slice_tap,
+    divisor_tile_size,
+    partition_units,
+    shape_defines,
+)
 
 # GGML pooling op selector (matches enum ggml_op_pool in include/ggml.h).
 _GGML_OP_POOL_MAX = 0
 _GGML_OP_POOL_AVG = 1
+
+# The kernel's frame holds a row's vector accumulators and bounce buffers: up to ~1.4 KB measured
+# (aie2 and aie2p, windows up to 7x7), over the 1 KB default. aiecc checks the declaration.
+_STACK_SIZE_BYTES = 2048
 
 
 def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -102,12 +115,32 @@ def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     out_plane = ow * oh
     num_planes = in_c * in_n
 
+    # Planes stream in tiles of the largest plane count dividing num_planes whose double-buffered
+    # input and output tiles fit half the core's data memory (at least one plane, as before), and
+    # the tiles fan out over the workers in contiguous bands, each moved linearly.
+    # (Each "element" is a whole plane: one sub-array dtype per fifo.)
+    tile_planes = divisor_tile_size(
+        arch,
+        num_planes,
+        fifo_dtypes=(
+            np.dtype((input_tensor.dtype, (in_plane,))),
+            np.dtype((output_tensor.dtype, (out_plane,))),
+        ),
+    )
+    num_tiles = num_planes // tile_planes
+    # Two workers per column, each on its own shim DMA channel each way (a shim tile has two):
+    # the op is bound by those channels (a kernel returning at entry scales with the worker
+    # count), and on aie2 a second worker per column measured faster down to 4 tiles of MNIST
+    # planes.
+    n_workers = min(2 * arch_num_columns(arch), num_tiles)
+    tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
+
     function = _create_external_function(
         op_name="GGML_OP_POOL_2D",
         input_tensor=input_tensor,
         output_tensor=output_tensor,
-        in_plane=in_plane,
-        out_plane=out_plane,
+        in_tile=in_plane * tile_planes,
+        out_tile=out_plane * tile_planes,
         shape={
             "IW": iw,
             "IH": ih,
@@ -123,44 +156,99 @@ def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         },
     )
 
-    # AIE-array data movement with object fifos: one channel-plane per tile.
-    input_tile_ty = np.ndarray[(in_plane,), np.dtype[input_tensor.dtype]]
-    output_tile_ty = np.ndarray[(out_plane,), np.dtype[output_tensor.dtype]]
-    of_in = ObjectFifo(input_tile_ty, name="in")
-    of_out = ObjectFifo(output_tile_ty, name="out")
+    input_tile_ty = np.ndarray[(in_plane * tile_planes,), np.dtype[input_tensor.dtype]]
+    output_tile_ty = np.ndarray[
+        (out_plane * tile_planes,), np.dtype[output_tensor.dtype]
+    ]
+    of_ins = [ObjectFifo(input_tile_ty, name=f"in{w}") for w in range(n_workers)]
+    of_outs = [ObjectFifo(output_tile_ty, name=f"out{w}") for w in range(n_workers)]
 
-    def ext_core_fn(of_in, of_out, function):
-        for _ in range_(num_planes):
+    def ext_core_fn(of_in, of_out, function, n_tiles):
+        for _ in range_(n_tiles):
             elem_in = of_in.acquire(1)
             elem_out = of_out.acquire(1)
-            function(elem_in, elem_out, iw, ih, ow, oh, k0, k1, s0, s1, p0, p1, op)
+            function(
+                elem_in,
+                elem_out,
+                iw,
+                ih,
+                ow,
+                oh,
+                k0,
+                k1,
+                s0,
+                s1,
+                p0,
+                p1,
+                op,
+                tile_planes,
+            )
             of_in.release(1)
             of_out.release(1)
 
-    worker = Worker(ext_core_fn, fn_args=[of_in.cons(), of_out.prod(), function])
+    workers = [
+        Worker(
+            ext_core_fn,
+            fn_args=[
+                of_ins[w].cons(),
+                of_outs[w].prod(),
+                function,
+                tiles_per_worker[w],
+            ],
+            stack_size=_STACK_SIZE_BYTES,
+        )
+        for w in range(n_workers)
+    ]
 
-    # Runtime operations to move data to/from the AIE-array.
+    # Runtime operations to move data to/from the AIE-array: one host buffer per ggml tensor,
+    # src then dst, each worker's band moved linearly. Every drain is waited on: the bands can
+    # finish in any order.
     input_tensor_ty = np.ndarray[(in_plane * num_planes,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[
         (out_plane * num_planes,), np.dtype[output_tensor.dtype]
     ]
 
-    return fill_drain_program(
-        arch,
-        [worker],
-        input_tys=[input_tensor_ty],
-        output_ty=output_tensor_ty,
-        in_prods=[of_in.prod()],
-        out_cons=of_out.cons(),
+    def sequence(in_buf, out_buf, in_prods, out_conses):
+        for w in range(n_workers):
+            in_prods[w].fill(
+                in_buf,
+                batch_slice_tap(
+                    num_tiles,
+                    in_plane * tile_planes,
+                    first_tiles[w],
+                    tiles_per_worker[w],
+                ),
+            )
+        for w in range(n_workers):
+            out_conses[w].drain(
+                out_buf,
+                batch_slice_tap(
+                    num_tiles,
+                    out_plane * tile_planes,
+                    first_tiles[w],
+                    tiles_per_worker[w],
+                ),
+                wait=True,
+            )
+
+    rt = Runtime(
+        sequence,
+        [
+            input_tensor_ty,
+            output_tensor_ty,
+            [of_in.prod() for of_in in of_ins],
+            [of_out.cons() for of_out in of_outs],
+        ],
     )
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
 def _create_external_function(
     op_name: str,
     input_tensor,
     output_tensor,
-    in_plane: int,
-    out_plane: int,
+    in_tile: int,
+    out_tile: int,
     shape: dict[str, int],
 ) -> ExternalFunction:
     """Create the ExternalFunction for the pooling core function.
@@ -169,8 +257,8 @@ def _create_external_function(
         op_name: Operation name (drives function name and compile flags).
         input_tensor: Input tensor.
         output_tensor: Output tensor.
-        in_plane: Input channel-plane size (IW * IH).
-        out_plane: Output channel-plane size (OW * OH).
+        in_tile: Input tile size (whole channel-planes).
+        out_tile: Output tile size (whole channel-planes).
         shape: Plane extents and op_params, passed as -DGGML_POOL_<key>=<value> as well as
             at run time, so the kernel can be specialized for them (pool_2d.cc).
 
@@ -183,8 +271,8 @@ def _create_external_function(
         object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=str(current_dir / "pool_2d.cc"),
         arg_types=[
-            np.ndarray[(in_plane,), np.dtype[input_tensor.dtype]],
-            np.ndarray[(out_plane,), np.dtype[output_tensor.dtype]],
+            np.ndarray[(in_tile,), np.dtype[input_tensor.dtype]],
+            np.ndarray[(out_tile,), np.dtype[output_tensor.dtype]],
             np.int32,  # iw
             np.int32,  # ih
             np.int32,  # ow
@@ -196,6 +284,7 @@ def _create_external_function(
             np.int32,  # p0
             np.int32,  # p1
             np.int32,  # op
+            np.int32,  # num_planes
         ],
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",
