@@ -175,6 +175,11 @@ int main() {
         // Bands of unequal length: 11 tiles of 11 rows, and 9 single-row tiles, over 8 workers.
         {10, 121, 1, "10x121 rnd", 1.0f, input_kind::random},
         {40, 9, 1, "40x9 rnd", 1.0f, input_kind::random},
+        // Wider rows take exp() 64 at a time: 3 vectors and a 15-element tail, 4 + 1 vectors, and
+        // 2 calls + a 1-element tail.
+        {63, 16, 1, "63 rnd", 1.0f, input_kind::random},
+        {80, 16, 1, "80 rnd", 1.0f, input_kind::random},
+        {129, 8, 1, "129 rnd", 1.0f, input_kind::random},
         // NOTE: the full-context [1024,1024,12] shape is intentionally omitted for now:
         // the current single-worker kernel overruns the per-dispatch watchdog and aborts
         // the process (uncatchable). Re-add it once the kernel is fanned across compute
