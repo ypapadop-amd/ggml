@@ -2549,6 +2549,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     std::vector<std::unique_ptr<test_case>> test_cases;
     std::default_random_engine rng(0);
 
+    // Tile-aligned GEMMs: every dimension is already a multiple of the aie2p padding factors
+    // (K%8, M%32, N%128), so the padded-GEMM path rewrites neither operand nor the result and the
+    // kernel reads/writes the parent buffers directly. The MNIST shapes below all need padding, so
+    // without these the no-rewrite path has no correctness coverage at all.
+    test_cases.emplace_back(
+        new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 512, 512, 512, {1, 1}, {1, 1}));
+    test_cases.emplace_back(
+        new test_mul_mat(GGML_TYPE_BF16, GGML_TYPE_BF16, 512, 512, 512, {1, 1}, {1, 1}));
+
     // MNIST-MLP layer tests (FP32, batch=500)
     // FC1: images [784, 500] x fc1_weight [784, 500] -> [500, 500]
     test_cases.emplace_back(
@@ -2608,6 +2617,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_cont(GGML_TYPE_F32, {14, 14, 500, 16}, {0, 1, 3, 2}));
     // Pre-dense flatten CONT: permute [7,7,16,500] with (1,2,0,3) -> cont [16,7,7,500]
     test_cases.emplace_back(new test_cont(GGML_TYPE_F32, {7, 7, 16, 500}, {1, 2, 0, 3}));
+    // Conv1 MUL_MAT (im2col GEMM): a[K=9,M=392000] x b[K=9,N=8] -> [392000, 8]. M=batch*OH*OW
+    // (500*28*28) lands innermost, forcing the HSA_DEPAD post-amble to tile a d0=392064 row that
+    // does not fit AIE L1. Exercises the tiled/pad-stripping de-pad DMA path.
+    test_cases.emplace_back(
+        new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 392000, 8, 9, {1, 1}, {1, 1}));
+    // Conv2 MUL_MAT (im2col GEMM): a[K=72,M=98000] x b[K=72,N=16] -> [98000, 16]. Same oversized
+    // de-pad row (d0=98048).
+    test_cases.emplace_back(
+        new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 98000, 16, 72, {1, 1}, {1, 1}));
     // Dense: flattened [784, 500] x dense_weight [784, 10] -> [10, 500]  (784 = 7*7*16)
     test_cases.emplace_back(
         new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 10, 500, 784, {1, 1}, {1, 1}));

@@ -22,7 +22,10 @@ The system supports both JIT and AOT compilation.
 
 Some operations run on the host CPU rather than the AIE:
 
-- **Host operations** (`DUP`, `CPY`, `CONT`): Implemented in `host-ops.cpp`, execute on the CPU
+- **Host operations** (`DUP`, `CPY`, `CONT`): Implemented in `host-ops.cpp`, execute on the CPU.
+  The exception is a `CPY` that is not a view and only changes the dtype of a contiguous tensor
+  (a `ggml_cast`): it runs on the device as an `HSA_CONVERT` dispatch, so it stays batched on the
+  queue. A `ggml_cpy` result is a view of its destination and always takes the host path.
 - **AIE kernels**: All other supported operations, compiled and dispatched to AIE tiles
 
 Host operations are handled separately in `ggml_backend_hsa_device_supports_op()` and bypass
@@ -92,6 +95,7 @@ src/ggml-hsa/
 │       ├── cross_entropy_loss.py/cc  # Cross entropy loss IRON design + AIE core function
 │       ├── gemm.py              # Matrix multiplication IRON design
 │       ├── ggml-aie.hpp         # Common AIE type definitions
+│       ├── mm_f32_b.hpp         # f32-B conversion helpers shared by aie2/mm.cc and aie2p/mm.cc
 │       ├── aie_kernel_utils.h   # Loop optimization macros (AIE_LOOP_UNROLL, AIE_PREPARE_FOR_PIPELINING, etc.)
 │       ├── aie_kernel_math.h    # AIE math utility functions (scalar_exp, scalar_log, pow2, vec_exp)
 │       ├── aie2/                # aie2-specific core functions
@@ -292,6 +296,29 @@ computation across the AIE array:
 The implementation in `gemm.py` includes both a standalone CLI tool and a `gemm()` function
 callable from the dispatch layer. Key parameters include tile sizes (m, k, n), number of
 columns, data types, and layout (row-major vs column-major).
+
+**f32 operands.** The microkernel is bf16-only, so `ggml_hsa_prepare_mul_mat_f32` (in `gemm.cpp`)
+converts an f32 A to bf16 and zero-pads it to the tile multiples, and pads C, de-padding the result
+afterwards; an f32 B is handled as described below. The transforms run on the device queue as
+`HSA_CONVERT_PAD` and `HSA_DEPAD` when those kernels build, and on the host otherwise; an operand or
+result that is already at the target dtype and shape is used in place. A constant operand (a weight:
+a leaf that is not a view, not flagged with `ggml_set_input()`, and not in a graph allocator's
+compute buffer) is converted once and reused, as is any constant source of any op that needs an
+internal buffer; see `source_node_t::is_constant` in `common.hpp`.
+
+An f32 B is instead streamed to the cores as f32 and converted there (`matmul_bf16_f32_bf32` in
+`aie2/mm.cc` and `aie2p/mm.cc`), and when B is at least one column group wide the GEMM reads it
+unpadded and, for an f32 C at least one row block tall, writes C in place ("ragged" mode,
+`b_ld`/`n_valid`/`m_valid` in `my_matmul`):
+
+- The last column group and row block are shifted back to end at N and M. They recompute
+  columns/rows the previous group or block already wrote, with bit-identical values.
+- The last K tile reads past each column of B by up to 7 elements, and `matmul_*_ktail` zeroes
+  them on the core. HSA device buffers are over-allocated by `ggml_hsa_buffer_read_slack` so this
+  read never leaves the allocation.
+- Each C drain issues a completion token and each `dma_wait` consumes one, so a transfer block
+  that drains C in two runs (normal plus shifted group) needs two waits.
+- The tile selector ranks f32-B tiles by `min(m, k)` before volume (see `select_gemm_tile`).
 
 ### Broadcasting Support
 
@@ -575,7 +602,7 @@ These operations have complete AIE kernel implementations:
 | Unary (GGML_OP) | `SQR`, `SQRT`, `LOG` |
 | Pooling | `POOL_2D` (`MAX` and `AVG`, with padding) |
 | Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
-| Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE) |
+| Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE; a dtype-only `ggml_cast` runs as `HSA_CONVERT`) |
 
 ### Registered but Not Implemented
 

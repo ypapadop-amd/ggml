@@ -24,7 +24,7 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 | Reduction | `ARGMAX`, `COUNT_EQUAL`                                        |
 | Loss      | `CROSS_ENTROPY_LOSS`                                           |
 | Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                   |
-| Host-only | `DUP`, `CPY`, `CONT` (CPU execution)                           |
+| Host-only | `DUP`, `CPY`, `CONT` (CPU execution; a dtype-only `CPY`/`DUP` runs on the NPU) |
 
 > **Note:** Operations like `SIN`, `COS`, `EXP`, `TANH`, `ELU`, `SIGMOID`, `SILU`,
 > `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` are registered but not yet implemented.
@@ -47,6 +47,12 @@ Binary operations support GGML-style broadcasting where `src1` can be repeated t
 | `GGML_TYPE_BF16` | Native `aie2` / `aie2p` datatype       |
 | `GGML_TYPE_F16`  | Supported via conversion to/from `BF16` |
 | `GGML_TYPE_F32`  | Emulated (slower than native types)    |
+
+A source an operation cannot read as-is (e.g., `F16` converted to `BF16`, or an `F32` `MUL_MAT`
+operand converted and padded) is copied into an internal buffer before the dispatch. For a leaf that
+is not flagged with `ggml_set_input()`, such as a weight or bias, that copy is made once and reused
+while the tensor's data pointer is unchanged. **Do not rewrite such a leaf in place after the first
+compute that uses it**; flag it with `ggml_set_input()` if its contents change between computes.
 
 ## Prerequisites
 

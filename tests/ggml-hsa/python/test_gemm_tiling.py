@@ -8,6 +8,7 @@ miscompute or an ``aiecc`` failure on device.
 """
 
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -19,14 +20,18 @@ KERNELS_DIR = Path(__file__).resolve().parents[3] / "src" / "ggml-hsa" / "kernel
 sys.path.insert(0, str(KERNELS_DIR))
 
 from iron_kernels.gemm import (  # noqa: E402
+    DMA_MAX_SHIM_ITERATIONS,
     DMA_MAX_STRIDE,
     L1_TILE_BUDGET_BYTES,
+    ceildiv,
     microkernel_expansion_map,
     microkernel_mac_dim_map,
     resolve_expansion,
     resolve_mac_dims,
     select_gemm_tile,
 )
+
+import iron_kernels.gemm as gemm_module  # noqa: E402
 
 BF16 = np.dtype(ml_dtypes.bfloat16)
 F32 = np.dtype(np.float32)
@@ -39,10 +44,9 @@ DTYPES = {
 }
 
 # GEMM output dtypes. The microkernel always consumes bf16, but the destination
-# varies: ggml's native MUL_MAT output is f32 (what create_mat_mul_external_functions
-# actually passes), while graph_optimize can retype it to bf16 so the de-pad narrows
-# in one pass. The L1 budget depends on the output element size, so both must be
-# covered -- testing only bf16->bf16 would exercise a combination production never uses.
+# varies: the backend requests ggml's native f32 MUL_MAT output (what
+# create_mat_mul_external_functions passes), while bf16 remains a valid gemm.py output.
+# The L1 budget depends on the output element size, so both are covered.
 OUT_DTYPES = [BF16, F32]
 
 # Upper bound on a single tile dimension. Passed explicitly to select_gemm_tile so
@@ -118,6 +122,8 @@ def _is_valid(n_aie_cols, M, N, K, m, k, n, dtype_out=F32):
         return False
     if ((M // m) * (N // n)) % (N_AIE_ROWS * n_aie_cols):
         return False
+    if N // (n * n_aie_cols) > DMA_MAX_SHIM_ITERATIONS:
+        return False
     if N // (n * n_aie_cols) > 1 and (
         M * n * n_aie_cols > DMA_MAX_STRIDE or n * n_aie_cols * K > DMA_MAX_STRIDE
     ):
@@ -167,11 +173,57 @@ def test_tile_respects_dma_stride_limit(dev, n_aie_cols, M, N, K):
     ("Stride N exceeds the [1:1048576] range"), so the selector must exclude it.
 
     Both strides step the column-group dimension, so the bound only binds while
-    that dimension has size > 1; see test_single_column_group_ignores_the_bound.
+    that dimension has size > 1; see test_single_column_group_ignores_the_bound
+    and test_single_column_group_ignores_the_stride_bound.
     """
     _, _, _, m, k, n = _tile(dev, M, N, K)
-    assert M * n * n_aie_cols <= DMA_MAX_STRIDE
-    assert n * n_aie_cols * K <= DMA_MAX_STRIDE
+    if N // (n * n_aie_cols) > 1:
+        assert M * n * n_aie_cols <= DMA_MAX_STRIDE
+        assert n * n_aie_cols * K <= DMA_MAX_STRIDE
+
+
+@pytest.mark.parametrize(
+    "dev,n_aie_cols,M,N,K",
+    [
+        # Hung on aie2p: the largest-volume tile gives 65 and 125 column groups.
+        ("npu2", 8, 32, 16640, 512),
+        ("npu2", 8, 1504, 32000, 768),
+        # aie2: the largest-volume tile 16x128x48 gives 65 column groups.
+        ("npu", 4, 64, 12480, 128),
+    ],
+)
+def test_column_groups_fit_the_shim_iteration_limit(dev, n_aie_cols, M, N, K, monkeypatch):
+    """The column-group count, the outermost A/B shim dimension, must stay <= 64.
+
+    A shim BD iterates at most 64 times. aiecc splits a longer transfer over BDs whose
+    ids it does not check, so the GEMM hangs or miscomputes instead of failing to
+    compile. Pins both halves: without the bound the selector picks a tile over it.
+    """
+    *_, n = _tile(dev, M, N, K)
+    assert N // (n * n_aie_cols) <= DMA_MAX_SHIM_ITERATIONS
+    monkeypatch.setattr(gemm_module, "DMA_MAX_SHIM_ITERATIONS", 1 << 30)
+    *_, unbounded_n = _tile(dev, M, N, K)
+    assert N // (unbounded_n * n_aie_cols) > DMA_MAX_SHIM_ITERATIONS
+
+
+def test_raises_past_the_shim_iteration_limit():
+    """No tile with <= 64 column groups exists for N = 128 * 67 at max_tile 256.
+
+    67 is prime, so a column group is 128 or 8576 columns wide; the second needs
+    n = 1072. Returning the 67-group tile would hang the device.
+    """
+    with pytest.raises(ValueError, match="column groups"):
+        select_gemm_tile(
+            "npu2",
+            32,
+            128 * 67,
+            64,
+            BF16,
+            F32,
+            *resolve_mac_dims("npu2", "bf16"),
+            *resolve_expansion("npu2", "bf16"),
+            max_tile=MAX_TILE,
+        )
 
 
 @pytest.mark.parametrize("dev,n_aie_cols", DEVICES)
@@ -377,3 +429,222 @@ def test_expansion_is_at_least_two(dev, dtype_in_str):
     row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
     assert row_expand >= 2
     assert col_expand >= 2
+
+
+# ---------------------------------------------------------------------------
+# Coupling guard for the host-side padding in gemm.cpp
+# ---------------------------------------------------------------------------
+#
+# ggml_hsa_prepare_mul_mat_f32 pads a MUL_MAT's operands *before* any of this
+# Python runs, so it cannot call select_gemm_tile and has to carry the
+# granularity itself. These tests pin the C++ literals against the tables here:
+# if a gemm.py change moves the granularity, the C++ is now wrong and this
+# fails, naming the value it has to become.
+#
+# Both operands are converted to bf16 by that function, so only bf16 applies.
+
+# The constants are read from gemm.cpp itself, so a change on either side alone
+# fails here; a change to how gemm.cpp spells them fails the parse below.
+GEMM_CPP = Path(__file__).resolve().parents[3] / "src" / "ggml-hsa" / "gemm.cpp"
+
+
+def _read_cpp_padding_constants():
+    """((gm, gk, gn, n_aie_cols) per device, n_aie_rows) from ggml_hsa_prepare_mul_mat_f32."""
+    src = GEMM_CPP.read_text()
+
+    def constant(name):
+        pattern = rf"constexpr std::int64_t {name} = (\d+);"
+        match = re.search(pattern, src)
+        assert match, f"gemm.cpp: no match for {pattern!r}; update this parser"
+        return int(match[1])
+
+    def per_device(name):
+        pattern = rf"const std::int64_t {name} = aie2p \? (\d+) : (\d+);"
+        match = re.search(pattern, src)
+        assert match, f"gemm.cpp: no match for {pattern!r}; update this parser"
+        return {"npu2": int(match[1]), "npu": int(match[2])}
+
+    gk, gn = constant("gk"), constant("gn")
+    gm, n_aie_cols = per_device("gm"), per_device("n_aie_cols")
+    granularity = {dev: (gm[dev], gk, gn, n_aie_cols[dev]) for dev in ("npu", "npu2")}
+    return granularity, constant("n_aie_rows")
+
+
+# (gm, gk, gn, n_aie_cols) per device, as ggml_hsa_prepare_mul_mat_f32 sets them.
+CPP_PADDING_GRANULARITY, CPP_N_AIE_ROWS = _read_cpp_padding_constants()
+
+
+def _cpp_padded_shape(dev, M, N, K):
+    """(Mpad, Npad, Kpad) as ggml_hsa_prepare_mul_mat_f32 pads an M x N x K GEMM."""
+    gm, gk, gn, n_aie_cols = CPP_PADDING_GRANULARITY[dev]
+    return (
+        ceildiv(M, gm * CPP_N_AIE_ROWS) * gm * CPP_N_AIE_ROWS,
+        ceildiv(N, gn * n_aie_cols) * gn * n_aie_cols,
+        ceildiv(K, gk) * gk,
+    )
+
+
+@pytest.mark.parametrize("dev", ["npu", "npu2"])
+def test_cpp_padding_granularity_matches_gemm_py(dev):
+    """The C++ padding granularity must equal (row_expand*r, s, col_expand*t)."""
+    expected = _granular_minimum(dev)
+    gm, gk, gn, _ = CPP_PADDING_GRANULARITY[dev]
+    assert (gm, gk, gn) == expected, (
+        f"ggml_hsa_prepare_mul_mat_f32 pads {dev} bf16 to {(gm, gk, gn)}, but "
+        f"gemm.py's microkernel contract now requires {expected}; update the "
+        f"literals in gemm.cpp"
+    )
+
+
+@pytest.mark.parametrize("dev", ["npu", "npu2"])
+def test_cpp_n_aie_cols_matches_gemm_py(dev):
+    """The C++ column count must match the one select_gemm_tile assumes."""
+    _, _, _, n_aie_cols = CPP_PADDING_GRANULARITY[dev]
+    assert n_aie_cols == dict(DEVICES)[dev]
+
+
+@pytest.mark.parametrize("dev", ["npu", "npu2"])
+@pytest.mark.parametrize(
+    "mnk",
+    [
+        (1, 1, 1),
+        (10, 500, 500),
+        (500, 500, 784),
+        (512, 512, 512),
+        # The im2col GEMMs behind MNIST-CNN's two CONV_2D layers: M is the whole
+        # batch*OH*OW extent, N is a single column group wide.
+        (392000, 8, 9),
+        (98000, 16, 72),
+    ],
+)
+def test_cpp_padding_always_admits_a_tile(dev, mnk):
+    """Padding as the C++ does must leave select_gemm_tile a valid tile.
+
+    This is the property that matters: the host pads without consulting the
+    selector, so if the two disagree the kernel build raises and the op
+    silently falls back to the CPU.
+    """
+    M, N, K = mnk
+    n_aie_cols = CPP_PADDING_GRANULARITY[dev][3]
+    m_pad, n_pad, k_pad = _cpp_padded_shape(dev, M, N, K)
+
+    r, s, t = resolve_mac_dims(dev, "bf16")
+    row_expand, col_expand = resolve_expansion(dev, "bf16")
+    tile = select_gemm_tile(
+        dev, m_pad, n_pad, k_pad, BF16, F32, r, s, t, row_expand, col_expand
+    )
+    m, k, n = tile
+    assert m_pad % (m * CPP_N_AIE_ROWS) == 0
+    assert k_pad % k == 0
+    assert n_pad % (n * n_aie_cols) == 0
+
+
+@pytest.mark.parametrize("dev", ["npu", "npu2"])
+@pytest.mark.parametrize("mnk", [(392000, 8, 9), (98000, 16, 72)])
+def test_single_column_group_ignores_the_stride_bound(dev, mnk):
+    """A one-column-group GEMM is supportable only because the bound is size-aware.
+
+    The im2col GEMMs behind CONV_2D pad to a single column group, so the
+    outermost B/C dimension has size 1 and its stride is never applied. Pins
+    both halves: the dimension really is size 1, and the stride it carries
+    really would be over the limit -- so dropping the size guard would put these
+    shapes back on the CPU, and dropping the bound entirely would let a
+    multi-group shape reach aiecc and fail there.
+    """
+    M, N, K = mnk
+    n_aie_cols = CPP_PADDING_GRANULARITY[dev][3]
+    m_pad, n_pad, k_pad = _cpp_padded_shape(dev, M, N, K)
+
+    r, s, t = resolve_mac_dims(dev, "bf16")
+    row_expand, col_expand = resolve_expansion(dev, "bf16")
+    _, _, n = select_gemm_tile(
+        dev, m_pad, n_pad, k_pad, BF16, F32, r, s, t, row_expand, col_expand
+    )
+
+    assert n_pad // (n * n_aie_cols) == 1
+    assert m_pad * n * n_aie_cols > DMA_MAX_STRIDE
+
+
+def _f32_b_tile(M, N, K, n_limit=None, m_limit=None, dev="npu"):
+    """Tile for the GEMM that streams an f32 B and converts it on the core."""
+    r, s, t = resolve_mac_dims(dev, "bf16")
+    row_expand, col_expand = resolve_expansion(dev, "bf16")
+    return select_gemm_tile(
+        dev,
+        M,
+        N,
+        K,
+        BF16,
+        F32,
+        r,
+        s,
+        t,
+        row_expand,
+        col_expand,
+        max_tile=MAX_TILE,
+        dtype_b=F32,
+        n_limit=n_limit,
+        m_limit=m_limit,
+    )
+
+
+# Shapes whose f32-B tile was timed on aie2 over every equal-volume candidate (and, for the
+# last, the six leading candidates of any volume), with the fastest balanced tile.
+@pytest.mark.parametrize(
+    "M,N,K,n_limit,m_limit,expected",
+    [
+        (4096, 512, 4096, None, None, (64, 64, 16)),
+        (4096, 128, 4096, None, None, (64, 64, 16)),
+        (2048, 512, 2048, None, None, (64, 64, 16)),
+        # 4000x500x4000 as the backend pads it: M 4032, N 512, K 4000.
+        (4032, 512, 4000, 500, 4000, (48, 80, 16)),
+    ],
+)
+def test_f32_b_tile_balances_m_and_k(M, N, K, n_limit, m_limit, expected):
+    """An f32 B ranks tiles by min(m, k) before volume.
+
+    Each K-tile call reloads the f32 C tile (cost falling with k) and streams and converts
+    the B tile (cost falling with m). The volume-first rule picked 64x16x64 or 128x16x32 on
+    the first three shapes and 144x40x16 on the last, up to 1.9x slower than these.
+    """
+    assert _f32_b_tile(M, N, K, n_limit, m_limit) == expected
+
+
+# Shapes as the backend pads them for each device (M to 4 * gm, N to n_aie_cols * gn, K to 8).
+@pytest.mark.parametrize(
+    "dev,M,N,K,n_limit,m_limit",
+    [
+        ("npu", 512, 512, 784, 500, 500),  # MNIST fc1
+        ("npu", 64, 512, 504, 500, None),  # MNIST fc2
+        ("npu", 1024, 1024, 1000, 1000, 1000),
+        ("npu", 128, 128, 264, 70, 100),
+        ("npu", 4032, 512, 4000, 500, 4000),
+        ("npu2", 512, 512, 784, 500, 500),  # MNIST fc1
+        ("npu2", 32, 512, 504, 500, None),  # MNIST fc2
+        ("npu2", 1024, 1024, 1000, 1000, 1000),
+        ("npu2", 128, 256, 264, 140, 100),
+        ("npu2", 4000, 512, 4000, 500, None),
+    ],
+)
+def test_f32_b_tile_fits_the_shift_limits_and_l1(dev, M, N, K, n_limit, m_limit):
+    """A shifted last column group / row block must fit inside the real B / C.
+
+    The f32 B tile is double-buffered at 4 bytes and has a single bf16 scratch copy, so
+    the L1 working set is larger than the bf16-B one ``_working_set`` models.
+    """
+    m, k, n = _f32_b_tile(M, N, K, n_limit, m_limit, dev)
+    assert n * dict(DEVICES)[dev] <= n_limit
+    if m_limit is not None:
+        assert m * N_AIE_ROWS <= m_limit
+    working_set = 2 * (
+        BF16.itemsize * m * k + F32.itemsize * k * n + F32.itemsize * m * n
+    )
+    working_set += BF16.itemsize * k * n
+    assert working_set <= L1_TILE_BUDGET_BYTES
+
+
+@pytest.mark.parametrize("n_limit,m_limit", [(63, None), (None, 63)])
+def test_shift_limits_below_one_group_raise(n_limit, m_limit):
+    """No tile exists when B or C is narrower than one minimum column group / row block."""
+    with pytest.raises(ValueError, match="minimum"):
+        _f32_b_tile(512, 512, 512, n_limit, m_limit)

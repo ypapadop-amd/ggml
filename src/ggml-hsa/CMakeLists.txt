@@ -26,6 +26,7 @@ option(GGML_HSA_JIT_COMPILE "ggml-hsa: enable JIT compilation of kernels" ON)
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
     aie-kernel.cpp
+    gemm.cpp
     ggml-hsa.cpp
     host-ops.cpp
     kernel-discovery.cpp
@@ -59,6 +60,7 @@ target_sources(ggml-hsa
     PRIVATE
         aie-kernel.hpp
         common.hpp
+        gemm.hpp
         host-ops.hpp
         kernel-discovery.hpp
         type-traits.hpp
