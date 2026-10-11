@@ -1230,10 +1230,13 @@ ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
         GGML_ABORT("%s: unexpected signal value (%ld)\n", __func__, val);
     }
 
-    // every packet ran, so the constant conversions among them may now be reused by any context;
-    // a later conversion of the same constant comes later in the list and wins
-    for (const auto & [conversion, converted_ptr] : ctx.pending_conversions) {
-        conversion->converted_ptr = converted_ptr;
+    // Every packet ran, so the constant conversions among them may now be reused by any context; a
+    // later conversion of the same constant comes later in the list and wins. Not after waiting on
+    // work that never ran, though: this context's results are then unsound, its conversions too.
+    if (!ctx.dependency_failed.load(std::memory_order_relaxed)) {
+        for (const auto & [conversion, converted_ptr] : ctx.pending_conversions) {
+            conversion->converted_ptr = converted_ptr;
+        }
     }
     ctx.pending_conversions.clear();
     return GGML_STATUS_SUCCESS;

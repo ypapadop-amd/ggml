@@ -610,7 +610,8 @@ struct ggml_backend_hsa_context {
     /// @brief Constant conversions issued on the device queue and not yet known to have run, each
     /// with the parent data pointer it converts. @ref ggml_hsa_wait_dispatches publishes them (sets
     /// @c conversion_t::converted_ptr) once the queue drains, and drops them if it is suspended: a
-    /// packet that is written but never runs must not be trusted by any context.
+    /// packet that is written but never runs must not be trusted by any context. They are dropped
+    /// too after @ref dependency_failed, which makes every result of this context unsound.
     std::vector<std::pair<ggml_backend_hsa_tensor_extra::conversion_t *, const void *>>
         pending_conversions;
 
