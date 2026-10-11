@@ -106,6 +106,8 @@ static inline void matmul_scalar(T_in * a, T_in * b, T_out * c) {
  * @tparam t         mmul N dimension.
  * @tparam b_row_maj If true, B tiles are row-major; if false, column-major.
  * @tparam c_row_maj If true, C tiles are row-major; if false, column-major.
+ * @tparam a_group   Block rows of A per interleaved group (see matmul_vectorized_4x4).
+ * @tparam b_group   Block columns of column-major B per interleaved group.
  *
  * @param[in]     pA Pointer to pre-tiled matrix A.
  * @param[in]     pB Pointer to pre-tiled matrix B.
@@ -122,7 +124,9 @@ template <typename T_in,
           uint32_t s,
           uint32_t t,
           bool b_row_maj = true,
-          bool c_row_maj = true>
+          bool c_row_maj = true,
+          uint32_t a_group = 1,
+          uint32_t b_group = 1>
 static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
                                               const T_in * __restrict pB,
                                               T_out * __restrict pC) {
@@ -152,16 +156,19 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
                     pC1 = pC + j * rowA * MMUL::size_C + z * MMUL::size_C;
                     pC2 = pC + (j + 1) * rowA * MMUL::size_C + z * MMUL::size_C;
                 }
-                const T_in * __restrict pA1 = pA + (z * colA) * MMUL::size_A;
-                const T_in * __restrict pA2 = pA + ((z + 1) * colA) * MMUL::size_A;
+                const T_in * __restrict pA1 =
+                    pA + (z / a_group * colA * a_group + z % a_group) * MMUL::size_A;
+                const T_in * __restrict pA2 =
+                    pA + ((z + 1) / a_group * colA * a_group + (z + 1) % a_group) * MMUL::size_A;
                 const T_in * __restrict pB1;
                 const T_in * __restrict pB2;
                 if constexpr (b_row_maj) {
                     pB1 = pB + (j)*MMUL::size_B;
                     pB2 = pB + (j + 1) * MMUL::size_B;
                 } else {
-                    pB1 = pB + (j * colA) * MMUL::size_B;
-                    pB2 = pB + ((j + 1) * colA) * MMUL::size_B;
+                    pB1 = pB + (j / b_group * colA * b_group + j % b_group) * MMUL::size_B;
+                    pB2 = pB +
+                          ((j + 1) / b_group * colA * b_group + (j + 1) % b_group) * MMUL::size_B;
                 }
 
                 aie::vector<T_in, MMUL::size_A> A0;
@@ -199,9 +206,9 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
 #endif
                     {
                         A0 = aie::load_v<MMUL::size_A>(pA1);
-                        pA1 += MMUL::size_A;
+                        pA1 += a_group * MMUL::size_A;
                         A1 = aie::load_v<MMUL::size_A>(pA2);
-                        pA2 += MMUL::size_A;
+                        pA2 += a_group * MMUL::size_A;
                         if constexpr (b_row_maj) {
                             B0 = aie::load_v<MMUL::size_B>(pB1);
                             pB1 += MMUL::size_B * colB;
@@ -209,9 +216,9 @@ static inline void matmul_vectorized_2x2_mmul(const T_in * __restrict pA,
                             pB2 += MMUL::size_B * colB;
                         } else {
                             B0 = aie::transpose(aie::load_v<MMUL::size_B>(pB1), t, s);
-                            pB1 += MMUL::size_B;
+                            pB1 += b_group * MMUL::size_B;
                             B1 = aie::transpose(aie::load_v<MMUL::size_B>(pB2), t, s);
-                            pB2 += MMUL::size_B;
+                            pB2 += b_group * MMUL::size_B;
                         }
 
                         C00.mac(A0, B0);
@@ -516,6 +523,18 @@ static inline void matmul_vectorized_4x2_mmul(const T_in * __restrict pA,
  * @tparam t         mmul N dimension.
  * @tparam b_row_maj If true, B tiles are row-major; if false, column-major.
  * @tparam c_row_maj If true, C tiles are row-major; if false, column-major.
+ * @tparam a_group   Block rows of A per interleaved group; a multiple of 4.
+ * @tparam b_group   Block columns of column-major B per interleaved group; a multiple of 4.
+ *
+ * Operand layout: gemm.py interleaves A in groups of a_group block rows, ordered by K step
+ * within a group, so block (row i, K step k) is at (i / a_group * colA + k) * a_group +
+ * i % a_group; column-major B is interleaved the same way by block column. A group of 1 is the
+ * plain layout, block (i, k) at i * colA + k.
+ *
+ * The four A blocks and the four B blocks one K step reads are adjacent in memory (row-major B
+ * stores them so already; A and column-major B are interleaved by gemm.py), so each operand is read
+ * through one pointer. With four pointers per operand the loop ran out of pointer registers and
+ * spent most of its bundles moving them (II 36 against 17).
  *
  * @param[in]     pA Pointer to pre-tiled matrix A.
  * @param[in]     pB Pointer to pre-tiled matrix B.
@@ -530,12 +549,17 @@ template <typename T_in,
           uint32_t s,
           uint32_t t,
           bool b_row_maj = true,
-          bool c_row_maj = true>
+          bool c_row_maj = true,
+          uint32_t a_group = 1,
+          uint32_t b_group = 1>
 static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
                                          const T_in * __restrict pB,
                                          T_out * __restrict pC) {
 
     using MMUL = aie::mmul<r, s, t, T_in, T_in, accauto>;
+
+    static_assert(a_group % 4 == 0, "the four A blocks of a K step must be adjacent");
+    static_assert(b_row_maj || b_group % 4 == 0, "the four B blocks of a K step must be adjacent");
 
     event0();
 
@@ -566,25 +590,16 @@ static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
                     pC3 = pC + (j + 2) * rowA * MMUL::size_C + z * MMUL::size_C;
                     pC4 = pC + (j + 3) * rowA * MMUL::size_C + z * MMUL::size_C;
                 }
-                const T_in * __restrict pA1 = pA + (z * colA + 0) * MMUL::size_A;
-                const T_in * __restrict pA2 = pA + ((z + 1) * colA + 0) * MMUL::size_A;
-                const T_in * __restrict pA3 = pA + ((z + 2) * colA + 0) * MMUL::size_A;
-                const T_in * __restrict pA4 = pA + ((z + 3) * colA + 0) * MMUL::size_A;
-
-                const T_in * __restrict pB1;
-                const T_in * __restrict pB2;
-                const T_in * __restrict pB3;
-                const T_in * __restrict pB4;
+                // Blocks z..z+3 of A and j..j+3 of B for one K step, then the next K step's.
+                const T_in * __restrict pAk =
+                    pA + (z / a_group * colA * a_group + z % a_group) * MMUL::size_A;
+                constexpr uint32_t a_step = a_group * MMUL::size_A;
+                const T_in * __restrict pBk;
+                constexpr uint32_t b_step = (b_row_maj ? colB : b_group) * MMUL::size_B;
                 if constexpr (b_row_maj) {
-                    pB1 = pB + (j)*MMUL::size_B;
-                    pB2 = pB + (j + 1) * MMUL::size_B;
-                    pB3 = pB + (j + 2) * MMUL::size_B;
-                    pB4 = pB + (j + 3) * MMUL::size_B;
+                    pBk = pB + j * MMUL::size_B;
                 } else {
-                    pB1 = pB + (j * colA) * MMUL::size_B;
-                    pB2 = pB + ((j + 1) * colA) * MMUL::size_B;
-                    pB3 = pB + ((j + 2) * colA) * MMUL::size_B;
-                    pB4 = pB + ((j + 3) * colA) * MMUL::size_B;
+                    pBk = pB + (j / b_group * colA * b_group + j % b_group) * MMUL::size_B;
                 }
 
                 aie::vector<T_in, MMUL::size_A> A0;
@@ -691,34 +706,27 @@ static inline void matmul_vectorized_4x4(const T_in * __restrict pA,
                     AIE_LOOP_FLATTEN
 #endif
                     {
-                        A0 = aie::load_v<MMUL::size_A>(pA1);
-                        pA1 += MMUL::size_A;
-                        A1 = aie::load_v<MMUL::size_A>(pA2);
-                        pA2 += MMUL::size_A;
-                        A2 = aie::load_v<MMUL::size_A>(pA3);
-                        pA3 += MMUL::size_A;
-                        A3 = aie::load_v<MMUL::size_A>(pA4);
-                        pA4 += MMUL::size_A;
+                        A0 = aie::load_v<MMUL::size_A>(pAk);
+                        A1 = aie::load_v<MMUL::size_A>(pAk + MMUL::size_A);
+                        A2 = aie::load_v<MMUL::size_A>(pAk + 2 * MMUL::size_A);
+                        A3 = aie::load_v<MMUL::size_A>(pAk + 3 * MMUL::size_A);
+                        pAk += a_step;
 
                         if constexpr (b_row_maj) {
-                            B0 = aie::load_v<MMUL::size_B>(pB1);
-                            pB1 += MMUL::size_B * colB;
-                            B1 = aie::load_v<MMUL::size_B>(pB2);
-                            pB2 += MMUL::size_B * colB;
-                            B2 = aie::load_v<MMUL::size_B>(pB3);
-                            pB3 += MMUL::size_B * colB;
-                            B3 = aie::load_v<MMUL::size_B>(pB4);
-                            pB4 += MMUL::size_B * colB;
+                            B0 = aie::load_v<MMUL::size_B>(pBk);
+                            B1 = aie::load_v<MMUL::size_B>(pBk + MMUL::size_B);
+                            B2 = aie::load_v<MMUL::size_B>(pBk + 2 * MMUL::size_B);
+                            B3 = aie::load_v<MMUL::size_B>(pBk + 3 * MMUL::size_B);
                         } else {
-                            B0 = aie::transpose(aie::load_v<MMUL::size_B>(pB1), t, s);
-                            pB1 += MMUL::size_B;
-                            B1 = aie::transpose(aie::load_v<MMUL::size_B>(pB2), t, s);
-                            pB2 += MMUL::size_B;
-                            B2 = aie::transpose(aie::load_v<MMUL::size_B>(pB3), t, s);
-                            pB3 += MMUL::size_B;
-                            B3 = aie::transpose(aie::load_v<MMUL::size_B>(pB4), t, s);
-                            pB4 += MMUL::size_B;
+                            B0 = aie::transpose(aie::load_v<MMUL::size_B>(pBk), t, s);
+                            B1 =
+                                aie::transpose(aie::load_v<MMUL::size_B>(pBk + MMUL::size_B), t, s);
+                            B2 = aie::transpose(aie::load_v<MMUL::size_B>(pBk + 2 * MMUL::size_B),
+                                                t, s);
+                            B3 = aie::transpose(aie::load_v<MMUL::size_B>(pBk + 3 * MMUL::size_B),
+                                                t, s);
                         }
+                        pBk += b_step;
 
                         C00.mac(A0, B0);
                         C01.mac(A0, B1);
@@ -851,6 +859,15 @@ constexpr bool is_c_row_maj = false;
 constexpr bool is_c_row_maj = true;
 #endif
 
+// How gemm.py interleaves the blocks of A and of column-major B (see matmul_vectorized_4x4); 1
+// is the plain layout. It is part of the DMA layout, so gemm.py passes it with the tile size.
+#ifndef GEMM_A_GROUP
+#define GEMM_A_GROUP 1
+#endif
+#ifndef GEMM_B_GROUP
+#define GEMM_B_GROUP 1
+#endif
+
 // The rounding mode can be set for bfloat16 mmul to improve accuracy
 #ifdef ROUND_CONV_EVEN
 constexpr aie::rounding_mode round_mode = aie::rounding_mode::conv_even;
@@ -955,10 +972,11 @@ static inline void matmul_vectorized_bf16(const bfloat16 * __restrict pA,
 
     if constexpr (m / r == 4 && n / t == 4) {
         matmul_vectorized_2x2_mmul<bfloat16, T_out, (m / r), (k / s), (n / t), r, s, t,
-                                   is_b_row_maj, is_c_row_maj>(pA, pB, pC);
+                                   is_b_row_maj, is_c_row_maj, GEMM_A_GROUP, GEMM_B_GROUP>(pA, pB,
+                                                                                           pC);
     } else {
         matmul_vectorized_4x4<bfloat16, T_out, (m / r), (k / s), (n / t), r, s, t, is_b_row_maj,
-                              is_c_row_maj>(pA, pB, pC);
+                              is_c_row_maj, GEMM_A_GROUP, GEMM_B_GROUP>(pA, pB, pC);
     }
 }
 
@@ -1220,7 +1238,7 @@ void matmul_bf16_f32_bf32_ktail(bfloat16 * a_in,
                                 bfloat16 * b_scratch,
                                 float * c_out) {
     convert_b_tile<DIM_K, DIM_N>(b_in, b_scratch);
-    zero_b_k_tail<DIM_K, DIM_N, 8, 4, B_K_VALID>(b_scratch);
+    zero_b_k_tail<DIM_K, DIM_N, 8, 4, B_K_VALID, GEMM_B_GROUP>(b_scratch);
     matmul_vectorized_4x8x4_bf16_f32<DIM_M, DIM_K, DIM_N>(a_in, b_scratch, c_out);
 }
 #endif
