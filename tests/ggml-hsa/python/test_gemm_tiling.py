@@ -441,7 +441,8 @@ def test_expansion_is_at_least_two(dev, dtype_in_str):
 # if a gemm.py change moves the granularity, the C++ is now wrong and this
 # fails, naming the value it has to become.
 #
-# Both operands are converted to bf16 by that function, so only bf16 applies.
+# gemm.py keys the granularity by A's dtype, which that function always makes
+# bf16 (an f32 B only changes how tiles are ranked), so only bf16 applies.
 
 # The constants are read from gemm.cpp itself, so a change on either side alone
 # fails here; a change to how gemm.cpp spells them fails the parse below.
