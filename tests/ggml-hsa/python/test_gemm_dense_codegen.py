@@ -8,6 +8,7 @@ runtime-sequence passes -- BD ids, task queue, lock rules -- run without hardwar
 """
 
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -91,6 +92,17 @@ def _compile(mod, arch):
 def test_dense_c_module_verifies(arch, shape):
     """The dense-C module builds and verifies."""
     assert _module(arch, shape, F32).operation.verify()
+
+
+@pytest.mark.parametrize("arch", list(PAD))
+@pytest.mark.parametrize("shape", SHAPES)
+def test_no_single_trip_loop_in_cores(arch, shape):
+    """No core loop runs once: a nested range_(1) trips mlir-aie issue #1547."""
+    text = str(_module(arch, shape, F32))
+    consts = dict(re.findall(r"(%\S+) = arith\.constant (\d+) : index", text))
+    cores = text[text.find("aie.core") :]
+    bounds = re.findall(r"scf\.for %\S+ = (%\S+) to (%\S+) step (%\S+)", cores)
+    assert ("0", "1", "1") not in [tuple(consts.get(v) for v in b) for b in bounds]
 
 
 def test_bf16_c_with_odd_m_is_rejected():

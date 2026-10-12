@@ -1011,8 +1011,7 @@ def my_matmul(
 
             def k_loop(acc_buf):
                 if acc_buf is None or matmul_tail is None:
-                    for _ in range_(K // k):
-                        k_step(matmul, acc_buf)
+                    repeat(K // k, lambda: k_step(matmul, acc_buf))
                     return
                 # A ragged K ends on the tail matmul, which zeroes the elements the last K tile
                 # read past B's columns.
