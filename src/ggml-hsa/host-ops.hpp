@@ -17,13 +17,14 @@
 ggml_status ggml_hsa_copy_tensor(const ggml_tensor * src, ggml_tensor * dst);
 
 /**
- * @brief Copy the overlapping sub-block of @p src into @p dst, converting the datatype if needed.
+ * @brief Copy the overlapping sub-block of @p src into @p dst, converting the datatype if needed,
+ * and zero-fill the rest of @p dst.
  *
- * Unlike @ref ggml_hsa_copy_tensor, @p src and @p dst may have different shapes. Only the
- * per-dimension overlap (@c min(src->ne[i], dst->ne[i])) is copied; both tensors are indexed
- * through their own strides, so a smaller logical tensor can be scattered into a larger,
- * zero-padded destination (or a padded tensor gathered back into a smaller one). Padding gaps in
- * @p dst are left untouched and must be pre-zeroed by the caller.
+ * Unlike @ref ggml_hsa_copy_tensor, @p src and @p dst may have different shapes. The per-dimension
+ * overlap (@c min(src->ne[i], dst->ne[i])) is copied and every other element of @p dst is written
+ * as zero; both tensors are indexed through their own strides, so a smaller logical tensor can be
+ * scattered into a larger padded destination that need not be pre-zeroed (or a padded tensor
+ * gathered back into a smaller one, which writes no zeros).
  *
  * @warning This function does not synchronize with any device.
  *
