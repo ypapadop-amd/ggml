@@ -3,11 +3,11 @@
 // Standalone test for f32 x f32 MUL_MAT at shapes that are not tile multiples. The GEMM streams an
 // f32 B unpadded and converts it on the core, and writes C in place when it is tall enough: it
 // shifts its last column group and row block back to end at N and M, and zeroes the K tail the last
-// K tile reads past each B column. Narrow or short shapes fall back to padding and de-padding. Each
-// case checks the whole result against a host reference; inputs are small integers, so every
-// product and partial sum is exact in bf16/f32 and the result must match bit for bit. Two more
-// cases place B after C, so the kernel is chosen before B's buffer is known, and check that a B
-// without read slack is refused rather than read past.
+// K tile reads past each B column. Narrow or short shapes run over padding instead and clip the
+// result to the dense destination. Each case checks the whole result against a host reference;
+// inputs are small integers, so every product and partial sum is exact in bf16/f32 and the result
+// must match bit for bit. Two more cases place B after C, so the kernel is chosen before B's buffer
+// is known, and check that a B without read slack is refused rather than read past.
 
 #include <cmath>
 #include <cstdint>
@@ -237,7 +237,7 @@ int main() {
         int64_t nan_col;
         const char * name;
     } cases[] = {
-        // tile multiples: nothing to shift, pad or de-pad
+        // tile multiples: nothing to shift, pad or clip
         {512, 512, 512, -1, "aligned"},
         // shifted last column group and row block, C written in place
         {500, 500, 784, -1, "mnist fc1"},
@@ -251,12 +251,12 @@ int main() {
         {64, 200, 500, -1, "K tail, wide N"},
         {64, 140, 257, -1, "K tail, odd K, wide N"},
         {64, 200, 500, 150, "K tail, NaN, wide N"},
-        // a row block on aie2p but not on aie2: C in place on aie2p, de-padded on aie2
+        // a row block on aie2p but not on aie2: shifted rows on aie2p, clipped on aie2
         {40, 200, 256, -1, "short M, wide N"},
-        // M below one row block: B unpadded, C padded and de-padded
+        // M below one row block: B unpadded, last row block clipped
         {10, 500, 500, -1, "mnist fc2"},
         {33, 257, 129, -1, "short M"},
-        // N below one column group: B padded as before
+        // N below one column group: B padded, last column group clipped
         {300, 8, 256, -1, "narrow N"},
         // more than 64 column groups for the largest-volume tile (8x256x32 on aie2p): a shim BD
         // iterates at most 64 times, so the tile must be chosen to keep the group count at most 64

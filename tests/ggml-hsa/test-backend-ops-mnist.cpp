@@ -2617,13 +2617,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_cont(GGML_TYPE_F32, {14, 14, 500, 16}, {0, 1, 3, 2}));
     // Pre-dense flatten CONT: permute [7,7,16,500] with (1,2,0,3) -> cont [16,7,7,500]
     test_cases.emplace_back(new test_cont(GGML_TYPE_F32, {7, 7, 16, 500}, {1, 2, 0, 3}));
-    // Conv1 MUL_MAT (im2col GEMM): a[K=9,M=392000] x b[K=9,N=8] -> [392000, 8]. M=batch*OH*OW
-    // (500*28*28) lands innermost, forcing the HSA_DEPAD post-amble to tile a d0=392064 row that
-    // does not fit AIE L1. Exercises the tiled/pad-stripping de-pad DMA path.
+    // Conv1 MUL_MAT (im2col GEMM): a[K=9,M=392000] x b[K=9,N=8] -> [392000, 8]. M=batch*OH*OW.
+    // N=8 leaves AIE columns 1-7 with nothing to write, which exercises the GEMM's idle-column
+    // path.
     test_cases.emplace_back(
         new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 392000, 8, 9, {1, 1}, {1, 1}));
-    // Conv2 MUL_MAT (im2col GEMM): a[K=72,M=98000] x b[K=72,N=16] -> [98000, 16]. Same oversized
-    // de-pad row (d0=98048).
+    // Conv2 MUL_MAT (im2col GEMM): a[K=72,M=98000] x b[K=72,N=16] -> [98000, 16]. Idle columns plus a
+    // row clip in the last row block.
     test_cases.emplace_back(
         new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 98000, 16, 72, {1, 1}, {1, 1}));
     // Dense: flattened [784, 500] x dense_weight [784, 10] -> [10, 500]  (784 = 7*7*16)

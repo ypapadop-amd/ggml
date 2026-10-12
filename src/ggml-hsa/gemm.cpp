@@ -138,23 +138,11 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     }
     sources[1].reads_past_end = b_unpadded && K != Kpad;
 
-    // Rewrite the output to a padded f32 temporary that must be de-padded back into the parent.
-    //
-    // When the parent is already at exactly the padded shape there is nothing to de-pad, so the
-    // kernel writes straight into it.
-    //
-    // It also writes straight into a parent of any shape when B is read unpadded and M is at least
-    // one row block: the GEMM then shifts its last row block up to end at M, as it shifts its last
-    // column group to end at N, so it writes only the parent's real rows and columns.
-    const bool c_in_place = b_unpadded && M >= gm * n_aie_rows;
-    if (!c_in_place && (dst.ne[0] != Mpad || dst.ne[1] != Npad)) {
-        dst.ne[0] = Mpad;
-        dst.ne[1] = Npad;
-        ggml_hsa_set_contiguous_strides(dst); // before ggml_nbytes, which reads the strides
-        dst.data = nullptr;
-        node.buffer_size = GGML_PAD(ggml_nbytes(&dst), dev_info.alignment);
-        node.transform = ggml_backend_hsa_tensor_extra::output_transform_t::depad;
-    }
+    // The output is not rewritten: the GEMM writes the dense parent directly. Over padded operands
+    // its mem tiles read back only the valid part of each C block; with an unpadded f32 B
+    // it shifts its last column group (and, when M is at least one row block, its last row block)
+    // back inside the parent instead (kernels/iron_kernels/gemm_c_plan.py). Either way there is no
+    // internal output buffer and nothing to post-process.
 
     // A trivial layout can still have arbitrary strides in dimensions of size 1; make the strides
     // of the tensors the kernel sees canonical.

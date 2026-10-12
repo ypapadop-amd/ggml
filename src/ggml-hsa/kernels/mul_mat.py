@@ -72,6 +72,15 @@ def _make_triton_matmul_kernel_spec(
     """
 
     def _compile(arch=arch, input_tensors=input_tensors, output_tensor=output_tensor):
+        # The padded-GEMM path hands the GEMM padded operands and a dense C, which only the
+        # IRON GEMM supports. Refuse, so the node falls back to the CPU rather than miscompute.
+        if tuple(output_tensor.shape[:2]) != (
+            input_tensors[0].shape[1],
+            input_tensors[1].shape[1],
+        ):
+            msg = "Triton MUL_MAT needs C to match the operand shapes"
+            raise ValueError(msg)
+
         # Imports and tensor creation are deferred so any failure is caught by
         # the try/except fallback in build.py, mirroring the ADD Triton spec.
         import torch

@@ -94,6 +94,7 @@ src/ggml-hsa/
 │       ├── count_equal.py/cc    # Count equal IRON design + AIE core function
 │       ├── cross_entropy_loss.py/cc  # Cross entropy loss IRON design + AIE core function
 │       ├── gemm.py              # Matrix multiplication IRON design
+│       ├── gemm_c_plan.py       # Static plan of the GEMM's C (output) data movement
 │       ├── ggml-aie.hpp         # Common AIE type definitions
 │       ├── mm_f32_b.hpp         # f32-B conversion helpers shared by aie2/mm.cc and aie2p/mm.cc
 │       ├── aie_kernel_utils.h   # Loop optimization macros (AIE_LOOP_UNROLL, AIE_PREPARE_FOR_PIPELINING, etc.)
@@ -298,26 +299,29 @@ callable from the dispatch layer. Key parameters include tile sizes (m, k, n), n
 columns, data types, and layout (row-major vs column-major).
 
 **f32 operands.** The microkernel is bf16-only, so `ggml_hsa_prepare_mul_mat_f32` (in `gemm.cpp`)
-converts an f32 A to bf16 and zero-pads it to the tile multiples, and pads C, de-padding the result
-afterwards; an f32 B is handled as described below. The transforms run on the device queue as
-`HSA_CONVERT_PAD` and `HSA_DEPAD` when those kernels build, and on the host otherwise; an operand or
-result that is already at the target dtype and shape is used in place. A constant operand (a weight:
-a leaf that is not a view, not flagged with `ggml_set_input()`, and not in a graph allocator's
-compute buffer) is converted once and reused, as is any constant source of any op that needs an
-internal buffer; see `source_node_t::is_constant` in `common.hpp`.
+converts an f32 A to bf16 and zero-pads it to the tile multiples; an f32 B is handled as described
+below. The conversion runs on the device queue as `HSA_CONVERT_PAD` when that kernel builds, and on
+the host otherwise; an operand that is already at the target dtype and shape is used in place. A
+constant operand (a weight: a leaf that is not a view, not flagged with `ggml_set_input()`, and not
+in a graph allocator's compute buffer) is converted once and reused, as is any constant source of
+any op that needs an internal buffer; see `source_node_t::is_constant` in `common.hpp`. The GEMM
+writes the dense f32 destination directly; its C path is written by hand from the static plan in
+`gemm_c_plan.py` (no C ObjectFifos). Each dimension ends at C's edge in one of two ways:
 
-An f32 B is instead streamed to the cores as f32 and converted there (`matmul_bf16_f32_bf32` in
-`aie2/mm.cc` and `aie2p/mm.cc`), and when B is at least one column group wide the GEMM reads it
-unpadded and, for an f32 C at least one row block tall, writes C in place ("ragged" mode,
-`b_ld`/`n_valid`/`m_valid` in `my_matmul`):
-
-- The last column group and row block are shifted back to end at N and M. They recompute
+- **Clipped** (padded operands): the last row block / column group runs over the zero padding,
+  and the mem tile's runtime MM2S tasks read back only the valid rows and columns.
+- **Shifted** (an unpadded f32 B): an f32 B is streamed to the cores as f32 and converted there
+  (`matmul_bf16_f32_bf32` in `aie2/mm.cc` and `aie2p/mm.cc`). When B is at least one column
+  group wide the GEMM reads it unpadded and shifts its last column group back to end at N, and,
+  when M is at least one row block, its last row block up to end at M. They recompute
   columns/rows the previous group or block already wrote, with bit-identical values.
+
+On the shifted path:
+
 - The last K tile reads past each column of B by up to 7 elements, and `matmul_*_ktail` zeroes
   them on the core. HSA device buffers are over-allocated by `ggml_hsa_buffer_read_slack` so this
   read never leaves the allocation.
-- Each C drain issues a completion token and each `dma_wait` consumes one, so a transfer block
-  that drains C in two runs (normal plus shifted group) needs two waits.
+- Every shim C task issues a completion token and is awaited once.
 - The tile selector ranks f32-B tiles by `min(m, k)` before volume (see `select_gemm_tile`).
 
 ### Broadcasting Support

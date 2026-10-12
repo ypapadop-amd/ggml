@@ -21,11 +21,10 @@ set(IRON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/conv_2d.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/conv_2d.py
     ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy_loss.py
-    ${CMAKE_CURRENT_SOURCE_DIR}/depad.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/depad.py
     ${CMAKE_CURRENT_SOURCE_DIR}/diag_mask_inf.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/diag_mask_inf.py
     ${CMAKE_CURRENT_SOURCE_DIR}/gemm.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/gemm_c_plan.py
     ${CMAKE_CURRENT_SOURCE_DIR}/ggml-aie.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/im2col.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/im2col.py
