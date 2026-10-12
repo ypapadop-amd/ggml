@@ -358,10 +358,15 @@ def select_gemm_tile(
 
 
 def main():
-    """CLI entry point: parse arguments and print the generated GEMM MLIR."""
+    """CLI entry point: parse arguments and print the generated GEMM MLIR.
+
+    The module imports its package siblings, so run it as a module from ``src/ggml-hsa/kernels``:
+    ``python -m iron_kernels.gemm [options]``. Running the file directly fails on the import.
+    """
     argparser = argparse.ArgumentParser(
-        prog="AIE Matrix Multiplication MLIR Design (Whole Array)",
-        description="Emits MLIR code for a matrix multiplication design of the given input size",
+        prog="python -m iron_kernels.gemm",
+        description="Emits MLIR code for a matrix multiplication design of the given input size. "
+        "Run from src/ggml-hsa/kernels.",
     )
     argparser.add_argument("--dev", type=str, choices=["npu", "npu2"], default="npu")
     argparser.add_argument("-M", type=int, default=512)
