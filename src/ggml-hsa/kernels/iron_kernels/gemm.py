@@ -372,9 +372,6 @@ def main():
     argparser.add_argument("-n", type=int, default=32)
     argparser.add_argument("--n-aie-cols", type=int, choices=[1, 2, 4, 8], default=4)
     argparser.add_argument("--b-col-maj", type=int, choices=[0, 1], default=0)
-    argparser.add_argument("--c-col-maj", type=int, choices=[0, 1], default=0)
-    # Whether to use the scalar kernel; this is low, but can be useful for debugging smaller sizes
-    argparser.add_argument("--scalar", type=int, choices=[0, 1], default=0)
     argparser.add_argument(
         "--emulate-bf16-mmul-with-bfp16", type=int, choices=[0, 1], default=0
     )
@@ -395,8 +392,8 @@ def main():
         "of the input/output matrices. These objects can be used for visualization.",
     )
     args = argparser.parse_args()
-    # Function names follow the extern "C" wrappers in <arch>/mm.cc.
-    scalar_suffix = "_scalar" if args.scalar else ""
+    # Function names follow the extern "C" wrappers in <arch>/mm.cc. C is always column-major and
+    # the kernel vectorized: the hand-written C path supports nothing else.
     with mlir_mod_ctx() as ctx:
         maybe_taps = my_matmul(
             dev=args.dev,
@@ -410,12 +407,12 @@ def main():
             dtype_in_str=args.dtype_in,
             dtype_out_str=args.dtype_out,
             b_col_maj=bool(args.b_col_maj),
-            c_col_maj=bool(args.c_col_maj),
-            use_scalar=bool(args.scalar),
+            c_col_maj=True,
+            use_scalar=False,
             emulate_bf16_mmul_with_bfp16=bool(args.emulate_bf16_mmul_with_bfp16),
             trace_size=args.trace_size,
-            zero_fn=f"zero{scalar_suffix}_{args.dtype_out}",
-            matmul_fn=f"matmul{scalar_suffix}_{args.dtype_in}_{args.dtype_out}",
+            zero_fn=f"zero_{args.dtype_out}",
+            matmul_fn=f"matmul_{args.dtype_in}_{args.dtype_out}",
             object_file=f"mm_{args.m}x{args.k}x{args.n}.o",
             generate_taps=args.generate_taps,
         )
