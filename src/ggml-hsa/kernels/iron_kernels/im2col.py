@@ -8,9 +8,11 @@
 """IRON design for GGML_OP_IM2COL (2D image-to-column layout transform)."""
 
 import struct
+from math import gcd
 from pathlib import Path
 
 import numpy as np
+from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
@@ -22,7 +24,23 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_to_device, batch_slice_tap, partition_units, shape_defines
+from .utils import (
+    _arch_params,
+    arch_to_device,
+    batch_slice_tap,
+    partition_units,
+    shape_defines,
+)
+
+# Lanes of the packed path's f32 vectors (im2col.cc V).
+_VECTOR = 16
+# A core tile's DMA buffer descriptor (aie2): 8-bit sizes, 13-bit strides.
+_CORE_BD_MAX_SIZE = 255
+_CORE_BD_MAX_STRIDE = 8192
+# How far past the image the packed kernel's unaligned loads may read (three 32-byte blocks).
+_OVERREAD_BYTES = 96
+# Vector chunks the packed kernel unrolls (one period of slot groups; program memory).
+_PACKED_MAX_CHUNKS = 32
 
 # Cap on data-parallel workers (compute tiles). Beyond this the per-worker shim/
 # mem-tile DMA channels exhaust the array's routing budget on NPU1 (aie2).
@@ -116,12 +134,31 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
 
     image_size = ic * ih * iw
     row_size = ow * col_stride
+    row_bytes = row_size * output_tensor.dtype.itemsize
+    image_bytes = image_size * image_tensor.dtype.itemsize
+
+    # Slot-major objects (see im2col.cc), on aie2 only so far (aie2p not run), for a
+    # contiguous f32 copy whose DMA walk fits a core tile's buffer descriptor: several output
+    # rows per object, a whole number of vectors. Otherwise one row per object, written in
+    # order.
+    packed = None
+    if (
+        arch == "aie2"
+        and output_tensor.dtype == np.float32
+        and s0 == 1
+        and _packed_walk_fits(ow, kw, col_stride)
+    ):
+        packed = _rows_per_object(
+            arch, oh, row_bytes, image_bytes, multiple=_VECTOR // gcd(row_size, _VECTOR)
+        )
+    rows = packed or 1
+    obj_size = rows * row_size
 
     function = _create_external_function(
         image_tensor=image_tensor,
         output_tensor=output_tensor,
         image_size=image_size,
-        row_size=row_size,
+        row_size=obj_size,
         shape={
             "IW": iw,
             "IH": ih,
@@ -135,6 +172,8 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
             "P1": p1,
             "D0": d0,
             "D1": d1,
+            "ROWS": rows,
+            **({"PACKED": 1} if packed else {}),
         },
     )
 
@@ -151,10 +190,21 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     out_per_image = row_size * oh
 
     image_tile_ty = np.ndarray[(image_size,), np.dtype[image_tensor.dtype]]
-    row_tile_ty = np.ndarray[(row_size,), np.dtype[output_tensor.dtype]]
+    row_tile_ty = np.ndarray[(obj_size,), np.dtype[output_tensor.dtype]]
+    # A packed object holds [rows][col_stride][ow]; its DMA streams it as [rows][ow][col_stride].
+    to_stream = (
+        TensorAccessPattern(
+            (obj_size,), 0, [rows, ow, col_stride], [col_stride * ow, 1, ow]
+        )
+        if packed
+        else None
+    )
 
     of_ins = [ObjectFifo(image_tile_ty, name=f"in{w}") for w in range(num_workers)]
-    of_outs = [ObjectFifo(row_tile_ty, name=f"out{w}") for w in range(num_workers)]
+    of_outs = [
+        ObjectFifo(row_tile_ty, name=f"out{w}", to_stream=to_stream)
+        for w in range(num_workers)
+    ]
 
     # The outer loop over this worker's images is emitted as an AIE loop
     # (range_). The inner loop over output rows uses a plain Python range so it
@@ -164,7 +214,7 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         def ext_core_fn(of_in, of_out, function):
             for _ in range_(image_count):
                 img = of_in.acquire(1)
-                for oh_idx in range(oh):
+                for oh_idx in range(0, oh, rows):
                     row = of_out.acquire(1)
                     function(
                         img, row, oh_idx, iw, ih, ic, kw, kh, ow, s0, s1, p0, p1, d0, d1
@@ -218,6 +268,61 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
+def _packed_walk_fits(ow: int, kw: int, col_stride: int) -> bool:
+    """Whether the packed path's [rows][OW][IC*KH*KW] walk fits and its kernel stays small.
+
+    Args:
+        ow: Output width (OW).
+        kw: Kernel width (KW).
+        col_stride: Column slots per output pixel (IC * KH * KW).
+
+    Returns:
+        True if the walk's sizes and strides fit a core tile's buffer descriptor and the
+        kernel unrolls at most _PACKED_MAX_CHUNKS vector chunks (one period of groups of KW
+        runs, after which a run again starts on a vector boundary).
+    """
+    period = _VECTOR // gcd(kw * ow, _VECTOR)
+    chunks = period * kw * -(-ow // _VECTOR)
+    return (
+        ow <= _CORE_BD_MAX_SIZE
+        and col_stride <= _CORE_BD_MAX_SIZE
+        and col_stride * ow <= _CORE_BD_MAX_STRIDE
+        and chunks <= _PACKED_MAX_CHUNKS
+    )
+
+
+def _rows_per_object(
+    arch: str, oh: int, row_bytes: int, image_bytes: int, multiple: int
+) -> int | None:
+    """Output rows per packed object: the largest divisor of OH that fits.
+
+    The input image and the output objects, each double-buffered, must fit half the core
+    data memory, less _OVERREAD_BYTES, which the packed kernel's unaligned loads may read past
+    the image: they must not run off the core's memory (in the MNIST designs the input
+    buffers start at 32 and 48 KB). The row count is also a DMA walk size.
+
+    Args:
+        arch: Target architecture.
+        oh: Output rows per image (OH).
+        row_bytes: Bytes in one output row.
+        image_bytes: Bytes in one input image.
+        multiple: The row count must be a multiple of this.
+
+    Returns:
+        The rows per object, a divisor of oh and a multiple of `multiple`, or None if no
+        such count fits.
+    """
+    budget = (
+        _arch_params(arch)["core_data_mem_bytes"] // 2
+        - 2 * image_bytes
+        - _OVERREAD_BYTES
+    )
+    cap = min(oh, _CORE_BD_MAX_SIZE, max(0, budget) // (2 * row_bytes))
+    return next(
+        (r for r in range(cap, 0, -1) if oh % r == 0 and r % multiple == 0), None
+    )
+
+
 def _create_external_function(
     image_tensor,
     output_tensor,
@@ -266,5 +371,9 @@ def _create_external_function(
             f"-DINPUT_DTYPE={dtype_to_str(image_tensor.dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
             *shape_defines("GGML_IM2COL", shape),
+            # The packed kernel without the pre-RA machine scheduler: it hoisted every load
+            # of the unrolled period ahead of its use and spilled them (up to ~2 KB of stack,
+            # past the core's 1 KB, on 128-wide rows).
+            *(["-mllvm", "-enable-misched=false"] if "PACKED" in shape else []),
         ],
     )
