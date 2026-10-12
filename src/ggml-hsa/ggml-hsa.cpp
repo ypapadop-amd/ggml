@@ -107,8 +107,6 @@ const char * ggml_hsa_op_name(ggml_hsa_op op) {
     switch (op) {
         case GGML_HSA_OP_CONVERT_PAD:
             return "HSA_CONVERT_PAD";
-        case GGML_HSA_OP_DEPAD:
-            return "HSA_DEPAD";
         case GGML_HSA_OP_CONVERT:
             return "HSA_CONVERT";
         case GGML_HSA_OP_COUNT:
@@ -607,11 +605,11 @@ ggml_hsa_get_cached_kernel(const std::string & kernel_name,
 /**
  * @brief Builds (or fetches from cache) an internal single-input transform kernel.
  *
- * Used for the HSA-only transform operators, which are not GGML ops. A
- * carrier tensor is synthesized from @p out (shape/dtype/strides of the transform's destination)
- * with its single source set to @p in, then compiled under @p op (e.g. @ref GGML_HSA_OP_CONVERT_PAD
- * or @ref GGML_HSA_OP_DEPAD). The (in, out) shapes/dtypes flow into the kernel name so each
- * distinct padded/unpadded combination caches its own PDI.
+ * Used for the HSA-only transform operators, which are not GGML ops. A carrier tensor is
+ * synthesized from @p out (shape/dtype/strides of the transform's destination) with its single
+ * source set to @p in, then compiled under @p op (e.g. @ref GGML_HSA_OP_CONVERT_PAD). The (in, out)
+ * shapes/dtypes flow into the kernel name so each distinct padded/unpadded combination caches its
+ * own PDI.
  *
  * @param[in] dev_info device information
  * @param[in] op HSA-only operator selecting the kernel source
@@ -837,7 +835,7 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
         return;
     }
 
-    // HSA-only operators (single-input transforms: convert/pad, de-pad, dtype cast). The kernel
+    // HSA-only operators (single-input transforms: convert/pad, dtype cast). The kernel
     // maps the sole parent source into this node's shape/dtype; no generic layout/flatten handling.
     if (ggml_hsa_is_hsa_op(node.tensor.op)) {
         const auto hsa_op = static_cast<ggml_hsa_op>(node.tensor.op);
@@ -879,8 +877,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     }
 
     // F32 MUL_MAT is handled specially: the operands are converted to bf16 and zero-padded to the
-    // GEMM tile multiples. This fully sets up the internal nodes (dtype, shape, buffer sizes,
-    // depad), so the generic preparation is skipped.
+    // GEMM tile multiples. This fully sets up the internal nodes (dtype, shape, buffer sizes), so
+    // the generic dtype/layout/flatten handling below is skipped.
     const bool padded_gemm = ggml_hsa_prepare_mul_mat_f32(dev_info, node, sources);
     const auto src_dtype_only = padded_gemm ? std::array<bool, GGML_MAX_SRC>{}
                                             : ggml_hsa_prepare_generic(dev_info, node, sources);
@@ -921,15 +919,14 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     }
 
     // For the padded MUL_MAT path, build on-device pre-processing kernels (per source; convert
-    // f32->bf16 and/or zero-pad) and a post-processing kernel (de-pad the result). These run on the
-    // device queue in place of the host copies in graph_compute, removing the per-op queue drains
-    // that would otherwise flush the packet batch. If any fails to compile the pointer stays null
-    // and graph_compute falls back to the host copy path. A source whose operand is already bf16
-    // needs no dtype conversion but still needs zero-padding to the tile multiples, so build the
-    // pre-processing kernel for every source that has a padded internal buffer (HSA_CONVERT_PAD
-    // selects convert+pad or pad-only from the source dtype).
-    // Gated on the padded-GEMM path itself, not on node.transform: an operand can still need
-    // convert+pad on a node whose output happens to land at the padded shape already.
+    // f32->bf16 and/or zero-pad). These run on the device queue in place of the host copies in
+    // graph_compute, removing the per-op queue drains that would otherwise flush the packet batch.
+    // If any fails to compile the pointer stays null and graph_compute falls back to the host copy
+    // path. A source whose operand is already bf16 needs no dtype conversion but still needs
+    // zero-padding to the tile multiples, so build the pre-processing kernel for every source that
+    // has a padded internal buffer (HSA_CONVERT_PAD selects convert+pad or pad-only from the source
+    // dtype). Gated on the padded-GEMM path itself: only the operands are transformed, the GEMM
+    // writes the output.
     if (padded_gemm) {
         for (auto src_idx = 0; src_idx < sources.count; ++src_idx) {
             // CONVERT_PAD takes only an f32 or bf16 source; an f16 operand stays on the host path
@@ -942,10 +939,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
             sources[src_idx].preprocess_kernel = ggml_hsa_build_transform_kernel(
                 dev_info, GGML_HSA_OP_CONVERT_PAD, *parent_tensor.src[src_idx],
                 sources[src_idx].tensor);
-        }
-        if (node.transform == output_transform_t::depad) {
-            node.postprocess_kernel = ggml_hsa_build_transform_kernel(dev_info, GGML_HSA_OP_DEPAD,
-                                                                      node.tensor, parent_tensor);
         }
     }
 
@@ -1033,7 +1026,7 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
         }
     }
 
-    // the output node may need its own padded temporary storage (e.g. a de-padded MUL_MAT result)
+    // the output node may need its own padded temporary storage (e.g. a dtype-converted result)
     if (node.buffer_size > 0) {
         assert(node.tensor.data == nullptr);
         node.tensor.data = buffer_ptr;
@@ -1927,14 +1920,14 @@ static void ggml_backend_hsa_synchronize(ggml_backend_t backend) {
 }
 
 /**
- * @brief Host-path copy from @p src to @p dst, choosing sub-block or plain copy based on @p depad.
+ * @brief Host-path copy from @p src to @p dst, choosing sub-block or plain copy based on @p padded.
  *
- * A padded tensor (@p depad) has a different shape from its counterpart, so the logical sub-block
+ * A padded tensor (@p padded) has a different shape from its counterpart, so the logical sub-block
  * must be scattered/gathered; otherwise the shapes match and a plain layout/dtype copy suffices.
  */
 static ggml_status
-ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool depad) {
-    return depad ? ggml_hsa_copy_subblock(src, dst) : ggml_hsa_copy_tensor(src, dst);
+ggml_hsa_copy_padded_or_plain(const ggml_tensor * src, ggml_tensor * dst, bool padded) {
+    return padded ? ggml_hsa_copy_subblock(src, dst) : ggml_hsa_copy_tensor(src, dst);
 }
 
 /**
@@ -2045,9 +2038,7 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
             // into the padded buffer, zero-filling the padding; otherwise a plain layout/dtype
             // copy suffices. The shapes alone cannot tell: a flattened source has the parent's
             // elements in a different shape, and a sub-block copy would keep only their overlap.
-            // Decided per source: node.transform describes the *output*, and the two can disagree
-            // -- a GEMM padded only in K has padded operands and an unpadded result, which a plain
-            // copy would get wrong.
+            // Decided per source from the element counts.
             const bool src_is_padded =
                 ggml_nelements(node->src[src_idx]) != ggml_nelements(internal_node.src[src_idx]);
             status = ggml_hsa_copy_padded_or_plain(node->src[src_idx], internal_node.src[src_idx],
@@ -2077,9 +2068,9 @@ static ggml_status ggml_hsa_dispatch_preprocess(ggml_backend_hsa_context & ctx,
  * @brief Post-processes a node's internal output buffer back into the parent tensor after dispatch.
  *
  * No-op when @c tensor_extra.node.transform is @c none. When a @c postprocess_kernel was built the
- * result is transformed back into the parent on-queue (e.g. de-pad), with no drain; otherwise the
- * queue is drained first (the host may not touch a buffer the device is still using) and the result
- * is gathered/converted back into the parent on the host.
+ * result is converted back into the parent on-queue, with no drain; otherwise the queue is drained
+ * first (the host may not touch a buffer the device is still using) and the result is converted
+ * back into the parent on the host.
  *
  * @param[in,out] ctx HSA backend context (queue used for the drain and on-device dispatch)
  * @param[in,out] tensor_extra node metadata holding the internal output node
@@ -2098,7 +2089,7 @@ static ggml_status ggml_hsa_dispatch_postprocess(ggml_backend_hsa_context & ctx,
 
     if (tensor_extra.node.postprocess_kernel != nullptr) {
         // on-device result post-processing: transform the internal output back into the parent
-        // tensor on-queue (e.g. de-pad), no drain.
+        // tensor on-queue (dtype conversion), no drain.
         ggml_tensor * postprocess_src = &internal_node;
         const ggml_status status =
             tensor_extra.node.postprocess_kernel->dispatch(ctx, &postprocess_src, 1, *node);
@@ -2109,13 +2100,11 @@ static ggml_status ggml_hsa_dispatch_postprocess(ggml_backend_hsa_context & ctx,
         return status;
     }
 
-    // gather the padded result sub-block back into the parent tensor (de-pad), or convert the
-    // datatype in place for the same-shape case
+    // convert the datatype back into the parent tensor
     if (const ggml_status status = ggml_hsa_wait_dispatches(ctx); status != GGML_STATUS_SUCCESS) {
         return status;
     }
-    const ggml_status status = ggml_hsa_copy_padded_or_plain(
-        &internal_node, node, tensor_extra.node.transform == output_transform_t::depad);
+    const ggml_status status = ggml_hsa_copy_tensor(&internal_node, node);
     if (status != GGML_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: failed to copy back for tensor \"%s\" (%s)", __func__, node->name,
                            ggml_hsa_tensor_op_desc(*node));
@@ -2259,12 +2248,6 @@ ggml_tensor * ggml_hsa_convert_pad(
     ggml_context * ctx, ggml_tensor * a, ggml_type type, int64_t ne0, int64_t ne1) {
     const int64_t ne[GGML_MAX_DIMS] = {ne0, ne1, 1, 1};
     return ggml_hsa_new_transform(ctx, a, GGML_HSA_OP_CONVERT_PAD, type, ne);
-}
-
-ggml_tensor *
-ggml_hsa_depad(ggml_context * ctx, ggml_tensor * a, ggml_type type, int64_t ne0, int64_t ne1) {
-    const int64_t ne[GGML_MAX_DIMS] = {ne0, ne1, 1, 1};
-    return ggml_hsa_new_transform(ctx, a, GGML_HSA_OP_DEPAD, type, ne);
 }
 
 ggml_tensor * ggml_hsa_convert(ggml_context * ctx, ggml_tensor * a, ggml_type type) {

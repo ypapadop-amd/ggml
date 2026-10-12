@@ -15,21 +15,19 @@
  *   - the padded regions are zero-filled by whatever fills the operand (the @c CONVERT_PAD
  *     dispatch, or the host sub-block scatter if that kernel is unavailable), so the extra
  *     rows/cols and the interior K gap contribute nothing to the result.
- * The output node keeps f32 but needs its own padded temporary storage plus a de-pad copy back into
- * the (smaller) parent tensor, flagged via @c node_t::transform.
+ * The output node is left as the dense parent: the GEMM writes it directly.
  *
- * Each of the three rewrites is skipped when the parent tensor already has the target dtype and
+ * Each operand rewrite is skipped when the parent tensor already has the target dtype and
  * shape, which leaves that tensor pointing at the parent buffer (@c buffer_size stays 0) and elides
- * the corresponding convert/pad/de-pad dispatch -- the common case for GEMMs whose dimensions are
+ * the corresponding convert/pad dispatch -- the common case for GEMMs whose dimensions are
  * already tile multiples (see @ref ggml_hsa_pad_gemm_operand for the measured cost of not doing
  * so).
  *
  * An f32 B is not converted at all: the GEMM streams it as f32 and converts each tile on
- * the core. Once B is at least one column group wide the GEMM also reads it unpadded and, when M is
- * at least one row block and the output is f32, writes C in place: it shifts its last column group
- * and row block back to end at N and M, and zeroes the K tail on the core. Such a GEMM has neither
- * a B pre-processing nor a de-pad dispatch; only the constant A is still converted and padded,
- * once.
+ * the core. Once B is at least one column group wide the GEMM also reads it unpadded: it shifts its
+ * last column group back to end at N and zeroes the K tail on the core, and, when M is at least one
+ * row block, it shifts its last row block up to end at M as well. Such a GEMM has no B
+ * pre-processing dispatch; only the constant A is still converted and padded, once.
  *
  * Only the contiguous, non-batched, non-permuted f32 x f32 case is handled (the shapes exercised by
  * MNIST). Returns @c false for anything else, leaving the node untouched so the caller falls back

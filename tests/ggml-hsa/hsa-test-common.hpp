@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 // Shared helpers for the HSA backend tests: f32/f16/bf16 element encode/decode/round used to build
-// inputs and compute references for the convert / convert_pad / depad ops.
+// inputs and compute references for the convert / convert_pad ops.
 
 #pragma once
 
