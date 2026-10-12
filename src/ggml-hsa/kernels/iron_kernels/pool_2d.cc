@@ -44,7 +44,8 @@ struct row_range {
 
 /// Output rows whose window rows all lie in the plane, whose loads stay at or after the plane's
 /// start and end at most @p limit elements past it, and, in the tile's last plane (@p last),
-/// whose stores stay inside the plane: [lo, hi).
+/// whose stores stay inside the plane: [lo, hi). A row's last chunk ends chunks * V - ow lanes
+/// past it, which can reach past the plane from rows before the last one (ow = 7: two rows).
 constexpr row_range interior_rows(int32_t limit, bool last) {
     int32_t lo = 0;
     // A row's first load starts at column -p0: before the plane's start in its first row.
@@ -55,7 +56,7 @@ constexpr row_range interior_rows(int32_t limit, bool last) {
     const int32_t load_end = (chunks - 1) * V * s0 - p0 + (groups - 1) * s0 + L;
     while (hi > lo &&
            ((hi - 1) * s1 - p1 + k1 > ih || ((hi - 1) * s1 - p1 + k1 - 1) * iw + load_end > limit ||
-            (last && hi == oh && chunks * V > ow))) {
+            (last && (hi - 1) * ow + chunks * V > out_plane))) {
         --hi;
     }
     return {lo, hi};
