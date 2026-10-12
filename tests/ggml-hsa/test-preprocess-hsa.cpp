@@ -4,13 +4,20 @@
 // ggml_backend_hsa_tensor_extra. The device has no f16 kernels, so an op with f16 operands runs as
 // bf16 internally: each f16 source is converted into its own internal buffer before the dispatch
 // (per source) and the bf16 result is converted back into the f16 parent afterwards
-// (node.convert_dtype).
+// (node.transform == convert).
 //
 // Both source paths are exercised. With an even element count the HSA_CONVERT kernel builds and the
 // conversion is dispatched on the device queue (a preprocess kernel); with an odd element count the
 // kernel legitimately declines -- a 2-byte tensor is then not a whole number of DMA words -- and
 // the conversion falls back to the host copy path (no kernel). Both must produce identical, correct
 // results; that fallback is the point of the test.
+//
+// The padded-GEMM MUL_MAT has its own host fallback: HSA_CONVERT_PAD declines an f16 source, so f16
+// operands are scattered into their zero-padded bf16 internal buffers on the host. The internal
+// buffers are not zeroed at allocation, so that scatter must write the padding itself. Fresh device
+// allocations happen to read as zero, so the case first dirties the storage: a larger MUL_MAT with
+// no zero inputs runs on the same allocator, and the padded case's extra, recycled from it, takes
+// over its internal storage, so a scatter that skips the padding leaves nonzero values there.
 //
 // Inputs are small integers, which are exact in f16 and in bf16, and so are their sums. That makes
 // the expected result an exact integer regardless of how many times the value is round-tripped
@@ -134,6 +141,124 @@ case_result run_case(ggml_backend_t backend,
     return ok ? case_result::pass : case_result::fail;
 }
 
+// f16 [K, M] x f16 [K, N] -> f32 [M, N] MUL_MAT on the padded-GEMM path, with K, M and N off the
+// tile multiples so every operand is padded in both dimensions. Both operands take the host
+// fallback (asserted), so the padding gaps the GEMM reads are written only by the host scatter.
+case_result run_mul_mat_case(ggml_backend_t backend, int64_t K, int64_t M, int64_t N) {
+    const std::size_t ctx_size = 8 * ggml_tensor_overhead() + 2 * ggml_graph_overhead();
+    ggml_init_params params{
+        /*.mem_size   =*/ctx_size,
+        /*.mem_buffer =*/nullptr,
+        /*.no_alloc   =*/true,
+    };
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx{ggml_init(params), ggml_free};
+
+    ggml_tensor * a = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, K, M);
+    ggml_set_name(a, "a");
+    ggml_tensor * b = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, K, N);
+    ggml_set_name(b, "b");
+    ggml_tensor * dst = ggml_mul_mat(ctx.get(), a, b);
+    ggml_set_name(dst, "dst");
+
+    if (!ggml_backend_supports_op(backend, dst)) {
+        printf("  op not supported (skipped)\n");
+        return case_result::skip;
+    }
+
+    // As above, assert the path rather than infer it: the operand pre-processing is on-queue
+    // exactly when HSA_CONVERT_PAD builds for the operand, and it declines an f16 source whatever
+    // the padded shape, so probing any padded shape reports the path.
+    for (ggml_tensor * src : {a, b}) {
+        ggml_tensor * probe = ggml_hsa_convert_pad(ctx.get(), src, GGML_TYPE_BF16, GGML_PAD(K, 8),
+                                                   GGML_PAD(src->ne[1], 64));
+        ggml_set_name(probe, "convert_pad_probe");
+        if (ggml_backend_supports_op(backend, probe)) {
+            printf("  expected host pre-processing of %s, got on-queue\n", ggml_get_name(src));
+            return case_result::fail;
+        }
+    }
+
+    std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)> galloc{
+        ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
+
+    // Dirty the internal storage first: a MUL_MAT at tile multiples on aie2 and aie2p, with no zero
+    // inputs, whose operands' bf16 copies alone outsize all of the padded case's internal storage.
+    // It is larger, so the allocator keeps its buffer for the padded case and recycles its extras;
+    // the padded MUL_MAT takes the same extra slot and reuses its storage.
+    {
+        const int64_t dK = 64, dM = 512, dN = 128;
+        ggml_tensor * da = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, dK, dM);
+        ggml_tensor * db = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, dK, dN);
+        ggml_tensor * ddst = ggml_mul_mat(ctx.get(), da, db);
+        if (!ggml_backend_supports_op(backend, ddst)) {
+            printf("  dirtying MUL_MAT not supported\n");
+            return case_result::fail;
+        }
+        ggml_cgraph * dgf = ggml_new_graph(ctx.get());
+        ggml_build_forward_expand(dgf, ddst);
+        if (!ggml_gallocr_alloc_graph(galloc.get(), dgf)) {
+            printf("  dirtying graph allocation failed\n");
+            return case_result::fail;
+        }
+        for (ggml_tensor * t : {da, db}) {
+            std::vector<uint8_t> bytes(ggml_nbytes(t));
+            for (int64_t i = 0; i < ggml_nelements(t); ++i) {
+                store_val(GGML_TYPE_F16, bytes.data(), i, static_cast<float>(i % 7 + 1));
+            }
+            ggml_backend_tensor_set(t, bytes.data(), 0, bytes.size());
+        }
+        if (ggml_backend_graph_compute(backend, dgf) != GGML_STATUS_SUCCESS) {
+            printf("  dirtying graph compute failed\n");
+            return case_result::fail;
+        }
+    }
+
+    ggml_cgraph * gf = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(gf, dst);
+    if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
+        printf("  graph allocation failed\n");
+        return case_result::fail;
+    }
+
+    std::vector<uint8_t> a_bytes(ggml_nbytes(a));
+    std::vector<uint8_t> b_bytes(ggml_nbytes(b));
+    for (int64_t i = 0; i < K * M; ++i) {
+        store_val(GGML_TYPE_F16, a_bytes.data(), i, src0_val(i));
+    }
+    for (int64_t i = 0; i < K * N; ++i) {
+        store_val(GGML_TYPE_F16, b_bytes.data(), i, src1_val(i));
+    }
+    ggml_backend_tensor_set(a, a_bytes.data(), 0, ggml_nbytes(a));
+    ggml_backend_tensor_set(b, b_bytes.data(), 0, ggml_nbytes(b));
+
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        printf("  graph compute failed\n");
+        return case_result::fail;
+    }
+
+    std::vector<float> dst_host(M * N);
+    ggml_backend_tensor_get(dst, dst_host.data(), 0, ggml_nbytes(dst));
+
+    // small integers: every product and partial sum is exact in bf16 inputs / f32 accumulation
+    bool ok = true;
+    for (int64_t n = 0; n < N && ok; ++n) {
+        for (int64_t m = 0; m < M && ok; ++m) {
+            float want = 0.0f;
+            for (int64_t k = 0; k < K; ++k) {
+                want += src0_val(m * K + k) * src1_val(n * K + k);
+            }
+            const float got = dst_host[n * M + m];
+            if (got != want) {
+                printf("  mismatch at [%lld,%lld]: got %g want %g\n", (long long)m, (long long)n,
+                       got, want);
+                ok = false;
+            }
+        }
+    }
+
+    return ok ? case_result::pass : case_result::fail;
+}
+
 } // namespace
 
 int main() {
@@ -186,6 +311,17 @@ int main() {
                              : r == case_result::skip ? "SKIPPED"
                                                       : "FAILED";
         printf("ADD f16 %-32s: %s\n", c.name, label);
+        any_fail = any_fail || (r == case_result::fail);
+        passed += (r == case_result::pass);
+        skipped += (r == case_result::skip);
+    }
+
+    {
+        const case_result r = run_mul_mat_case(backend, 37, 20, 10);
+        const char * label = r == case_result::pass   ? "PASSED"
+                             : r == case_result::skip ? "SKIPPED"
+                                                      : "FAILED";
+        printf("MUL_MAT f16 %-28s: %s\n", "padded GEMM (host scatter)", label);
         any_fail = any_fail || (r == case_result::fail);
         passed += (r == case_result::pass);
         skipped += (r == case_result::skip);

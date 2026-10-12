@@ -45,15 +45,19 @@ ggml_hsa_convert(const typename ggml_hsa_type_traits<SrcT>::type & src) {
 }
 
 /**
- * @brief Copies the overlapping sub-block between two tensors.
+ * @brief Copies the overlapping sub-block between two tensors, zero-filling the rest of the
+ * destination.
  *
- * Iterates over the per-dimension overlap and indexes both tensors through their own strides, so a
- * smaller logical tensor can be scattered into a larger zero-padded destination (or gathered back).
- * Padding gaps in the destination are never written and must be pre-zeroed by the caller.
+ * Iterates over every element of the destination, indexing both tensors through their own strides:
+ * elements inside the per-dimension overlap are copied from the source, and elements past the
+ * source's extent in any dimension are written as zero. A smaller logical tensor can thus be
+ * scattered into a larger padded destination without the destination being pre-zeroed, and a
+ * padded tensor gathered back into a smaller one (where the destination lies entirely inside the
+ * overlap, so nothing is zero-filled).
  *
- * Also serves the equal-shape case, where every @c min below is just the shared extent: this is the
- * general copy for any pair of tensors that share an element layout, whether or not they share a
- * shape. Only a destination that reshapes the source (same element count, different shape) needs
+ * Also serves the equal-shape case, where the overlap is the whole destination: this is the general
+ * copy for any pair of tensors that share an element layout, whether or not they share a shape.
+ * Only a destination that reshapes the source (same element count, different shape) needs
  * something else -- see @ref ggml_hsa_copy_tensor_to_cont_tensor_f.
  */
 struct ggml_hsa_copy_subblock_f {
@@ -63,24 +67,29 @@ struct ggml_hsa_copy_subblock_f {
         using dst_type = typename ggml_hsa_type_traits<DstT>::type;
 
         const std::int64_t ne0 = std::min(src->ne[0], dst->ne[0]);
-        const std::int64_t ne1 = std::min(src->ne[1], dst->ne[1]);
-        const std::int64_t ne2 = std::min(src->ne[2], dst->ne[2]);
-        const std::int64_t ne3 = std::min(src->ne[3], dst->ne[3]);
 
-        for (std::int64_t i03 = 0; i03 < ne3; ++i03) {
-            for (std::int64_t i02 = 0; i02 < ne2; ++i02) {
-                for (std::int64_t i01 = 0; i01 < ne1; ++i01) {
-                    for (std::int64_t i00 = 0; i00 < ne0; ++i00) {
+        for (std::int64_t i03 = 0; i03 < dst->ne[3]; ++i03) {
+            for (std::int64_t i02 = 0; i02 < dst->ne[2]; ++i02) {
+                for (std::int64_t i01 = 0; i01 < dst->ne[1]; ++i01) {
+                    // a destination row past the source's extent is all padding
+                    const bool row_in_src =
+                        i01 < src->ne[1] && i02 < src->ne[2] && i03 < src->ne[3];
+                    const std::int64_t ncopy = row_in_src ? ne0 : 0;
+                    auto dst_row = static_cast<std::byte *>(dst->data) +
+                                   (i01 * dst->nb[1] + i02 * dst->nb[2] + i03 * dst->nb[3]);
+                    for (std::int64_t i00 = 0; i00 < ncopy; ++i00) {
                         auto src_ptr = std::launder(reinterpret_cast<const src_type *>(
                             static_cast<const std::byte *>(src->data) +
                             (i00 * src->nb[0] + i01 * src->nb[1] + i02 * src->nb[2] +
                              i03 * src->nb[3])));
-                        auto dst_ptr = std::launder(
-                            reinterpret_cast<dst_type *>(static_cast<std::byte *>(dst->data) +
-                                                         (i00 * dst->nb[0] + i01 * dst->nb[1] +
-                                                          i02 * dst->nb[2] + i03 * dst->nb[3])));
-
+                        auto dst_ptr =
+                            std::launder(reinterpret_cast<dst_type *>(dst_row + i00 * dst->nb[0]));
                         *dst_ptr = ggml_hsa_convert<SrcT, DstT>(*src_ptr);
+                    }
+                    for (std::int64_t i00 = ncopy; i00 < dst->ne[0]; ++i00) {
+                        auto dst_ptr =
+                            std::launder(reinterpret_cast<dst_type *>(dst_row + i00 * dst->nb[0]));
+                        *dst_ptr = dst_type{};
                     }
                 }
             }

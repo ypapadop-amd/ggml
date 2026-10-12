@@ -101,7 +101,7 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
    for each node:
      • optional source pre-processing (per source: on-queue or CPU-side)
      • tensor_extra.kernel->dispatch(ctx, srcs, dst)
-     • optional output post-processing (node.convert_dtype: on-queue or CPU-side)
+     • optional output post-processing (node.transform: on-queue or CPU-side)
            │
            ▼
  ggml_hsa_aie_kernel::dispatch()              ─── aie-kernel.cpp
