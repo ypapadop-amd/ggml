@@ -35,9 +35,11 @@ inline void convert_b_tile(const float * __restrict b_in, bfloat16 * __restrict 
 
     AIE_PREPARE_FOR_PIPELINING
     AIE_LOOP_RANGE(nblk, nblk)
+    AIE_LOOP_UNROLL(2)
     for (std::int32_t b = 0; b < nblk; ++b) {
-        const aie::vector<float, V> fv = aie::load_v<V>(b_in + b * V);
-        aie::store_v(b_scratch + b * V, convert_f32_to_bf16_vector<V>(fv));
+        aie::store_v(b_scratch, convert_f32_to_bf16_vector_hi16<V>(aie::load_v<V>(b_in)));
+        b_in += V;
+        b_scratch += V;
     }
 }
 
