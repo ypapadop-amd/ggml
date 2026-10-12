@@ -76,7 +76,6 @@ extern bool g_ggml_hsa_verbose;
  */
 enum ggml_hsa_op {
     GGML_HSA_OP_CONVERT_PAD = GGML_OP_COUNT + 1, ///< dtype-convert and zero-pad a source
-    GGML_HSA_OP_DEPAD,                           ///< strip zero-padding from a result
     GGML_HSA_OP_CONVERT,                         ///< element-wise dtype cast
     GGML_HSA_OP_COUNT,
 };
@@ -469,14 +468,11 @@ struct ggml_backend_hsa_tensor_extra {
     /// @brief How the internal output is turned back into the parent tensor after the dispatch.
     ///
     /// This says what the transformation is, not where it runs: it runs on the device queue when
-    /// @c node_t::postprocess_kernel (a DEPAD or CONVERT kernel) could be built, and otherwise on
-    /// the host after a queue drain. @c convert and @c depad stay distinct because the host copy
-    /// differs: the output may have been flattened, so a conversion is an element-order copy while
-    /// a de-pad copies the parent's sub-block.
+    /// @c node_t::postprocess_kernel (a CONVERT kernel) could be built, and otherwise on the host
+    /// after a queue drain.
     enum class output_transform_t {
         none,    ///< The internal output is the parent tensor as-is.
         convert, ///< Same shape, different dtype: converted element-wise into the parent.
-        depad,   ///< Zero-padded: the parent's sub-block is copied out.
     };
 
     /// @brief Internal output graph node.
@@ -484,7 +480,7 @@ struct ggml_backend_hsa_tensor_extra {
         ggml_tensor tensor{};      ///< Transformed tensor.
         std::size_t buffer_size{}; ///< Temporary storage size in bytes.
         /// @brief Optional on-device post-processing kernel for the result: transforms the internal
-        /// output buffer back into the parent tensor (e.g., de-padding and/or dtype conversion) on
+        /// output buffer back into the parent tensor (e.g., dtype conversion) on
         /// the device queue instead of on the host. Null when the output needs no on-device
         /// post-processing.
         std::shared_ptr<ggml_hsa_kernel> postprocess_kernel;
