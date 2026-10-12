@@ -877,8 +877,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     }
 
     // F32 MUL_MAT is handled specially: the operands are converted to bf16 and zero-padded to the
-    // GEMM tile multiples. This fully sets up the internal nodes (dtype, shape, buffer sizes), so the
-    // generic dtype/layout/flatten handling below is skipped.
+    // GEMM tile multiples. This fully sets up the internal nodes (dtype, shape, buffer sizes), so
+    // the generic dtype/layout/flatten handling below is skipped.
     const bool padded_gemm = ggml_hsa_prepare_mul_mat_f32(dev_info, node, sources);
     const auto src_dtype_only = padded_gemm ? std::array<bool, GGML_MAX_SRC>{}
                                             : ggml_hsa_prepare_generic(dev_info, node, sources);
