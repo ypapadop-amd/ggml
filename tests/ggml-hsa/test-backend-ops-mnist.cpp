@@ -2673,6 +2673,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                                             {12, 10, 2, 2}, {5, 3, 2, 4}, 1, 1, 2, 0, 1, 1, true));
     test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
                                             {40, 6, 1, 2}, {3, 3, 1, 4}, 1, 1, 1, 1, 1, 1, true));
+    // IM2COL's slot-major (packed) path: 128-wide rows (8 vectors per run), padding wider than
+    // a vector (whole runs and chunks of zeros), 144 slots per pixel, and a 127-wide row too
+    // long to unroll (the in-order path).
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {128, 4, 1, 2}, {3, 3, 1, 4}, 1, 1, 1, 1, 1, 1, true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {16, 2, 1, 2}, {3, 3, 1, 4}, 1, 1, 17, 17, 1, 1,
+                                            true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {6, 6, 16, 2}, {3, 3, 16, 4}, 1, 1, 1, 1, 1, 1, true));
+    test_cases.emplace_back(new test_im2col(GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F32,
+                                            {127, 3, 1, 2}, {3, 3, 1, 4}, 1, 1, 1, 1, 1, 1, true));
     // Conv1: images [28, 28, 1, 500] x conv1_kernel [3, 3, 1, 8], stride=1, pad=1 -> [28, 28, 8,
     // 500]
     test_cases.emplace_back(
