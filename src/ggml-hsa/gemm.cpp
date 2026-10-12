@@ -48,8 +48,8 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
                                   ggml_backend_hsa_tensor_extra::sources_t & sources) {
     ggml_tensor & dst = node.tensor;
 
-    // The GEMM microkernel runs in bf16, so both operands are converted to bf16 below; the
-    // destination must be f32 (ggml's native MUL_MAT output).
+    // The GEMM microkernel runs in bf16, so A is converted to bf16 below (an f32 B is converted on
+    // the cores instead; see below); the destination must be f32 (ggml's native MUL_MAT output).
     if (dst.op != GGML_OP_MUL_MAT || dst.type != GGML_TYPE_F32 || sources.count != 2) {
         return false;
     }
@@ -83,8 +83,8 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
     //     (gm, gk, gn) = (row_expand * r, s, col_expand * t)
     //
     // with (r, s, t) the mmul MAC dims (gemm.py microkernel_mac_dim_map) and (row_expand,
-    // col_expand) the wrapper's mmul expansion (gemm.py microkernel_expansion_map). Both operands
-    // are converted to bf16 below, so only the bf16 row of those tables applies:
+    // col_expand) the wrapper's mmul expansion (gemm.py microkernel_expansion_map). gemm.py keys
+    // both tables by A's dtype, which is bf16 below whatever B's, so only the bf16 row applies:
     //
     //     aie2  (npu)  bf16: (r,s,t)=(4,8,4), expansion (4,4) -> (gm,gk,gn)=(16,8,16), 4 columns
     //     aie2p (npu2) bf16: (r,s,t)=(4,8,8), expansion (2,2) -> (gm,gk,gn)=( 8,8,16), 8 columns
