@@ -11,6 +11,16 @@
 #include "transform.h"
 
 /**
+ * @brief Bits per vector step of the MUL kernels (transform_vector_walk_n's VectorBits).
+ *
+ * There is no f32 vector multiplier: aie::mul on f32 is emulated on bf16 limbs, and on aie2p a
+ * step of 32 lanes costs about what one of 16 does (static II 61 against 58 for the row kernel's
+ * aligned loop), so f32 steps 1024 bits there. Other types, and aie2, step one register.
+ */
+template <typename T>
+constexpr unsigned mul_vector_bits = __AIEARCH__ != 20 && std::is_same_v<T, float> ? 1024 : 512;
+
+/**
  * @brief Applies a binary operation with NumPy-style broadcasting.
  *
  * Handles broadcasting of src1 (in1) to match the shape of src0/dst (in0/out).
@@ -135,8 +145,9 @@ inline int32_t bcast_src1_row(int32_t row) {
  * @param[in]  row0     dst row index of the tile's first row.
  * @param[in]  vec_op   op(vector, scalar), as transform_vector_walk_n's vec_op.
  * @param[in]  scalar_op op(element, scalar).
+ * @tparam VectorBits As transform_vector_walk_n's.
  */
-template <typename VecOp, typename ScalarOp>
+template <unsigned VectorBits = 512, typename VecOp, typename ScalarOp>
 void transform_scalar_rows(const INPUT0_DTYPE * __restrict src0,
                            const INPUT1_DTYPE * __restrict src1,
                            OUTPUT_DTYPE * __restrict out,
@@ -149,7 +160,7 @@ void transform_scalar_rows(const INPUT0_DTYPE * __restrict src0,
                   "the vector op takes src1's element as is: the design gates this on one dtype");
     for (int32_t r = 0; r < rows; ++r) {
         const auto s = src1[bcast_src1_row(row0 + r)];
-        transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+        transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>, VectorBits>(
             out + r * N, N, [s, vec_op](auto a) { return vec_op(a, s); },
             [s, scalar_op](auto a) { return scalar_op(a, s); }, src0 + r * N);
     }
@@ -220,7 +231,8 @@ void ggml_op_mul(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>,
+                            mul_vector_bits<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); }, in0, in1);
 }
@@ -478,7 +490,8 @@ void ggml_op_mul_row(const INPUT0_DTYPE * __restrict src0,
                      const INPUT1_DTYPE * __restrict src1,
                      OUTPUT_DTYPE * __restrict out,
                      int32_t N) {
-    transform_vector_walk_n(
+    transform_vector_walk_n</*Aligned=*/false, /*EnableVector=*/true,
+                            mul_vector_bits<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); }, src0, src1);
 }
@@ -572,7 +585,8 @@ void ggml_op_mul_rows(const INPUT0_DTYPE * __restrict src0,
                       int32_t N,
                       int32_t row0,
                       int32_t i) {
-    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>,
+                            mul_vector_bits<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::mul(a, b).template to_vector<OUTPUT_DTYPE>(); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a * b); }, src0,
         src1 + bcast_src1_row(row0 + i) * N);
@@ -653,7 +667,7 @@ void ggml_op_mul_scalar_rows(const INPUT0_DTYPE * __restrict src0,
                              int32_t rows,
                              int32_t row0,
                              int32_t i) {
-    transform_scalar_rows(
+    transform_scalar_rows<mul_vector_bits<OUTPUT_DTYPE>>(
         src0, src1, out, N, rows, row0 + i * rows,
         [](auto a, auto s) { return aie::mul(a, s).template to_vector<OUTPUT_DTYPE>(); },
         [](auto a, auto s) { return static_cast<OUTPUT_DTYPE>(a * s); });

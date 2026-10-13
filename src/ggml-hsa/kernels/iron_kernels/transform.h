@@ -203,9 +203,13 @@ void transform_vector_n(TOut * __restrict out,
  *
  * @tparam Aligned      As in @ref transform_vector_n: true only when the builder guaranteed it.
  * @tparam EnableVector As in @ref transform_vector_n.
+ * @tparam VectorBits   Bits per vector step: 512, one register, or 1024 for an op whose vector
+ *                      form costs the same at twice the lanes (the emulated f32 multiply on aie2p).
+ *                      A 1024-bit loop ends with at most one 512-bit step before the scalar tail.
  */
 template <bool Aligned = false,
           bool EnableVector = true,
+          unsigned VectorBits = 512,
           typename TOut,
           typename VecOp,
           typename ScalarOp,
@@ -226,8 +230,12 @@ void transform_vector_walk_n(TOut * __restrict out,
     int32_t vend = 0;
 
     if constexpr (EnableVector && (std::is_same_v<TIn, TOut> && ...)) {
-        constexpr int32_t V = 512 / (sizeof(TOut) * 8);
-        vend = (N / V) * V;
+        static_assert(VectorBits == 512 || VectorBits == 1024, "a vector step is 512 or 1024 bits");
+        constexpr int32_t V = VectorBits / (sizeof(TOut) * 8);
+        constexpr int32_t H = VectorBits > 512 ? V / 2 : V; // lanes of the last vector step
+        vend = (N / H) * H;
+        // With H < V, the end of the steps of V lanes; one step of H lanes covers the rest of vend.
+        [[maybe_unused]] const int32_t wend = (N / V) * V;
 
         // aligned: every pointer is aligned for a vector access. store: else, the alignment of
         // out for store_v_any, which every store shares (they are a whole vector apart).
@@ -245,12 +253,35 @@ void transform_vector_walk_n(TOut * __restrict out,
                     ((p += V), ...);
                 };
 #if __AIEARCH__ == 20 // As in transform_vector_n: the promise is measured on aie2 only.
-                GGML_AIE_LOOP_MIN_TRIPS(4, i, vend, V, body(i);)
+                if constexpr (H < V) {
+                    GGML_AIE_LOOP_MIN_TRIPS(4, i, wend, V, body(i);)
+                } else {
+                    GGML_AIE_LOOP_MIN_TRIPS(4, i, vend, V, body(i);)
+                }
 #else
-                for (int32_t i = 0; i < vend; i += V) {
-                    body(i);
+                if constexpr (H < V) {
+                    // A wide step is one long latency-bound chain (the emulated f32 multiply):
+                    // two in one body overlap.
+                    AIE_LOOP_UNROLL(2)
+                    for (int32_t i = 0; i < wend; i += V) {
+                        body(i);
+                    }
+                } else {
+                    for (int32_t i = 0; i < vend; i += V) {
+                        body(i);
+                    }
                 }
 #endif
+                if constexpr (H < V) {
+                    if (wend < vend) {
+                        if constexpr (decltype(aligned)::value) {
+                            aie::store_v(o, vec_op(aie::load_v<H>(p)...));
+                        } else {
+                            store_v_any<decltype(store)::value>(
+                                o, vec_op(aie::load_unaligned_v<H>(p)...));
+                        }
+                    }
+                }
             }(in...);
         };
 
@@ -258,7 +289,7 @@ void transform_vector_walk_n(TOut * __restrict out,
         using unaligned_store = std::integral_constant<store_alignment, store_alignment::unaligned>;
         if constexpr (Aligned) {
             loop(std::true_type{}, aligned_store{});
-        } else if (vend > 0) { // a row narrower than V skips the check
+        } else if (vend > 0) { // a row narrower than one vector step skips the check
             constexpr uintptr_t mask = aie::vector_ldst_align_v<TOut, V> - 1;
             if (((reinterpret_cast<uintptr_t>(out) | ... | reinterpret_cast<uintptr_t>(in)) &
                  mask) == 0) {
