@@ -12,6 +12,7 @@
 #include <bit>
 #include <cstdint>
 #include <type_traits>
+#include <utility>
 
 #include "aie_api/aie.hpp"
 
@@ -370,6 +371,104 @@ inline void store_v_partial(T * p, const aie::vector<T, V> & v, std::int32_t n) 
     aie::store_v(buf, v);
     for (std::int32_t j = 0; j < n; ++j) {
         p[j] = buf[j];
+    }
+}
+
+/// How @ref store_v_any stores: see there.
+enum class store_alignment {
+    run_time,  ///< Any address, every store: see store_v_any.
+    aligned,   ///< The caller tested it: aligned for @ref store_v_any's aligned path.
+    unaligned, ///< The caller tested it: not aligned.
+};
+
+/**
+ * @brief Whether @p p takes @ref store_v_any's aligned path for a vector of @p V elements:
+ * aligned to 32 bytes, or to the vector's size if it is smaller.
+ *
+ * A loop whose stores all share one alignment tests this once and passes the result to
+ * @ref store_v_any as store_alignment::aligned or store_alignment::unaligned.
+ */
+template <unsigned V, typename T>
+inline bool store_v_any_aligned(const T * p) {
+    constexpr uintptr_t bytes = V * sizeof(T);
+    constexpr uintptr_t block = bytes < 32 ? bytes : 32;
+    return (reinterpret_cast<uintptr_t>(p) & (block - 1)) == 0;
+}
+
+/**
+ * @brief Stores @p v at @p p, whatever the alignment of @p p, rewriting no memory outside the
+ * 32-byte blocks the vector's bytes lie in.
+ *
+ * aie::store_unaligned_v (aie_api, aie2 and aie2p) stores each 256-bit piece of the vector as a
+ * read-modify-write of the two 32-byte blocks from the piece's address rounded down to 32 bytes,
+ * even when the piece starts on a block: it then also rewrites the whole next block with what it
+ * read there. At the end of a buffer that block belongs to the next buffer, which the DMA may be
+ * filling; inside a loop, it is a stale copy of what the next store writes.
+ *
+ * Here an aligned @p p (@ref store_v_any_aligned) is stored with aligned stores of the vector's
+ * 256-bit pieces (an aligned 256-bit store needs 32 bytes on both archs; a 512-bit one needs 64
+ * on aie2p), touching exactly the vector's bytes. Any other @p p goes through
+ * aie::store_unaligned_v, whose blocks are then exactly those the bytes lie in, rewritten with
+ * what was read from them. (For a 128-bit vector, an address off a 16-byte boundary still
+ * rewrites both blocks.)
+ *
+ * store_alignment::run_time takes either kind of address without a branch, for vectors of whole
+ * 256-bit pieces (a branch in a loop body stops Peano pipelining the loop): it reads the blocks
+ * from @p p rounded down to 32 bytes, merges the pieces into them in registers and stores them
+ * aligned. When @p p is aligned, the last block it read lies past the vector: it is stored over
+ * the one before it, which is then stored with its data, so nothing past the vector is written.
+ * Its next loads depend on its stores, so in a loop whose stores share one alignment, testing it
+ * once is faster.
+ *
+ * @tparam A store_alignment::run_time for any address; a loop whose stores share one alignment
+ *           tests it once (@ref store_v_any_aligned) and passes aligned or unaligned instead.
+ */
+template <store_alignment A = store_alignment::run_time, unsigned V, typename T>
+inline void store_v_any(T * p, const aie::vector<T, V> & v) {
+    constexpr unsigned bytes = V * sizeof(T);
+    static_assert(bytes >= 16 && bytes % 16 == 0, "store_v_any stores whole 128-bit vectors");
+    if constexpr (A == store_alignment::run_time && bytes % 32 == 0) {
+        using block = aie::vector<std::int8_t, 32>;
+        const auto data = v.template cast_to<std::int8_t>();
+        const unsigned frac = reinterpret_cast<uintptr_t>(p) & 31;
+        std::int8_t * b =
+            reinterpret_cast<std::int8_t *>(reinterpret_cast<uintptr_t>(p) & ~uintptr_t{31});
+        // Bytes [frac, frac + 32) of a piece's two blocks are the piece's.
+        const auto mine = aie::mask<64>::from_uint64(uint64_t{0xffffffff} << frac);
+        block carry = aie::load_v<32>(b);
+        [&]<unsigned... K>(std::integer_sequence<unsigned, K...>) {
+            (
+                [&] {
+                    const auto merged = aie::select(
+                        aie::concat(carry, aie::load_v<32>(b + 32 * (K + 1))),
+                        aie::shuffle_up(aie::concat(data.template extract<32>(K), block{}), frac),
+                        mine);
+                    if constexpr (K + 1 < bytes / 32) {
+                        aie::store_v(b + 32 * K, merged.template extract<32>(0));
+                    } else {
+                        // Aligned p: the block past the vector goes over this one, stored after.
+                        aie::store_v(b + 32 * (K + (frac != 0)), merged.template extract<32>(1));
+                        aie::store_v(b + 32 * K, merged.template extract<32>(0));
+                    }
+                    carry = merged.template extract<32>(1);
+                }(),
+                ...);
+        }(std::make_integer_sequence<unsigned, bytes / 32>{});
+    } else if constexpr (A == store_alignment::run_time) {
+        if (store_v_any_aligned<V>(p)) {
+            store_v_any<store_alignment::aligned>(p, v);
+        } else {
+            store_v_any<store_alignment::unaligned>(p, v);
+        }
+    } else if constexpr (A == store_alignment::unaligned) {
+        aie::store_unaligned_v(p, v);
+    } else if constexpr (bytes <= 32) {
+        aie::store_v(p, v);
+    } else {
+        constexpr unsigned E = 32 / sizeof(T); // elements per 256-bit piece
+        [&]<unsigned... K>(std::integer_sequence<unsigned, K...>) {
+            (aie::store_v(p + K * E, v.template extract<E>(K)), ...);
+        }(std::make_integer_sequence<unsigned, V / E>{});
     }
 }
 

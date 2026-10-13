@@ -128,7 +128,7 @@ inline void soft_max_row(const float * __restrict input,
         for (int32_t k = 0; k < kExpVectors; ++k) {
             const int32_t j = i + k * V;
             if (j < n_whole) {
-                aie::store_unaligned_v(output + j, e.template extract<V>(k));
+                store_v_any(output + j, e.template extract<V>(k));
                 vsum = aie::add(vsum, e.template extract<V>(k));
             } else if (j < N) {
                 e_tail = aie::select(aie::zeros<float, V>(), e.template extract<V>(k), in_tail);
@@ -140,10 +140,19 @@ inline void soft_max_row(const float * __restrict input,
     // Pass 3: normalize. aie::inv on fp32 ends in a Newton step of its own (see
     // soft_max_lane_rows); it replaces a runtime divide.
     const vec sum_inv = aie::inv(aie::broadcast<float, V>(aie::reduce_add(vsum)));
-    for (int32_t i = 0; i < n_whole; i += V) {
-        aie::store_unaligned_v(
-            output + i,
-            aie::mul(aie::load_unaligned_v<V>(output + i), sum_inv).template to_vector<float>());
+    // Its stores are a whole vector apart, so at the row's alignment, tested once (see
+    // store_v_any); pass 2's loop, which is not pipelined, tests every store.
+    const auto normalize = [&](auto store) {
+        for (int32_t i = 0; i < n_whole; i += V) {
+            store_v_any<decltype(store)::value>(
+                output + i, aie::mul(aie::load_unaligned_v<V>(output + i), sum_inv)
+                                .template to_vector<float>());
+        }
+    };
+    if (store_v_any_aligned<V>(output)) {
+        normalize(std::integral_constant<store_alignment, store_alignment::aligned>{});
+    } else {
+        normalize(std::integral_constant<store_alignment, store_alignment::unaligned>{});
     }
     if (n_tail > 0) {
         store_v_partial<V>(output + n_whole, aie::mul(e_tail, sum_inv).template to_vector<float>(),
