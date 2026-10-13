@@ -11,7 +11,8 @@
 // the vectorized ggml_op_*_row kernels, and a src1 of several rows the ggml_op_*_rows kernels,
 // which pick each dst row's src1 row. (A dtype-mismatched src1 also lands in the latter, but is
 // not covered here: every case below builds src1 as F32. A src1 narrower than dst along ne0
-// takes the generic ggml_op_*_broadcast kernels, which this test cannot build.)
+// takes the generic ggml_op_*_broadcast kernels, except a src1 of one element per row (a conv
+// bias, src1_nc == 1), which on aie2p takes the ggml_op_*_scalar_rows kernels.)
 
 #include <cmath>
 #include <cstddef>
@@ -47,13 +48,16 @@ int64_t ulp_distance(float want, float got) {
     return d < 0 ? -d : d;
 }
 
-// src0 [nc, nr, nz] op src1 [nc, src1_nr, src1_nz] (repeated over the remaining rows/slices)
-// -> dst [nc, nr, nz]. src1_nr must divide nr and src1_nz nz; src1_nr == src1_nz == 1 is the
-// single-row fast path.
+// src0 [nc, nr, nz] op src1 [src1_nc, src1_nr, src1_nz] (repeated over the remaining
+// rows/slices) -> dst [nc, nr, nz]. src1_nr must divide nr and src1_nz nz; src1_nr == src1_nz
+// == 1 is the single-row fast path. src1_nc is nc, or 1 for one src1 element per row.
 bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int64_t nz,
-              int64_t src1_nr, const char * name, int64_t src1_nz = 1) {
+              int64_t src1_nr, const char * name, int64_t src1_nz = 1, int64_t src1_nc = 0) {
+    if (src1_nc == 0) {
+        src1_nc = nc;
+    }
     const int64_t n = nc * nr * nz;
-    const int64_t n1 = nc * src1_nr * src1_nz;
+    const int64_t n1 = src1_nc * src1_nr * src1_nz;
 
     // ggml_add/ggml_mul assert ggml_can_repeat, which needs nr % src1_nr == 0.
     // Check it here so a malformed table entry names itself instead of aborting
@@ -74,7 +78,7 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int6
 
     ggml_tensor * src0 = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, nc, nr, nz);
     // Broadcast operand. src1_nr == 1 gives ne == (nc,1,1,1), the single-row shape.
-    ggml_tensor * src1 = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, nc, src1_nr, src1_nz);
+    ggml_tensor * src1 = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, src1_nc, src1_nr, src1_nz);
     ggml_set_name(src0, "src0");
     ggml_set_name(src1, "src1");
     ggml_tensor * dst = nullptr;
@@ -153,7 +157,7 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int6
         const int64_t b_row = (r % nr) % src1_nr + ((r / nr) % src1_nz) * src1_nr;
         for (int64_t i = 0; i < nc; ++i) {
             const int64_t idx  = r * nc + i;
-            const int64_t bidx = b_row * nc + i;
+            const int64_t bidx = b_row * src1_nc + i % src1_nc;
             float want = 0.0f;
             switch (kind) {
                 case op_kind::add: want = a_host[idx] + b_host[bidx]; break;
@@ -218,6 +222,7 @@ int main() {
         int64_t nc, nr, nz, src1_nr;
         const char * name;
         int64_t src1_nz = 1;
+        int64_t src1_nc = 0;
     } cases[] = {
         {op_kind::add, 32, 8, 1, 1, "add bias 2d"},
         {op_kind::add, 768, 4, 1, 1, "add bias gpt2"},
@@ -277,6 +282,19 @@ int main() {
         {op_kind::add, 100, 33, 1, 1, "add bias partial tail"},
         {op_kind::sub, 100, 33, 1, 1, "sub bcast partial tail"},
         {op_kind::mul, 100, 33, 1, 1, "mul bcast partial tail"},
+        // One src1 element per row (src1_nc 1), the ggml_op_*_scalar_rows kernels on aie2p. A
+        // conv bias [1, 1, C]: rows of 14 x 14 floats (784 B, so three in four rows start off
+        // 64-byte alignment, and 196 leaves a 4-element tail), ten rows a tile, 70 tiles over
+        // 4 workers, each row reading src1[i2 % 7]. The bands start at rows 180, 360 and 530,
+        // none a multiple of 7, so a band that lost its first row reads the wrong elements.
+        {op_kind::add, 14, 14, 700, 1, "add scalar rows conv", 7, 1},
+        {op_kind::sub, 14, 14, 700, 1, "sub scalar rows conv", 7, 1},
+        {op_kind::mul, 14, 14, 700, 1, "mul scalar rows conv", 7, 1},
+        {op_kind::div, 14, 14, 700, 1, "div scalar rows conv", 7, 1},
+        // Rows narrower than a vector (scalar tail only), src1 varying along dim 1 and 2.
+        {op_kind::add, 10, 64, 3, 64, "add scalar rows narrow", 3, 1},
+        // A single src1 element for all of dst: rows of 100, 33 x 2 of them.
+        {op_kind::mul, 100, 33, 2, 1, "mul scalar rows scalar", 1, 1},
     };
 
     bool all_ok = true;
@@ -288,7 +306,8 @@ int main() {
             backend = ggml_backend_hsa_init(0);
         }
         const auto & c = cases[i];
-        bool ok = run_case(backend, c.kind, c.nc, c.nr, c.nz, c.src1_nr, c.name, c.src1_nz);
+        bool ok = run_case(backend, c.kind, c.nc, c.nr, c.nz, c.src1_nr, c.name, c.src1_nz,
+                           c.src1_nc);
         printf("BROADCAST %-22s: %s\n", c.name, ok ? "PASSED" : "FAILED");
         all_ok = all_ok && ok;
     }

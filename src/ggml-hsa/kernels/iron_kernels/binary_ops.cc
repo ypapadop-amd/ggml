@@ -89,7 +89,9 @@ void transform_binary_broadcast_n(const T0 * __restrict in0,
 }
 
 #if defined(GGML_OP_ADD_ROWS) || defined(GGML_OP_SUB_ROWS) || defined(GGML_OP_MUL_ROWS) ||         \
-    defined(GGML_OP_DIV_ROWS)
+    defined(GGML_OP_DIV_ROWS) || defined(GGML_OP_ADD_SCALAR_ROWS) ||                               \
+    defined(GGML_OP_SUB_SCALAR_ROWS) || defined(GGML_OP_MUL_SCALAR_ROWS) ||                        \
+    defined(GGML_OP_DIV_SCALAR_ROWS)
 
 /**
  * @brief The src1 row that dst row @p row reads, for a src1 of several rows.
@@ -110,6 +112,47 @@ inline int32_t bcast_src1_row(int32_t row) {
         i1 % GGML_BCAST_SRC1_NE1 +
         GGML_BCAST_SRC1_NE1 *
             (i2 % GGML_BCAST_SRC1_NE2 + GGML_BCAST_SRC1_NE2 * (i3 % GGML_BCAST_SRC1_NE3)));
+}
+
+#endif
+
+#if defined(GGML_OP_ADD_SCALAR_ROWS) || defined(GGML_OP_SUB_SCALAR_ROWS) ||                        \
+    defined(GGML_OP_MUL_SCALAR_ROWS) || defined(GGML_OP_DIV_SCALAR_ROWS)
+
+/**
+ * @brief out = op(src0, s) over @p rows dst rows of @p N elements, s the one src1 element each
+ * row reads.
+ *
+ * For a src1 that is a single element along the leading dims it repeats in (a conv bias
+ * [1, 1, C]): the design folds those dims into rows of N elements, so every row reads one src1
+ * element, bcast_src1_row(row) of src1 viewed as rows of one element.
+ *
+ * @param[in]  src0     The tile's rows of src0, @p rows * @p N elements.
+ * @param[in]  src1     All of src1.
+ * @param[out] out      The tile's rows of dst.
+ * @param[in]  N        Elements per row.
+ * @param[in]  rows     Rows in the tile.
+ * @param[in]  row0     dst row index of the tile's first row.
+ * @param[in]  vec_op   op(vector, scalar), as transform_vector_walk_n's vec_op.
+ * @param[in]  scalar_op op(element, scalar).
+ */
+template <typename VecOp, typename ScalarOp>
+void transform_scalar_rows(const INPUT0_DTYPE * __restrict src0,
+                           const INPUT1_DTYPE * __restrict src1,
+                           OUTPUT_DTYPE * __restrict out,
+                           int32_t N,
+                           int32_t rows,
+                           int32_t row0,
+                           VecOp vec_op,
+                           ScalarOp scalar_op) {
+    static_assert(std::is_same_v<INPUT1_DTYPE, OUTPUT_DTYPE>,
+                  "the vector op takes src1's element as is: the design gates this on one dtype");
+    for (int32_t r = 0; r < rows; ++r) {
+        const auto s = src1[bcast_src1_row(row0 + r)];
+        transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+            out + r * N, N, [s, vec_op](auto a) { return vec_op(a, s); },
+            [s, scalar_op](auto a) { return scalar_op(a, s); }, src0 + r * N);
+    }
 }
 
 #endif
@@ -552,5 +595,91 @@ void ggml_op_div_rows(const INPUT0_DTYPE * __restrict src0,
 }
 
 #endif // GGML_OP_DIV_ROWS
+
+// Row-tiled broadcast of a src1 that is one element per dst row (see transform_scalar_rows).
+// The design takes this path on aie2p only.
+
+#ifdef GGML_OP_ADD_SCALAR_ROWS
+
+/**
+ * @brief out = src0 + s for @p rows dst rows of @p N elements, s the src1 element of each row.
+ *
+ * @param[in]  src0  The tile's rows of src0.
+ * @param[in]  src1  All of src1.
+ * @param[out] out   The tile's rows of dst.
+ * @param[in]  N     Elements per row.
+ * @param[in]  rows  Rows per tile.
+ * @param[in]  row0  First dst row of this worker's band.
+ * @param[in]  i     Tile within the band.
+ */
+void ggml_op_add_scalar_rows(const INPUT0_DTYPE * __restrict src0,
+                             const INPUT1_DTYPE * __restrict src1,
+                             OUTPUT_DTYPE * __restrict out,
+                             int32_t N,
+                             int32_t rows,
+                             int32_t row0,
+                             int32_t i) {
+    transform_scalar_rows(
+        src0, src1, out, N, rows, row0 + i * rows, [](auto a, auto s) { return aie::add(a, s); },
+        [](auto a, auto s) { return static_cast<OUTPUT_DTYPE>(a + s); });
+}
+
+#endif // GGML_OP_ADD_SCALAR_ROWS
+
+#ifdef GGML_OP_SUB_SCALAR_ROWS
+
+/// As ggml_op_add_scalar_rows, for out = src0 - s.
+void ggml_op_sub_scalar_rows(const INPUT0_DTYPE * __restrict src0,
+                             const INPUT1_DTYPE * __restrict src1,
+                             OUTPUT_DTYPE * __restrict out,
+                             int32_t N,
+                             int32_t rows,
+                             int32_t row0,
+                             int32_t i) {
+    transform_scalar_rows(
+        src0, src1, out, N, rows, row0 + i * rows, [](auto a, auto s) { return aie::sub(a, s); },
+        [](auto a, auto s) { return static_cast<OUTPUT_DTYPE>(a - s); });
+}
+
+#endif // GGML_OP_SUB_SCALAR_ROWS
+
+#ifdef GGML_OP_MUL_SCALAR_ROWS
+
+/// As ggml_op_add_scalar_rows, for out = src0 * s (accuracy as ggml_op_mul_row).
+void ggml_op_mul_scalar_rows(const INPUT0_DTYPE * __restrict src0,
+                             const INPUT1_DTYPE * __restrict src1,
+                             OUTPUT_DTYPE * __restrict out,
+                             int32_t N,
+                             int32_t rows,
+                             int32_t row0,
+                             int32_t i) {
+    transform_scalar_rows(
+        src0, src1, out, N, rows, row0 + i * rows,
+        [](auto a, auto s) { return aie::mul(a, s).template to_vector<OUTPUT_DTYPE>(); },
+        [](auto a, auto s) { return static_cast<OUTPUT_DTYPE>(a * s); });
+}
+
+#endif // GGML_OP_MUL_SCALAR_ROWS
+
+#ifdef GGML_OP_DIV_SCALAR_ROWS
+
+/// As ggml_op_add_scalar_rows, for out = src0 / s; scalar, as ggml_op_div_row.
+void ggml_op_div_scalar_rows(const INPUT0_DTYPE * __restrict src0,
+                             const INPUT1_DTYPE * __restrict src1,
+                             OUTPUT_DTYPE * __restrict out,
+                             int32_t N,
+                             int32_t rows,
+                             int32_t row0,
+                             int32_t i) {
+    row0 += i * rows;
+    for (int32_t r = 0; r < rows; ++r) {
+        const auto s = src1[bcast_src1_row(row0 + r)];
+        transform_n(
+            out + r * N, N,
+            [s](auto a) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(a / s); }, src0 + r * N);
+    }
+}
+
+#endif // GGML_OP_DIV_SCALAR_ROWS
 
 } // extern "C"
