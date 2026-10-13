@@ -172,6 +172,28 @@ aie::vector<float, V> vec_logf(const aie::vector<float, V> & x) {
     return aie::vector_cast<float>(r);
 }
 
+/**
+ * @brief out[i] = |in[i]|: floating point walked as its unsigned bits, the sign bit cleared;
+ * other types as @ref vec_abs and @ref scalar_abs.
+ *
+ * On the bits because LLVM folds the mask of a float vector's bits into a vector fabs, which
+ * aie2p runs one lane at a time.
+ */
+template <typename TOut, typename TIn>
+void abs_n(TOut * __restrict out, int32_t N, const TIn * __restrict in) {
+    if constexpr (is_floating_point_v<TOut> && std::is_same_v<TIn, TOut>) {
+        using U = same_width_uint_t<TOut>;
+        constexpr U kMask = static_cast<U>(~(U{1} << (sizeof(U) * 8 - 1)));
+        transform_vector_walk_n<tile_vector_aligned_v<TOut>>(
+            reinterpret_cast<U *>(out), N, [](auto v) { return aie::bit_and(kMask, v); },
+            [](U v) { return static_cast<U>(v & kMask); }, reinterpret_cast<const U *>(in));
+    } else {
+        transform_vector_walk_n<tile_vector_aligned_v<TOut>>(
+            out, N, [](auto v) { return vec_abs(v); },
+            [](auto v) { return static_cast<TOut>(scalar_abs(v)); }, in);
+    }
+}
+
 #endif // __AIE_ARCH__ != 20
 
 extern "C" {
@@ -186,7 +208,10 @@ extern "C" {
  * @param[in]  N   Number of elements to process.
  */
 void ggml_op_sqr(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
-    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
+    // aie2p: f32 32 lanes a step, as the emulated f32 multiply costs the same at 16.
+    constexpr unsigned kVectorBits =
+        __AIE_ARCH__ != 20 && std::is_same_v<OUTPUT_DTYPE, f32> ? 1024 : 512;
+    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>, true, kVectorBits>(
         out, N, [](auto v) { return aie::mul(v, v).template to_vector<OUTPUT_DTYPE>(); },
         [](auto v) { return static_cast<OUTPUT_DTYPE>(v * v); }, in);
 }
@@ -236,8 +261,25 @@ void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
 
     // vec_sqrt is f32-only; other element types are promoted per element by the scalar path.
     if constexpr (std::is_same_v<INPUT_DTYPE, f32> && std::is_same_v<OUTPUT_DTYPE, f32>) {
+#if __AIE_ARCH__ != 20
+        // 32 lanes a step, as vec_sqrt's emulated multiplies cost the same at 16, and walked as
+        // int32: LLVM folds vec_sqrt's sign-bit mask of a float vector's bits into a vector fabs,
+        // which aie2p runs one lane at a time.
+        transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>, true, 1024>(
+            reinterpret_cast<int32_t *>(out), N,
+            [](auto v) {
+                // Inlined here: Peano otherwise calls it once per vector.
+                [[clang::always_inline]] return aie::vector_cast<int32_t>(
+                    vec_sqrt(aie::vector_cast<float>(v)));
+            },
+            [](int32_t v) {
+                return __builtin_bit_cast(int32_t, scalar_sqrt(__builtin_bit_cast(float, v)));
+            },
+            reinterpret_cast<const int32_t *>(in));
+#else
         transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
             out, N, [](auto v) { return vec_sqrt(v); }, scalar_op, in);
+#endif
     } else {
         transform_n(out, N, scalar_op, in);
     }
@@ -257,9 +299,13 @@ void ggml_op_sqrt(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict o
 void ggml_unary_op_abs(const INPUT_DTYPE * __restrict in,
                        OUTPUT_DTYPE * __restrict out,
                        int32_t N) {
+#if __AIE_ARCH__ != 20
+    abs_n(out, N, in);
+#else
     transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
         out, N, [](auto v) { return vec_abs(v); },
         [](auto v) { return static_cast<OUTPUT_DTYPE>(scalar_abs(v)); }, in);
+#endif
 }
 
 #endif // GGML_UNARY_OP_ABS
