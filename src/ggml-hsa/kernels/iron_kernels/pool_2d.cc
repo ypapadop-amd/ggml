@@ -202,7 +202,7 @@ inline void pool_rows(const T * __restrict tile,
             if (Checked && at + V > out_len) {
                 store_v_partial<V>(out + at, r, out_len - at);
             } else {
-                aie::store_unaligned_v(out + at, r);
+                store_v_any(out + at, r);
             }
         }
     }

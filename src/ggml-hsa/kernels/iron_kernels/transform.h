@@ -18,6 +18,7 @@
 #include <aie_api/aie.hpp>
 
 #include "aie_kernel_utils.h"
+#include "ggml-aie.hpp"
 
 /**
  * @brief Whether the Python builder opted this kernel in to a vector body.
@@ -143,24 +144,38 @@ void transform_vector_n(TOut * __restrict out,
         constexpr int32_t V = 512 / (sizeof(TOut) * 8);
         vend = (N / V) * V; // division by constexpr V -> inline shift, once
 
-        const auto body = [&](int32_t i) {
-            if constexpr (Aligned) {
-                aie::store_v(out + i, vec_op(aie::load_v<V>(in + i)...));
-            } else {
-                aie::store_unaligned_v(out + i, vec_op(aie::load_unaligned_v<V>(in + i)...));
-            }
-        };
+        // Without the builder's guarantee every store goes through store_v_any, at the
+        // alignment of out, which every store shares (they are a whole vector apart).
+        const auto loop = [&](auto store) {
+            const auto body = [&](int32_t i) {
+                if constexpr (Aligned) {
+                    aie::store_v(out + i, vec_op(aie::load_v<V>(in + i)...));
+                } else {
+                    store_v_any<decltype(store)::value>(
+                        out + i, vec_op(aie::load_unaligned_v<V>(in + i)...));
+                }
+            };
 #if __AIEARCH__ == 20 // aie2 only so far; aie2p keeps the single loop below, unmeasured there.
-        // A tile narrower than V leaves vend 0, so the minimum trip count is versioned.
-        GGML_AIE_LOOP_MIN_TRIPS(4, i, vend, V, body(i);)
+            // A tile narrower than V leaves vend 0, so the minimum trip count is versioned.
+            GGML_AIE_LOOP_MIN_TRIPS(4, i, vend, V, body(i);)
 #else
-        // No AIE_LOOP_MIN_ITERATION_COUNT: a tile narrower than V leaves vend 0, and promising
-        // >= 1 iteration would make the pipelined prologue run the body on too few elements.
-        AIE_PREPARE_FOR_PIPELINING
-        for (int32_t i = 0; i < vend; i += V) {
-            body(i);
-        }
+            // No AIE_LOOP_MIN_ITERATION_COUNT: a tile narrower than V leaves vend 0, and promising
+            // >= 1 iteration would make the pipelined prologue run the body on too few elements.
+            AIE_PREPARE_FOR_PIPELINING
+            for (int32_t i = 0; i < vend; i += V) {
+                body(i);
+            }
 #endif
+        };
+        using aligned_store = std::integral_constant<store_alignment, store_alignment::aligned>;
+        using unaligned_store = std::integral_constant<store_alignment, store_alignment::unaligned>;
+        if constexpr (Aligned) {
+            loop(aligned_store{});
+        } else if (store_v_any_aligned<V>(out)) {
+            loop(aligned_store{});
+        } else {
+            loop(unaligned_store{});
+        }
     }
 
     // Tail of the vector loop, or the whole range when there is no vector path.
@@ -214,14 +229,17 @@ void transform_vector_walk_n(TOut * __restrict out,
         constexpr int32_t V = 512 / (sizeof(TOut) * 8);
         vend = (N / V) * V;
 
-        const auto loop = [&](auto aligned) {
+        // aligned: every pointer is aligned for a vector access. store: else, the alignment of
+        // out for store_v_any, which every store shares (they are a whole vector apart).
+        const auto loop = [&](auto aligned, auto store) {
             TOut * __restrict o = out;
             [&](auto... p) {
                 const auto body = [&](int32_t) {
                     if constexpr (decltype(aligned)::value) {
                         aie::store_v(o, vec_op(aie::load_v<V>(p)...));
                     } else {
-                        aie::store_unaligned_v(o, vec_op(aie::load_unaligned_v<V>(p)...));
+                        store_v_any<decltype(store)::value>(o,
+                                                            vec_op(aie::load_unaligned_v<V>(p)...));
                     }
                     o += V;
                     ((p += V), ...);
@@ -236,15 +254,19 @@ void transform_vector_walk_n(TOut * __restrict out,
             }(in...);
         };
 
+        using aligned_store = std::integral_constant<store_alignment, store_alignment::aligned>;
+        using unaligned_store = std::integral_constant<store_alignment, store_alignment::unaligned>;
         if constexpr (Aligned) {
-            loop(std::true_type{});
+            loop(std::true_type{}, aligned_store{});
         } else if (vend > 0) { // a row narrower than V skips the check
             constexpr uintptr_t mask = aie::vector_ldst_align_v<TOut, V> - 1;
             if (((reinterpret_cast<uintptr_t>(out) | ... | reinterpret_cast<uintptr_t>(in)) &
                  mask) == 0) {
-                loop(std::true_type{});
+                loop(std::true_type{}, aligned_store{});
+            } else if (store_v_any_aligned<V>(out)) {
+                loop(std::false_type{}, aligned_store{});
             } else {
-                loop(std::false_type{});
+                loop(std::false_type{}, unaligned_store{});
             }
         }
     }

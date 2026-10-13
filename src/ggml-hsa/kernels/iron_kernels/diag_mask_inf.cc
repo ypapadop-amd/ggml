@@ -13,6 +13,7 @@
 #include <aie_api/aie.hpp>
 
 #include "aie_kernel_utils.h"
+#include "ggml-aie.hpp"
 
 extern "C" {
 
@@ -35,12 +36,10 @@ extern "C" {
  * shares with the last whole vector with the same values.
  *
  * Rows in a tile need not start aligned for a vector access. A row or tail that does is loaded
- * and stored aligned. One that does not is stored with store_unaligned_v, which rewrites the
- * whole 32-byte granules each 256-bit half of the vector straddles, and which therefore stays
- * inside the granules holding the data only when every half starts off a granule boundary; if
- * the half started on one, it would rewrite the 32 bytes after it, past the end of the tile on
- * its last row, while the DMA may be filling the next buffer. That case (a start 32 mod 64,
- * aligned on aie2 but not on aie2p) runs the scalar loop.
+ * and stored aligned. One that does not is loaded unaligned and stored with store_v_any, which
+ * writes only the 32-byte blocks holding the vector (aie::store_unaligned_v would also rewrite
+ * the block after a vector starting on one: past the end of the tile on its last row, while the
+ * DMA may be filling the next buffer).
  *
  * @param[in]  in     Input tile of rows x N float elements.
  * @param[out] out    Output tile of rows x N float elements.
@@ -60,9 +59,8 @@ void ggml_op_diag_mask_inf(const float * __restrict in,
     event0();
 
     constexpr int32_t V = 16;
-    // Alignment of a vector load/store (32 B on aie2, 64 B on aie2p), and of a 256-bit granule.
+    // Alignment of a vector load/store (32 B on aie2, 64 B on aie2p).
     constexpr uintptr_t vector_align_mask = aie::vector_ldst_align_v<float, V> - 1;
-    constexpr uintptr_t granule_mask = 32 - 1;
     const int32_t vend = static_cast<int32_t>(static_cast<uint32_t>(N) & ~uint32_t{V - 1});
     alignas(aie::vector_decl_align) static constexpr int32_t lane_index[V] = {
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
@@ -70,16 +68,20 @@ void ggml_op_diag_mask_inf(const float * __restrict in,
     const aie::vector<float, V> neg_inf =
         aie::broadcast<float, V>(-std::numeric_limits<float>::infinity());
 
-    // How a vector starting at in + i / out + i may be accessed.
-    enum class access { aligned, unaligned, scalar };
+    // How a vector starting at in + i / out + i may be accessed: aligned, or unaligned loads
+    // with store_v_any at out + i's alignment.
+    enum class access { aligned, unaligned_aligned_store, unaligned };
     const auto access_at = [&](int32_t i) {
         const auto ip = reinterpret_cast<uintptr_t>(in + i);
         const auto op = reinterpret_cast<uintptr_t>(out + i);
         if (((ip | op) & vector_align_mask) == 0) {
             return access::aligned;
         }
-        return (op & granule_mask) != 0 ? access::unaligned : access::scalar;
+        return store_v_any_aligned<V>(out + i) ? access::unaligned_aligned_store
+                                               : access::unaligned;
     };
+    using aligned_store = std::integral_constant<store_alignment, store_alignment::aligned>;
+    using unaligned_store = std::integral_constant<store_alignment, store_alignment::unaligned>;
 
     int32_t j = row0 % nr;
     for (int32_t r = 0; r < rows; ++r) {
@@ -91,16 +93,12 @@ void ggml_op_diag_mask_inf(const float * __restrict in,
         if (keep > N) {
             keep = N;
         }
-        const auto scalar = [&](int32_t begin) {
-            for (int32_t i = begin; i < N; ++i) {
+        if (vend == 0) { // narrower than a vector
+            for (int32_t i = 0; i < N; ++i) {
                 out[i] = i < keep ? in[i] : -std::numeric_limits<float>::infinity();
             }
-        };
-
-        if (vend == 0) {
-            scalar(0); // narrower than a vector
         } else {
-            const auto row_loop = [&](auto aligned) {
+            const auto row_loop = [&](auto aligned, auto store) {
                 const float * __restrict pi = in;
                 float * __restrict po = out;
                 aie::vector<int32_t, V> cols = lanes;
@@ -115,7 +113,7 @@ void ggml_op_diag_mask_inf(const float * __restrict in,
                     if constexpr (decltype(aligned)::value) {
                         aie::store_v(po, res);
                     } else {
-                        aie::store_unaligned_v(po, res);
+                        store_v_any<decltype(store)::value>(po, res);
                     }
                     pi += V;
                     po += V;
@@ -125,24 +123,21 @@ void ggml_op_diag_mask_inf(const float * __restrict in,
             };
             const access row_access = access_at(0);
             if (row_access == access::aligned) {
-                row_loop(std::true_type{});
-            } else if (row_access == access::unaligned) {
-                row_loop(std::false_type{});
+                row_loop(std::true_type{}, aligned_store{});
+            } else if (row_access == access::unaligned_aligned_store) {
+                row_loop(std::false_type{}, aligned_store{});
             } else {
-                scalar(0);
+                row_loop(std::false_type{}, unaligned_store{});
             }
 
             const int32_t t = N - V; // the tail vector
-            if (vend != N && row_access != access::scalar) {
-                const access tail_access = access_at(t);
+            if (vend != N) {
                 const auto mask = aie::ge(aie::add(lanes, t), keep);
-                if (tail_access == access::aligned) {
+                if (access_at(t) == access::aligned) {
                     aie::store_v(out + t, aie::select(aie::load_v<V>(in + t), neg_inf, mask));
-                } else if (tail_access == access::unaligned) {
-                    aie::store_unaligned_v(
-                        out + t, aie::select(aie::load_unaligned_v<V>(in + t), neg_inf, mask));
                 } else {
-                    scalar(vend);
+                    store_v_any(out + t,
+                                aie::select(aie::load_unaligned_v<V>(in + t), neg_inf, mask));
                 }
             }
         }
