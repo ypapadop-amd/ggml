@@ -92,7 +92,9 @@ def argmax_op(arch: str, input_tensors: list, output_tensor):
     )
 
     # rows_per_tile rows streamed in, as many indices streamed out per worker iteration.
-    input_tile_ty = np.ndarray[(rows_per_tile * row_length,), np.dtype[input_tensor.dtype]]
+    input_tile_ty = np.ndarray[
+        (rows_per_tile * row_length,), np.dtype[input_tensor.dtype]
+    ]
     output_tile_ty = np.ndarray[(rows_per_tile,), np.dtype[output_tensor.dtype]]
 
     of_in = ObjectFifo(input_tile_ty, name="in")

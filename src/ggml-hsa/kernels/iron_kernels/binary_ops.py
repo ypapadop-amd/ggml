@@ -586,12 +586,17 @@ def _binary_op_row(
     def suffix(w):
         return "" if n_workers == 1 else f"_{w}"
 
-    of_src0s = [ObjectFifo(src0_tile_ty, name=f"src0{suffix(w)}") for w in range(n_workers)]
+    of_src0s = [
+        ObjectFifo(src0_tile_ty, name=f"src0{suffix(w)}") for w in range(n_workers)
+    ]
     # loaded once, reused
     of_src1s = [
-        ObjectFifo(src1_row_ty, depth=1, name=f"src1{suffix(w)}") for w in range(n_workers)
+        ObjectFifo(src1_row_ty, depth=1, name=f"src1{suffix(w)}")
+        for w in range(n_workers)
     ]
-    of_outs = [ObjectFifo(out_tile_ty, name=f"out{suffix(w)}") for w in range(n_workers)]
+    of_outs = [
+        ObjectFifo(out_tile_ty, name=f"out{suffix(w)}") for w in range(n_workers)
+    ]
 
     function = function_spec.external_function
 
@@ -603,7 +608,9 @@ def _binary_op_row(
             if src1_rows:
                 # dst row = first_tile + tile_idx, added in the kernel
                 tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
-                function(src0_tile, src1_buf, out_tile, tile_size, first_tile, tile_idx_i32)
+                function(
+                    src0_tile, src1_buf, out_tile, tile_size, first_tile, tile_idx_i32
+                )
             else:
                 function(src0_tile, src1_buf, out_tile, tile_size)
             of_src0.release(1)
@@ -826,7 +833,11 @@ def binary_op(
     # of 4-byte words for some operand cannot be one DMA tile, and takes the generic path.
     rows_tileable = all(
         (dst_shape[0] * dtype.itemsize) % 4 == 0
-        for dtype in (input_tensors[0].dtype, input_tensors[1].dtype, output_tensor.dtype)
+        for dtype in (
+            input_tensors[0].dtype,
+            input_tensors[1].dtype,
+            output_tensor.dtype,
+        )
     )
     if (
         op_name in _ROW_BROADCAST_OPS

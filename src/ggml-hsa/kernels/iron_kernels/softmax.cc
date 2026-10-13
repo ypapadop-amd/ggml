@@ -61,10 +61,8 @@ inline float compute_alibi_slope(float max_bias, int32_t n_head, int32_t head_id
 namespace {
 
 /// Softmax of one row of @p N elements: see ggml_op_soft_max.
-inline void soft_max_row(const float * __restrict input,
-                         float * __restrict output,
-                         int32_t N,
-                         float scale) {
+inline void
+soft_max_row(const float * __restrict input, float * __restrict output, int32_t N, float scale) {
 #if __AIEARCH__ == 20 // aie2 only so far; aie2p keeps the scalar passes below, unmeasured there.
     // The scalar passes below call a runtime routine for every float multiply and compare (the
     // scalar unit has neither), so they run in vectors: whole vectors in place, and the last
@@ -235,7 +233,8 @@ inline void soft_max_lane_rows(const float * __restrict input,
         uint32_t * __restrict cols_bits = reinterpret_cast<uint32_t *>(cols);
         AIE_LOOP_NO_UNROLL
         for (int32_t c = 0; c < N; ++c) {
-            const uint32_t * __restrict src = reinterpret_cast<const uint32_t *>(input + r0 * N) + c;
+            const uint32_t * __restrict src =
+                reinterpret_cast<const uint32_t *>(input + r0 * N) + c;
             uint32_t * __restrict col = cols_bits + c * L;
             GGML_AIE_LOOP_MIN_TRIPS(8, r, rows, 1, {
                 *col++ = *src;
@@ -274,8 +273,9 @@ inline void soft_max_lane_rows(const float * __restrict input,
         // further one moved the outputs' error vs a double reference by at most 2e-7.
         const vec sum_inv = aie::inv(sum);
         for (int32_t c = 0; c < N; ++c) {
-            aie::store_v(cols + c * L,
-                         aie::mul(aie::load_v<L>(cols + c * L), sum_inv).template to_vector<float>());
+            aie::store_v(
+                cols + c * L,
+                aie::mul(aie::load_v<L>(cols + c * L), sum_inv).template to_vector<float>());
         }
 
         // Transpose out, a column at a time.
