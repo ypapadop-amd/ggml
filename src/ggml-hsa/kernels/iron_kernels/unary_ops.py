@@ -183,6 +183,18 @@ _VECTORIZED_OPS = frozenset(
 )
 
 
+# Unary ops that unary_ops.cc vectorizes on aie2p only; aie2 runs them scalar, on the
+# one-vector-register tile.
+_AIE2P_VECTORIZED_OPS = frozenset(
+    {
+        "GGML_UNARY_OP_CEIL",
+        "GGML_UNARY_OP_FLOOR",
+        "GGML_UNARY_OP_ROUND",
+        "GGML_UNARY_OP_TRUNC",
+    }
+)
+
+
 def _create_external_function(
     arch: str,
     op_name: str,
@@ -305,7 +317,8 @@ def unary_op(
         op_name=op_name,
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
-        vectorized=op_name in _VECTORIZED_OPS,
+        vectorized=op_name in _VECTORIZED_OPS
+        or (arch == "aie2p" and op_name in _AIE2P_VECTORIZED_OPS),
     )
 
     return _unary_op(

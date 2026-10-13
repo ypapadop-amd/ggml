@@ -10,6 +10,105 @@
 #include "ggml-aie.hpp"
 #include "transform.h"
 
+#if __AIE_ARCH__ != 20 // aie2 runs these ops scalar, on one-vector tiles.
+
+/// Which integer @ref round_integral_n rounds to.
+enum class round_integral { floor, ceil, round, trunc };
+
+/**
+ * @brief floorf, ceilf, roundf (half away from zero) or truncf of every lane, bit for bit, on the
+ * bits of f32 values.
+ *
+ * On the magnitude a = |x|, from float adds and integer compares only (the f32 vector float to
+ * int conversion rounds by the core's mode, and f32 compares are emulated): a + 2^23 - 2^23 is a
+ * rounded to an integer whichever way the add rounds, and one less where that is above a, which
+ * gives floor(a). The integer above it is taken where the mode and sign ask for it (round: where
+ * a - floor(a), exact as both share an exponent, is at least 1/2), and x's sign put back, so
+ * ceilf(-0.5) is -0 as on the CPU. |x| >= 2^23, infinities and NaN are already integral and kept.
+ *
+ * Takes and returns the bits as int32: LLVM turns the sign-bit mask of a float's bits into a
+ * vector fabs, which aie2p runs one lane at a time.
+ *
+ * @tparam M Rounding.
+ * @tparam V Vector width.
+ * @param[in] bits The f32 inputs' bits.
+ * @return The bits of every lane rounded to an integer.
+ */
+template <round_integral M, unsigned V>
+aie::vector<int32_t, V> vec_round_integral(const aie::vector<int32_t, V> & bits) {
+    using ivec = aie::vector<int32_t, V>;
+    using fvec = aie::vector<float, V>;
+    constexpr float kTwo23 = 8388608.0f;
+    const ivec abs_bits = aie::bit_and(int32_t{0x7FFFFFFF}, bits);
+    const fvec a = aie::vector_cast<float>(abs_bits);
+    // Non-negative floats order as their bits do.
+    fvec f = aie::sub(aie::add(a, kTwo23), kTwo23);
+    f = aie::select(f, aie::sub(f, 1.0f), aie::gt(aie::vector_cast<int32_t>(f), abs_bits));
+    if constexpr (M == round_integral::round) {
+        const ivec frac = aie::vector_cast<int32_t>(aie::sub(a, f));
+        f = aie::select(
+            f, aie::add(f, 1.0f),
+            aie::ge(frac, aie::broadcast<int32_t, V>(__builtin_bit_cast(int32_t, 0.5f))));
+    } else if constexpr (M != round_integral::trunc) {
+        const auto fractional = aie::neq(aie::vector_cast<int32_t>(f), abs_bits);
+        const auto away = M == round_integral::floor ? aie::lt(bits, aie::zeros<int32_t, V>())
+                                                     : aie::ge(bits, aie::zeros<int32_t, V>());
+        f = aie::select(f, aie::add(f, 1.0f), fractional & away);
+    }
+    // f's bits are non-negative, so adding x's sign bit sets it.
+    const ivec r = aie::add(aie::vector_cast<int32_t>(f), aie::bit_and(INT32_MIN, bits));
+    return aie::select(
+        r, bits,
+        aie::ge(abs_bits, aie::broadcast<int32_t, V>(__builtin_bit_cast(int32_t, kTwo23))));
+}
+
+/// Scalar counterpart of @ref vec_round_integral, the same arithmetic on one element's bits.
+template <round_integral M>
+int32_t scalar_round_integral(int32_t bits) {
+    constexpr float kTwo23 = 8388608.0f;
+    const int32_t abs_bits = bits & 0x7FFFFFFF;
+    if (abs_bits >= __builtin_bit_cast(int32_t, kTwo23)) {
+        return bits;
+    }
+    const float a = __builtin_bit_cast(float, abs_bits);
+    float f = (a + kTwo23) - kTwo23;
+    if (__builtin_bit_cast(int32_t, f) > abs_bits) {
+        f -= 1.0f;
+    }
+    if constexpr (M == round_integral::round) {
+        if (__builtin_bit_cast(int32_t, a - f) >= __builtin_bit_cast(int32_t, 0.5f)) {
+            f += 1.0f;
+        }
+    } else if constexpr (M != round_integral::trunc) {
+        if (__builtin_bit_cast(int32_t, f) != abs_bits &&
+            (M == round_integral::floor ? bits < 0 : bits >= 0)) {
+            f += 1.0f;
+        }
+    }
+    return __builtin_bit_cast(int32_t, f) + (bits & INT32_MIN);
+}
+
+/**
+ * @brief out[i] = in[i] rounded to an integer by @p M: f32 walked as its bits in vectors of
+ * @ref vec_round_integral, other types by @p scalar_op.
+ */
+template <round_integral M, typename TOut, typename TIn, typename ScalarOp>
+void round_integral_n(TOut * __restrict out,
+                      int32_t N,
+                      ScalarOp scalar_op,
+                      const TIn * __restrict in) {
+    if constexpr (std::is_same_v<TIn, float> && std::is_same_v<TOut, float>) {
+        transform_vector_walk_n<tile_vector_aligned_v<float>>(
+            reinterpret_cast<int32_t *>(out), N, [](auto v) { return vec_round_integral<M>(v); },
+            [](int32_t v) { return scalar_round_integral<M>(v); },
+            reinterpret_cast<const int32_t *>(in));
+    } else {
+        transform_n(out, N, scalar_op, in);
+    }
+}
+
+#endif // __AIE_ARCH__ != 20
+
 extern "C" {
 
 #ifdef GGML_OP_SQR
@@ -350,17 +449,18 @@ void ggml_unary_op_floor(const INPUT_DTYPE * __restrict in,
                          int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     static_assert(is_floating_point_v<OUTPUT_DTYPE>, "Output type must be a floating point type");
-    transform_n(
-        out, N,
-        [](auto v) -> OUTPUT_DTYPE {
-            if (v == static_cast<int32>(v)) {
-                return static_cast<OUTPUT_DTYPE>(static_cast<int32>(v));
-            }
-            return static_cast<OUTPUT_DTYPE>((v >= static_cast<INPUT_DTYPE>(0))
-                                                 ? static_cast<int32>(v)
-                                                 : static_cast<int32>(v) - 1);
-        },
-        in);
+    const auto scalar_op = [](auto v) -> OUTPUT_DTYPE {
+        if (v == static_cast<int32>(v)) {
+            return static_cast<OUTPUT_DTYPE>(static_cast<int32>(v));
+        }
+        return static_cast<OUTPUT_DTYPE>(
+            (v >= static_cast<INPUT_DTYPE>(0)) ? static_cast<int32>(v) : static_cast<int32>(v) - 1);
+    };
+#if __AIE_ARCH__ != 20
+    round_integral_n<round_integral::floor>(out, N, scalar_op, in);
+#else
+    transform_n(out, N, scalar_op, in);
+#endif
 }
 
 #endif // GGML_UNARY_OP_FLOOR
@@ -382,17 +482,18 @@ void ggml_unary_op_ceil(const INPUT_DTYPE * __restrict in,
                         int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     static_assert(is_floating_point_v<OUTPUT_DTYPE>, "Output type must be a floating point type");
-    transform_n(
-        out, N,
-        [](auto v) -> OUTPUT_DTYPE {
-            if (v == static_cast<int32>(v)) {
-                return static_cast<OUTPUT_DTYPE>(static_cast<int32>(v));
-            }
-            return static_cast<OUTPUT_DTYPE>((v >= static_cast<INPUT_DTYPE>(0))
-                                                 ? static_cast<int32>(v) + 1
-                                                 : static_cast<int32>(v));
-        },
-        in);
+    const auto scalar_op = [](auto v) -> OUTPUT_DTYPE {
+        if (v == static_cast<int32>(v)) {
+            return static_cast<OUTPUT_DTYPE>(static_cast<int32>(v));
+        }
+        return static_cast<OUTPUT_DTYPE>(
+            (v >= static_cast<INPUT_DTYPE>(0)) ? static_cast<int32>(v) + 1 : static_cast<int32>(v));
+    };
+#if __AIE_ARCH__ != 20
+    round_integral_n<round_integral::ceil>(out, N, scalar_op, in);
+#else
+    transform_n(out, N, scalar_op, in);
+#endif
 }
 
 #endif // GGML_UNARY_OP_CEIL
@@ -414,15 +515,17 @@ void ggml_unary_op_round(const INPUT_DTYPE * __restrict in,
                          int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     static_assert(is_floating_point_v<OUTPUT_DTYPE>, "Output type must be a floating point type");
-    transform_n(
-        out, N,
-        [](auto v) -> OUTPUT_DTYPE {
-            return static_cast<OUTPUT_DTYPE>(
-                (v >= static_cast<INPUT_DTYPE>(0))
-                    ? static_cast<int32>(v + static_cast<INPUT_DTYPE>(.5))
-                    : static_cast<int32>(v - static_cast<INPUT_DTYPE>(.5)));
-        },
-        in);
+    const auto scalar_op = [](auto v) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(
+            (v >= static_cast<INPUT_DTYPE>(0))
+                ? static_cast<int32>(v + static_cast<INPUT_DTYPE>(.5))
+                : static_cast<int32>(v - static_cast<INPUT_DTYPE>(.5)));
+    };
+#if __AIE_ARCH__ != 20
+    round_integral_n<round_integral::round>(out, N, scalar_op, in);
+#else
+    transform_n(out, N, scalar_op, in);
+#endif
 }
 
 #endif // GGML_UNARY_OP_ROUND
@@ -444,10 +547,14 @@ void ggml_unary_op_trunc(const INPUT_DTYPE * __restrict in,
                          int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
     static_assert(is_floating_point_v<OUTPUT_DTYPE>, "Output type must be a floating point type");
-    transform_n(
-        out, N,
-        [](auto v) -> OUTPUT_DTYPE { return static_cast<OUTPUT_DTYPE>(static_cast<int32>(v)); },
-        in);
+    const auto scalar_op = [](auto v) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(static_cast<int32>(v));
+    };
+#if __AIE_ARCH__ != 20
+    round_integral_n<round_integral::trunc>(out, N, scalar_op, in);
+#else
+    transform_n(out, N, scalar_op, in);
+#endif
 }
 
 #endif // GGML_UNARY_OP_TRUNC
