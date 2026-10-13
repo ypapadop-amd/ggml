@@ -16,10 +16,12 @@ namespace {
  *
  * Copies every field except the header/setup, which must be written last and atomically.
  */
-void write_aql_to_queue(const hsa_kernel_dispatch_packet_t & pkt, hsa_queue_t * queue,
+void write_aql_to_queue(const hsa_kernel_dispatch_packet_t & pkt,
+                        hsa_queue_t * queue,
                         std::uint64_t pkt_idx) {
     const std::uint32_t mask = queue->size - 1;
-    auto * slot = &(static_cast<hsa_kernel_dispatch_packet_t *>(queue->base_address))[pkt_idx & mask];
+    auto * slot =
+        &(static_cast<hsa_kernel_dispatch_packet_t *>(queue->base_address))[pkt_idx & mask];
 
     slot->setup = pkt.setup;
     slot->workgroup_size_x = pkt.workgroup_size_x;
@@ -43,7 +45,8 @@ void write_aql_to_queue(const hsa_kernel_dispatch_packet_t & pkt, hsa_queue_t * 
  * Must be done after all other fields are set so the packet processor never observes a
  * partially-written KERNEL_DISPATCH packet.
  */
-void atomic_set_packet_header(std::uint16_t header, std::uint16_t setup,
+void atomic_set_packet_header(std::uint16_t header,
+                              std::uint16_t setup,
                               hsa_kernel_dispatch_packet_t * queue_packet) {
     __atomic_store_n(reinterpret_cast<std::uint32_t *>(queue_packet),
                      header | (static_cast<std::uint32_t>(setup) << 16), __ATOMIC_RELEASE);
@@ -176,7 +179,8 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
             std::uint16_t v = 1;
             put(arg.offset, &v, arg.size);
         } else if (arg.value_kind == "hidden_remainder_x") {
-            std::uint16_t v = static_cast<std::uint16_t>(static_cast<std::uint32_t>(n_elements) % wg);
+            std::uint16_t v =
+                static_cast<std::uint16_t>(static_cast<std::uint32_t>(n_elements) % wg);
             put(arg.offset, &v, arg.size);
         } else if (arg.value_kind == "hidden_grid_dims") {
             std::uint16_t v = 1; // 1D grid

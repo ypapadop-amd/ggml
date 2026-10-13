@@ -25,10 +25,10 @@ inline constexpr std::size_t ggml_hsa_gpu_kernarg_alignment = 64;
  * hand-maintained struct, so the kernarg layout is robust to ABI/architecture changes.
  */
 struct ggml_hsa_gpu_kernel_arg {
-    std::string name;        ///< Argument name (explicit args only; empty for hidden args).
-    std::string value_kind;  ///< AMDGPU value kind, e.g. "global_buffer", "hidden_block_count_x".
-    std::uint32_t offset{};  ///< Byte offset of the argument within the kernarg segment.
-    std::uint32_t size{};    ///< Argument size in bytes.
+    std::string name;       ///< Argument name (explicit args only; empty for hidden args).
+    std::string value_kind; ///< AMDGPU value kind, e.g. "global_buffer", "hidden_block_count_x".
+    std::uint32_t offset{}; ///< Byte offset of the argument within the kernarg segment.
+    std::uint32_t size{};   ///< Argument size in bytes.
 };
 
 /**
@@ -48,8 +48,8 @@ class ggml_hsa_gpu_kernel : public ggml_hsa_kernel {
     std::uint32_t kernarg_size{};         ///< Kernel argument segment size in bytes.
     std::uint32_t kernarg_align{};        ///< Kernel argument segment alignment in bytes.
     std::uint32_t work_group_size{64};    ///< Default workgroup size when launch geometry is unset.
-    std::uint32_t grid_size_x{};          ///< Fixed AQL grid size (total work-items); 0 = derive from N.
-    std::uint32_t workgroup_size_x{};     ///< Fixed workgroup size (work-items/group); 0 = use default.
+    std::uint32_t grid_size_x{}; ///< Fixed AQL grid size (total work-items); 0 = derive from N.
+    std::uint32_t workgroup_size_x{}; ///< Fixed workgroup size (work-items/group); 0 = use default.
     std::vector<ggml_hsa_gpu_kernel_arg> args; ///< Argument layout from code object metadata.
 
     ggml_hsa_gpu_kernel() = default;

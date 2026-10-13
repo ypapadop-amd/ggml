@@ -266,8 +266,7 @@ static std::string ggml_hsa_sanitize_kernel_name(const std::string & kernel_name
 static bool ggml_hsa_find_gpu_kernel_files(const std::string & device_name,
                                            const std::string & symbol_name,
                                            fs::path & hsaco_path) {
-    const auto partial_path =
-        fs::path(device_name).append(symbol_name).concat(hsaco_file_suffix);
+    const auto partial_path = fs::path(device_name).append(symbol_name).concat(hsaco_file_suffix);
 
     if (!kernel_dir.empty()) {
         // find kernel in pregenerated kernel directory
@@ -310,8 +309,8 @@ static bool ggml_hsa_comgr_get_string(amd_comgr_metadata_node_t node, std::strin
 /**
  * @brief Looks up a string-valued key in a comgr metadata map.
  */
-static bool ggml_hsa_comgr_lookup_string(amd_comgr_metadata_node_t map, const char * key,
-                                         std::string & out) {
+static bool
+ggml_hsa_comgr_lookup_string(amd_comgr_metadata_node_t map, const char * key, std::string & out) {
     amd_comgr_metadata_node_t node;
     if (amd_comgr_metadata_lookup(map, key, &node) != AMD_COMGR_STATUS_SUCCESS) {
         return false;
@@ -334,7 +333,8 @@ static bool ggml_hsa_comgr_lookup_string(amd_comgr_metadata_node_t map, const ch
  * @param[out] out_symbol kernel descriptor symbol (e.g. "add_8f32_8f32_8f32.kd" or "vecadd.kd")
  * @param[out] out_args parsed argument descriptors
  */
-static bool ggml_hsa_parse_kernel_metadata(const std::vector<char> & blob, std::string & out_symbol,
+static bool ggml_hsa_parse_kernel_metadata(const std::vector<char> & blob,
+                                           std::string & out_symbol,
                                            std::vector<ggml_hsa_gpu_kernel_arg> & out_args) {
     amd_comgr_data_t data;
     if (amd_comgr_create_data(AMD_COMGR_DATA_KIND_EXECUTABLE, &data) != AMD_COMGR_STATUS_SUCCESS) {
@@ -387,8 +387,10 @@ static bool ggml_hsa_parse_kernel_metadata(const std::vector<char> & blob, std::
                         ggml_hsa_gpu_kernel_arg info;
                         info.name = std::move(name);
                         info.value_kind = std::move(kind);
-                        info.offset = off.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(off));
-                        info.size = size.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(size));
+                        info.offset =
+                            off.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(off));
+                        info.size =
+                            size.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(size));
                         out_args.push_back(std::move(info));
                         amd_comgr_destroy_metadata(arg);
                     }
@@ -415,7 +417,8 @@ static bool ggml_hsa_parse_kernel_metadata(const std::vector<char> & blob, std::
  * compile time; it is emitted alongside the @c .hsaco as @c <name>.hsaco.json. Hand-written HIP
  * kernels have no sidecar and derive their grid from the element count at dispatch.
  */
-static bool ggml_hsa_read_launch_sidecar(const fs::path & hsaco_path, std::uint32_t & grid_size_x,
+static bool ggml_hsa_read_launch_sidecar(const fs::path & hsaco_path,
+                                         std::uint32_t & grid_size_x,
                                          std::uint32_t & workgroup_size_x) {
     fs::path sidecar = hsaco_path;
     sidecar += ".json";
@@ -502,9 +505,9 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
 
     auto gpu_kernel = std::make_shared<ggml_hsa_gpu_kernel>();
 
-    if (status = hsa_executable_create_alt(HSA_PROFILE_FULL,
-                                           HSA_DEFAULT_FLOAT_ROUNDING_MODE_DEFAULT, nullptr,
-                                           &gpu_kernel->executable);
+    if (status =
+            hsa_executable_create_alt(HSA_PROFILE_FULL, HSA_DEFAULT_FLOAT_ROUNDING_MODE_DEFAULT,
+                                      nullptr, &gpu_kernel->executable);
         status != HSA_STATUS_SUCCESS) {
         hsa_code_object_reader_destroy(reader);
         GGML_HSA_LOG_ERROR("%s: failed to create executable (%s)", __func__,

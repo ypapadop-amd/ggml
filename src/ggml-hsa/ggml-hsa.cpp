@@ -978,8 +978,8 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
  * must be made accessible to both the GPU agent (kernel execution) and the CPU agent (host-side
  * @c set_tensor / @c get_tensor copies).
  */
-static hsa_status_t ggml_hsa_grant_unified_access(const ggml_hsa_device_info::device_info & dev_info,
-                                                  void * ptr) {
+static hsa_status_t
+ggml_hsa_grant_unified_access(const ggml_hsa_device_info::device_info & dev_info, void * ptr) {
     const auto & info = ggml_hsa_info();
     std::vector<hsa_agent_t> agents;
     if (dev_info.agent.handle != 0) {
@@ -992,7 +992,7 @@ static hsa_status_t ggml_hsa_grant_unified_access(const ggml_hsa_device_info::de
         return HSA_STATUS_SUCCESS;
     }
     return hsa_amd_agents_allow_access(static_cast<std::uint32_t>(agents.size()), agents.data(),
-                                      nullptr, ptr);
+                                       nullptr, ptr);
 }
 #endif
 
@@ -1157,7 +1157,8 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     if (dev_info.type == HSA_DEVICE_TYPE_GPU) {
         // A GPU kernarg segment is the explicit arguments followed by the HIP hidden arguments;
         // ggml_hsa_gpu_kernel::dispatch rejects a kernel whose segment does not fit.
-        kernarg_alignment = std::max<std::size_t>(kernarg_alignment, ggml_hsa_gpu_kernarg_alignment);
+        kernarg_alignment =
+            std::max<std::size_t>(kernarg_alignment, ggml_hsa_gpu_kernarg_alignment);
         slot_size = ggml_hsa_gpu_kernarg_slot_size;
     }
 #endif
