@@ -20,6 +20,14 @@
 template <typename T>
 constexpr unsigned mul_vector_bits = __AIEARCH__ != 20 && std::is_same_v<T, float> ? 1024 : 512;
 
+/**
+ * @brief Whether the element-wise ADD/SUB kernels add in vectors: floating point, and on aie2p
+ * int32 too, whose vector add wraps as the scalar one does (vadd.32 is modular).
+ */
+template <typename T>
+constexpr bool add_vector_v =
+    is_floating_point_v<T> || (__AIEARCH__ != 20 && std::is_same_v<T, std::int32_t>);
+
 /// Whether the DIV kernels divide f32 in vectors (div_f32_rne); aie2 keeps the scalar division.
 template <typename TOut, typename T0, typename T1>
 constexpr bool div_vector_v = __AIEARCH__ != 20 && std::is_same_v<TOut, float> &&
@@ -325,7 +333,7 @@ void ggml_op_add(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+    transform_vector_walk_n</*Aligned=*/false, add_vector_v<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::add(a, b); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a + b); }, in0, in1);
 }
@@ -346,7 +354,7 @@ void ggml_op_sub(const INPUT0_DTYPE * __restrict in0,
                  const INPUT1_DTYPE * __restrict in1,
                  OUTPUT_DTYPE * __restrict out,
                  int32_t N) {
-    transform_vector_walk_n</*Aligned=*/false, is_floating_point_v<OUTPUT_DTYPE>>(
+    transform_vector_walk_n</*Aligned=*/false, add_vector_v<OUTPUT_DTYPE>>(
         out, N, [](auto a, auto b) { return aie::sub(a, b); },
         [](auto a, auto b) { return static_cast<OUTPUT_DTYPE>(a - b); }, in0, in1);
 }
