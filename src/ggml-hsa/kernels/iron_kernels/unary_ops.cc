@@ -107,6 +107,36 @@ void round_integral_n(TOut * __restrict out,
     }
 }
 
+/**
+ * @brief clamp((x + 3) / 6, 0, 1) of every lane, as ggml's CPU hardsigmoid (which gives 0 for
+ * NaN).
+ *
+ * (x + 3) / 6 is a multiply by the f32 nearest 1/6, within one ulp of the division. The clamp
+ * compares the result's bits as integers, since f32 compares are emulated: non-negative floats
+ * order as their bits, NaN's above +inf's.
+ *
+ * @tparam V Vector width.
+ * @param[in] x The input vector.
+ * @return The element-wise hard sigmoid.
+ */
+template <unsigned V>
+aie::vector<float, V> vec_hardsigmoid(const aie::vector<float, V> & x) {
+    using ivec = aie::vector<int32_t, V>;
+    constexpr int32_t kOneBits = __builtin_bit_cast(int32_t, 1.0f);
+    constexpr int32_t kInfBits = 0x7F800000;
+    const ivec t = aie::vector_cast<int32_t>(
+        aie::mul(aie::add(x, 3.0f), 1.0f / 6.0f).template to_vector<float>());
+    const ivec x_bits = aie::vector_cast<int32_t>(x);
+    const auto pos_inf = aie::eq(x_bits, aie::broadcast<int32_t, V>(kInfBits));
+    // Above 1, and +inf (whose emulated product is NaN), give 1; below 0 and NaN give 0.
+    const ivec r = aie::select(t, aie::broadcast<int32_t, V>(kOneBits),
+                               aie::gt(t, aie::broadcast<int32_t, V>(kOneBits)) | pos_inf);
+    return aie::vector_cast<float>(
+        aie::select(r, aie::zeros<int32_t, V>(),
+                    aie::lt(t, aie::zeros<int32_t, V>()) |
+                        (aie::gt(t, aie::broadcast<int32_t, V>(kInfBits)) & ~pos_inf)));
+}
+
 #endif // __AIE_ARCH__ != 20
 
 extern "C" {
@@ -395,13 +425,17 @@ void ggml_unary_op_hardsigmoid(const INPUT_DTYPE * __restrict in,
                                OUTPUT_DTYPE * __restrict out,
                                int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
-    transform_n(
-        out, N,
-        [](auto v) -> OUTPUT_DTYPE {
-            return static_cast<OUTPUT_DTYPE>(
-                std::min<INPUT_DTYPE>(1, std::max<INPUT_DTYPE>(0, (v + 3) / 6)));
-        },
-        in);
+    const auto scalar_op = [](auto v) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(
+            std::min<INPUT_DTYPE>(1, std::max<INPUT_DTYPE>(0, (v + 3) / 6)));
+    };
+#if __AIE_ARCH__ != 20
+    // f32 in vectors, 32 lanes a step: the emulated f32 multiply costs the same at 16.
+    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>, std::is_same_v<INPUT_DTYPE, f32>,
+                            1024>(out, N, [](auto v) { return vec_hardsigmoid(v); }, scalar_op, in);
+#else
+    transform_n(out, N, scalar_op, in);
+#endif
 }
 
 #endif // GGML_UNARY_OP_HARDSIGMOID
@@ -421,13 +455,36 @@ void ggml_unary_op_hardswish(const INPUT_DTYPE * __restrict in,
                              OUTPUT_DTYPE * __restrict out,
                              int32_t N) {
     static_assert(is_floating_point_v<INPUT_DTYPE>, "Input type must be a floating point type");
-    transform_n(
+    const auto scalar_op = [](auto v) -> OUTPUT_DTYPE {
+        return static_cast<OUTPUT_DTYPE>(
+            v * std::min<INPUT_DTYPE>(1, std::max<INPUT_DTYPE>(0, (v + 3) / 6)));
+    };
+#if __AIE_ARCH__ != 20
+    // As HARDSIGMOID, then x where the hard sigmoid is 1: the emulated product would turn an
+    // infinite x into NaN.
+    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>, std::is_same_v<INPUT_DTYPE, f32>,
+                            1024>(
         out, N,
-        [](auto v) -> OUTPUT_DTYPE {
-            return static_cast<OUTPUT_DTYPE>(
-                v * std::min<INPUT_DTYPE>(1, std::max<INPUT_DTYPE>(0, (v + 3) / 6)));
+        [](auto v) {
+            using V = decltype(v);
+            using IV = aie::vector<int32_t, V::size()>;
+            const IV h = aie::vector_cast<int32_t>(vec_hardsigmoid(v));
+            const IV x = aie::vector_cast<int32_t>(v);
+            const V y = aie::select(
+                aie::mul(v, aie::vector_cast<float>(h)).template to_vector<float>(), v,
+                aie::eq(h, aie::broadcast<int32_t, V::size()>(__builtin_bit_cast(int32_t, 1.0f))));
+            // A zero product of a finite negative x (bits below -inf's as int32) is -0; the
+            // emulated product gives +0.
+            return aie::select(
+                y, aie::vector_cast<float>(aie::broadcast<int32_t, V::size()>(INT32_MIN)),
+                aie::eq(aie::vector_cast<int32_t>(y), aie::zeros<int32_t, V::size()>()) &
+                    aie::lt(x, aie::broadcast<int32_t, V::size()>(
+                                   __builtin_bit_cast(int32_t, -INFINITY))));
         },
-        in);
+        scalar_op, in);
+#else
+    transform_n(out, N, scalar_op, in);
+#endif
 }
 
 #endif // GGML_UNARY_OP_HARDSWISH
