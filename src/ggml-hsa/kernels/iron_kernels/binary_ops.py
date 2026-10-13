@@ -346,8 +346,8 @@ def _create_external_function(
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
             # L1-budgeted tile, so the shared transform_vector_walk_n may use its vector body.
-            # This builder serves ADD/SUB/MUL/DIV; DIV has no vector body and simply ignores
-            # the flag. The generic broadcast path keeps the one-register tile and is
+            # This builder serves ADD/SUB/MUL/DIV; DIV's vector body (div_n) does not use it
+            # and simply ignores the flag. The generic broadcast path keeps the one-register tile and is
             # deliberately left without it.
             "-DGGML_VECTORIZED_TILING=1",
             *(
