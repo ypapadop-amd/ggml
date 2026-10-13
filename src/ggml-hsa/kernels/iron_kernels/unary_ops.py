@@ -43,9 +43,11 @@ from .utils import (
 # at least 2432 bytes on aie2 (aiecc's lower bound: it has no stack information for the soft-float
 # libcalls the scalar tail reaches), so this matches binary_ops.py's 4096.
 _STACK_SIZE_BYTES = 4096
-# aie2p's GELU runs two 32-lane vectors of emulated f32 arithmetic per loop trip, and LLVM spills
-# its loop invariants (bf16 limbs and accumulators of the constants) to a 5.3 KB frame.
-_AIE2P_GELU_STACK_SIZE_BYTES = 6144
+# Larger stacks for some aie2p cores, by op. GELU runs two 32-lane vectors of emulated f32
+# arithmetic per loop trip, and LLVM spills its loop invariants (bf16 limbs and accumulators of
+# the constants) to a 5.3 KB frame. LOG's vector body next to scalar_log's tail needs 4544 bytes
+# (aiecc) on a tile with a tail.
+_AIE2P_STACK_SIZE_BYTES = {"GGML_UNARY_OP_GELU": 6144, "GGML_OP_LOG": 6144}
 
 
 def _unary_op(
@@ -187,6 +189,7 @@ _VECTORIZED_OPS = frozenset(
 # one-vector-register tile.
 _AIE2P_VECTORIZED_OPS = frozenset(
     {
+        "GGML_OP_LOG",
         "GGML_UNARY_OP_CEIL",
         "GGML_UNARY_OP_FLOOR",
         "GGML_UNARY_OP_HARDSIGMOID",
@@ -329,8 +332,8 @@ def unary_op(
         function_spec=function_spec,
         output_tensor=output_tensor,
         stack_size=(
-            _AIE2P_GELU_STACK_SIZE_BYTES
-            if arch == "aie2p" and op_name == "GGML_UNARY_OP_GELU"
+            _AIE2P_STACK_SIZE_BYTES.get(op_name, _STACK_SIZE_BYTES)
+            if arch == "aie2p"
             else _STACK_SIZE_BYTES
         ),
     )

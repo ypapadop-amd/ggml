@@ -137,6 +137,41 @@ aie::vector<float, V> vec_hardsigmoid(const aie::vector<float, V> & x) {
                         (aie::gt(t, aie::broadcast<int32_t, V>(kInfBits)) & ~pos_inf)));
 }
 
+/**
+ * @brief logf of every lane: @ref vec_log, with logf's special values and subnormals.
+ *
+ * A subnormal m 2^-149 is taken as m (the bits of 2^23 + m, less 2^23, both exact) and 149 ln 2
+ * taken off its log. ln(+-0) is -inf, ln of a negative NaN, ln(+inf) +inf and ln(NaN) NaN.
+ *
+ * @tparam V Vector width.
+ * @param[in] x The input vector.
+ * @return The element-wise natural logarithm.
+ */
+template <unsigned V>
+aie::vector<float, V> vec_logf(const aie::vector<float, V> & x) {
+    using ivec = aie::vector<int32_t, V>;
+    constexpr int32_t kMinNormalBits = 0x00800000;
+    constexpr int32_t kInfBits = 0x7F800000;
+    constexpr float kTwo23 = 8388608.0f;
+    const ivec bits = aie::vector_cast<int32_t>(x);
+    const auto subnormal = aie::lt(bits, aie::broadcast<int32_t, V>(kMinNormalBits));
+    const aie::vector<float, V> m =
+        aie::sub(aie::vector_cast<float>(aie::add(
+                     bits, aie::broadcast<int32_t, V>(__builtin_bit_cast(int32_t, kTwo23)))),
+                 kTwo23);
+    aie::vector<float, V> y = vec_log<V>(aie::select(x, m, subnormal));
+    y = aie::select(y, aie::sub(y, 103.27892990343185f), subnormal); // 149 ln 2
+    ivec r = aie::select(aie::vector_cast<int32_t>(y), bits,
+                         aie::ge(bits, aie::broadcast<int32_t, V>(kInfBits)));
+    // A float compare: on the bits, LLVM folds "0 or INT32_MIN" into a vector fabs and then a
+    // fneg, which aie2p cannot legalize.
+    const auto zero = aie::eq(x, aie::zeros<float, V>());
+    r = aie::select(r, aie::broadcast<int32_t, V>(static_cast<int32_t>(0xFF800000u)), zero);
+    r = aie::select(r, aie::broadcast<int32_t, V>(0x7FC00000),
+                    aie::lt(bits, aie::zeros<int32_t, V>()) & ~zero);
+    return aie::vector_cast<float>(r);
+}
+
 #endif // __AIE_ARCH__ != 20
 
 extern "C" {
@@ -170,7 +205,14 @@ void ggml_op_sqr(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict ou
 void ggml_op_log(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t N) {
     static_assert(std::is_same_v<INPUT_DTYPE, float>, "Input type must be float32");
     static_assert(std::is_same_v<OUTPUT_DTYPE, float>, "Output type must be float32");
-    transform_n(out, N, [](auto v) -> OUTPUT_DTYPE { return scalar_log(v); }, in);
+    const auto scalar_op = [](auto v) -> OUTPUT_DTYPE { return scalar_log(v); };
+#if __AIE_ARCH__ != 20
+    // 32 lanes a step: vec_log's emulated f32 multiplies cost the same at 16.
+    transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>, true, 1024>(
+        out, N, [](auto v) { return vec_logf(v); }, scalar_op, in);
+#else
+    transform_n(out, N, scalar_op, in);
+#endif
 }
 
 #endif // GGML_OP_LOG
