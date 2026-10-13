@@ -175,7 +175,13 @@ inline aie::vector<float, V> vec_log(const aie::vector<float, V> & x) {
         aie::sub(aie::vector_cast<float>(aie::add(e_int, aie::broadcast<int32_t, V>(magic_bits))),
                  aie::broadcast<float, V>(12582912.0f));
 
+#if __AIE_ARCH__ != 20
+    // aie2p's vadd.f has no guard bit, so m - 1 drops m's last bit when m < 1. In two halves each
+    // subtraction is exact: m - 1/2 shares m's exponent or the result's, and so does the rest.
+    const fvec f = aie::sub(aie::sub(m, 0.5f), 0.5f);
+#else
     const fvec f = aie::sub(m, aie::broadcast<float, V>(1.0f));
+#endif
     const fvec z = mul(f, f);
 
     constexpr float log_coeffs[] = {7.0376836292e-2f,  -1.1514610310e-1f, 1.1676998740e-1f,
