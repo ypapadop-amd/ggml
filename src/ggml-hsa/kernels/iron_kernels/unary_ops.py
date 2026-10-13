@@ -189,6 +189,8 @@ _AIE2P_VECTORIZED_OPS = frozenset(
     {
         "GGML_UNARY_OP_CEIL",
         "GGML_UNARY_OP_FLOOR",
+        "GGML_UNARY_OP_HARDSIGMOID",
+        "GGML_UNARY_OP_HARDSWISH",
         "GGML_UNARY_OP_ROUND",
         "GGML_UNARY_OP_TRUNC",
     }
