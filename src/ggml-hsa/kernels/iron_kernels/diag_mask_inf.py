@@ -113,7 +113,9 @@ def diag_mask_inf(arch: str, input_tensors: list, output_tensor, op_params: byte
     ]
 
     def band(w):
-        return batch_slice_tap(num_tiles, tile_size, first_tiles[w], tiles_per_worker[w])
+        return batch_slice_tap(
+            num_tiles, tile_size, first_tiles[w], tiles_per_worker[w]
+        )
 
     # One host buffer per ggml tensor, src then dst. Every drain is waited on: the bands can
     # finish in any order.

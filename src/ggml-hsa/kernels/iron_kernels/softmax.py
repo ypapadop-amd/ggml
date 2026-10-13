@@ -180,14 +180,21 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
     workers = [
         Worker(
             ext_core_fn,
-            fn_args=[of_ins[w].cons(), of_outs[w].prod(), function, tiles_per_worker[w]],
+            fn_args=[
+                of_ins[w].cons(),
+                of_outs[w].prod(),
+                function,
+                tiles_per_worker[w],
+            ],
             stack_size=_PLAIN_STACK_SIZE_BYTES,
         )
         for w in range(n_workers)
     ]
 
     def band(w):
-        return batch_slice_tap(num_tiles, tile_size, first_tiles[w], tiles_per_worker[w])
+        return batch_slice_tap(
+            num_tiles, tile_size, first_tiles[w], tiles_per_worker[w]
+        )
 
     # One host buffer per ggml tensor, src then dst. Every drain is waited on: the bands can
     # finish in any order.
