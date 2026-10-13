@@ -270,7 +270,9 @@ void ggml_unary_op_gelu(const INPUT_DTYPE * __restrict in,
     };
 
     if constexpr (std::is_same_v<INPUT_DTYPE, f32> && std::is_same_v<OUTPUT_DTYPE, f32>) {
-        transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>>(
+        // aie2p: 32 lanes a step, as vec_gelu's emulated multiplies cost the same at 16.
+        constexpr unsigned kVectorBits = __AIE_ARCH__ != 20 ? 1024 : 512;
+        transform_vector_walk_n<tile_vector_aligned_v<OUTPUT_DTYPE>, true, kVectorBits>(
             out, N, [](auto v) { return vec_gelu(v); }, scalar_gelu, in);
     } else {
         transform_n(out, N, scalar_gelu, in);
