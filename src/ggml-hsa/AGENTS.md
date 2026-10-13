@@ -34,7 +34,8 @@ the kernel compilation pipeline.
 ### Memory Sharing with HIP
 
 HSA backend buffers are allocated with the HSA vmem API (`ggml_hsa_vmem_allocation` in
-`ggml-hsa.cpp`). The same class imports another ROCm backend's buffer from a dma-buf:
+`ggml-hsa.cpp`), except on a GPU device, whose buffers come from the pool allocator: the GPU read
+stale data from vmem mappings. The same class imports another ROCm backend's buffer from a dma-buf:
 `ggml_backend_hsa_buffer_import` wraps the mapping in an ordinary HSA buffer whose base is offset
 into the mapping so offsets match the source buffer, and `ggml_backend_hsa_tensor_alloc_alias`
 places an HSA tensor (an NPU input or an op result) on a source tensor's memory.
@@ -56,6 +57,8 @@ src/ggml-hsa/
 ├── host-ops.cpp/hpp             # Host-side operation implementations
 ├── kernel-discovery.cpp/hpp     # Runtime kernel discovery and loading
 ├── aie-kernel.cpp/hpp           # AIE kernel abstraction layer
+├── gpu-kernel.cpp/hpp           # GPU kernel (AQL dispatch of .hsaco code objects, GGML_HSA_GPU)
+├── gpu-kernels/                 # Generator + docs for precompiled GPU .hsaco kernels
 ├── kernel-compiler.cpp/hpp      # JIT compilation interface
 ├── type-traits.hpp              # GGML type to C++ type mapping
 ├── kernels/                     # AIE kernel implementations (two-layer architecture)

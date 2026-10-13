@@ -12,6 +12,10 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 [AMD XDNA]: https://www.amd.com/en/technologies/xdna.html
 [AMD XDNA2]: https://www.amd.com/en/technologies/xdna.html#xdna2
 
+AMD GPUs (`gfx*` HSA agents) are supported experimentally when built with `-DGGML_HSA_GPU=ON`:
+elementwise `ADD` and `SCALE` from precompiled HIP code objects, and `ADD` compiled with Triton
+when JIT compilation is enabled. See [`gpu-kernels/README.md`](gpu-kernels/README.md).
+
 ## Supported Operations
 
 | Category  | Operations                                                     |
@@ -340,6 +344,8 @@ JIT compilation generates kernels on-the-fly. Precompiled kernels in `GGML_HSA_K
 | Option                 | Description                                                        |
 |------------------------|--------------------------------------------------------------------|
 | `GGML_HSA`             | Enable HSA backend                                                 |
+| `GGML_HSA_AIE`         | Enable AIE (XDNA NPU) devices (default `ON`)                       |
+| `GGML_HSA_GPU`         | Enable GPU devices (default `OFF`)                                 |
 | `GGML_HSA_JIT_COMPILE` | Enable JIT compilation (requires IRON environment)                 |
 
 ### Environment Variables
