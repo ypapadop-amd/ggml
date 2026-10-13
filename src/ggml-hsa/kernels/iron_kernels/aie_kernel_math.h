@@ -436,6 +436,145 @@ inline aie::vector<float, VecSize> vec_exp_nonpositive(const aie::vector<float, 
     }
 }
 
+#if __AIE_ARCH__ != 20
+
+/**
+ * @brief Applies the GELU activation (tanh approximation) to 32 lanes; aie2p form.
+ *
+ * Same sigmoid form as the aie2 version below, x / (1 + exp(-2y)), rearranged so that every step
+ * is a multiply, an add or a bit operation:
+ *
+ * - Only e = exp(-2|y|) = 2^-w <= 1 is computed, w = 2 log2(e) |y| clamped at 125:
+ *   gelu(x) = x / (1 + e) for x >= 0 and x e / (1 + e) for x < 0. 2^-w = 2^-n 2^-r, with n the
+ *   nearest integer by the 1.5 * 2^23 magic number (whose low bits then hold n, so 2^-n is a
+ *   subtraction from the exponent field), and 2^-r on [-1/2, 1/2] by a degree-5 minimax
+ *   polynomial (relative error 1.5e-7). The clamp compares w's bits as integers, so it needs no
+ *   emulated f32 min/max and takes infinite and NaN magnitudes too.
+ * - 1 / (1 + e), on [1, 2], is the linear minimax seed 24/17 - 8/17 d (relative error 1/17)
+ *   refined by three Newton steps, instead of aie::inv, which aie2p runs as one scalar inverse per
+ *   lane.
+ * - The emulated f32 products are aie2p's "fast" six bf16 partial products, not aie::mul's nine,
+ *   and fewer where a later step corrects or damps the error.
+ *
+ * Within 1.5e-6 relative of the exact tanh form, against ggml's CPU f32 GELU's fp16 table at
+ * 3.8e-3. Always inlined: Peano otherwise calls it once per vector.
+ *
+ * @param[in] x The input vector.
+ * @return The element-wise GELU.
+ */
+__attribute__((always_inline)) inline aie::vector<float, 32>
+vec_gelu_32(const aie::vector<float, 32> & x) {
+    using fvec = aie::vector<float, 32>;
+    using ivec = aie::vector<int32_t, 32>;
+    using acc = aie::accum<accfloat, 32>;
+    // Emulated f32 products, at two accuracies: "fast", six of the nine bf16 partial products
+    // of aie::mul (within ~1 ulp), and "low", three (relative error ~2^-16), where a later step
+    // corrects or damps the error.
+    const auto mul = [](const fvec & a, const fvec & b) -> fvec {
+        return acc(::mul_elem_32_accuracy_fast(a, b)).template to_vector<float>();
+    };
+    const auto mul_low = [](const fvec & a, const fvec & b) -> fvec {
+        return acc(::mul_elem_32_accuracy_low(a, b)).template to_vector<float>();
+    };
+    // c + a * b at low accuracy.
+    const auto mac_low = [](float c, const fvec & a, const fvec & b) -> fvec {
+        return acc(::mac_elem_32_accuracy_low(a, b, aie::broadcast<float, 32>(c), 0, 0, 0))
+            .template to_vector<float>();
+    };
+    // c - a * b at low accuracy.
+    const auto msc_low = [](float c, const fvec & a, const fvec & b) -> fvec {
+        return acc(::msc_elem_32_accuracy_low(a, b, aie::broadcast<float, 32>(c), 0, 0, 0))
+            .template to_vector<float>();
+    };
+    const auto bc = [](float c) { return aie::broadcast<float, 32>(c); };
+    const auto to_bf16 = [](const fvec & v) { return acc(v).template to_vector<bfloat16>(); };
+
+    constexpr float kSqrt2OverPi = 0.7978845608028654f; // sqrt(2/pi)
+    constexpr float kCoefA = 0.044715f;
+    constexpr float kLog2e = 1.4426950408889634f;
+    // 2y log2(e) = x (k1 + k2 x^2).
+    constexpr float kK1 = 2.0f * kLog2e * kSqrt2OverPi;
+    constexpr float kK2 = kK1 * kCoefA;
+    // w = 2 |y| log2(e) is clamped at 125: 2^-125 and 2^-n 2^-r are still normal floats.
+    constexpr int32_t kWMaxBits = __builtin_bit_cast(int32_t, 125.0f);
+    constexpr float kMagic = 12582912.0f; // 1.5 * 2^23
+    constexpr uint32_t kTenBits = __builtin_bit_cast(uint32_t, 10.0f);
+    constexpr uint32_t kSignBit = 0x80000000u;
+    // 2^-r on [-1/2, 1/2], highest degree first: the minimax 2^r's with odd terms negated.
+    constexpr float kExp2Coeffs[] = {-1.3276466634e-3f, 9.6755418926e-3f,  -5.5507134646e-2f,
+                                     2.4022120237e-1f,  -6.9314694405e-1f, 1.0000001192e+0f};
+
+    const ivec x_bits = aie::vector_cast<int32_t>(x);
+    const ivec abs_bits =
+        aie::bit_and(int32_t{0x7FFFFFFF},
+                     aie::vector_cast<int32_t>(mul(x, aie::add(mul(mul(x, x), bc(kK2)), kK1))));
+    const fvec w = aie::vector_cast<float>(
+        aie::select(abs_bits, aie::broadcast<int32_t, 32>(kWMaxBits),
+                    aie::gt(abs_bits, aie::broadcast<int32_t, 32>(kWMaxBits))));
+
+    // w = n + r: w + magic rounds to the nearest integer n, held in its low bits.
+    const fvec wm = aie::add(w, kMagic);
+    const fvec r = aie::sub(w, aie::sub(wm, kMagic));
+    // Horner's rule; |r| <= 1/2 damps the low-accuracy error of the inner steps below 1e-7.
+    fvec p = bc(kExp2Coeffs[0]);
+    AIE_LOOP_UNROLL_FULL
+    for (int32_t i = 1; i < 4; ++i) {
+        p = mac_low(kExp2Coeffs[i], p, r);
+    }
+    p = aie::add(mul(p, r), kExp2Coeffs[4]);
+    p = aie::add(mul(p, r), kExp2Coeffs[5]);
+    // e = 2^-r * 2^-n: n << 23 taken off the exponent field. The magic number's bits shift out.
+    const fvec e = aie::vector_cast<float>(
+        aie::sub(aie::vector_cast<int32_t>(p), aie::upshift(aie::vector_cast<int32_t>(wm), 23)));
+
+    // q = 1 / d, d = 1 + e in [1, 2]. Newton's step q (2 - d q) squares the relative error, so
+    // the seed and the first step run in bf16 and the second at low accuracy (1/17, ~7e-3,
+    // ~7e-5), and only the last needs the fast product.
+    const fvec d = aie::add(e, 1.0f);
+    const auto d16 = to_bf16(d);
+    fvec q = aie::mac(acc(bc(24.0f / 17.0f)), d16, static_cast<bfloat16>(-8.0f / 17.0f))
+                 .template to_vector<float>();
+    const auto q16 = to_bf16(q);
+    q = aie::mul(q16, to_bf16(aie::msc(acc(bc(2.0f)), d16, q16).template to_vector<float>()))
+            .template to_vector<float>();
+    q = mul_low(q, msc_low(2.0f, d, q));
+    q = mul(q, aie::sub(bc(2.0f), mul(d, q)));
+
+    // y < 0 (the sign of x): x e / (1 + e), else x / (1 + e).
+    const fvec num = aie::select(x, mul(x, e), aie::lt(x_bits, aie::zeros<int32_t, 32>()));
+    // As ggml's CPU GELU: x for x >= 10, 0 for x <= -10, decided on the bits of x (unsigned,
+    // the negatives order above the positives). This also keeps infinities, whose emulated
+    // product is NaN, and x^3 overflowing out of the result.
+    const auto ux = aie::vector_cast<uint32_t>(x);
+    fvec y = aie::select(mul(num, q), x,
+                         aie::ge(ux, aie::broadcast<uint32_t, 32>(kTenBits)) &
+                             aie::lt(ux, aie::broadcast<uint32_t, 32>(kSignBit)));
+    return aie::select(y, aie::zeros<float, 32>(),
+                       aie::ge(ux, aie::broadcast<uint32_t, 32>(kSignBit | kTenBits)));
+}
+
+/**
+ * @brief Applies the GELU activation (tanh approximation) to every lane; see @ref vec_gelu_32.
+ *
+ * Narrower vectors run at 32 lanes: the emulated f32 multiply costs the same at 16 lanes as at 32.
+ *
+ * @tparam VecSize Vector width, up to 32.
+ * @param[in] x The input vector.
+ * @return The element-wise GELU.
+ */
+template <unsigned VecSize>
+__attribute__((always_inline)) inline aie::vector<float, VecSize>
+vec_gelu(const aie::vector<float, VecSize> & x) {
+    static_assert(VecSize <= 32, "vec_gelu takes up to 32 lanes");
+    if constexpr (VecSize < 32) {
+        return vec_gelu_32(x.template grow<32>()).template extract<VecSize>(0);
+    } else {
+        return vec_gelu_32(x);
+    }
+}
+
+#else // __AIE_ARCH__ == 20
+
 /**
  * @brief Applies the GELU activation (tanh approximation) to every lane.
  *
@@ -475,6 +614,8 @@ inline aie::vector<float, VecSize> vec_gelu(const aie::vector<float, VecSize> & 
 
     return aie::mul(x, aie::inv(aie::add(e, 1.0f))).template to_vector<float>();
 }
+
+#endif // __AIE_ARCH__ != 20
 
 /**
  * @brief Returns |v| for one element.

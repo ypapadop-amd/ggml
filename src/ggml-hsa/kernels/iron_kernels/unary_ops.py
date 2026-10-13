@@ -43,6 +43,9 @@ from .utils import (
 # at least 2432 bytes on aie2 (aiecc's lower bound: it has no stack information for the soft-float
 # libcalls the scalar tail reaches), so this matches binary_ops.py's 4096.
 _STACK_SIZE_BYTES = 4096
+# aie2p's GELU runs two 32-lane vectors of emulated f32 arithmetic per loop trip, and LLVM spills
+# its loop invariants (bf16 limbs and accumulators of the constants) to a 5.3 KB frame.
+_AIE2P_GELU_STACK_SIZE_BYTES = 6144
 
 
 def _unary_op(
@@ -50,6 +53,7 @@ def _unary_op(
     input_tensors: list,
     function_spec: CoreFunctionSpec,
     output_tensor,
+    stack_size: int = _STACK_SIZE_BYTES,
 ):
     """Element-wise output_tensor = op(input_tensors[0]).
 
@@ -58,6 +62,7 @@ def _unary_op(
         input_tensors: List of one input tensor.
         function_spec: Core function specification.
         output_tensor: Output tensor.
+        stack_size: Stack size of each worker, in bytes.
 
     Returns:
         The resolved IRON program.
@@ -113,7 +118,7 @@ def _unary_op(
                 function,
                 tiles_per_worker[w],
             ],
-            stack_size=_STACK_SIZE_BYTES,
+            stack_size=stack_size,
         )
         for w in range(n_workers)
     ]
@@ -308,4 +313,9 @@ def unary_op(
         input_tensors=input_tensors,
         function_spec=function_spec,
         output_tensor=output_tensor,
+        stack_size=(
+            _AIE2P_GELU_STACK_SIZE_BYTES
+            if arch == "aie2p" and op_name == "GGML_UNARY_OP_GELU"
+            else _STACK_SIZE_BYTES
+        ),
     )
