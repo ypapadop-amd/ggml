@@ -200,6 +200,13 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t nc, int64_t nr, int6
                        name, (long long)r, (long long)i, got, want, rel);
                 ok = false;
             }
+            // DIV is exact on both archs (the scalar division, or on aie2p f32 the vector long
+            // division, which rounds as IEEE does), so it must match the CPU bit for bit.
+            if (kind == op_kind::div && ulp != 0 && ok) {
+                printf("  %-22s: inexact quotient at row %lld col %lld got %.9g want %.9g\n", name,
+                       (long long)r, (long long)i, got, want);
+                ok = false;
+            }
         }
     }
     printf("  %-22s: worst %lld ulp, %.3e rel-to-%s (allowed %.3e)\n", name,
@@ -264,8 +271,7 @@ int main() {
         // src1_nr == nr with nz == 1 makes src1 the same shape as src0, so no broadcast is
         // involved at all and dispatch lands on the plain ggml_op_add/sub/mul/div kernels --
         // a different body from every case above, and the one the shared vectorized
-        // transform_vector_walk_n serves. Only these four ops have a vector body there; DIV stays
-        // scalar deliberately.
+        // transform_vector_walk_n serves (DIV's is div_n, and only on aie2p).
         {op_kind::add, 768, 64, 1, 64, "add elementwise"},
         {op_kind::sub, 768, 64, 1, 64, "sub elementwise"},
         {op_kind::mul, 768, 64, 1, 64, "mul elementwise"},
