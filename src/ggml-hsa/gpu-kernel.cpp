@@ -67,10 +67,13 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor & dst_tensor) const {
     auto * queue = ctx.queue;
 
-    // Wait for a free ring slot before reserving it: the wait flushes, and ringing the doorbell
-    // past a reserved slot whose header is still invalid would stall the packet processor.
-    while (hsa_queue_load_write_index_relaxed(queue) - hsa_queue_load_read_index_scacquire(queue) >=
-           queue->size) {
+    // A kernarg segment must stay unchanged until its kernel completes, but the packet processor
+    // consumes a packet (advancing the read index) when it launches it. The kernarg slot this
+    // packet takes was last used queue->size packets earlier, so drain unless that packet is known
+    // to have completed. This also covers a full ring, whose oldest packet was not even consumed.
+    // Drain before reserving the slot: the drain flushes, and ringing the doorbell past a reserved
+    // slot whose header is still invalid would stall the packet processor.
+    if (hsa_queue_load_write_index_relaxed(queue) >= ctx.completed_write_index + queue->size) {
         if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
             status != GGML_STATUS_SUCCESS) {
             return status;

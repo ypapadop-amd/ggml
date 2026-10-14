@@ -625,6 +625,8 @@ struct ggml_backend_hsa_context {
     ggml_hsa_kernarg_pool kernargs;     ///< Per-ring-slot kernarg buffers for in-flight packets.
     std::size_t dispatch_batch_size{1}; ///< Packets accumulated before the doorbell is rung.
     std::size_t n_batched{};            ///< Packets written since the last doorbell ring.
+    /// @brief Queue write index at the last full drain: every packet before it has completed.
+    std::uint64_t completed_write_index{};
 
     /// @brief First error reported by the queue's error callback, or @c HSA_STATUS_SUCCESS.
     std::atomic<hsa_status_t> queue_error{HSA_STATUS_SUCCESS};

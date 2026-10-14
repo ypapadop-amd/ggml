@@ -1058,9 +1058,11 @@ ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
 /**
  * @brief Records an asynchronous queue error on the owning context.
  *
- * The runtime calls this synchronously, on the thread that rang the doorbell, when it cannot
- * submit a packet; it then suspends the queue. Only the first error is kept: that is the one that
- * suspended the queue, and every later failure is a consequence of it.
+ * The runtime calls this when it cannot submit or run a packet, then suspends the queue. For an AIE
+ * queue that happens synchronously, on the thread that rang the doorbell; for a GPU queue it
+ * happens on a runtime thread, possibly while another thread waits on the queue (see
+ * @ref ggml_hsa_wait_signal_zero). Only the first error is kept: that is the one that suspended the
+ * queue, and every later failure is a consequence of it.
  *
  * @param[in] status error reported by the runtime
  * @param[in] source queue the error occurred on (unused; the context identifies it)
@@ -1155,6 +1157,45 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
 }
 
 /**
+ * @brief Waits for @p signal to reach zero, or for the queue of @p ctx to be suspended.
+ *
+ * A suspended queue never releases the completion signals of the packets it did not run, so an
+ * unbounded wait would then block forever. A GPU queue is suspended from the runtime's error
+ * callback asynchronously, possibly after the wait started, so @c queue_error is checked between
+ * bounded waits rather than only before them.
+ *
+ * @param[in] ctx    backend context owning the queue that releases @p signal
+ * @param[in] signal completion signal to wait for
+ * @retval true  @p signal reached zero
+ * @retval false the queue was suspended first; @p signal may never reach zero
+ */
+static bool ggml_hsa_wait_signal_zero(const ggml_backend_hsa_context & ctx, hsa_signal_t signal) {
+    // The wait timeout is a hint in system timestamp ticks; check the queue every ~10 ms.
+    static const std::uint64_t timeout_hint = [] {
+        std::uint64_t ticks_per_second = 0;
+        if (hsa_system_get_info(HSA_SYSTEM_INFO_TIMESTAMP_FREQUENCY, &ticks_per_second) !=
+                HSA_STATUS_SUCCESS ||
+            ticks_per_second == 0) {
+            ticks_per_second = 1'000'000'000;
+        }
+        return ticks_per_second / 100;
+    }();
+    while (true) {
+        const hsa_signal_value_t value = hsa_signal_wait_scacquire(
+            signal, HSA_SIGNAL_CONDITION_EQ, 0, timeout_hint, HSA_WAIT_STATE_BLOCKED);
+        if (value == 0) {
+            return true;
+        }
+        if (value < 0) {
+            GGML_ABORT("%s: unexpected signal value (%ld)\n", __func__, value);
+        }
+        if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
+            return false;
+        }
+    }
+}
+
+/**
  * @brief Waits, with a bound, for the packets still in flight on a suspended queue.
  *
  * A suspended queue never releases the completion signals of the packets it did not run, so the
@@ -1243,11 +1284,13 @@ ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
         return status;
     }
 
-    if (auto val = hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_EQ, 0,
-                                             UINT64_MAX, HSA_WAIT_STATE_BLOCKED);
-        val != 0) {
-        GGML_ABORT("%s: unexpected signal value (%ld)\n", __func__, val);
+    if (!ggml_hsa_wait_signal_zero(ctx, ctx.dispatch_signal)) {
+        ctx.pending_conversions.clear();
+        return GGML_STATUS_FAILED;
     }
+    // Single producer: no packet was written since the flush, so every packet before the write
+    // index has completed.
+    ctx.completed_write_index = hsa_queue_load_write_index_relaxed(ctx.queue);
 
     // Every packet ran, so the constant conversions among them may now be reused by any context; a
     // later conversion of the same constant comes later in the list and wins. Not after waiting on
@@ -2344,26 +2387,29 @@ struct ggml_hsa_event_context {
  * the signal to reach zero.
  *
  * @param[in] ec Event context populated by @c ggml_backend_hsa_event_record.
+ * @retval true  the recorded work completed
+ * @retval false the recording queue is suspended, so the recorded work did not all run
  */
-static void ggml_hsa_event_wait_for_snapshot(const ggml_hsa_event_context & ec) {
+static bool ggml_hsa_event_wait_for_snapshot(const ggml_hsa_event_context & ec) {
     if (ec.snapshot == 0) {
-        return;
+        return true;
     }
     // Non-zero snapshot is only ever set together with ec.ctx, so ctx is valid here.
     assert(ec.ctx != nullptr);
     // Flush pending packets on the recording context; the drain below waits for the dispatch
     // signal to reach zero, which never happens if written packets were never rung.
     //
-    // A suspended queue never drains, so there is nothing to wait for. This returns void, so the
-    // caller is warned here and failed via dependency_failed in ggml_backend_hsa_event_wait.
-    if (ggml_hsa_flush_dispatches(*ec.ctx) != GGML_STATUS_SUCCESS) {
+    // A suspended queue never drains, so there is nothing to wait for, including when it is
+    // suspended during the wait. The event interface returns void, so the caller is warned here
+    // and failed via dependency_failed in ggml_backend_hsa_event_wait.
+    if (ggml_hsa_flush_dispatches(*ec.ctx) != GGML_STATUS_SUCCESS ||
+        !ggml_hsa_wait_signal_zero(*ec.ctx, ec.signal())) {
         GGML_HSA_LOG_WARN("%s: queue suspended; the work this event fences did not run and is not "
                           "being waited for",
                           __func__);
-        return;
+        return false;
     }
-    hsa_signal_wait_scacquire(ec.signal(), HSA_SIGNAL_CONDITION_EQ, 0, UINT64_MAX,
-                              HSA_WAIT_STATE_BLOCKED);
+    return true;
 }
 
 /**
@@ -2417,7 +2463,9 @@ static void ggml_backend_hsa_event_wait(ggml_backend_t backend, ggml_backend_eve
         ec.ctx->queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
         ctx.dependency_failed.store(true, std::memory_order_relaxed);
     }
-    ggml_hsa_event_wait_for_snapshot(ec);
+    if (!ggml_hsa_event_wait_for_snapshot(ec)) {
+        ctx.dependency_failed.store(true, std::memory_order_relaxed);
+    }
 }
 
 /**
@@ -2692,7 +2740,8 @@ static void ggml_backend_hsa_device_event_free(ggml_backend_dev_t /* dev */,
  */
 static void ggml_backend_hsa_device_event_synchronize(ggml_backend_dev_t /* dev */,
                                                       ggml_backend_event_t event) {
-    ggml_hsa_event_wait_for_snapshot(*static_cast<ggml_hsa_event_context *>(event->context));
+    // A suspended producer was already warned about; this interface cannot report it.
+    (void)ggml_hsa_event_wait_for_snapshot(*static_cast<ggml_hsa_event_context *>(event->context));
 }
 
 /**
