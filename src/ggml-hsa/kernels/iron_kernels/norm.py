@@ -7,6 +7,7 @@
 
 """IRON design for norm (layer normalization) over dim 0, tiles of whole rows over workers."""
 
+import math
 import struct
 from pathlib import Path
 
@@ -38,6 +39,9 @@ _STACK_SIZE_BYTES = {"aie2": 2048, "aie2p": 3072}
 
 # How many more rows than the fewest possible a worker may take to get fewer, larger tiles.
 _ROW_SLACK = 1.15
+
+# aie2p: at most sqrt(elements / this) workers (see _tiling).
+_AIE2P_WORKER_ELEMENTS = 768
 
 
 def norm(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -157,6 +161,14 @@ def _tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
     tiles of 10 (7 tiles, 70 rows for the busiest worker), measured faster than 500 tiles of 1
     (63 rows: 167 vs 93 us at 10 wide) and than 20 tiles of 25 (75 rows: 96 us).
 
+    On aie2p the workers are at most sqrt(elements / _AIE2P_WORKER_ELEMENTS): a worker adds a
+    fixed cost to the dispatch (sixteen early-return workers measured 131 us for 768 x 256
+    against 116 for eight) while its band moves at a per-worker rate, so the best count grows as
+    the square root of the data. At 768-wide rows that is sqrt(rows) workers, which measured
+    fastest or within noise of it over 16 to 1024 rows (8 workers for 64 rows: 84 us, 16: 92).
+    In a graph, where each op switches designs, a worker costs far more, which this does not
+    weigh: norm, mul and add over 768 x 64 took 1823 us with 16 workers, 1305 with 8, 909 with 1.
+
     Args:
         arch: Target AIE architecture.
         input_tensor: Input tensor.
@@ -176,6 +188,11 @@ def _tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
         ),
     )
     max_workers = 2 * arch_num_columns(arch)
+    if arch == "aie2p":
+        max_workers = min(
+            max_workers,
+            max(1, round(math.sqrt(row_length * num_rows / _AIE2P_WORKER_ELEMENTS))),
+        )
 
     def busiest_worker_rows(rows):
         num_tiles = num_rows // rows
