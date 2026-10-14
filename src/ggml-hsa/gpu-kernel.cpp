@@ -216,7 +216,11 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // to zero when the kernel finishes (see ggml_hsa_wait_dispatches).
     hsa_signal_add_relaxed(ctx.dispatch_signal, 1);
 
+    // The barrier bit makes the packet processor wait for every earlier packet to complete before
+    // launching this one; without it, consecutive dispatches may overlap, and a dispatch would race
+    // with the one producing its sources.
     std::uint16_t header = HSA_PACKET_TYPE_KERNEL_DISPATCH << HSA_PACKET_HEADER_TYPE;
+    header |= 1 << HSA_PACKET_HEADER_BARRIER;
     header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE;
     header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE;
     atomic_set_packet_header(
