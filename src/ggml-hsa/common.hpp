@@ -570,8 +570,8 @@ struct ggml_backend_hsa_tensor_extra {
     /// @brief A converted copy of a graph-constant tensor, made for consumers that cannot read the
     /// tensor as-is (see @ref source_node_t::is_constant).
     struct conversion_t {
-        ggml_tensor tensor{};                  ///< The converted tensor; its data is @c buffer.
-        ggml_hsa_device_ptr buffer;            ///< Device storage of the converted tensor.
+        ggml_tensor tensor{};       ///< The converted tensor; its data is @c buffer.
+        ggml_hsa_device_ptr buffer; ///< Device storage of the converted tensor.
         /// @brief The parent data pointer whose converted contents @c buffer holds, or null if
         /// none (no conversion yet, or the last one failed).
         const void * converted_ptr{nullptr};
