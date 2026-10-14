@@ -26,6 +26,9 @@ constexpr int32_t G = V;
 /// one per trip leaves the loop latency-bound.
 constexpr int32_t U = 4;
 
+/// One trip of the unrolled loops as one vector.
+using wvec = aie::vector<float, U * V>;
+
 template <bool Aligned>
 __attribute__((always_inline)) inline vec load(const float * p) {
     if constexpr (Aligned) {
@@ -33,6 +36,12 @@ __attribute__((always_inline)) inline vec load(const float * p) {
     } else {
         return aie::load_unaligned_v<V>(p);
     }
+}
+
+template <bool Aligned>
+__attribute__((always_inline)) inline wvec load_w(const float * p) {
+    return aie::concat(load<Aligned>(p), load<Aligned>(p + V), load<Aligned>(p + 2 * V),
+                       load<Aligned>(p + 3 * V));
 }
 
 template <bool Aligned>
@@ -52,6 +61,9 @@ __attribute__((always_inline)) inline void store(float * p, const vec & v) {
 // per row, and the bf16 multiply's two products per lane (lanes i and i + V of its operands) pair
 // the limb products, so a deviation's square takes two multiplies and its product with the
 // scale four. The caller sets floor rounding (truncating conversions).
+
+/// Lanes of one step of the squares and normalize loops.
+constexpr int32_t W = V;
 
 using pair_t = aie::vector<bfloat16, 2 * V>;
 using acc_t = aie::accum<accfloat, V>;
@@ -121,27 +133,97 @@ struct factor {
 
 #else
 
-/// A running sum of squares (the f32 multiply as the target provides it).
-struct sum_sq {
-    vec a = aie::zeros<float, V>();
+// f32 products on bf16 limbs, 64 lanes a step. aie2p has no f32 multiplier: an f32 aie::mul splits
+// both operands into three bf16 limbs and sums nine separate limb products, 32 lanes at a time,
+// while one bf16 multiply takes 64 lanes. Here a row's scale is split once per row, a deviation's
+// square takes four bf16 multiplies and its product with the scale eight (every limb product but
+// lo * lo), each 64 lanes wide, and each accumulates exactly (a bf16 product is exact in f32).
 
-    __attribute__((always_inline)) void add(const vec & c) {
-        a = aie::add(a, aie::mul(c, c).template to_vector<float>());
-    }
+/// Lanes of one step of the squares and normalize loops: a bf16 multiply fills a 64-lane
+/// accumulator.
+constexpr int32_t W = U * V;
 
-    __attribute__((always_inline)) void add(const sum_sq & o) { a = aie::add(a, o.a); }
+template <unsigned L>
+using bf_t = aie::vector<bfloat16, L>;
+template <unsigned L>
+using acc_t = aie::accum<accfloat, L>;
 
-    __attribute__((always_inline)) vec total() const { return a; }
+template <unsigned L>
+struct limbs {
+    bf_t<L> h, m, l;
 };
 
-/// A row's scale s, as a multiplier.
+/// Splits @p x into bf16 limbs h + m + l, each from the exact residual of the ones before (an
+/// accumulator subtraction, which is exact where aie2p's vadd.f is not).
+template <unsigned L>
+__attribute__((always_inline)) inline limbs<L> split(const aie::vector<float, L> & x) {
+    const bf_t<L> one = aie::broadcast<bfloat16, L>(1.0f);
+    acc_t<L> r;
+    r.from_vector(x);
+    limbs<L> s;
+    s.h = r.template to_vector<bfloat16>();
+    r = aie::msc(r, s.h, one);
+    s.m = r.template to_vector<bfloat16>();
+    r = aie::msc(r, s.m, one);
+    s.l = r.template to_vector<bfloat16>();
+    return s;
+}
+
+/// A running sum of squares, a + 2 * b, of the limbs h, m, l of each square: h h + m m + 2 (h m +
+/// h l). The dropped 2 m l + l l is below 2^-21 of the square (|m| < 2^-7 |h|, |l| < 2^-15 |h|).
+struct sum_sq {
+    acc_t<W> a = aie::zeros<accfloat, W>();
+    acc_t<W> b = aie::zeros<accfloat, W>();
+
+    __attribute__((always_inline)) void add(const wvec & c) {
+        const limbs<W> s = split(c);
+        a = aie::mac(a, s.h, s.h);
+        b = aie::mac(b, s.h, s.m);
+        a = aie::mac(a, s.m, s.m);
+        b = aie::mac(b, s.h, s.l);
+    }
+
+    /// One vector of V lanes, the others zero.
+    __attribute__((always_inline)) void add(const vec & c) {
+        const vec z = aie::zeros<float, V>();
+        add(aie::concat(c, z, z, z));
+    }
+
+    __attribute__((always_inline)) void add(const sum_sq & o) {
+        a = aie::add(a, o.a);
+        b = aie::add(b, o.b);
+    }
+
+    __attribute__((always_inline)) wvec total() const {
+        const wvec bv = b.template to_vector<float>();
+        return aie::add(a.template to_vector<float>(), aie::add(bv, bv));
+    }
+};
+
+/// A row's scale s, split once.
 struct factor {
-    vec s;
+    limbs<W> s;
 
-    __attribute__((always_inline)) explicit factor(float f) : s(aie::broadcast<float, V>(f)) {}
+    __attribute__((always_inline)) explicit factor(float f) :
+        s(split(aie::broadcast<float, W>(f))) {}
 
-    __attribute__((always_inline)) vec times(const vec & x) const {
-        return aie::mul(x, s).template to_vector<float>();
+    /// x * s on L lanes (L divides W), in two chains, each with its smaller products first.
+    template <unsigned L>
+    __attribute__((always_inline)) aie::vector<float, L>
+    times(const aie::vector<float, L> & x) const {
+        const limbs<L> c = split(x);
+        const bf_t<L> sh = s.h.template extract<L>(0);
+        const bf_t<L> sm = s.m.template extract<L>(0);
+        const bf_t<L> sl = s.l.template extract<L>(0);
+        acc_t<L> p = aie::mul(c.m, sl);
+        acc_t<L> q = aie::mul(c.l, sh);
+        p = aie::mac(p, c.l, sm);
+        q = aie::mac(q, c.h, sm);
+        p = aie::mac(p, c.h, sl);
+        q = aie::mac(q, c.m, sh);
+        p = aie::mac(p, c.m, sm);
+        q = aie::mac(q, c.h, sh);
+        return aie::add(q, p).template to_vector<float>();
     }
 };
 
@@ -171,10 +253,26 @@ template <bool Aligned>
 __attribute__((always_inline)) inline float row_sum(
     const float * __restrict p, int32_t vend, int32_t tail, aie::mask<V> tail_lanes, int32_t room) {
     vec acc = aie::zeros<float, V>();
-    GGML_AIE_LOOP_MIN_TRIPS(4, i, vend, V, {
-        acc = aie::add(acc, load<Aligned>(p));
-        p += V;
-    })
+    if constexpr (W == U * V) {
+        // A 64-lane f32 add is one instruction.
+        const int32_t vendu = vend & ~(U * V - 1);
+        wvec accw = aie::zeros<float, U * V>();
+        GGML_AIE_LOOP_MIN_TRIPS(4, i, vendu, U * V, {
+            accw = aie::add(accw, load_w<Aligned>(p));
+            p += U * V;
+        })
+        acc = aie::add(aie::add(accw.template extract<V>(0), accw.template extract<V>(1)),
+                       aie::add(accw.template extract<V>(2), accw.template extract<V>(3)));
+        for (int32_t i = vendu; i < vend; i += V) {
+            acc = aie::add(acc, load<Aligned>(p));
+            p += V;
+        }
+    } else {
+        GGML_AIE_LOOP_MIN_TRIPS(4, i, vend, V, {
+            acc = aie::add(acc, load<Aligned>(p));
+            p += V;
+        })
+    }
     if (tail > 0) {
         acc = aie::add(acc,
                        aie::select(aie::zeros<float, V>(), load_tail(p, tail, room), tail_lanes));
@@ -192,12 +290,20 @@ __attribute__((always_inline)) inline float row_sum_sq_dev(const float * __restr
                                                            int32_t room) {
     sum_sq acc0, acc1;
     const int32_t vendu = vend & ~(U * V - 1);
-    for (int32_t i = 0; i < vendu; i += U * V) {
-        acc0.add(aie::sub(load<Aligned>(p), m));
-        acc1.add(aie::sub(load<Aligned>(p + V), m));
-        acc0.add(aie::sub(load<Aligned>(p + 2 * V), m));
-        acc1.add(aie::sub(load<Aligned>(p + 3 * V), m));
-        p += U * V;
+    if constexpr (W == U * V) {
+        const wvec mw = aie::concat(m, m, m, m);
+        GGML_AIE_LOOP_MIN_TRIPS(4, i, vendu, U * V, {
+            acc0.add(aie::sub(load_w<Aligned>(p), mw));
+            p += U * V;
+        })
+    } else {
+        for (int32_t i = 0; i < vendu; i += U * V) {
+            acc0.add(aie::sub(load<Aligned>(p), m));
+            acc1.add(aie::sub(load<Aligned>(p + V), m));
+            acc0.add(aie::sub(load<Aligned>(p + 2 * V), m));
+            acc1.add(aie::sub(load<Aligned>(p + 3 * V), m));
+            p += U * V;
+        }
     }
     acc0.add(acc1);
     for (int32_t i = vendu; i < vend; i += V) {
@@ -227,13 +333,26 @@ __attribute__((always_inline)) inline void row_normalize(const float * __restric
     const bool bounce_last = !Aligned && vend > 0 && room < STORE_SPILL;
     const int32_t vend_direct = bounce_last ? vend - V : vend;
     const int32_t vendu = vend_direct & ~(U * V - 1);
-    for (int32_t i = 0; i < vendu; i += U * V) {
-        AIE_LOOP_UNROLL_FULL
-        for (int32_t u = 0; u < U; ++u) {
-            store<Aligned>(q + u * V, s.times(aie::sub(load<Aligned>(p + u * V), m)));
+    if constexpr (W == U * V) {
+        const wvec mw = aie::concat(m, m, m, m);
+        GGML_AIE_LOOP_MIN_TRIPS(4, i, vendu, U * V, {
+            const wvec y = s.times(aie::sub(load_w<Aligned>(p), mw));
+            AIE_LOOP_UNROLL_FULL
+            for (int32_t u = 0; u < U; ++u) {
+                store<Aligned>(q + u * V, y.template extract<V>(u));
+            }
+            p += U * V;
+            q += U * V;
+        })
+    } else {
+        for (int32_t i = 0; i < vendu; i += U * V) {
+            AIE_LOOP_UNROLL_FULL
+            for (int32_t u = 0; u < U; ++u) {
+                store<Aligned>(q + u * V, s.times(aie::sub(load<Aligned>(p + u * V), m)));
+            }
+            p += U * V;
+            q += U * V;
         }
-        p += U * V;
-        q += U * V;
     }
     for (int32_t i = vendu; i < vend_direct; i += V) {
         store<Aligned>(q, s.times(aie::sub(load<Aligned>(p), m)));

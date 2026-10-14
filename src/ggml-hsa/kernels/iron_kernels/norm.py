@@ -33,7 +33,7 @@ from .utils import (
 _OP_NAME = "GGML_OP_NORM"
 
 # The core's stack, over the 1024-byte default: the kernel's frame measures 1088 bytes on aie2 and
-# 2432 on aie2p (its emulated f32 multiplies spill), plus main's.
+# 2368 on aie2p, plus main's.
 _STACK_SIZE_BYTES = {"aie2": 2048, "aie2p": 3072}
 
 # How many more rows than the fewest possible a worker may take to get fewer, larger tiles.
