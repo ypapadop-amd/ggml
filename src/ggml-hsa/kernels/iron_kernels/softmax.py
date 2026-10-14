@@ -45,6 +45,9 @@ _STACK_SIZE_BYTES = 2048
 # temporaries on the stack: the kernel's frame measures up to 3392 bytes over row lengths 1..32
 # (the narrow rows' lane path, largest at 3 to 5 elements), plus main's.
 _PLAIN_STACK_SIZE_BYTES = 4096
+# aie2p's 64-lane passes keep more live 2048-bit values: frames up to 10240 bytes (7872 for the
+# rows, 2368 for the exp() they call), plus main's.
+_PLAIN_STACK_SIZE_BYTES_AIE2P = 10752
 
 
 def softmax(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -186,7 +189,9 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
                 function,
                 tiles_per_worker[w],
             ],
-            stack_size=_PLAIN_STACK_SIZE_BYTES,
+            stack_size=_PLAIN_STACK_SIZE_BYTES_AIE2P
+            if arch == "aie2p"
+            else _PLAIN_STACK_SIZE_BYTES,
         )
         for w in range(n_workers)
     ]
@@ -430,6 +435,7 @@ def create_ternary_program(
 
 # Rows the plain kernel computes together when they are this short: one per lane (softmax.cc).
 _LANE_ROWS = 32
+_LANE_ROWS_AIE2P = 64
 _LANE_ROWS_MAX_LENGTH = 32
 
 
@@ -440,10 +446,9 @@ def _plain_tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
     to two workers per column. Over the row counts that divide the rows and whose
     double-buffered tiles fit half of L1, this takes the split whose busiest worker has the
     least work, preferring larger tiles: rows up to _LANE_ROWS_MAX_LENGTH long cost about the
-    same per group of _LANE_ROWS rows however full (on aie2; elsewhere this only shapes the
-    split), longer ones cost per row. MNIST's 500
-    rows of 10 go as 20 tiles of 25 rows over 8 workers (3 groups for the busiest), not 4
-    tiles of 125 over 4 (4 groups).
+    same per group of _LANE_ROWS rows (_LANE_ROWS_AIE2P on aie2p) however full, longer ones cost
+    per row. MNIST's 500 rows of 10 go on aie2 as 20 tiles of 25 rows over 8 workers (3 groups
+    for the busiest), not 4 tiles of 125 over 4 (4 groups).
 
     Args:
         arch: Target AIE architecture.
@@ -463,7 +468,11 @@ def _plain_tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
             np.dtype((output_tensor.dtype, (row_length,))),
         ),
     )
-    lane_rows = _LANE_ROWS if row_length <= _LANE_ROWS_MAX_LENGTH else 1
+    lane_rows = (
+        (_LANE_ROWS_AIE2P if arch == "aie2p" else _LANE_ROWS)
+        if row_length <= _LANE_ROWS_MAX_LENGTH
+        else 1
+    )
     max_workers = 2 * arch_num_columns(arch)
 
     def busiest_worker_work(rows):
