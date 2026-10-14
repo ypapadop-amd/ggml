@@ -48,7 +48,8 @@ contiguous, equally shaped tensors:
 - `add_*` for every dtype combination ggml's CPU backend implements: f32, f16
   and bf16 with matching dtypes, and an f16 or bf16 source plus an f32 source
   into either of their dtypes.
-- `scale_*` for f32, f16 and bf16.
+- `scale_*` for f32 only (ggml's CPU backend has no f16/bf16 `SCALE` to check a
+  generated kernel against).
 
 Broadcasting and non-contiguous kernels are skipped. By default it writes into
 the runtime cache directory above, so kernels are found automatically — no

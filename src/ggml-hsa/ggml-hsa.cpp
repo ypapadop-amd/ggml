@@ -512,19 +512,15 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     }
     dev_info.name = std::string(name);
 
-    switch (type) {
-        case HSA_DEVICE_TYPE_AIE:
-            if (dev_info.name != "aie2" && dev_info.name != "aie2p") {
-                GGML_ABORT("%s: unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
-            }
-            dev_info.substitute_fp16_bf16 = true;
-            GGML_ASSERT(dev_info.alignment % 4 == 0);
-            break;
-        case HSA_DEVICE_TYPE_GPU:
-            // AMD GPU (e.g. gfx1151 Strix Halo iGPU); native datatypes, no fp16->bf16 substitution
-            break;
-        default:
+    // The switch above already filtered type to AIE or GPU; only AIE needs extra validation and
+    // setup here (an AMD GPU, e.g. gfx1151 Strix Halo iGPU, uses native datatypes, with no
+    // fp16->bf16 substitution).
+    if (type == HSA_DEVICE_TYPE_AIE) {
+        if (dev_info.name != "aie2" && dev_info.name != "aie2p") {
             GGML_ABORT("%s: unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
+        }
+        dev_info.substitute_fp16_bf16 = true;
+        GGML_ASSERT(dev_info.alignment % 4 == 0);
     }
 
     // find dev memory pool (only for AIE agents)

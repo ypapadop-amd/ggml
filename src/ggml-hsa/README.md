@@ -346,7 +346,7 @@ JIT compilation generates kernels on-the-fly. Precompiled kernels in `GGML_HSA_K
 | `GGML_HSA`             | Enable HSA backend                                                 |
 | `GGML_HSA_AIE`         | Enable AIE (XDNA NPU) devices (default `ON`)                       |
 | `GGML_HSA_GPU`         | Enable GPU devices (default `OFF`)                                 |
-| `GGML_HSA_JIT_COMPILE` | Enable JIT compilation (requires IRON for AIE kernels, Triton for GPU-only) |
+| `GGML_HSA_JIT_COMPILE` | Enable JIT compilation (needs an IRON environment for AIE kernels; a GPU-only build, `GGML_HSA_AIE=OFF`, uses Triton instead and does not build `iron_kernels`, though installing Triton's own requirements pulls in IRON packages transitively) |
 
 ### Environment Variables
 

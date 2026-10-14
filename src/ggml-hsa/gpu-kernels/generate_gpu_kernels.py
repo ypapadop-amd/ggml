@@ -53,6 +53,13 @@ ADD_DTYPES = {
     ("f16", "f32", "f32"),
 }
 
+# (src, dst) dtype combinations ggml's CPU backend implements for SCALE
+# (ggml-cpu/ops.cpp, ggml_compute_forward_scale): f32 only, so a generated kernel can be checked
+# against the CPU result.
+SCALE_DTYPES = {
+    ("f32", "f32"),
+}
+
 # A tensor in a kernel name: dimensions joined by "x", the dtype, and "n" if non-contiguous.
 _TENSOR = r"(\d+(?:x\d+)*)(f32|f16|bf16)(n?)"
 # Kernel names list the destination first, then the sources.
@@ -111,9 +118,7 @@ def kernel_source(name: str) -> str | None:
 """
     if match := _SCALE_RE.match(name):
         dst, src = _tensors(match)
-        # ggml-cpu's ggml_compute_forward_scale only implements f32 (GGML_ABORT otherwise), so an
-        # f16/bf16 kernel here could never be checked against a CPU result.
-        if not _elementwise([dst, src]) or dst.dtype != "f32" or src.dtype != "f32":
+        if not _elementwise([dst, src]) or (src.dtype, dst.dtype) not in SCALE_DTYPES:
             return None
         ctype = CTYPES[dst.dtype]
         # The scalars follow N in op_params order, so dispatch copies them in raw.
