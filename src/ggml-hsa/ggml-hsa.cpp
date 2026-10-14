@@ -970,32 +970,6 @@ ggml_backend_hsa_tensor_extra::ggml_backend_hsa_tensor_extra(
     // postprocess_kernel. The dispatch functions infer the queue drains the host paths need.
 }
 
-#ifdef GGML_HSA_GPU
-/**
- * @brief Grants the device and CPU agents access to a unified-memory allocation.
- *
- * On Strix Halo the CPU and GPU share physical memory; buffers allocated from the GPU memory pool
- * must be made accessible to both the GPU agent (kernel execution) and the CPU agent (host-side
- * @c set_tensor / @c get_tensor copies).
- */
-static hsa_status_t
-ggml_hsa_grant_unified_access(const ggml_hsa_device_info::device_info & dev_info, void * ptr) {
-    const auto & info = ggml_hsa_info();
-    std::vector<hsa_agent_t> agents;
-    if (dev_info.agent.handle != 0) {
-        agents.push_back(dev_info.agent);
-    }
-    if (info.cpu_agent.handle != 0) {
-        agents.push_back(info.cpu_agent);
-    }
-    if (agents.empty()) {
-        return HSA_STATUS_SUCCESS;
-    }
-    return hsa_amd_agents_allow_access(static_cast<std::uint32_t>(agents.size()), agents.data(),
-                                       nullptr, ptr);
-}
-#endif
-
 /**
  * @brief Allocates @p size bytes of device memory from the data memory pool of @p dev_info into
  * @p buffer, logging on failure.
@@ -1003,36 +977,21 @@ ggml_hsa_grant_unified_access(const ggml_hsa_device_info::device_info & dev_info
 static ggml_status
 ggml_hsa_allocate_device_memory(const ggml_hsa_device_info::device_info & dev_info,
                                 std::size_t size,
-                                ggml_hsa_unique_ptr<std::byte> & buffer) {
-    void * ptr = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
-                                                   /* flags = */ 0, &ptr);
+                                ggml_hsa_device_ptr & buffer) {
+    if (auto status = ggml_hsa_allocate(dev_info.agent, dev_info.type,
+                                        dev_info.data_memory.memory_pool, size, buffer);
         status != HSA_STATUS_SUCCESS) {
         GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
                            (size / 1024.0 / 1024.0), dev_info.name.c_str(),
                            ggml_hsa_get_status_string(status));
         return GGML_STATUS_ALLOC_FAILED;
     }
-    buffer.reset(static_cast<std::byte *>(ptr));
-
-#ifdef GGML_HSA_GPU
-    if (dev_info.type == HSA_DEVICE_TYPE_GPU) {
-        if (auto status = ggml_hsa_grant_unified_access(dev_info, ptr);
-            status != HSA_STATUS_SUCCESS) {
-            GGML_HSA_LOG_ERROR("%s: failed to grant unified access (%s)", __func__,
-                               ggml_hsa_get_status_string(status));
-            buffer.reset();
-            return GGML_STATUS_ALLOC_FAILED;
-        }
-    }
-#endif
-
     return GGML_STATUS_SUCCESS;
 }
 
 ggml_status ggml_backend_hsa_tensor_extra::allocate_internal_storage(
     const ggml_hsa_device_info::device_info & dev_info,
-    ggml_hsa_unique_ptr<std::byte> & spare,
+    ggml_hsa_device_ptr & spare,
     std::size_t spare_capacity) {
     if (buffer != nullptr) {
         // already allocated
@@ -1163,21 +1122,9 @@ ggml_backend_hsa_context::ggml_backend_hsa_context(
     }
 #endif
     try {
-        kernargs = ggml_hsa_kernarg_pool{dev_info.kernarg_memory.memory_pool, queue->size,
-                                         slot_size, kernarg_alignment};
-#ifdef GGML_HSA_GPU
-        // the kernarg pool may be the GPU's data pool, which the host writes the arguments into
-        if (dev_info.type == HSA_DEVICE_TYPE_GPU) {
-            const std::array<hsa_agent_t, 2> agents = {dev_info.agent, ggml_hsa_info().cpu_agent};
-            if (auto status = hsa_amd_agents_allow_access(agents.size(), agents.data(), nullptr,
-                                                          kernargs.slot(0));
-                status != HSA_STATUS_SUCCESS) {
-                throw std::runtime_error{std::string("Could not grant kernarg pool access (")
-                                             .append(ggml_hsa_get_status_string(status))
-                                             .append(")")};
-            }
-        }
-#endif
+        kernargs = ggml_hsa_kernarg_pool{
+            dev_info.agent, dev_info.type, dev_info.kernarg_memory.memory_pool,
+            queue->size,    slot_size,     kernarg_alignment};
     } catch (...) {
         // release the HSA resources acquired above before propagating the failure
         GGML_HSA_CHECK_ABORT(hsa_signal_destroy(dispatch_signal));
@@ -1312,9 +1259,6 @@ ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
 
 /**
  * @brief Device memory mapped with the HSA vmem API, accessible to the host and the device.
- *
- * A GPU's memory is allocated with the pool allocator instead (see @ref allocate); importing a
- * dma-buf always maps it with the vmem API.
  */
 class ggml_hsa_vmem_allocation {
   public:
@@ -1324,35 +1268,13 @@ class ggml_hsa_vmem_allocation {
     ~ggml_hsa_vmem_allocation() { release(); }
 
     /**
-     * @brief Allocates at least @p size bytes from the data pool of @p dev_info.
+     * @brief Allocates at least @p size bytes from @p pool for the host and @p agent.
      *
      * On failure, nothing is left allocated.
      */
-    hsa_status_t allocate(const ggml_hsa_device_info::device_info & dev_info, std::size_t size) {
+    hsa_status_t allocate(hsa_agent_t agent, hsa_amd_memory_pool_t pool, std::size_t size) {
         assert(m_va == nullptr);
 
-#ifdef GGML_HSA_GPU
-        // A GPU reads stale data from vmem mappings, most visibly once a released range is mapped
-        // again, so GPU memory comes from the pool allocator instead.
-        if (dev_info.type == HSA_DEVICE_TYPE_GPU) {
-            if (auto status = hsa_amd_memory_pool_allocate(dev_info.data_memory.memory_pool, size,
-                                                           /* flags = */ 0, &m_va);
-                status != HSA_STATUS_SUCCESS) {
-                m_va = nullptr;
-                return status;
-            }
-            m_size = size;
-            m_pool_allocated = true;
-            if (auto status = ggml_hsa_grant_unified_access(dev_info, m_va);
-                status != HSA_STATUS_SUCCESS) {
-                release();
-                return status;
-            }
-            return HSA_STATUS_SUCCESS;
-        }
-#endif
-
-        const auto pool = dev_info.data_memory.memory_pool;
         std::size_t granule = 0;
         if (auto status = hsa_amd_memory_pool_get_info(
                 pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_GRANULE, &granule);
@@ -1371,7 +1293,7 @@ class ggml_hsa_vmem_allocation {
             return status;
         }
 
-        return map(dev_info, alloc_size);
+        return map(agent, alloc_size);
     }
 
     /**
@@ -1393,7 +1315,7 @@ class ggml_hsa_vmem_allocation {
             return status;
         }
 
-        return map(dev_info, static_cast<std::size_t>(dmabuf_size));
+        return map(dev_info.agent, static_cast<std::size_t>(dmabuf_size));
     }
 
     /// @brief Returns the base address of the mapping.
@@ -1404,11 +1326,11 @@ class ggml_hsa_vmem_allocation {
 
   private:
     /**
-     * @brief Maps @ref m_handle at a new @p size bytes range for the host and @p dev_info.
+     * @brief Maps @ref m_handle at a new @p size bytes range for the host and @p agent.
      *
      * On failure, releases everything, including @ref m_handle.
      */
-    hsa_status_t map(const ggml_hsa_device_info::device_info & dev_info, std::size_t size) {
+    hsa_status_t map(hsa_agent_t agent, std::size_t size) {
         if (auto status = hsa_amd_vmem_address_reserve_align(&m_va, size, /* address = */ 0,
                                                              /* alignment = */ 0,
                                                              HSA_AMD_VMEM_ADDRESS_NO_REGISTER);
@@ -1428,7 +1350,7 @@ class ggml_hsa_vmem_allocation {
 
         const std::array<hsa_amd_memory_access_desc_t, 2> access = {{
             {HSA_ACCESS_PERMISSION_RW, ggml_hsa_info().cpu_agent},
-            {HSA_ACCESS_PERMISSION_RW, dev_info.agent},
+            {HSA_ACCESS_PERMISSION_RW, agent},
         }};
         if (auto status = hsa_amd_vmem_set_access(m_va, m_size, access.data(), access.size());
             status != HSA_STATUS_SUCCESS) {
@@ -1441,13 +1363,6 @@ class ggml_hsa_vmem_allocation {
 
     /// @brief Releases whatever part of the allocation exists.
     void release() {
-        if (m_pool_allocated) {
-            GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(m_va));
-            m_va = nullptr;
-            m_size = 0;
-            m_pool_allocated = false;
-            return;
-        }
         if (m_mapped) {
             GGML_HSA_CHECK_ABORT(hsa_amd_vmem_unmap(m_va, m_size));
             m_mapped = false;
@@ -1467,8 +1382,39 @@ class ggml_hsa_vmem_allocation {
     void * m_va{};                          ///< Reserved virtual address range.
     std::size_t m_size{};                   ///< Size of the reserved range in bytes.
     bool m_mapped{false};                   ///< @c true if @ref m_handle is mapped at @ref m_va.
-    bool m_pool_allocated{false};           ///< @c true if @ref m_va is from the pool allocator.
 };
+
+void ggml_hsa_device_delete::operator()(std::byte * ptr) const {
+    if (vmem != nullptr) {
+        delete vmem;
+    } else if (ptr != nullptr) {
+        GGML_HSA_CHECK_ABORT(hsa_amd_memory_pool_free(ptr));
+    }
+}
+
+hsa_status_t ggml_hsa_allocate(hsa_agent_t agent,
+                               hsa_device_type_t type,
+                               hsa_amd_memory_pool_t pool,
+                               std::size_t size,
+                               ggml_hsa_device_ptr & ptr) {
+    if (type == HSA_DEVICE_TYPE_GPU) {
+        auto vmem = std::make_unique<ggml_hsa_vmem_allocation>();
+        if (auto status = vmem->allocate(agent, pool, size); status != HSA_STATUS_SUCCESS) {
+            return status;
+        }
+        auto * va = static_cast<std::byte *>(vmem->get());
+        ptr = ggml_hsa_device_ptr{va, ggml_hsa_device_delete{vmem.release()}};
+        return HSA_STATUS_SUCCESS;
+    }
+
+    void * va = nullptr;
+    if (auto status = hsa_amd_memory_pool_allocate(pool, size, /* flags = */ 0, &va);
+        status != HSA_STATUS_SUCCESS) {
+        return status;
+    }
+    ptr = ggml_hsa_device_ptr{static_cast<std::byte *>(va), ggml_hsa_device_delete{}};
+    return HSA_STATUS_SUCCESS;
+}
 
 /**
  * @brief Context for managing a HSA buffer associated with a specific device.
@@ -1499,7 +1445,7 @@ struct ggml_backend_hsa_buffer_context {
     /// @brief Internal storage outgrown by recycled extras. A graph may still be running on it when
     /// the next graph is allocated (ggml_backend_sched_graph_compute_async), so it is freed only
     /// with the buffer; extras grow their storage geometrically, which keeps this bounded.
-    std::vector<ggml_hsa_unique_ptr<std::byte>> outgrown_scratch;
+    std::vector<ggml_hsa_device_ptr> outgrown_scratch;
 
     explicit ggml_backend_hsa_buffer_context(std::int32_t device) : device{device} {}
 
@@ -1525,7 +1471,7 @@ ggml_status ggml_backend_hsa_buffer_context::attach_extra(ggml_tensor & tensor) 
         outgrown_scratch.push_back(std::move(slot->buffer));
     }
     auto & tensor_extra = slot.emplace(dev_info, tensor);
-    ggml_hsa_unique_ptr<std::byte> no_spare;
+    ggml_hsa_device_ptr no_spare;
     const auto status = tensor_extra.allocate_internal_storage(
         dev_info, spare_capacity > 0 ? outgrown_scratch.back() : no_spare, spare_capacity);
     if (spare_capacity > 0 && outgrown_scratch.back() == nullptr) {
@@ -1763,7 +1709,9 @@ ggml_backend_hsa_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_
     // kernel may read slightly past the last tensor (see ggml_hsa_buffer_read_slack).
     try {
         auto buf_ctx = std::make_unique<ggml_backend_hsa_buffer_context>(buft_ctx.device);
-        if (auto status = buf_ctx->dev_mem.allocate(dev_info, size + ggml_hsa_buffer_read_slack);
+        if (auto status =
+                buf_ctx->dev_mem.allocate(dev_info.agent, dev_info.data_memory.memory_pool,
+                                          size + ggml_hsa_buffer_read_slack);
             status != HSA_STATUS_SUCCESS) {
             GGML_HSA_LOG_ERROR("%s: failed to allocate %.2f MiB on device %s (%s)", __func__,
                                (size / 1024.0 / 1024.0), dev_info.name.c_str(),

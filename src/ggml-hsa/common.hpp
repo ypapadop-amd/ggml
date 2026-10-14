@@ -308,6 +308,33 @@ struct ggml_hsa_delete {
 template <typename T>
 using ggml_hsa_unique_ptr = std::unique_ptr<T, ggml_hsa_delete<T>>;
 
+class ggml_hsa_vmem_allocation;
+
+/**
+ * @brief Frees device memory allocated by @ref ggml_hsa_allocate.
+ */
+struct ggml_hsa_device_delete {
+    /// @brief Mapping that owns the memory, or @c nullptr if it is from the pool allocator.
+    ggml_hsa_vmem_allocation * vmem{};
+
+    void operator()(std::byte * ptr) const;
+};
+
+/// @brief Device memory allocated by @ref ggml_hsa_allocate.
+using ggml_hsa_device_ptr = std::unique_ptr<std::byte, ggml_hsa_device_delete>;
+
+/**
+ * @brief Allocates @p size bytes from @p pool for @p agent, a device of type @p type, into @p ptr.
+ *
+ * GPU memory is mapped with the HSA vmem API, accessible to the host and @p agent; any other
+ * device's memory comes from the pool allocator. On failure, @p ptr is left unchanged.
+ */
+hsa_status_t ggml_hsa_allocate(hsa_agent_t agent,
+                               hsa_device_type_t type,
+                               hsa_amd_memory_pool_t pool,
+                               std::size_t size,
+                               ggml_hsa_device_ptr & ptr);
+
 /**
  * @brief Fixed-slot kernarg pool over a single HSA memory-pool buffer.
  *
@@ -323,6 +350,8 @@ class ggml_hsa_kernarg_pool {
     /**
      * @brief Constructs a pool of @p slot_count slots, each at least @p slot_size bytes.
      *
+     * @param[in] agent device agent the kernargs are for
+     * @param[in] type device type of @p agent
      * @param[in] memory_pool HSA memory pool to allocate the backing buffer from
      * @param[in] slot_count number of fixed slots (one per HSA queue ring slot)
      * @param[in] slot_size minimum size of each slot in bytes
@@ -330,7 +359,9 @@ class ggml_hsa_kernarg_pool {
      * @throws std::invalid_argument if @p alignment is not a power of two
      * @throws std::runtime_error if the backing buffer cannot be allocated
      */
-    ggml_hsa_kernarg_pool(hsa_amd_memory_pool_t memory_pool,
+    ggml_hsa_kernarg_pool(hsa_agent_t agent,
+                          hsa_device_type_t type,
+                          hsa_amd_memory_pool_t memory_pool,
                           std::size_t slot_count,
                           std::size_t slot_size,
                           std::size_t alignment) :
@@ -340,15 +371,13 @@ class ggml_hsa_kernarg_pool {
         }
         // Pad each slot to alignment so every slot start is aligned.
         m_slot_size = GGML_PAD(slot_size, alignment);
-        void * buffer = nullptr;
         if (auto status =
-                hsa_amd_memory_pool_allocate(memory_pool, m_slot_size * m_slot_count, 0, &buffer);
+                ggml_hsa_allocate(agent, type, memory_pool, m_slot_size * m_slot_count, m_buffer);
             status != HSA_STATUS_SUCCESS) {
             throw std::runtime_error{std::string("Could not allocate kernarg pool buffer (")
                                          .append(ggml_hsa_get_status_string(status))
                                          .append(")")};
         }
-        m_buffer.reset(buffer);
     }
 
     /**
@@ -358,7 +387,7 @@ class ggml_hsa_kernarg_pool {
      */
     void * slot(std::size_t index) const {
         assert(index < m_slot_count);
-        return static_cast<std::byte *>(m_buffer.get()) + index * m_slot_size;
+        return m_buffer.get() + index * m_slot_size;
     }
 
     /// @brief Returns the size of each slot in bytes.
@@ -374,9 +403,9 @@ class ggml_hsa_kernarg_pool {
     void leak() { static_cast<void>(m_buffer.release()); }
 
   private:
-    ggml_hsa_unique_ptr<void> m_buffer; ///< Backing storage.
-    std::size_t m_slot_size{};          ///< Size of each slot in bytes (padded to alignment).
-    std::size_t m_slot_count{};         ///< Number of slots.
+    ggml_hsa_device_ptr m_buffer; ///< Backing storage.
+    std::size_t m_slot_size{};    ///< Size of each slot in bytes (padded to alignment).
+    std::size_t m_slot_count{};   ///< Number of slots.
 };
 
 struct ggml_backend_hsa_context;
@@ -542,7 +571,7 @@ struct ggml_backend_hsa_tensor_extra {
     /// tensor as-is (see @ref source_node_t::is_constant).
     struct conversion_t {
         ggml_tensor tensor{};                  ///< The converted tensor; its data is @c buffer.
-        ggml_hsa_unique_ptr<std::byte> buffer; ///< Device storage of the converted tensor.
+        ggml_hsa_device_ptr buffer;            ///< Device storage of the converted tensor.
         /// @brief The parent data pointer whose converted contents @c buffer holds, or null if
         /// none (no conversion yet, or the last one failed).
         const void * converted_ptr{nullptr};
@@ -555,7 +584,7 @@ struct ggml_backend_hsa_tensor_extra {
     /// @brief Kernel associated with the tensor.
     std::shared_ptr<ggml_hsa_kernel> kernel;
     /// @brief Temporary storage for tensor data, allocated only if needed.
-    ggml_hsa_unique_ptr<std::byte> buffer;
+    ggml_hsa_device_ptr buffer;
     /// @brief Bytes allocated for @c buffer.
     std::size_t buffer_capacity{};
     /// @brief Converted copies of this tensor when it is a graph constant, one per distinct
@@ -581,7 +610,7 @@ struct ggml_backend_hsa_tensor_extra {
      * caller, so a recycled extra's storage is never freed while earlier dispatches may use it.
      */
     ggml_status allocate_internal_storage(const ggml_hsa_device_info::device_info & dev_info,
-                                          ggml_hsa_unique_ptr<std::byte> & spare,
+                                          ggml_hsa_device_ptr & spare,
                                           std::size_t spare_capacity);
 };
 
