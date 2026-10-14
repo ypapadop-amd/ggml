@@ -9,8 +9,9 @@
 
 from .kernel import Backend, KernelSpec
 from .triton_kernels.spec_utils import (
+    ArchKind,
+    arch_kind,
     elementwise_block_size,
-    is_gpu_arch,
     transform_script,
 )
 
@@ -234,12 +235,13 @@ def _make_triton_gpu_add_kernel_spec(
     num_programs = triton.cdiv(n_elements, block_size)
 
     # ONE canonical, backend-neutral description of the kernel's argument contract and launch
-    # geometry. The GPU compiler consumes signature/constexprs directly via ASTSource.
-    elt = _numpy_to_triton_elt(output_tensor.dtype)
+    # geometry. The GPU compiler consumes signature/constexprs directly via ASTSource. Each
+    # pointer takes its own tensor's dtype: ggml ADD mixes dtypes (e.g. f16 + f32 -> f16), the
+    # kernel adds in the promoted type, and tl.store converts the sum to the output dtype.
     signature = {
-        "A": f"*{elt}",
-        "B": f"*{elt}",
-        "C": f"*{elt}",
+        "A": f"*{_numpy_to_triton_elt(input_tensors[0].dtype)}",
+        "B": f"*{_numpy_to_triton_elt(input_tensors[1].dtype)}",
+        "C": f"*{_numpy_to_triton_elt(output_tensor.dtype)}",
         "n_elements": "constexpr",
         "BLOCK_SIZE_N": "constexpr",
     }
@@ -284,23 +286,29 @@ def ggml_op_add(
 
     Returns:
         List of KernelSpecs for the ADD operation.
+
+    Raises:
+        ValueError: If arch is neither a supported NPU nor a GPU architecture.
     """
     _validate_binary_inputs(input_tensors)
 
-    if is_gpu_arch(arch):
+    kind = arch_kind(arch)
+    if kind is ArchKind.GPU:
         try:
             return [
                 _make_triton_gpu_add_kernel_spec(arch, input_tensors, output_tensor)
             ]
         except ValueError:
             return []
-
-    return [
-        _make_iron_binary_kernel_spec(
-            arch, input_tensors, output_tensor, "GGML_OP_ADD"
-        ),
-        _make_triton_add_kernel_spec(arch, input_tensors, output_tensor),
-    ]
+    if kind is ArchKind.NPU:
+        return [
+            _make_iron_binary_kernel_spec(
+                arch, input_tensors, output_tensor, "GGML_OP_ADD"
+            ),
+            _make_triton_add_kernel_spec(arch, input_tensors, output_tensor),
+        ]
+    msg = f"Unsupported architecture for GGML_OP_ADD: {arch!r}"
+    raise ValueError(msg)
 
 
 def ggml_op_sub(

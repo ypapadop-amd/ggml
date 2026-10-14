@@ -4,13 +4,22 @@ Precompiled HIP kernels for the GGML HSA **GPU** backend (`GGML_HSA_GPU`). The
 backend searches for AMDGPU code objects in, in order:
 
 ```
-1. ${GGML_HSA_KERNEL_DIR}/<device_name>/<kernel_symbol>.hsaco   (pregenerated)
-2. <cache_dir>/<device_name>/<kernel_symbol>.hsaco             (cache)
+1. ${GGML_HSA_KERNEL_DIR}/<device_name>/<kernel_name>.hsaco   (pregenerated)
+2. <cache_dir>/<device_name>/<kernel_name>.hsaco             (cache)
 ```
 
-resolving the kernel descriptor symbol `<kernel_symbol>.kd`. `<device_name>` is
-the HSA agent name (e.g. `gfx1151`) and `<kernel_symbol>` is the sanitized ggml
-kernel name (e.g. `add_8f32_8f32_8f32`).
+`<device_name>` is the HSA agent name (e.g. `gfx1151`) and `<kernel_name>` is the
+sanitized ggml kernel name (e.g. `add_8f32_8f32_8f32`). The kernel descriptor
+symbol is not derived from the file name: the loader reads it from the code
+object's metadata. Kernels from `generate_gpu_kernels.py` export the kernel name
+itself (`add_8f32_8f32_8f32.kd`), while a Triton-compiled kernel exports its
+`@triton.jit` function name (e.g. `vecadd.kd`).
+
+A code object without HIP hidden arguments, such as a Triton kernel, bakes its
+launch geometry in at compile time and needs a `<kernel_name>.hsaco.json`
+sidecar holding `grid_size_x` and `workgroup_size_x`. Loading such a kernel
+fails if its sidecar is missing, and loading any kernel fails if its sidecar is
+malformed.
 
 The cache directory mirrors the AIE JIT cache and is resolved as:
 `GGML_HSA_KERNEL_CACHE_DIR`, else `$XDG_CACHE_HOME/ggml`, else
@@ -32,14 +41,21 @@ cmake --build build -j --target ggml-hsa test-backend-ops
 
 ## Generating kernels
 
-`generate_gpu_kernels.sh` emits a shape-specialized `.hsaco` per kernel name. It
-reads kernel names (one per line) from a file or stdin and supports elementwise
-`add_*` and `scale_*` (f32, f16). By default it writes into the runtime cache
-directory above, so kernels are found automatically — no `GGML_HSA_KERNEL_DIR`
-and no dependence on the build folder.
+`generate_gpu_kernels.py` emits a `.hsaco` per kernel name. It reads kernel
+names (one per line) from a file or stdin and supports elementwise kernels over
+contiguous, equally shaped tensors:
+
+- `add_*` for every dtype combination ggml's CPU backend implements: f32, f16
+  and bf16 with matching dtypes, and an f16 or bf16 source plus an f32 source
+  into either of their dtypes.
+- `scale_*` for f32, f16 and bf16.
+
+Broadcasting and non-contiguous kernels are skipped. By default it writes into
+the runtime cache directory above, so kernels are found automatically — no
+`GGML_HSA_KERNEL_DIR` and no dependence on the build folder.
 
 ```
-generate_gpu_kernels.sh <arch> [names_file] [out_dir]
+generate_gpu_kernels.py [arch] [names_file] [out_dir]
 ```
 
 The exact kernel names a test needs can be captured by running with logging on;
@@ -51,7 +67,7 @@ LD_LIBRARY_PATH=/opt/rocm/lib GGML_HSA_ENABLE_LOG=1 \
   | grep -oE 'kernel (add|scale)_[0-9a-zA-Z_]+' | sed 's/kernel //' | sort -u > names.txt
 
 # Writes to the runtime cache dir (default); no GGML_HSA_KERNEL_DIR needed.
-ROCM_PATH=/opt/rocm ./generate_gpu_kernels.sh gfx1151 names.txt
+ROCM_PATH=/opt/rocm ./generate_gpu_kernels.py gfx1151 names.txt
 ```
 
 To stage kernels in a fixed, checked-in location instead of the cache, pass an

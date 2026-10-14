@@ -9,11 +9,43 @@ in an IRON-only environment. ``utils`` imports ``torch`` at module scope and is
 therefore only safe to import from inside a KernelSpec's compile function.
 """
 
+from enum import Enum, auto
 from pathlib import Path
 
 import numpy as np
 
 _SCRIPT_DIR = Path(__file__).parent
+
+# NPU architecture strings, as reported by the HSA agent name, and their Triton targets.
+NPU_ARCH_MAP = {
+    "aie2": "npu1",
+    "aie2p": "npu2",
+}
+
+
+class ArchKind(Enum):
+    """Kind of device an architecture string names."""
+
+    NPU = auto()
+    GPU = auto()
+    UNSUPPORTED = auto()
+
+
+def arch_kind(arch: str) -> ArchKind:
+    """Classify an architecture string.
+
+    Args:
+        arch: Architecture string, e.g. "aie2", "aie2p" or "gfx1151".
+
+    Returns:
+        ArchKind.NPU for an XDNA NPU, ArchKind.GPU for an AMD GPU ("gfx*"), and
+        ArchKind.UNSUPPORTED for anything else.
+    """
+    if arch in NPU_ARCH_MAP:
+        return ArchKind.NPU
+    if arch.startswith("gfx"):
+        return ArchKind.GPU
+    return ArchKind.UNSUPPORTED
 
 
 def is_gpu_arch(arch: str) -> bool:
@@ -23,9 +55,9 @@ def is_gpu_arch(arch: str) -> bool:
         arch: Architecture string to check.
 
     Returns:
-        True if arch starts with "gfx".
+        True if arch names an AMD GPU.
     """
-    return arch.startswith("gfx")
+    return arch_kind(arch) is ArchKind.GPU
 
 
 def transform_script(stem: str, arch: str, dtype=None) -> str:

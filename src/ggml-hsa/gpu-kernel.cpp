@@ -2,6 +2,7 @@
 
 #include "ggml-hsa/gpu-kernel.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -84,6 +85,32 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
         return GGML_STATUS_FAILED;
     }
 
+    // Grid configuration. AQL grid_size is the total number of work-items (global size).
+    //  - Triton kernels bake their launch geometry (fixed workgroup/grid, provided via the
+    //    sidecar); they read program ids from the dispatch packet and have no hidden kernargs.
+    //  - Hand-written HIP kernels use one work-item per element (workgroup default), deriving the
+    //    grid from the element count and filling the COV5 hidden block/group args below.
+    // Computed before a queue slot is reserved, so a launch that does not fit leaves none behind.
+    const std::uint64_t n_elements = ggml_nelements(&dst_tensor);
+    std::uint32_t wg;
+    std::uint64_t grid_size_total;
+    if (workgroup_size_x != 0) {
+        wg = workgroup_size_x;
+        grid_size_total = grid_size_x;
+    } else {
+        wg = work_group_size != 0 ? work_group_size : 64;
+        const std::uint64_t num_groups = std::max<std::uint64_t>((n_elements + wg - 1) / wg, 1);
+        grid_size_total = num_groups * wg;
+    }
+    if (grid_size_total > UINT32_MAX) {
+        GGML_HSA_LOG_ERROR("%s: grid of %llu work-items for %llu elements exceeds the AQL "
+                           "packet's 32-bit grid size",
+                           __func__, static_cast<unsigned long long>(grid_size_total),
+                           static_cast<unsigned long long>(n_elements));
+        return GGML_STATUS_FAILED;
+    }
+    const auto num_groups_x = static_cast<std::uint32_t>(grid_size_total / wg);
+
     // reserve the queue slot; its kernarg slot is reused only once the device consumed the packet
     const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
     const std::uint64_t packet_id = wr_idx % queue->size;
@@ -93,36 +120,14 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // defined.
     std::memset(kernarg, 0, kernarg_size);
 
-    // Grid configuration. AQL grid_size is the total number of work-items (global size).
-    //  - Triton kernels bake their launch geometry (fixed workgroup/grid, provided via the
-    //    sidecar); they read program ids from the dispatch packet and have no hidden kernargs.
-    //  - Hand-written HIP kernels use one work-item per element (workgroup default), deriving the
-    //    grid from the element count and filling the COV5 hidden block/group args below.
-    const std::uint64_t n_elements = ggml_nelements(&dst_tensor);
-    std::uint32_t wg;
-    std::uint32_t grid_size_total;
-    std::uint32_t num_groups_x;
-    if (workgroup_size_x != 0) {
-        wg = workgroup_size_x;
-        grid_size_total = grid_size_x;
-        num_groups_x = wg != 0 ? grid_size_total / wg : 1;
-    } else {
-        wg = work_group_size != 0 ? work_group_size : 64;
-        num_groups_x = (static_cast<std::uint32_t>(n_elements) + wg - 1) / wg;
-        if (num_groups_x == 0) {
-            num_groups_x = 1;
-        }
-        grid_size_total = num_groups_x * wg;
-    }
-
     // Populate the kernarg segment using the layout parsed from the code object metadata. Explicit
     // global_buffer arguments are filled in order (sources first, then destination); the single
     // by_value argument is the element count; the HIP hidden arguments are derived from the grid
     // configuration. Offsets/sizes come from the kernel itself, so the layout is ABI-robust.
+    // ggml_hsa_create_gpu_kernel rejects a kernel whose arguments do not all lie in its segment.
     const auto put = [&](std::uint32_t off, const void * src, std::uint32_t sz) {
-        if (static_cast<std::size_t>(off) + sz <= kernarg_size) {
-            std::memcpy(kernarg + off, src, sz);
-        }
+        assert(static_cast<std::size_t>(off) + sz <= kernarg_size);
+        std::memcpy(kernarg + off, src, sz);
     };
     // The HIP kernel ABI is positional (argument names are not emitted in the code object
     // metadata, so arguments are matched by kind and position rather than by name). Explicit
@@ -165,8 +170,7 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
             }
             ++by_value_idx;
         } else if (arg.value_kind == "hidden_block_count_x") {
-            std::uint32_t v = num_groups_x != 0 ? num_groups_x : 1;
-            put(arg.offset, &v, arg.size);
+            put(arg.offset, &num_groups_x, arg.size);
         } else if (arg.value_kind == "hidden_block_count_y" ||
                    arg.value_kind == "hidden_block_count_z") {
             std::uint32_t v = 1;
@@ -179,8 +183,7 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
             std::uint16_t v = 1;
             put(arg.offset, &v, arg.size);
         } else if (arg.value_kind == "hidden_remainder_x") {
-            std::uint16_t v =
-                static_cast<std::uint16_t>(static_cast<std::uint32_t>(n_elements) % wg);
+            auto v = static_cast<std::uint16_t>(n_elements % wg);
             put(arg.offset, &v, arg.size);
         } else if (arg.value_kind == "hidden_grid_dims") {
             std::uint16_t v = 1; // 1D grid
@@ -195,7 +198,7 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.workgroup_size_x = static_cast<std::uint16_t>(wg);
     pkt.workgroup_size_y = 1;
     pkt.workgroup_size_z = 1;
-    pkt.grid_size_x = grid_size_total;
+    pkt.grid_size_x = static_cast<std::uint32_t>(grid_size_total);
     pkt.grid_size_y = 1;
     pkt.grid_size_z = 1;
     pkt.private_segment_size = private_segment_size;

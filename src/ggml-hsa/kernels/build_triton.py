@@ -12,7 +12,7 @@ from pathlib import Path
 
 import triton
 from kernel import KernelSpec
-from triton_kernels.utils import NPU_ARCH_MAP, is_gpu_arch, is_npu_arch
+from triton_kernels.utils import NPU_ARCH_MAP, ArchKind, arch_kind, is_gpu_arch
 
 
 class TempEnvSet(ContextDecorator):
@@ -166,6 +166,95 @@ def _compile_triton_gpu_kernel(
     )
 
 
+def _compile_npu_kernel(
+    kernel_spec: KernelSpec,
+    exported_name: str,
+    output_directory: Path,
+    cache_dir: Path,
+    logger: logging.Logger,
+    verbose: bool,
+) -> None:
+    """Compile a Triton kernel for an NPU through the Triton-XDNA pipeline.
+
+    Runs the kernel's compile function under the NPU driver, then extracts the PDI and the
+    instructions binary from the resulting xclbin as ``<exported_name>.pdi`` and
+    ``<exported_name>_insts.bin``.
+
+    Args:
+        kernel_spec: The KernelSpec; its function triggers the Triton compilation and its config
+            may carry a transform_script.
+        exported_name: Base name for the output files.
+        output_directory: Directory for the PDI and instructions files.
+        cache_dir: Triton cache directory for the compilation artifacts.
+        logger: Logger for status messages.
+        verbose: If True, enables verbose compilation output.
+    """
+    from triton.backends.amd_triton_npu.config import config_context
+    from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
+
+    triton.runtime.driver.set_active(NPUDriver())
+    with (
+        TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
+        config_context(
+            compile_only=True,
+            transform_tiling_script=kernel_spec.config.get("transform_script", MISSING),
+            output_format="xclbin",
+            debug=1 if verbose else 0,
+            target=_get_triton_target(kernel_spec),
+        ),
+    ):
+        compiled_kernel = kernel_spec.function()
+        xclbin_path = Path(get_npu_cache_dir(compiled_kernel))
+        logger.info(
+            (
+                "Triton compilation successful\n"
+                "  Metadata:           %s\n"
+                "  Metadata Group:     %s\n"
+                "  XCLBIN Parent Path: %s"
+            ),
+            compiled_kernel.metadata,
+            compiled_kernel.metadata_group,
+            str(xclbin_path),
+        )
+        with Path(xclbin_path / "tt.shared.mlir").open("w", encoding="utf-8") as f:
+            f.write(str(compiled_kernel.asm["ttsharedir"]))
+            logger.info("Triton Shared MLIR written to %s", f.name)
+
+        # Create PDI from Triton cache xclbin
+        pdi_path = output_directory / f"{exported_name}.pdi"
+        cmd = [
+            _xclbinutil_path(),
+            "--dump-section",
+            "AIE_PARTITION:JSON:partition.json",
+            "--force",
+            "--input",
+            str(xclbin_path / "aie.xclbin"),
+        ]
+        subprocess.run(
+            cmd,
+            check=True,
+            text=True,
+            capture_output=True,
+            cwd=str(xclbin_path),
+        )
+        pdi_src_path = next(xclbin_path.glob("**/*.pdi"))
+        shutil.copy(pdi_src_path, pdi_path)
+
+        # Copy instructions file from Triton cache
+        insts_path = output_directory / f"{exported_name}_insts.bin"
+        shutil.copy(xclbin_path / "insts.bin", insts_path)
+
+        logger.info(
+            (
+                "Triton-XDNA compilation successful\n"
+                "  PDI Path:          %s\n"
+                "  Instructions Path: %s"
+            ),
+            pdi_path,
+            insts_path,
+        )
+
+
 def compile_triton_kernel(
     kernel_spec: KernelSpec,
     exported_name: str,
@@ -195,76 +284,12 @@ def compile_triton_kernel(
 
     logger.info("Triton cache directory: %s", cache_dir)
 
-    # Set active driver based on architecture
-    arch = _get_triton_target(kernel_spec)
-    if is_npu_arch(kernel_spec.arch):
-        from triton.backends.amd_triton_npu.config import config_context
-        from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
-
-        triton.runtime.driver.set_active(NPUDriver())
-        with (
-            TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)),
-            config_context(
-                compile_only=True,
-                transform_tiling_script=kernel_spec.config.get(
-                    "transform_script", MISSING
-                ),
-                output_format="xclbin",
-                debug=1 if verbose else 0,
-                target=arch,
-            ),
-        ):
-            compiled_kernel = kernel_spec.function()
-            xclbin_path = Path(get_npu_cache_dir(compiled_kernel))
-            logger.info(
-                (
-                    "Triton compilation successful\n"
-                    "  Metadata:           %s\n"
-                    "  Metadata Group:     %s\n"
-                    "  XCLBIN Parent Path: %s"
-                ),
-                compiled_kernel.metadata,
-                compiled_kernel.metadata_group,
-                str(xclbin_path),
-            )
-            with Path(xclbin_path / "tt.shared.mlir").open("w", encoding="utf-8") as f:
-                f.write(str(compiled_kernel.asm["ttsharedir"]))
-                logger.info("Triton Shared MLIR written to %s", f.name)
-
-            # Create PDI from Triton cache xclbin
-            pdi_path = output_directory / f"{exported_name}.pdi"
-            cmd = [
-                _xclbinutil_path(),
-                "--dump-section",
-                "AIE_PARTITION:JSON:partition.json",
-                "--force",
-                "--input",
-                str(xclbin_path / "aie.xclbin"),
-            ]
-            subprocess.run(
-                cmd,
-                check=True,
-                text=True,
-                capture_output=True,
-                cwd=str(xclbin_path),
-            )
-            pdi_src_path = next(xclbin_path.glob("**/*.pdi"))
-            shutil.copy(pdi_src_path, pdi_path)
-
-            # Copy instructions file from Triton cache
-            insts_path = output_directory / f"{exported_name}_insts.bin"
-            shutil.copy(xclbin_path / "insts.bin", insts_path)
-
-            logger.info(
-                (
-                    "Triton-XDNA compilation successful\n"
-                    "  PDI Path:          %s\n"
-                    "  Instructions Path: %s"
-                ),
-                pdi_path,
-                insts_path,
-            )
-    elif is_gpu_arch(kernel_spec.arch):
+    kind = arch_kind(kernel_spec.arch)
+    if kind is ArchKind.NPU:
+        _compile_npu_kernel(
+            kernel_spec, exported_name, output_directory, cache_dir, logger, verbose
+        )
+    elif kind is ArchKind.GPU:
         # GPU targets ahead-of-time compile to a .hsaco and emit a launch-metadata sidecar
         # (grid/block geometry) required by the C++ dispatch.
         _compile_triton_gpu_kernel(

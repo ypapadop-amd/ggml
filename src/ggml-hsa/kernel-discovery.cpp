@@ -16,7 +16,11 @@
 #endif
 
 #ifdef GGML_HSA_GPU
+#include <algorithm>
+#include <charconv>
+#include <cstdint>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <amd_comgr/amd_comgr.h>
@@ -410,24 +414,37 @@ static bool ggml_hsa_parse_kernel_metadata(const std::vector<char> & blob,
     return result;
 }
 
+/// @brief Result of reading a launch-metadata sidecar.
+enum class ggml_hsa_sidecar_status {
+    absent,    ///< No sidecar file.
+    valid,     ///< Sidecar read; the launch geometry is set.
+    malformed, ///< Sidecar present but unreadable, incomplete, or inconsistent.
+};
+
 /**
- * @brief Reads the optional launch-metadata sidecar for a GPU code object.
+ * @brief Reads the launch-metadata sidecar of a GPU code object.
  *
  * Triton-generated kernels bake their launch geometry (workgroup size, number of workgroups) at
  * compile time; it is emitted alongside the @c .hsaco as @c <name>.hsaco.json. Hand-written HIP
  * kernels have no sidecar and derive their grid from the element count at dispatch.
+ *
+ * @p grid_size_x and @p workgroup_size_x are set only if the sidecar is valid: both are present,
+ * positive, fit in their AQL packet fields, and the grid is a whole number of workgroups.
  */
-static bool ggml_hsa_read_launch_sidecar(const fs::path & hsaco_path,
-                                         std::uint32_t & grid_size_x,
-                                         std::uint32_t & workgroup_size_x) {
+static ggml_hsa_sidecar_status ggml_hsa_read_launch_sidecar(const fs::path & hsaco_path,
+                                                            std::uint32_t & grid_size_x,
+                                                            std::uint32_t & workgroup_size_x) {
     fs::path sidecar = hsaco_path;
     sidecar += ".json";
     if (!ggml_hsa_is_file(sidecar)) {
-        return false;
+        return ggml_hsa_sidecar_status::absent;
     }
     std::ifstream is(sidecar);
+    if (!is) {
+        return ggml_hsa_sidecar_status::malformed;
+    }
     const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
-    const auto read_uint = [&](const char * key, std::uint32_t & out) -> bool {
+    const auto read_uint = [&](const char * key, std::uint64_t & out) -> bool {
         auto pos = text.find(key);
         if (pos == std::string::npos) {
             return false;
@@ -436,12 +453,23 @@ static bool ggml_hsa_read_launch_sidecar(const fs::path & hsaco_path,
         if (pos == std::string::npos) {
             return false;
         }
-        out = static_cast<std::uint32_t>(std::strtoul(text.c_str() + pos + 1, nullptr, 10));
-        return true;
+        const char * first = text.c_str() + pos + 1;
+        while (*first == ' ') {
+            ++first;
+        }
+        const auto [last, ec] = std::from_chars(first, text.c_str() + text.size(), out);
+        return ec == std::errc{} && last != first;
     };
-    bool ok = read_uint("\"grid_size_x\"", grid_size_x);
-    ok = read_uint("\"workgroup_size_x\"", workgroup_size_x) && ok;
-    return ok;
+    std::uint64_t grid = 0;
+    std::uint64_t workgroup = 0;
+    if (!read_uint("\"grid_size_x\"", grid) || !read_uint("\"workgroup_size_x\"", workgroup) ||
+        grid == 0 || workgroup == 0 || grid > UINT32_MAX || workgroup > UINT16_MAX ||
+        grid % workgroup != 0) {
+        return ggml_hsa_sidecar_status::malformed;
+    }
+    grid_size_x = static_cast<std::uint32_t>(grid);
+    workgroup_size_x = static_cast<std::uint32_t>(workgroup);
+    return ggml_hsa_sidecar_status::valid;
 }
 
 /**
@@ -574,8 +602,41 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
         gpu_kernel->kernarg_align = 16;
     }
 
-    // Optional launch geometry (Triton kernels bake grid/block at compile time).
-    ggml_hsa_read_launch_sidecar(hsaco_path, gpu_kernel->grid_size_x, gpu_kernel->workgroup_size_x);
+    // Dispatch writes each argument at its metadata offset, so check once that they all lie in the
+    // kernarg segment the symbol reports.
+    for (const auto & arg : gpu_kernel->args) {
+        if (static_cast<std::uint64_t>(arg.offset) + arg.size > gpu_kernel->kernarg_size) {
+            GGML_HSA_LOG_ERROR("%s: argument at offset %u (%u bytes) of %s exceeds its %u-byte "
+                               "kernarg segment",
+                               __func__, arg.offset, arg.size, symbol_name.c_str(),
+                               gpu_kernel->kernarg_size);
+            return GGML_STATUS_FAILED;
+        }
+    }
+
+    // Launch geometry. HIP kernels carry hidden arguments and derive their grid from the element
+    // count; Triton kernels have none and bake their geometry in at compile time, so they cannot
+    // be launched without a valid sidecar.
+    const bool has_hidden_args =
+        std::any_of(gpu_kernel->args.begin(), gpu_kernel->args.end(),
+                    [](const auto & arg) { return arg.value_kind.rfind("hidden_", 0) == 0; });
+    switch (ggml_hsa_read_launch_sidecar(hsaco_path, gpu_kernel->grid_size_x,
+                                         gpu_kernel->workgroup_size_x)) {
+        case ggml_hsa_sidecar_status::valid:
+            break;
+        case ggml_hsa_sidecar_status::absent:
+            if (!has_hidden_args) {
+                GGML_HSA_LOG_ERROR("%s: %s has no hidden arguments, so it needs a launch "
+                                   "sidecar, but %s.json does not exist",
+                                   __func__, hsaco_path.c_str(), hsaco_path.c_str());
+                return GGML_STATUS_FAILED;
+            }
+            break;
+        case ggml_hsa_sidecar_status::malformed:
+            GGML_HSA_LOG_ERROR("%s: malformed launch sidecar %s.json", __func__,
+                               hsaco_path.c_str());
+            return GGML_STATUS_FAILED;
+    }
 
     kernel = std::move(gpu_kernel);
 
@@ -590,18 +651,23 @@ ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev
                                    const std::string & kernel_name,
                                    std::shared_ptr<ggml_hsa_kernel> & kernel) {
     switch (dev_info.type) {
-#ifdef GGML_HSA_AIE
         case HSA_DEVICE_TYPE_AIE:
+#ifdef GGML_HSA_AIE
             return ggml_hsa_create_aie_kernel(dev_info, tensor, op_name, kernel_name, kernel);
+#else
+            break;
 #endif
-#ifdef GGML_HSA_GPU
         case HSA_DEVICE_TYPE_GPU:
+#ifdef GGML_HSA_GPU
             return ggml_hsa_create_gpu_kernel(dev_info, tensor, op_name, kernel_name, kernel);
+#else
+            break;
 #endif
-
-        // unsupported device types
         default:
-            GGML_HSA_LOG_ERROR("%s: unsupported device %s", __func__, dev_info.name.c_str());
-            return GGML_STATUS_FAILED;
+            break;
     }
+
+    // device type not supported, or not enabled in this build
+    GGML_HSA_LOG_ERROR("%s: unsupported device %s", __func__, dev_info.name.c_str());
+    return GGML_STATUS_FAILED;
 }

@@ -470,13 +470,19 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
 
     auto & info = *static_cast<ggml_hsa_device_info *>(data);
     switch (type) {
-#ifdef GGML_HSA_AIE
         case HSA_DEVICE_TYPE_AIE:
+#ifdef GGML_HSA_AIE
             break;
+#else
+            // device type not enabled in this build
+            return HSA_STATUS_SUCCESS;
 #endif
-#ifdef GGML_HSA_GPU
         case HSA_DEVICE_TYPE_GPU:
+#ifdef GGML_HSA_GPU
             break;
+#else
+            // device type not enabled in this build
+            return HSA_STATUS_SUCCESS;
 #endif
         case HSA_DEVICE_TYPE_CPU:
             // record the first host agent; device buffers are mapped for it

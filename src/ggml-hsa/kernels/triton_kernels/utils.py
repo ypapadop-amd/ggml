@@ -7,7 +7,7 @@ import ml_dtypes
 import numpy as np
 import torch
 
-from .spec_utils import is_gpu_arch
+from .spec_utils import NPU_ARCH_MAP, ArchKind, arch_kind, is_gpu_arch  # noqa: F401
 
 _NUMPY_TO_TORCH_DTYPE = {
     np.float16: torch.float16,
@@ -16,12 +16,6 @@ _NUMPY_TO_TORCH_DTYPE = {
     np.int16: torch.int16,
     np.int32: torch.int32,
     ml_dtypes.bfloat16: torch.bfloat16,
-}
-
-
-NPU_ARCH_MAP = {
-    "aie2": "npu1",
-    "aie2p": "npu2",
 }
 
 
@@ -34,7 +28,7 @@ def is_npu_arch(arch: str) -> bool:
     Returns:
         True if arch is a recognised NPU architecture string.
     """
-    return arch in NPU_ARCH_MAP
+    return arch_kind(arch) is ArchKind.NPU
 
 
 def triton_device(arch: str) -> str:
