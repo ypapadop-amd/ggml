@@ -180,6 +180,10 @@ int main() {
         {63, 16, 1, "63 rnd", 1.0f, input_kind::random},
         {80, 16, 1, "80 rnd", 1.0f, input_kind::random},
         {129, 8, 1, "129 rnd", 1.0f, input_kind::random},
+        // aie2p splits a row at the first 64-byte boundary: rows of 65 floats in tiles of many
+        // rows start at every 4-byte offset, so each has a head, whole vectors or not, and a tail;
+        // scaled, the head is scaled on its own.
+        {65, 48, 1, "65x48 rnd s=0.125", 0.125f, input_kind::random},
         // NOTE: the full-context [1024,1024,12] shape is intentionally omitted for now:
         // the current single-worker kernel overruns the per-dispatch watchdog and aborts
         // the process (uncatchable). Re-add it once the kernel is fanned across compute
