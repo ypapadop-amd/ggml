@@ -111,7 +111,9 @@ def kernel_source(name: str) -> str | None:
 """
     if match := _SCALE_RE.match(name):
         dst, src = _tensors(match)
-        if not _elementwise([dst, src]) or dst.dtype != src.dtype:
+        # ggml-cpu's ggml_compute_forward_scale only implements f32 (GGML_ABORT otherwise), so an
+        # f16/bf16 kernel here could never be checked against a CPU result.
+        if not _elementwise([dst, src]) or dst.dtype != "f32" or src.dtype != "f32":
             return None
         ctype = CTYPES[dst.dtype]
         # The scalars follow N in op_params order, so dispatch copies them in raw.
@@ -128,11 +130,13 @@ def kernel_source(name: str) -> str | None:
 
 def default_cache_dir() -> Path:
     """Return the runtime kernel cache directory, matching ggml_hsa_cached_kernel_dir()."""
-    if value := os.environ.get("GGML_HSA_KERNEL_CACHE_DIR"):
+    # The backend checks getenv() != nullptr, so a set-but-empty variable still counts; match that
+    # with "is not None" rather than a truthiness check.
+    if (value := os.environ.get("GGML_HSA_KERNEL_CACHE_DIR")) is not None:
         return Path(value)
-    if value := os.environ.get("XDG_CACHE_HOME"):
+    if (value := os.environ.get("XDG_CACHE_HOME")) is not None:
         return Path(value) / "ggml"
-    if value := os.environ.get("HOME"):
+    if (value := os.environ.get("HOME")) is not None:
         return Path(value) / ".cache" / "ggml"
     # Must match the backend's hardcoded fallback, or the kernels would not be found.
     return Path("/tmp/ggml/ggml-hsa")  # noqa: S108

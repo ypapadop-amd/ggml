@@ -474,14 +474,14 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
 #ifdef GGML_HSA_AIE
             break;
 #else
-            // device type not enabled in this build
+            // this build has no AIE support
             return HSA_STATUS_SUCCESS;
 #endif
         case HSA_DEVICE_TYPE_GPU:
 #ifdef GGML_HSA_GPU
             break;
 #else
-            // device type not enabled in this build
+            // this build has no GPU support
             return HSA_STATUS_SUCCESS;
 #endif
         case HSA_DEVICE_TYPE_CPU:
@@ -512,13 +512,19 @@ static hsa_status_t ggml_hsa_find_hsa_agents(hsa_agent_t agent, void * data) {
     }
     dev_info.name = std::string(name);
 
-    if (dev_info.name == "aie2" || dev_info.name == "aie2p") {
-        dev_info.substitute_fp16_bf16 = true;
-        GGML_ASSERT(dev_info.alignment % 4 == 0);
-    } else if (type == HSA_DEVICE_TYPE_GPU) {
-        // AMD GPU (e.g. gfx1151 Strix Halo iGPU); native datatypes, no fp16->bf16 substitution
-    } else {
-        GGML_ABORT("%s: unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
+    switch (type) {
+        case HSA_DEVICE_TYPE_AIE:
+            if (dev_info.name != "aie2" && dev_info.name != "aie2p") {
+                GGML_ABORT("%s: unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
+            }
+            dev_info.substitute_fp16_bf16 = true;
+            GGML_ASSERT(dev_info.alignment % 4 == 0);
+            break;
+        case HSA_DEVICE_TYPE_GPU:
+            // AMD GPU (e.g. gfx1151 Strix Halo iGPU); native datatypes, no fp16->bf16 substitution
+            break;
+        default:
+            GGML_ABORT("%s: unknown agent \"%s\"\n", __func__, dev_info.name.c_str());
     }
 
     // find dev memory pool (only for AIE agents)

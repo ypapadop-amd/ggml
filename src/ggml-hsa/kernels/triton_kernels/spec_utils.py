@@ -48,18 +48,6 @@ def arch_kind(arch: str) -> ArchKind:
     return ArchKind.UNSUPPORTED
 
 
-def is_gpu_arch(arch: str) -> bool:
-    """Return True if arch is an AMD GPU architecture string (e.g. "gfx942").
-
-    Args:
-        arch: Architecture string to check.
-
-    Returns:
-        True if arch names an AMD GPU.
-    """
-    return arch_kind(arch) is ArchKind.GPU
-
-
 def transform_script(stem: str, arch: str, dtype=None) -> str:
     """Return the path to the Triton-XDNA transform script for an op.
 

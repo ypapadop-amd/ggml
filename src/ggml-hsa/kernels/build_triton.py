@@ -12,7 +12,7 @@ from pathlib import Path
 
 import triton
 from kernel import KernelSpec
-from triton_kernels.utils import NPU_ARCH_MAP, ArchKind, arch_kind, is_gpu_arch
+from triton_kernels.utils import NPU_ARCH_MAP, ArchKind, arch_kind
 
 
 class TempEnvSet(ContextDecorator):
@@ -101,7 +101,7 @@ def _get_triton_target(kernel_spec: KernelSpec) -> str:
     """
     if kernel_spec.arch in NPU_ARCH_MAP:
         return NPU_ARCH_MAP[kernel_spec.arch]
-    if is_gpu_arch(kernel_spec.arch):
+    if arch_kind(kernel_spec.arch) is ArchKind.GPU:
         return kernel_spec.arch
     msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"
     raise ValueError(msg)

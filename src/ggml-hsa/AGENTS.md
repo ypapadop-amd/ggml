@@ -34,8 +34,9 @@ the kernel compilation pipeline.
 ### Memory Sharing with HIP
 
 HSA backend buffers are allocated with the HSA vmem API (`ggml_hsa_vmem_allocation` in
-`ggml-hsa.cpp`). On a GPU device, all memory is: `ggml_hsa_allocate` also maps internal storage
-and kernargs with the vmem API there, and uses the pool allocator only for other devices. The same
+`ggml-hsa.cpp`). On a GPU device, `ggml_hsa_allocate` maps internal storage and kernargs with the
+vmem API too, instead of the pool allocator it uses for other devices: a GPU dispatch's kernarg
+segment and scratch buffers must be reachable the same way its tensor buffers are. The same
 class imports another ROCm backend's buffer from a dma-buf:
 `ggml_backend_hsa_buffer_import` wraps the mapping in an ordinary HSA buffer whose base is offset
 into the mapping so offsets match the source buffer, and `ggml_backend_hsa_tensor_alloc_alias`
