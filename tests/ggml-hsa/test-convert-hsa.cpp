@@ -409,9 +409,13 @@ int main() {
         {GGML_TYPE_BF16, GGML_TYPE_F16, 500, 500, false, "bf16->f16 half-vector tiles"},
         {GGML_TYPE_F16, GGML_TYPE_BF16, 33, 2, false, "f16->bf16 scalar"},
         {GGML_TYPE_BF16, GGML_TYPE_F16, 33, 2, false, "bf16->f16 scalar"},
-        // 4000 x 17: 17 tiles of 4000 over 4 workers (5, 4, 4, 4)
+        // 4000 x 17: 17 tiles of 4000 over 4 workers on aie2 (5, 4, 4, 4), one on aie2p
         {GGML_TYPE_F16, GGML_TYPE_BF16, 4000, 17, false, "f16->bf16 uneven workers"},
         {GGML_TYPE_BF16, GGML_TYPE_F16, 4000, 17, false, "bf16->f16 uneven workers"},
+        // 4000 x 85: 85 tiles of 4000 over 2 workers on aie2p (43, 42), 4 on aie2; as f32, 125
+        // tiles of 2720 (63, 62 on aie2p)
+        {GGML_TYPE_F16, GGML_TYPE_BF16, 4000, 85, false, "f16->bf16 uneven large workers"},
+        {GGML_TYPE_F32, GGML_TYPE_BF16, 4000, 85, true, "f32->bf16 uneven large workers"},
         {GGML_TYPE_F32, GGML_TYPE_F32, 2048, 256, true, "f32->f32 several workers"},
         {GGML_TYPE_BF16, GGML_TYPE_BF16, 500, 500, false, "bf16->bf16 half-vector tiles"},
     };
