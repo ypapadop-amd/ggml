@@ -8,9 +8,36 @@ add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
 set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
 
 #
+# test-mul-mat-f32-hsa
+
+set(TEST_TARGET test-mul-mat-f32-hsa)
+add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
+target_link_libraries(${TEST_TARGET} PRIVATE ggml ggml-hsa)
+add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
+set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
+
+#
 # test-mul-mat-accumulate-hsa
 
 set(TEST_TARGET test-mul-mat-accumulate-hsa)
+add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
+target_link_libraries(${TEST_TARGET} PRIVATE ggml ggml-hsa)
+add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
+set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
+
+#
+# test-mul-mat-dense-hsa
+
+set(TEST_TARGET test-mul-mat-dense-hsa)
+add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
+target_link_libraries(${TEST_TARGET} PRIVATE ggml ggml-hsa)
+add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
+set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
+
+#
+# test-mul-mat-const-cache-hsa
+
+set(TEST_TARGET test-mul-mat-const-cache-hsa)
 add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml ggml-hsa)
 add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
@@ -143,14 +170,6 @@ add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
 set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
 
 #
-# test-depad-hsa
-#
-set(TEST_TARGET test-depad-hsa)
-add_executable(${TEST_TARGET} ${TEST_TARGET}.cpp)
-target_link_libraries(${TEST_TARGET} PRIVATE ggml ggml-hsa)
-add_test(NAME ${TEST_TARGET} COMMAND $<TARGET_FILE:${TEST_TARGET}>)
-set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_TARGET}.profraw")
-#
 # test-softmax-hsa
 #
 set(TEST_TARGET test-softmax-hsa)
@@ -210,7 +229,6 @@ set_property(TEST ${TEST_TARGET}-permuted PROPERTY ENVIRONMENT
 set(GGML_HSA_INLINE_TESTS
     test-argmax-hsa     # argmax.py
     test-broadcast-hsa  # binary_ops.py, broadcast and row paths
-    test-depad-hsa      # depad.py
     test-gelu-hsa       # unary_ops.py, the largest unary frame
     test-mul-mat-hsa    # gemm.py
     test-unary-hsa      # unary_ops.py
