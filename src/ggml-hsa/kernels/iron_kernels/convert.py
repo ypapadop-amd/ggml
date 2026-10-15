@@ -14,9 +14,10 @@ so the same design serves any shape. This runs a pure cast on the device queue i
 path (which drains the queue), letting the cast batch with surrounding dispatches.
 
 Tiles are as large as half of L1 allows, and a large tensor's tiles are fanned out over one worker
-per column in contiguous bands, each moved by its own shim DMA.
+per column (fewer on aie2p) in contiguous bands, each moved by its own shim DMA.
 """
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,7 @@ from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
 from .utils import (
+    arch_num_columns,
     arch_to_device,
     divisor_tile_size,
     fan_out_worker_count,
@@ -47,6 +49,11 @@ _DMA_ALIGNMENT_BYTES = 4
 # 5 GB/s, so even a few tens of thousands of elements gain from all four columns on aie2 (a
 # 250000-element f32 -> bf16 measured 465 us on one worker, 283 on four).
 _MIN_ELEMS_PER_WORKER = 8 * 1024
+
+# aie2p: a worker adds a fixed cost to every dispatch, which in a graph, where every conversion sits
+# between two other kernels, outweighs its share of the bandwidth until the cast is large: workers =
+# sqrt(elements / this), rounded to a power of two (see _worker_cap).
+_AIE2P_WORKER_ELEMENTS = 128 * 1024
 
 
 def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -152,7 +159,11 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     # Fan the tiles out across columns, one worker each with its own shim DMA, in contiguous
     # bands moved linearly; small casts stay on one worker.
     n_workers = fan_out_worker_count(
-        arch, num_elements, num_tiles, min_elems_per_worker=_MIN_ELEMS_PER_WORKER
+        arch,
+        num_elements,
+        num_tiles,
+        max_workers=_worker_cap(arch, num_elements),
+        min_elems_per_worker=_MIN_ELEMS_PER_WORKER,
     )
     tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
     of_ins = [ObjectFifo(in_tile_ty, name=f"in{w}") for w in range(n_workers)]
@@ -208,6 +219,26 @@ def convert(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         ],
     )
     return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
+
+
+def _worker_cap(arch: str, num_elements: int) -> int | None:
+    """Most workers to fan a cast of num_elements over, or None for one per column.
+
+    On aie2p, fastest or within noise of it inside a graph (an ADD between three casts, f16 or
+    f32 <-> bf16, [768, N]): 1 worker up to N = 256, 2 at 512 and 1024, 4 at 2048 and 4096.
+    Alone, a cast prefers one worker per column at every size.
+
+    Args:
+        arch: Target architecture.
+        num_elements: Total number of elements to convert.
+
+    Returns:
+        The cap on aie2p, at most the column count; None (the column count) elsewhere.
+    """
+    if arch != "aie2p":
+        return None
+    workers = math.sqrt(num_elements / _AIE2P_WORKER_ELEMENTS)
+    return min(arch_num_columns(arch), 2 ** max(0, round(math.log2(workers))))
 
 
 def _lanes_and_tile_size(
