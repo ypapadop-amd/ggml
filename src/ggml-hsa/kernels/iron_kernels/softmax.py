@@ -7,6 +7,7 @@
 
 """IRON design for softmax over dim 0, one row per tile."""
 
+import math
 import struct
 from pathlib import Path
 from typing import Any
@@ -438,6 +439,11 @@ _LANE_ROWS = 32
 _LANE_ROWS_AIE2P = 64
 _LANE_ROWS_MAX_LENGTH = 32
 
+# aie2p: a worker adds a fixed cost to every dispatch, which in a graph outweighs its share of the
+# work until the op is large: workers = sqrt(elements / this), rounded to a power of two (see
+# _plain_tiling).
+_AIE2P_WORKER_ELEMENTS = 16384
+
 
 def _plain_tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
     """Rows per tile and worker count for the plain softmax.
@@ -448,7 +454,8 @@ def _plain_tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
     least work, preferring larger tiles: rows up to _LANE_ROWS_MAX_LENGTH long cost about the
     same per group of _LANE_ROWS rows (_LANE_ROWS_AIE2P on aie2p) however full, longer ones cost
     per row. MNIST's 500 rows of 10 go on aie2 as 20 tiles of 25 rows over 8 workers (3 groups
-    for the busiest), not 4 tiles of 125 over 4 (4 groups).
+    for the busiest), not 4 tiles of 125 over 4 (4 groups). aie2p takes fewer workers: see
+    _AIE2P_WORKER_ELEMENTS.
 
     Args:
         arch: Target AIE architecture.
@@ -474,6 +481,13 @@ def _plain_tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
         else 1
     )
     max_workers = 2 * arch_num_columns(arch)
+    if arch == "aie2p":
+        # Fastest or within noise of it inside a graph (GPT-2's scale, mask and softmax; MNIST's
+        # bias add and softmax): 1 worker for MNIST and every decode shape, 2 at [64, 64, 12],
+        # 6-8 at [256, 256, 12], 16 at [1024, 1024, 12]. A power of two divides GPT-2's row
+        # counts, so the bands keep whole tiles of many rows.
+        workers = math.sqrt(num_rows * row_length / _AIE2P_WORKER_ELEMENTS)
+        max_workers = min(max_workers, max(1, 2 ** round(math.log2(workers))))
 
     def busiest_worker_work(rows):
         num_tiles = num_rows // rows
