@@ -26,6 +26,7 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 
 from .utils import (
+    _arch_params,
     arch_num_columns,
     arch_to_device,
     batch_slice_tap,
@@ -170,8 +171,23 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
     output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
 
     tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
-    of_ins = [ObjectFifo(input_tile_ty, name=f"in{w}") for w in range(n_workers)]
-    of_outs = [ObjectFifo(output_tile_ty, name=f"out{w}") for w in range(n_workers)]
+    stack_size = (
+        _PLAIN_STACK_SIZE_BYTES_AIE2P if arch == "aie2p" else _PLAIN_STACK_SIZE_BYTES
+    )
+    in_depth, out_depth = _plain_fifo_depths(
+        arch,
+        stack_size,
+        tile_size * input_tensor.dtype.itemsize,
+        tile_size * output_tensor.dtype.itemsize,
+    )
+    of_ins = [
+        ObjectFifo(input_tile_ty, depth=in_depth, name=f"in{w}")
+        for w in range(n_workers)
+    ]
+    of_outs = [
+        ObjectFifo(output_tile_ty, depth=out_depth, name=f"out{w}")
+        for w in range(n_workers)
+    ]
 
     def ext_core_fn(of_in, of_out, function, n_tiles):
         for _ in range_(n_tiles):
@@ -190,9 +206,7 @@ def create_unary_program(arch, op_name, input_tensor, output_tensor, scale, max_
                 function,
                 tiles_per_worker[w],
             ],
-            stack_size=_PLAIN_STACK_SIZE_BYTES_AIE2P
-            if arch == "aie2p"
-            else _PLAIN_STACK_SIZE_BYTES,
+            stack_size=stack_size,
         )
         for w in range(n_workers)
     ]
@@ -499,6 +513,31 @@ def _plain_tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
         key=busiest_worker_work,
     )
     return rows_per_tile, min(max_workers, num_rows // rows_per_tile)
+
+
+def _plain_fifo_depths(arch, stack_size, input_tile_bytes, output_tile_bytes):
+    """Object fifo depths (input, output) for the plain softmax's tiles.
+
+    Double-buffered, unless aie2p's stack and four buffers of a tile overflow the core's data
+    memory: one-row tiles of 3425 to 3840 floats fit beside aie2's 4096-byte stack but not aie2p's
+    10752 bytes. There both are single-buffered, which takes rows up to 6848 floats. At 3425-3840
+    wide that measured within noise of single-buffering only the input or only the output.
+
+    Args:
+        arch: Target AIE architecture.
+        stack_size: The worker's stack size in bytes.
+        input_tile_bytes: Bytes of an input tile.
+        output_tile_bytes: Bytes of an output tile.
+
+    Returns:
+        The (input depth, output depth) pair.
+    """
+    if arch != "aie2p":
+        return 2, 2
+    data_mem_bytes = _arch_params(arch)["core_data_mem_bytes"]
+    if stack_size + 2 * (input_tile_bytes + output_tile_bytes) <= data_mem_bytes:
+        return 2, 2
+    return 1, 1
 
 
 def _create_external_function(

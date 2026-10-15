@@ -146,6 +146,8 @@ int main() {
         const char * name;
         float scale = 1.0f;
         input_kind kind = input_kind::ramp;
+        // The backend must run the case: a skip fails it.
+        bool required = false;
     } cases[] = {
         {32, 8, 1, "small"},
         {64, 64, 12, "gpt2 attn 64"},
@@ -184,6 +186,16 @@ int main() {
         // rows start at every 4-byte offset, so each has a head, whole vectors or not, and a tail;
         // scaled, the head is scaled on its own.
         {65, 48, 1, "65x48 rnd s=0.125", 0.125f, input_kind::random},
+        // Rows of 3425 to 3840 floats, a tile each: their double-buffered tiles do not fit beside
+        // aie2p's stack, so they are single-buffered there. They ran on the NPU before the
+        // stack grew; a skip would hide them falling back to the CPU again.
+        {3425, 2, 1, "3425x2 rnd", 1.0f, input_kind::random, true},
+        {3600, 12, 1, "3600x12 rnd", 1.0f, input_kind::random, true},
+        {3840, 3, 1, "3840x3 wide s=-1", -1.0f, input_kind::wide, true},
+        // Single-buffered on aie2p up to 6848 floats, buffers wider than a 16 KB memory bank (aie2
+        // declines these).
+        {4097, 2, 1, "4097x2 rnd", 1.0f, input_kind::random},
+        {6848, 2, 1, "6848x2 rnd s=0.125", 0.125f, input_kind::random},
         // NOTE: the full-context [1024,1024,12] shape is intentionally omitted for now:
         // the current single-worker kernel overruns the per-dispatch watchdog and aborts
         // the process (uncatchable). Re-add it once the kernel is fanned across compute
@@ -207,6 +219,11 @@ int main() {
                 ++mismatched;
                 break;
             case case_result::skip:
+                if (c.required) {
+                    label = "ERROR (op reported unsupported, but the backend must run it)";
+                    any_error = true;
+                    break;
+                }
                 label = "SKIPPED (op reported unsupported)";
                 ++skipped;
                 break;
