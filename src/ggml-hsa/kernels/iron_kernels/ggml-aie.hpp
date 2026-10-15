@@ -405,20 +405,32 @@ inline bool store_v_any_aligned(const T * p) {
  * read there. At the end of a buffer that block belongs to the next buffer, which the DMA may be
  * filling; inside a loop, it is a stale copy of what the next store writes.
  *
+ * It also does not round the address: it accesses the blocks through @p p itself, relying on the
+ * hardware ignoring the low address bits (aie_api's floor_ptr), so the compiler sees 32-byte
+ * accesses at @p p and @p p + 32 rather than at the blocks. That is unsafe on aie2p, where a
+ * 512-bit access (aie::load_unaligned_v's, of 16 floats) rounds its address down to 64 bytes, not
+ * 32: a block read at @p p is then taken from an earlier 512-bit load from @p p (same address, no
+ * store in between), which read the 64 bytes from @p p rounded down to 64. When @p p lies in the
+ * second half of a 64-byte block, the vector's first block is rewritten with the block before it:
+ * its bytes below @p p come back as the bytes 32 earlier (16-float vectors loaded and stored in
+ * place at 48 mod 64: the 16 bytes before each vector). And a scalar store just below @p p, in
+ * the block, looks disjoint from the read-modify-write, which is scheduled across it (on aie2
+ * too: its read is hoisted above the store and writes the old value back).
+ *
  * Here an aligned @p p (@ref store_v_any_aligned) is stored with aligned stores of the vector's
  * 256-bit pieces (an aligned 256-bit store needs 32 bytes on both archs; a 512-bit one needs 64
- * on aie2p), touching exactly the vector's bytes. Any other @p p goes through
+ * on aie2p), touching exactly the vector's bytes. Any other @p p goes, on aie2, through
  * aie::store_unaligned_v, whose blocks are then exactly those the bytes lie in, rewritten with
- * what was read from them. (For a 128-bit vector, an address off a 16-byte boundary still
- * rewrites both blocks.)
+ * what was read from them (for a 128-bit vector, an address off a 16-byte boundary still
+ * rewrites both blocks); on aie2p, through the merge below, at the blocks' own addresses.
  *
- * store_alignment::run_time takes either kind of address without a branch, for vectors of whole
- * 256-bit pieces (a branch in a loop body stops Peano pipelining the loop): it reads the blocks
- * from @p p rounded down to 32 bytes, merges the pieces into them in registers and stores them
- * aligned. When @p p is aligned, the last block it read lies past the vector: it is stored over
- * the one before it, which is then stored with its data, so nothing past the vector is written.
- * Its next loads depend on its stores, so in a loop whose stores share one alignment, testing it
- * once is faster.
+ * The merge (store_alignment::run_time, and store_alignment::unaligned on aie2p), for vectors of
+ * whole 256-bit pieces, takes either kind of address without a branch (a branch in a loop body
+ * stops Peano pipelining the loop): it reads the blocks from @p p rounded down to 32 bytes, merges
+ * the pieces into them in registers and stores them aligned. When @p p is aligned, the last block
+ * it read lies past the vector: it is stored over the one before it, which is then stored with
+ * its data, so nothing past the vector is written. Its next loads depend on its stores, so in a
+ * loop whose stores share one alignment, testing it once is faster.
  *
  * @tparam A store_alignment::run_time for any address; a loop whose stores share one alignment
  *           tests it once (@ref store_v_any_aligned) and passes aligned or unaligned instead.
@@ -427,12 +439,23 @@ template <store_alignment A = store_alignment::run_time, unsigned V, typename T>
 inline void store_v_any(T * p, const aie::vector<T, V> & v) {
     constexpr unsigned bytes = V * sizeof(T);
     static_assert(bytes >= 16 && bytes % 16 == 0, "store_v_any stores whole 128-bit vectors");
-    if constexpr (A == store_alignment::run_time && bytes % 32 == 0) {
+    // aie2 keeps aie::store_unaligned_v for store_alignment::unaligned (see above).
+    constexpr bool merge_unaligned = __AIEARCH__ != 20;
+    static_assert(!merge_unaligned || A == store_alignment::aligned || bytes % 32 == 0,
+                  "on aie2p, store_v_any stores unaligned vectors of whole 256-bit pieces only");
+    if constexpr ((A == store_alignment::run_time ||
+                   (A == store_alignment::unaligned && merge_unaligned)) &&
+                  bytes % 32 == 0) {
         using block = aie::vector<std::int8_t, 32>;
         const auto data = v.template cast_to<std::int8_t>();
         const unsigned frac = reinterpret_cast<uintptr_t>(p) & 31;
+        // On aie2p the blocks are addressed from p, so they keep its provenance (__restrict):
+        // another buffer's loads need not wait on these stores (an integer address cost MUL's
+        // unaligned row loop II 168 against 124). aie2 keeps its code.
         std::int8_t * b =
-            reinterpret_cast<std::int8_t *>(reinterpret_cast<uintptr_t>(p) & ~uintptr_t{31});
+            merge_unaligned
+                ? reinterpret_cast<std::int8_t *>(p) - frac
+                : reinterpret_cast<std::int8_t *>(reinterpret_cast<uintptr_t>(p) & ~uintptr_t{31});
         // Bytes [frac, frac + 32) of a piece's two blocks are the piece's.
         const auto mine = aie::mask<64>::from_uint64(uint64_t{0xffffffff} << frac);
         block carry = aie::load_v<32>(b);
