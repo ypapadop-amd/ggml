@@ -100,3 +100,59 @@ def elementwise_block_size(n_elements: int, max_block: int = 1024) -> int:
         )
         raise ValueError(msg)
     return block
+
+
+_TRITON_ELT_TYPES = {
+    "float32": "fp32",
+    "float16": "fp16",
+    "bfloat16": "bf16",
+    "int8": "i8",
+    "int16": "i16",
+    "int32": "i32",
+    "int64": "i64",
+}
+
+
+def triton_elt_type(dtype) -> str:
+    """Map a numpy dtype to a Triton pointer element type string (e.g. 'fp32').
+
+    Args:
+        dtype: The numpy dtype to map.
+
+    Returns:
+        The Triton element type name, used as ``f"*{...}"`` in a kernel signature.
+
+    Raises:
+        ValueError: If the dtype has no Triton element-type equivalent.
+    """
+    name = np.dtype(dtype).name
+    try:
+        return _TRITON_ELT_TYPES[name]
+    except KeyError:
+        msg = f"Unsupported dtype for Triton GPU kernel: {name}"
+        raise ValueError(msg) from None
+
+
+def gpu_elementwise_block_size(n_elements: int, max_block: int = 1024) -> int:
+    """Return the largest power of two that divides n_elements, capped at max_block.
+
+    For the unmasked elementwise kernels shared with the NPU (vecadd, relu) on GPU targets:
+    Triton's tl.arange needs a power-of-two range, and an unmasked block must divide the element
+    count exactly. Unlike elementwise_block_size this never rejects a shape -- 1 always divides
+    -- at the cost of small blocks for element counts with few factors of two.
+
+    Args:
+        n_elements: Number of elements the kernel covers.
+        max_block: Largest permitted block size.
+
+    Returns:
+        A power of two in [1, max_block] that divides n_elements.
+    """
+    cap = min(max_block, n_elements)
+    block_size = 1
+    power = 1
+    while power <= cap:
+        if n_elements % power == 0:
+            block_size = power
+        power *= 2
+    return block_size

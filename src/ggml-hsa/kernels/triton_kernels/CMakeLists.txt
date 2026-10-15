@@ -3,6 +3,7 @@
 # copy root package files
 set(TRITON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/add_bcast_gpu.py
     ${CMAKE_CURRENT_SOURCE_DIR}/vecadd_aie2.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/vecadd_aie2p.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/vecadd_aie2_f32.mlir
@@ -11,6 +12,7 @@ set(TRITON_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/matmul_aie2.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/matmul_aie2p.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/matmul.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/mul_mat_gpu.py
     ${CMAKE_CURRENT_SOURCE_DIR}/relu_aie2.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/relu_aie2p.mlir
     ${CMAKE_CURRENT_SOURCE_DIR}/relu_aie2_f32.mlir

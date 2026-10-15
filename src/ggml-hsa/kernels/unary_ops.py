@@ -8,7 +8,14 @@
 """Top-level entry points for GGML unary operations."""
 
 from .kernel import Backend, KernelSpec
-from .triton_kernels.spec_utils import elementwise_block_size, transform_script
+from .triton_kernels.spec_utils import (
+    ArchKind,
+    arch_kind,
+    elementwise_block_size,
+    gpu_elementwise_block_size,
+    transform_script,
+    triton_elt_type,
+)
 
 
 def _make_iron_unary_kernel_spec(
@@ -133,6 +140,70 @@ def _make_triton_relu_kernel_spec(
         config={
             "transform_script": transform_script("relu", arch, output_tensor.dtype),
         },
+    )
+
+
+def _make_triton_gpu_relu_kernel_spec(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+) -> KernelSpec:
+    """Create a TRITON-backend KernelSpec for RELU targeting an AMD GPU (gfx).
+
+    Ahead-of-time compiles the same relu kernel as the NPU path; see
+    binary_ops._make_triton_gpu_add_kernel_spec for the config contract. Exact in f32: the GPU
+    computes the max natively, unlike the AIE2 transform script.
+
+    Args:
+        arch: Target GPU architecture (e.g. "gfx1151").
+        input_tensors: List of one input tensor.
+        output_tensor: Output tensor.
+
+    Returns:
+        KernelSpec configured for the TRITON backend (GPU AOT path).
+
+    Raises:
+        ValueError: If there is not exactly one input, a tensor is non-contiguous, or the
+            input and output element counts differ (the kernel is unmasked).
+    """
+    import triton
+
+    from .triton_kernels.relu import relu
+
+    if len(input_tensors) != 1:
+        msg = f"Operation requires exactly one input tensor, got {len(input_tensors)}."
+        raise ValueError(msg)
+    if any(not t.contiguous for t in (*input_tensors, output_tensor)):
+        msg = "Non-contiguous tensors detected."
+        raise ValueError(msg)
+    n_elements = output_tensor.numel()
+    if input_tensors[0].numel() != n_elements:
+        msg = "Triton relu requires matching input and output element counts."
+        raise ValueError(msg)
+
+    block_size = gpu_elementwise_block_size(n_elements)
+    signature = {
+        "X": f"*{triton_elt_type(input_tensors[0].dtype)}",
+        "Y": f"*{triton_elt_type(output_tensor.dtype)}",
+        "n_elements": "constexpr",
+        "BLOCK_SIZE_N": "constexpr",
+    }
+    config = {
+        "triton_fn": relu,
+        "signature": signature,
+        "constexprs": {"n_elements": n_elements, "BLOCK_SIZE_N": block_size},
+        "num_warps": 4,
+        "num_programs": triton.cdiv(n_elements, block_size),
+    }
+
+    return KernelSpec(
+        backend=Backend.TRITON,
+        op_name="GGML_UNARY_OP_RELU",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        function=relu,
+        config=config,
     )
 
 
@@ -364,8 +435,9 @@ def ggml_unary_op_relu(
 ) -> list[KernelSpec]:
     """Return KernelSpecs for GGML_UNARY_OP_RELU (IRON primary, Triton fallback).
 
-    IRON is tried first; the Triton spec is the fallback, reached only if IRON
-    compilation fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the
+    On GPU (gfx) targets only the Triton -> hsaco AOT spec is returned, or none if the tensors
+    are unsupported. On NPU targets IRON is tried first; the Triton spec is the fallback,
+    reached only if IRON compilation fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the
     order so Triton is tried first (used to benchmark or exercise the Triton path).
 
     Args:
@@ -381,6 +453,13 @@ def ggml_unary_op_relu(
         ``GGML_HSA_JIT_COMPILER_ORDER``).
 
     """
+    if arch_kind(arch) is ArchKind.GPU:
+        try:
+            return [
+                _make_triton_gpu_relu_kernel_spec(arch, input_tensors, output_tensor)
+            ]
+        except ValueError:
+            return []
     return [
         _make_iron_unary_kernel_spec(
             arch, input_tensors, output_tensor, "GGML_UNARY_OP_RELU"

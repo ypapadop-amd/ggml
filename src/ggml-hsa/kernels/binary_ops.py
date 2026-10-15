@@ -12,7 +12,9 @@ from .triton_kernels.spec_utils import (
     ArchKind,
     arch_kind,
     elementwise_block_size,
+    gpu_elementwise_block_size,
     transform_script,
+    triton_elt_type,
 )
 
 
@@ -28,35 +30,6 @@ def _validate_binary_inputs(input_tensors: list) -> None:
     if len(input_tensors) != 2:
         msg = f"Operation requires exactly two input tensors, got {len(input_tensors)}."
         raise ValueError(msg)
-
-
-def _numpy_to_triton_elt(dtype) -> str:
-    """Map a numpy dtype to a Triton pointer element type string (e.g. 'fp32').
-
-    Parameters:
-        dtype: The numpy dtype to map.
-
-    Raises:
-        ValueError: If the dtype has no Triton element-type equivalent.
-
-    """
-    import numpy as np
-
-    name = np.dtype(dtype).name
-    mapping = {
-        "float32": "fp32",
-        "float16": "fp16",
-        "bfloat16": "bf16",
-        "int8": "i8",
-        "int16": "i16",
-        "int32": "i32",
-        "int64": "i64",
-    }
-    try:
-        return mapping[name]
-    except KeyError:
-        msg = f"Unsupported dtype for Triton GPU kernel: {name}"
-        raise ValueError(msg) from None
 
 
 def _make_iron_binary_kernel_spec(
@@ -223,15 +196,7 @@ def _make_triton_gpu_add_kernel_spec(
         msg = "Triton vecadd requires matching element counts (no broadcast)."
         raise ValueError(msg)
 
-    # Triton's tl.arange requires a power-of-two range, so BLOCK_SIZE_N must be a power of two
-    # that divides n_elements (the kernel is unmasked). Pick the largest such block.
-    cap = min(1024, n_elements)
-    block_size = 1
-    power = 1
-    while power <= cap:
-        if n_elements % power == 0:
-            block_size = power
-        power *= 2
+    block_size = gpu_elementwise_block_size(n_elements)
     num_programs = triton.cdiv(n_elements, block_size)
 
     # ONE canonical, backend-neutral description of the kernel's argument contract and launch
@@ -239,9 +204,9 @@ def _make_triton_gpu_add_kernel_spec(
     # pointer takes its own tensor's dtype: ggml ADD mixes dtypes (e.g. f16 + f32 -> f16), the
     # kernel adds in the promoted type, and tl.store converts the sum to the output dtype.
     signature = {
-        "A": f"*{_numpy_to_triton_elt(input_tensors[0].dtype)}",
-        "B": f"*{_numpy_to_triton_elt(input_tensors[1].dtype)}",
-        "C": f"*{_numpy_to_triton_elt(output_tensor.dtype)}",
+        "A": f"*{triton_elt_type(input_tensors[0].dtype)}",
+        "B": f"*{triton_elt_type(input_tensors[1].dtype)}",
+        "C": f"*{triton_elt_type(output_tensor.dtype)}",
         "n_elements": "constexpr",
         "BLOCK_SIZE_N": "constexpr",
     }
@@ -264,14 +229,108 @@ def _make_triton_gpu_add_kernel_spec(
     )
 
 
+def _make_triton_gpu_add_bcast_kernel_spec(
+    arch: str,
+    input_tensors: list,
+    output_tensor,
+) -> KernelSpec:
+    """Create a TRITON-backend KernelSpec for a broadcasting ADD targeting an AMD GPU (gfx).
+
+    Covers the ADDs vecadd cannot, where src1 is repeated over the destination (e.g. a bias
+    [M] added to a [M, N] matrix). Same AOT contract as _make_triton_gpu_add_kernel_spec.
+
+    Parameters:
+        arch: Target GPU architecture (e.g. "gfx1151").
+        input_tensors: List of two input tensors.
+        output_tensor: Output tensor.
+
+    Returns:
+        KernelSpec configured for the TRITON backend (GPU AOT path).
+
+    Raises:
+        ValueError: If a tensor is non-contiguous, src0 is not shaped like the destination, or
+            src1 cannot be repeated to the destination's shape.
+    """
+    import triton
+
+    from .triton_kernels.add_bcast_gpu import add_bcast_gpu
+
+    src0, src1 = input_tensors
+    if any(not t.contiguous for t in (src0, src1, output_tensor)):
+        msg = "Triton add_bcast_gpu requires contiguous tensors."
+        raise ValueError(msg)
+    if tuple(src0.shape) != tuple(output_tensor.shape):
+        msg = (
+            f"src0 shape must match output: {tuple(src0.shape)} "
+            f"!= {tuple(output_tensor.shape)}"
+        )
+        raise ValueError(msg)
+    if any(
+        ne % nb != 0 for ne, nb in zip(output_tensor.shape, src1.shape, strict=True)
+    ):
+        msg = (
+            f"src1 shape {tuple(src1.shape)} cannot be repeated to "
+            f"{tuple(output_tensor.shape)}"
+        )
+        raise ValueError(msg)
+
+    block_size = 1024
+    num_programs = triton.cdiv(output_tensor.numel(), block_size)
+
+    ne0, ne1, ne2, ne3 = output_tensor.shape
+    nb0, nb1, nb2, nb3 = src1.shape
+    signature = {
+        "A": f"*{triton_elt_type(src0.dtype)}",
+        "B": f"*{triton_elt_type(src1.dtype)}",
+        "C": f"*{triton_elt_type(output_tensor.dtype)}",
+        "NE0": "constexpr",
+        "NE1": "constexpr",
+        "NE2": "constexpr",
+        "NE3": "constexpr",
+        "NB0": "constexpr",
+        "NB1": "constexpr",
+        "NB2": "constexpr",
+        "NB3": "constexpr",
+        "BLOCK_SIZE_N": "constexpr",
+    }
+    config = {
+        "triton_fn": add_bcast_gpu,
+        "signature": signature,
+        "constexprs": {
+            "NE0": ne0,
+            "NE1": ne1,
+            "NE2": ne2,
+            "NE3": ne3,
+            "NB0": nb0,
+            "NB1": nb1,
+            "NB2": nb2,
+            "NB3": nb3,
+            "BLOCK_SIZE_N": block_size,
+        },
+        "num_warps": 4,
+        "num_programs": num_programs,
+    }
+
+    return KernelSpec(
+        backend=Backend.TRITON,
+        op_name="GGML_OP_ADD",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        function=add_bcast_gpu,
+        config=config,
+    )
+
+
 def ggml_op_add(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> list[KernelSpec]:
     """Return KernelSpecs for GGML_OP_ADD.
 
     On NPU targets IRON is the primary backend with a Triton fallback. On GPU (gfx) targets
-    the Triton -> hsaco AOT path is used; unsupported cases (e.g. broadcasting) yield no spec,
-    so the op is reported unsupported and skipped.
+    the Triton -> hsaco AOT path is used: vecadd for equally shaped tensors, add_bcast_gpu when
+    src1 is broadcast; unsupported cases (e.g. non-contiguous tensors) yield no spec, so the op
+    is reported unsupported and skipped.
 
     IRON is tried first; the Triton spec is the fallback, reached only if IRON
     compilation fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the
@@ -297,6 +356,14 @@ def ggml_op_add(
         try:
             return [
                 _make_triton_gpu_add_kernel_spec(arch, input_tensors, output_tensor)
+            ]
+        except ValueError:
+            pass
+        try:
+            return [
+                _make_triton_gpu_add_bcast_kernel_spec(
+                    arch, input_tensors, output_tensor
+                )
             ]
         except ValueError:
             return []
