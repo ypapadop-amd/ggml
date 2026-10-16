@@ -89,6 +89,13 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
         grid_size_total = grid_size_x;
     } else {
         wg = work_group_size != 0 ? work_group_size : 64;
+        if (wg > UINT16_MAX) {
+            // the packet's workgroup size is 16 bits; a larger value would be truncated
+            GGML_HSA_LOG_ERROR("%s: workgroup of %u work-items exceeds the AQL packet's 16-bit "
+                               "workgroup size",
+                               __func__, wg);
+            return GGML_STATUS_FAILED;
+        }
         const std::uint64_t num_groups = std::max<std::uint64_t>((n_elements + wg - 1) / wg, 1);
         grid_size_total = num_groups * wg;
     }

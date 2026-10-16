@@ -141,6 +141,12 @@ def _compile_triton_gpu_kernel(
     constexprs = cfg["constexprs"]
     num_warps = int(cfg.get("num_warps", 4))
     num_programs = int(cfg["num_programs"])
+    if num_programs < 1:
+        # e.g. an empty tensor: the loader rejects a zero-size grid, so fail before compiling
+        msg = (
+            f"{exported_name}: a launch needs at least one program, got {num_programs}"
+        )
+        raise ValueError(msg)
 
     # gfx11 uses wave32; the warp_size passed here is informational (Triton selects the ISA
     # wavefront). The actual workgroup size is read back from the compiled kernel metadata.
