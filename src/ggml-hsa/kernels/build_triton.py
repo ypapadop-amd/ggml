@@ -5,7 +5,6 @@
 import logging
 import os
 import shutil
-import subprocess
 from contextlib import ContextDecorator
 from dataclasses import MISSING
 from pathlib import Path
@@ -66,27 +65,6 @@ class TempEnvSet(ContextDecorator):
             del os.environ[self.env_var]
 
 
-def _xclbinutil_path() -> str:
-    """Return the xclbinutil that aiecc uses to package the Triton-XDNA xclbin.
-
-    Resolved the way aiecc resolves it: ``AIE_XCLBINUTIL`` (a path, or a name looked up on
-    ``PATH``), else ``xclbinutil`` on ``PATH``. Extracting the PDI with the same tool keeps the
-    packaging and the extraction in step.
-
-    Raises:
-        RuntimeError: If no xclbinutil is found.
-    """
-    override = os.environ.get("AIE_XCLBINUTIL")
-    found = shutil.which(override or "xclbinutil")
-    if found is None:
-        if override:
-            msg = f"AIE_XCLBINUTIL is set to {override!r}, which is not an executable."
-        else:
-            msg = "xclbinutil not found on PATH; install XRT or set AIE_XCLBINUTIL."
-        raise RuntimeError(msg)
-    return found
-
-
 def _get_triton_target(kernel_spec: KernelSpec) -> str:
     """Return the Triton target string for a KernelSpec's architecture.
 
@@ -116,9 +94,9 @@ def compile_triton_kernel(
 ) -> None:
     """Compile a Triton kernel for the target architecture in kernel_spec.
 
-    NPU targets run the Triton-XDNA pipeline and extract a PDI and instructions
-    binary from the resulting xclbin; GPU targets run the HIP pipeline and copy
-    the hsaco object from the Triton cache.
+    NPU targets run the Triton-XDNA pipeline and pack the result into an hsaco: a
+    full ELF on aie2p, an xclbin and instructions binary on aie2. GPU targets run
+    the HIP pipeline and copy the hsaco object from the Triton cache.
 
     Args:
         kernel_spec: The KernelSpec containing the Triton kernel function.
@@ -139,8 +117,14 @@ def compile_triton_kernel(
     # Set active driver based on architecture
     arch = _get_triton_target(kernel_spec)
     if is_npu_arch(kernel_spec.arch):
+        from aie_hsaco import pack_aie_hsaco
         from triton.backends.amd_triton_npu.config import config_context
         from triton.backends.amd_triton_npu.driver import NPUDriver, get_npu_cache_dir
+
+        # As for IRON, aie2p kernels are built as full ELFs, which take none of the queue's 32
+        # PDI slots, and ROCR rejects a dispatch batch that mixes them with PDI-plus-instructions
+        # kernels. aie2 has no full-ELF format and keeps the xclbin.
+        full_elf = kernel_spec.arch == "aie2p"
 
         triton.runtime.driver.set_active(NPUDriver())
         with (
@@ -150,60 +134,56 @@ def compile_triton_kernel(
                 transform_tiling_script=kernel_spec.config.get(
                     "transform_script", MISSING
                 ),
-                output_format="xclbin",
+                output_format="elf" if full_elf else "xclbin",
                 debug=1 if verbose else 0,
                 target=arch,
             ),
         ):
             compiled_kernel = kernel_spec.function()
-            xclbin_path = Path(get_npu_cache_dir(compiled_kernel))
+            npu_artifacts_path = Path(get_npu_cache_dir(compiled_kernel))
             logger.info(
                 (
                     "Triton compilation successful\n"
                     "  Metadata:           %s\n"
                     "  Metadata Group:     %s\n"
-                    "  XCLBIN Parent Path: %s"
+                    "  NPU Artifacts Path: %s"
                 ),
                 compiled_kernel.metadata,
                 compiled_kernel.metadata_group,
-                str(xclbin_path),
+                str(npu_artifacts_path),
             )
-            with Path(xclbin_path / "tt.shared.mlir").open("w", encoding="utf-8") as f:
+            with Path(npu_artifacts_path / "tt.shared.mlir").open(
+                "w", encoding="utf-8"
+            ) as f:
                 f.write(str(compiled_kernel.asm["ttsharedir"]))
                 logger.info("Triton Shared MLIR written to %s", f.name)
 
-            # Create PDI from Triton cache xclbin
-            pdi_path = output_directory / f"{exported_name}.pdi"
-            cmd = [
-                _xclbinutil_path(),
-                "--dump-section",
-                "AIE_PARTITION:JSON:partition.json",
-                "--force",
-                "--input",
-                str(xclbin_path / "aie.xclbin"),
-            ]
-            subprocess.run(
-                cmd,
-                check=True,
-                text=True,
-                capture_output=True,
-                cwd=str(xclbin_path),
-            )
-            pdi_src_path = next(xclbin_path.glob("**/*.pdi"))
-            shutil.copy(pdi_src_path, pdi_path)
-
-            # Copy instructions file from Triton cache
-            insts_path = output_directory / f"{exported_name}_insts.bin"
-            shutil.copy(xclbin_path / "insts.bin", insts_path)
+            if full_elf:
+                # MLIR-AIR's full ELF also holds an internal sequence that loads no PDI,
+                # which ROCR refuses to load; pack only the kernel Triton-XDNA dispatches.
+                elf_kernel_name = (
+                    (npu_artifacts_path / "elf_kernel_name.txt")
+                    .read_text(encoding="utf-8")
+                    .strip()
+                )
+                hsaco_path = pack_aie_hsaco(
+                    kernel_spec,
+                    exported_name,
+                    output_directory,
+                    full_elf_path=npu_artifacts_path / "aie.elf",
+                    elf_kernel_name=elf_kernel_name,
+                )
+            else:
+                hsaco_path = pack_aie_hsaco(
+                    kernel_spec,
+                    exported_name,
+                    output_directory,
+                    npu_artifacts_path / "aie.xclbin",
+                    npu_artifacts_path / "insts.bin",
+                )
 
             logger.info(
-                (
-                    "Triton-XDNA compilation successful\n"
-                    "  PDI Path:          %s\n"
-                    "  Instructions Path: %s"
-                ),
-                pdi_path,
-                insts_path,
+                "Triton-XDNA compilation successful\n  HSACO Path: %s", hsaco_path
             )
     elif is_gpu_arch(kernel_spec.arch):
         from triton.backends.amd.driver import HIPDriver

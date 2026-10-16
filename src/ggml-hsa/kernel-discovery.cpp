@@ -6,7 +6,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <string_view>
 
 #include "ggml-hsa/aie-kernel.hpp"
@@ -70,11 +69,8 @@ static fs::path ggml_hsa_cached_kernel_dir() {
 /// Cached (i.e., JIT compiled) kernel directory.
 static const fs::path cached_kernel_dir = ggml_hsa_cached_kernel_dir();
 
-/// PDI file suffix.
-static constexpr std::string_view pdi_file_suffix = ".pdi";
-
-/// Binary instructions file suffix.
-static constexpr std::string_view inst_file_suffix = "_insts.bin";
+/// Code object file suffix.
+static constexpr std::string_view hsaco_file_suffix = ".hsaco";
 
 /**
  * @brief Returns if @p p is a file.
@@ -84,33 +80,28 @@ static bool ggml_hsa_is_file(const fs::path & p) {
 }
 
 /**
- * @brief Returns if the files for a @ref ggml_hsa_aie_kernel exists in any of the directories.
+ * @brief Returns if the code object for a @ref ggml_hsa_kernel exists in any of the
+ * directories.
  */
-static bool ggml_hsa_find_aie_kernel_files(const std::string & device_name,
-                                           const std::string & kernel_name,
-                                           fs::path & pdi_path,
-                                           fs::path & insts_path) {
-    const auto partial_path = fs::path(device_name).append(kernel_name);
-    const auto partial_pdi_path = fs::path(partial_path).concat(pdi_file_suffix);
-    const auto partial_insts_path = fs::path(partial_path).concat(inst_file_suffix);
+static bool ggml_hsa_find_kernel_file(const std::string & device_name,
+                                      const std::string & kernel_name,
+                                      fs::path & hsaco_path) {
+    const auto partial_hsaco_path =
+        fs::path(device_name).append(kernel_name).concat(hsaco_file_suffix);
 
     if (!kernel_dir.empty()) {
         // find kernel in pregenerated kernel directory
-        auto tmp_pdi_path = kernel_dir / partial_pdi_path;
-        auto tmp_insts_path = kernel_dir / partial_insts_path;
-        if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
-            pdi_path = std::move(tmp_pdi_path);
-            insts_path = std::move(tmp_insts_path);
+        auto tmp_hsaco_path = kernel_dir / partial_hsaco_path;
+        if (ggml_hsa_is_file(tmp_hsaco_path)) {
+            hsaco_path = std::move(tmp_hsaco_path);
             return true;
         }
     }
 
     // find kernel in cached kernel directory
-    auto tmp_pdi_path = cached_kernel_dir / partial_pdi_path;
-    auto tmp_insts_path = cached_kernel_dir / partial_insts_path;
-    if (ggml_hsa_is_file(tmp_pdi_path) && ggml_hsa_is_file(tmp_insts_path)) {
-        pdi_path = std::move(tmp_pdi_path);
-        insts_path = std::move(tmp_insts_path);
+    auto tmp_hsaco_path = cached_kernel_dir / partial_hsaco_path;
+    if (ggml_hsa_is_file(tmp_hsaco_path)) {
+        hsaco_path = std::move(tmp_hsaco_path);
         return true;
     }
 
@@ -118,80 +109,39 @@ static bool ggml_hsa_find_aie_kernel_files(const std::string & device_name,
     return false;
 }
 
-/**
- * @brief Reads a binary file from @p path and returns its contents in @p buffer.
- */
-static ggml_status ggml_hsa_load_file(hsa_amd_memory_pool_t pool,
-                                      const fs::path & path,
-                                      ggml_hsa_aie_buffer & buffer) {
-    std::ifstream is(path, std::ios::binary | std::ios::ate);
-    if (is.fail()) {
-        GGML_HSA_LOG_ERROR("%s: could not open file %s", __func__, path.c_str());
-        return GGML_STATUS_FAILED;
+ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev_info,
+                                   const ggml_tensor & tensor,
+                                   std::optional<std::string> op_name,
+                                   const std::string & kernel_name,
+                                   std::shared_ptr<ggml_hsa_kernel> & kernel) {
+    // the kernel type only decides how the kernel is dispatched; it is chosen before compiling so
+    // that an unsupported device does not compile anything
+    std::shared_ptr<ggml_hsa_kernel> new_kernel;
+    switch (dev_info.type) {
+        case HSA_DEVICE_TYPE_AIE:
+            new_kernel = std::make_shared<ggml_hsa_aie_kernel>();
+            break;
+
+        // unsupported device types
+        default:
+            GGML_HSA_LOG_ERROR("%s: unsupported device %s", __func__, dev_info.name.c_str());
+            return GGML_STATUS_FAILED;
     }
 
-    const std::streamoff file_size = is.tellg();
-    if ((file_size <= 0) || !is.seekg(0, std::ios::beg)) {
-        GGML_HSA_LOG_ERROR("%s: could not get file size for %s", __func__, path.c_str());
-        return GGML_STATUS_FAILED;
-    }
-    const auto size = static_cast<std::size_t>(file_size);
+    fs::path hsaco_path;
 
-    void * ptr = nullptr;
-    if (auto status = hsa_amd_memory_pool_allocate(pool, size, 0, &ptr);
-        status != HSA_STATUS_SUCCESS) {
-        GGML_HSA_LOG_ERROR("%s: failed to allocate %zu bytes (%s)", __func__, size,
-                           ggml_hsa_get_status_string(status));
-        return GGML_STATUS_ALLOC_FAILED;
-    }
-
-    buffer = ggml_hsa_aie_buffer{static_cast<std::byte *>(ptr), size};
-    is.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(size));
-    if (!is || is.gcount() != static_cast<std::streamsize>(size)) {
-        GGML_HSA_LOG_ERROR("%s: failed to read %zu bytes from %s", __func__, size, path.c_str());
-        buffer = ggml_hsa_aie_buffer{};
-        return GGML_STATUS_FAILED;
-    }
-
-    return GGML_STATUS_SUCCESS;
-}
-
-/**
- * @brief Creates the kernel for the tensor's operation.
- *
- * This function will try the following until one succeeds in order of priority:
- *   -# load the kernel from a precompiled kernel directory,
- *   -# load the kernel from a cached kernel directory,
- *   -# compile the kernel, store it to the cached kernel directory, and load it.
- * If none of the above succeeds, an error message will be returned.
- *
- * @param[in] dev_info device information
- * @param[in] tensor tensor to find the kernel for
- * @param[in] op_name operation name; if provided, it overrides the default op name derived from the
- * tensor's operation type
- * @param[in] kernel_name kernel name
- * @param[out] kernel kernel for the operation of @p tensor
- */
-static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                              const ggml_tensor & tensor,
-                                              std::optional<std::string> op_name,
-                                              const std::string & kernel_name,
-                                              std::shared_ptr<ggml_hsa_kernel> & kernel) {
-    fs::path pdi_path;
-    fs::path insts_path;
-
-    // search for kernel files
-    if (!ggml_hsa_find_aie_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
+    // search for kernel file
+    if (!ggml_hsa_find_kernel_file(dev_info.name, kernel_name, hsaco_path)) {
 #ifdef GGML_HSA_JIT_COMPILE
-        // kernel files not found, compile kernel
+        // kernel file not found, compile kernel
         if (auto status =
                 ggml_hsa_compile_kernel(dev_info, tensor, op_name, kernel_name, cached_kernel_dir);
             status != GGML_STATUS_SUCCESS) {
             return status;
         }
 
-        // search for kernel files after compilation
-        if (!ggml_hsa_find_aie_kernel_files(dev_info.name, kernel_name, pdi_path, insts_path)) {
+        // search for kernel file after compilation
+        if (!ggml_hsa_find_kernel_file(dev_info.name, kernel_name, hsaco_path)) {
             return GGML_STATUS_FAILED;
         }
 #else
@@ -200,38 +150,12 @@ static ggml_status ggml_hsa_create_aie_kernel(const ggml_hsa_device_info::device
 #endif
     }
 
-    auto aie_kernel = std::make_shared<ggml_hsa_aie_kernel>();
-
-    // load PDI and instructions
-    if (auto status =
-            ggml_hsa_load_file(dev_info.dev_memory.memory_pool, pdi_path, aie_kernel->pdi);
+    if (auto status = new_kernel->load(dev_info.agent, hsaco_path, kernel_name);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
 
-    if (auto status =
-            ggml_hsa_load_file(dev_info.dev_memory.memory_pool, insts_path, aie_kernel->insts);
-        status != GGML_STATUS_SUCCESS) {
-        return status;
-    }
-
-    kernel = std::move(aie_kernel);
+    kernel = std::move(new_kernel);
 
     return GGML_STATUS_SUCCESS;
-}
-
-ggml_status ggml_hsa_create_kernel(const ggml_hsa_device_info::device_info & dev_info,
-                                   const ggml_tensor & tensor,
-                                   std::optional<std::string> op_name,
-                                   const std::string & kernel_name,
-                                   std::shared_ptr<ggml_hsa_kernel> & kernel) {
-    switch (dev_info.type) {
-        case HSA_DEVICE_TYPE_AIE:
-            return ggml_hsa_create_aie_kernel(dev_info, tensor, op_name, kernel_name, kernel);
-
-        // unsupported device types
-        default:
-            GGML_HSA_LOG_ERROR("%s: unsupported device %s", __func__, dev_info.name.c_str());
-            return GGML_STATUS_FAILED;
-    }
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+// Copyright (c) 2024-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #include "ggml-hsa/aie-kernel.hpp"
 
@@ -16,6 +16,9 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor & dst_tensor) const {
     const auto num_kernargs = num_src_tensors + 1 /* destination tensor */;
 
+    // each kernarg is an address and a size entry (see hsa_amd_aie_kernel_dispatch_packet_t)
+    assert(kernarg_size() == num_kernargs * 2 * sizeof(std::uint64_t));
+
     // number of bytes in the packet after completion_signal up to kernarg_address; the AIE dispatch
     // packet ABI requires this to be exactly 24 (see hsa_amd_aie_kernel_dispatch_packet_t)
     constexpr std::uint16_t aie_packet_count = 24;
@@ -28,11 +31,9 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.opcode = HSA_AMD_AIE_PACKET_OPCODE_KMQ;
     pkt.count = aie_packet_count;
     pkt.completion_signal = ctx.dispatch_signal;
-    pkt.insts_addr_low = reinterpret_cast<std::uintptr_t>(insts.data()) & 0xFFFFFFFF;
-    pkt.insts_addr_high = reinterpret_cast<std::uintptr_t>(insts.data()) >> 32;
+    pkt.kernel_object_low = kernel_object() & 0xFFFFFFFF;
+    pkt.kernel_object_high = kernel_object() >> 32;
     pkt.num_kernargs = num_kernargs;
-    pkt.insts_size = insts.size();
-    pkt.pdi_addr = pdi.data(); // PDI to use with this command
 
     auto queue = ctx.queue;
 
