@@ -178,6 +178,10 @@ int main() {
         {500, 10, 512, 128, "mnist A c2"},
         {500, 500, 512, 512, "mnist B c2"},
         {784, 10, 800, 128, "mnist A c3"},
+        // uneven bands of rows and of padding rows: on aie2p 613 rows (+ 27 padding) over two
+        // workers and 1201 (+ 15) over four
+        {650, 613, 656, 640, "2 uneven bands"},
+        {1500, 1201, 1504, 1216, "4 uneven bands"},
         // the im2col GEMM operands behind MNIST-CNN's two CONV_2D layers: the A operand's
         // d1 is the whole batch*OH*OW extent, orders of magnitude past every case above.
         {9, 392000, 16, 392000, "mnist-cnn conv1 A"},

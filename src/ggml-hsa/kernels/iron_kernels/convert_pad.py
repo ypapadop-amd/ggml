@@ -23,13 +23,19 @@ from aie.iron import (
 from aie.iron.controlflow import range_
 from ml_dtypes import bfloat16
 
-from .utils import arch_to_device, fan_out_worker_count
+from .utils import arch_num_columns, arch_to_device, fan_out_worker_count
 
 # Fewest valid elements worth a worker of its own. The convert is cheap per element, so a worker
 # pays off well below the shared default: fanning the MNIST FC operands ([784, 500], [500, 500])
 # out over 3-4 workers halved their time on aie2, while ops of a few thousand elements stay at the
 # dispatch floor either way.
 _MIN_ELEMS_PER_WORKER = 64 * 1024
+
+# aie2p: a worker adds a fixed cost to every dispatch, which in a graph, where the convert+pad sits
+# between two other kernels, outweighs its share of the bandwidth until the operand is large:
+# workers = sqrt(elements / this), rounded to a power of two (see _worker_cap). The same rule as
+# HSA_CONVERT's (convert.py), which moves the same bytes per element.
+_AIE2P_WORKER_ELEMENTS = 128 * 1024
 
 # Most bytes (input plus output) one ObjectFifo object of rows may hold. Each object costs a DMA
 # buffer descriptor and lock handshake at both ends and a core-function call, which dominate rows
@@ -82,8 +88,9 @@ def convert_pad(
     Rows travel in ObjectFifo objects of several rows when they are short (see
     ``_rows_per_object``), and the objects are fanned out across compute tiles, each worker with
     an independent in/out ObjectFifo (its own shim-DMA path), until the DMA bandwidth saturates.
-    The worker count scales with the work (see ``_MIN_ELEMS_PER_WORKER``) and is capped at the
-    array column count, so ops of a few thousand elements stay single-worker.
+    The worker count scales with the work (see ``_MIN_ELEMS_PER_WORKER``, and on aie2p
+    ``_worker_cap``) and is capped at the array column count, so ops of a few thousand elements
+    stay single-worker.
 
     Args:
         arch: Target architecture.
@@ -173,7 +180,11 @@ def convert_pad(
     # (n_objects % n_workers) workers take one extra so the bands cover d1 exactly.
     n_objects = d1 // rows
     n_workers = fan_out_worker_count(
-        arch, d0 * d1, n_objects, max_workers, _MIN_ELEMS_PER_WORKER
+        arch,
+        d0 * d1,
+        n_objects,
+        _worker_cap(arch, d0 * d1, max_workers),
+        _MIN_ELEMS_PER_WORKER,
     )
     base, rem = divmod(n_objects, n_workers)
     rows_per_worker = [rows * (base + (1 if w < rem else 0)) for w in range(n_workers)]
@@ -277,6 +288,29 @@ def convert_pad(
     )
 
     return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
+
+
+def _worker_cap(arch: str, num_elements: int, max_workers: int | None) -> int | None:
+    """Most workers to fan a convert+pad of num_elements valid elements over.
+
+    On aie2p, fastest or within noise of it inside a graph (an ADD, the convert+pad, and an ADD or
+    the MUL_MAT): 1 worker up to ~200K elements, 2 at 300K-800K, 4 at 1.8M-3.1M. Alone, the
+    convert+pad prefers one worker per column from ~200K elements up.
+
+    Args:
+        arch: Target architecture.
+        num_elements: Valid (source) elements to convert.
+        max_workers: The caller's cap, or None for the column count.
+
+    Returns:
+        On aie2p, the smaller of the caller's cap (or the column count) and the rule above;
+        elsewhere the caller's cap unchanged.
+    """
+    if arch != "aie2p":
+        return max_workers
+    workers = math.sqrt(num_elements / _AIE2P_WORKER_ELEMENTS)
+    cap = arch_num_columns(arch) if max_workers is None else max_workers
+    return min(cap, 2 ** max(0, round(math.log2(workers))))
 
 
 def _create_external_functions(
