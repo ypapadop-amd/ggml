@@ -91,7 +91,7 @@ def _make_triton_matmul_kernel_spec(
         import torch
         import triton
 
-        from .triton_kernels.matmul import bare_matmul
+        from .triton_kernels.gemm import bare_matmul
         from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
 
         if len(input_tensors) != 2:
@@ -234,81 +234,83 @@ _GPU_BLOCK_K = 32
 def _make_triton_gpu_matmul_kernel_spec(
     arch: str, input_tensors: list, output_tensor
 ) -> KernelSpec:
-    """Create a TRITON-backend KernelSpec for MUL_MAT targeting an AMD GPU (gfx).
+    """Create a TRITON-backend (GPU AOT) KernelSpec for MUL_MAT.
 
-    Ahead-of-time compiles triton_kernels.mul_mat_gpu, which reads the GGML buffers in their
-    native layout (A [K, M], B [K, N], C [M, N]); see
-    binary_ops._make_triton_gpu_add_kernel_spec for the config contract.
+    GGML MUL_MAT computes dst = src0 @ src1^T with
+        src0 (A): ne=[K, M] (row-major -> logically (M, K))
+        src1 (B): ne=[K, N] (row-major -> logically (N, K))
+        dst     : ne0=M, ne1=N, dst(im, in) = sum_k A(im, k) * B(in, k)
 
-    Args:
-        arch: Target GPU architecture (e.g. "gfx1151").
-        input_tensors: Input tensors A and B.
-        output_tensor: Output tensor C.
-
-    Returns:
-        KernelSpec configured for the TRITON backend (GPU AOT path).
-
-    Raises:
-        ValueError: If there are not exactly two inputs, a tensor is non-contiguous or batched
-            (dimensions 2 and 3 must be 1), or the shapes do not form a matrix product.
+    Only the plain 2-D case (no batching / broadcasting) is handled on the GPU. Each tensor keeps
+    its own dtype (any that triton_elt_type maps, e.g. f32/f16/bf16 or i16): operands are widened
+    to f32 in the kernel and the f32 accumulator is cast to the destination's dtype. Other cases
+    raise ValueError so the op is reported unsupported. All dims/block sizes are baked as Triton
+    constexprs; the only runtime kernel args are the src0, src1 and dst pointers.
     """
     import triton
 
-    from .triton_kernels.mul_mat_gpu import mul_mat_gpu
+    from .triton_kernels.gemm import gemm_kernel
 
-    if len(input_tensors) != 2:
-        msg = f"Operation requires exactly two input tensors, got {len(input_tensors)}."
+    src0, src1 = input_tensors[0], input_tensors[1]
+
+    # only contiguous, non-batched matmul
+    if any(not t.contiguous for t in (src0, src1, output_tensor)):
+        msg = "Triton GPU MUL_MAT requires contiguous tensors."
         raise ValueError(msg)
-    a, b = input_tensors
-    if any(not t.contiguous for t in (a, b, output_tensor)):
-        msg = "Triton mul_mat_gpu requires contiguous tensors."
-        raise ValueError(msg)
-    if any(t.shape[2] != 1 or t.shape[3] != 1 for t in (a, b, output_tensor)):
-        msg = "Triton mul_mat_gpu does not support batched MUL_MAT."
-        raise ValueError(msg)
-    k, m = a.shape[0], a.shape[1]
-    n = b.shape[1]
-    if b.shape[0] != k or tuple(output_tensor.shape[:2]) != (m, n):
-        msg = (
-            f"Shapes do not form a matrix product: A {tuple(a.shape)}, "
-            f"B {tuple(b.shape)}, C {tuple(output_tensor.shape)}"
-        )
+    if (
+        src0.shape[2] != 1
+        or src0.shape[3] != 1
+        or src1.shape[2] != 1
+        or src1.shape[3] != 1
+    ):
+        msg = "Triton GPU MUL_MAT supports 2-D (non-batched) matmul only."
         raise ValueError(msg)
 
-    num_programs = triton.cdiv(m, _GPU_BLOCK_M) * triton.cdiv(n, _GPU_BLOCK_N)
+    k = int(src0.shape[0])
+    m = int(src0.shape[1])
+    n = int(src1.shape[1])
+    if int(src1.shape[0]) != k:
+        msg = "Triton GPU MUL_MAT: src0/src1 inner dimension mismatch."
+        raise ValueError(msg)
+
+    num_pid_m = triton.cdiv(m, _GPU_BLOCK_M)
+    num_pid_n = triton.cdiv(n, _GPU_BLOCK_N)
+    num_programs = num_pid_m * num_pid_n
+
     signature = {
-        "A": f"*{triton_elt_type(a.dtype)}",
-        "B": f"*{triton_elt_type(b.dtype)}",
+        "A": f"*{triton_elt_type(src0.dtype)}",
+        "B": f"*{triton_elt_type(src1.dtype)}",
         "C": f"*{triton_elt_type(output_tensor.dtype)}",
         "M": "constexpr",
         "N": "constexpr",
         "K": "constexpr",
-        "BLOCK_SIZE_M": "constexpr",
-        "BLOCK_SIZE_N": "constexpr",
-        "BLOCK_SIZE_K": "constexpr",
+        "BM": "constexpr",
+        "BN": "constexpr",
+        "BK": "constexpr",
+        "NUM_PID_N": "constexpr",
     }
     config = {
-        "triton_fn": mul_mat_gpu,
+        "triton_fn": gemm_kernel,
         "signature": signature,
         "constexprs": {
             "M": m,
             "N": n,
             "K": k,
-            "BLOCK_SIZE_M": _GPU_BLOCK_M,
-            "BLOCK_SIZE_N": _GPU_BLOCK_N,
-            "BLOCK_SIZE_K": _GPU_BLOCK_K,
+            "BM": _GPU_BLOCK_M,
+            "BN": _GPU_BLOCK_N,
+            "BK": _GPU_BLOCK_K,
+            "NUM_PID_N": num_pid_n,
         },
         "num_warps": 4,
         "num_programs": num_programs,
     }
-
     return KernelSpec(
         backend=Backend.TRITON,
         op_name="GGML_OP_MUL_MAT",
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        function=mul_mat_gpu,
+        function=gemm_kernel,
         config=config,
     )
 

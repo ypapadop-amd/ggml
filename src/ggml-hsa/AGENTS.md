@@ -80,12 +80,21 @@ src/ggml-hsa/
 │   ├── argmax.py                # Top-level argmax op dispatch
 │   ├── count_equal.py           # Top-level count_equal op dispatch
 │   ├── cross_entropy_loss.py    # Top-level cross entropy loss op dispatch
-│   ├── triton/                  # Triton kernel implementations
+│   ├── triton_kernels/          # Triton kernels (NPU and GPU); files named like iron_kernels/
 │   │   ├── __init__.py          # Subpackage init
-│   │   ├── utils.py             # Shared utilities (dtype conversion)
-│   │   ├── vecadd.py            # Vector addition Triton kernel
-│   │   ├── vecadd_aie2.mlir     # MLIR transform/tiling script for AIE2
-│   │   └── vecadd_aie2p.mlir    # MLIR transform/tiling script for AIE2P
+│   │   ├── spec_utils.py        # KernelSpec helpers importable without torch (arch kind, dtypes)
+│   │   ├── utils.py             # Shared utilities (dtype conversion; imports torch)
+│   │   ├── binary_ops.py        # vecadd (NPU ADD) + bcast_binary_kernel (GPU ADD with broadcast)
+│   │   ├── unary_ops.py         # relu (NPU) + relu_kernel (GPU)
+│   │   ├── gemm.py              # bare_matmul (NPU) + gemm_kernel (GPU MUL_MAT)
+│   │   ├── softmax.py           # GPU SOFT_MAX kernel
+│   │   ├── argmax.py            # GPU ARGMAX kernel
+│   │   ├── im2col.py            # GPU IM2COL kernel
+│   │   ├── pool_2d.py           # GPU POOL_2D kernel
+│   │   ├── conv_2d.py           # GPU CONV_2D kernel
+│   │   ├── cross_entropy_loss.py # GPU CROSS_ENTROPY_LOSS kernel
+│   │   ├── count_equal.py       # GPU COUNT_EQUAL kernel
+│   │   └── *_aie2{,p}{,_f32}.mlir # Triton-XDNA transform/tiling scripts (vecadd, relu, matmul)
 │   └── iron_kernels/            # IRON kernel implementations
 │       ├── __init__.py          # Subpackage init
 │       ├── utils.py             # Shared utilities (alignment, device mapping)

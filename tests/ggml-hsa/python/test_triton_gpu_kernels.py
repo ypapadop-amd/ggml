@@ -102,6 +102,7 @@ def test_mul_mat_matches_reference(tmp_path, mods, k, m, n):
         ((500, 500), (500,)),  # MNIST bias add
         ((10, 7, 3, 2), (10, 1, 3, 1)),
         ((6, 4), (3, 2)),  # repeated, not just broadcast from 1
+        ((500, 500), (500, 500)),  # same shape
     ],
 )
 def test_add_broadcast_matches_reference(tmp_path, mods, dst, src1):
@@ -110,7 +111,7 @@ def test_add_broadcast_matches_reference(tmp_path, mods, dst, src1):
         ARCH, [_td(mods, dst), _td(mods, src1)], _td(mods, dst), bytearray()
     )
     assert len(specs) == 1
-    assert specs[0].config["triton_fn"].fn.__name__ == "add_bcast_gpu"
+    assert specs[0].config["triton_fn"].fn.__name__ == "bcast_binary_kernel"
 
     rng = np.random.default_rng(0)
     # numpy shapes are GGML shapes reversed (outermost first)
@@ -123,17 +124,6 @@ def test_add_broadcast_matches_reference(tmp_path, mods, dst, src1):
     )
     expected = a + np.tile(b.reshape((1,) * (a.ndim - b.ndim) + b.shape), reps)
     np.testing.assert_array_equal(c, expected.reshape(-1))
-
-
-def test_add_same_shape_keeps_vecadd(mods):
-    """Same-shape ADD still selects the vecadd kernel."""
-    specs = mods["binary_ops"].ggml_op_add(
-        ARCH,
-        [_td(mods, (500, 500)), _td(mods, (500, 500))],
-        _td(mods, (500, 500)),
-        bytearray(),
-    )
-    assert specs[0].config["triton_fn"].fn.__name__ == "vecadd"
 
 
 @pytest.mark.parametrize("n_elements", [500 * 500, 1000, 7])

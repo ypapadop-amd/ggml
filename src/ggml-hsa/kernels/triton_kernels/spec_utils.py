@@ -133,26 +133,9 @@ def triton_elt_type(dtype) -> str:
         raise ValueError(msg) from None
 
 
-def gpu_elementwise_block_size(n_elements: int, max_block: int = 1024) -> int:
-    """Return the largest power of two that divides n_elements, capped at max_block.
-
-    For the unmasked elementwise kernels shared with the NPU (vecadd, relu) on GPU targets:
-    Triton's tl.arange needs a power-of-two range, and an unmasked block must divide the element
-    count exactly. Unlike elementwise_block_size this never rejects a shape -- 1 always divides
-    -- at the cost of small blocks for element counts with few factors of two.
-
-    Args:
-        n_elements: Number of elements the kernel covers.
-        max_block: Largest permitted block size.
-
-    Returns:
-        A power of two in [1, max_block] that divides n_elements.
-    """
-    cap = min(max_block, n_elements)
-    block_size = 1
-    power = 1
-    while power <= cap:
-        if n_elements % power == 0:
-            block_size = power
-        power *= 2
-    return block_size
+def next_pow2(n: int) -> int:
+    """Return the smallest power of two that is >= ``n`` (>= 1)."""
+    p = 1
+    while p < n:
+        p <<= 1
+    return p

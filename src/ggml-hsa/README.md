@@ -13,8 +13,10 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 [AMD XDNA2]: https://www.amd.com/en/technologies/xdna.html#xdna2
 
 AMD GPUs (`gfx*` HSA agents) are supported experimentally when built with `-DGGML_HSA_GPU=ON`:
-elementwise `ADD` and `SCALE` from precompiled HIP code objects, and `ADD` compiled with Triton
-when JIT compilation is enabled. See [`gpu-kernels/README.md`](gpu-kernels/README.md).
+elementwise `ADD` and `SCALE` from precompiled HIP code objects and, when JIT compilation is
+enabled, Triton kernels for `ADD` (with broadcast), `MUL_MAT` (non-batched), `RELU`, `SOFT_MAX`
+(no mask or ALiBi), `ARGMAX`, `IM2COL`, `POOL_2D`, `CONV_2D`, `CROSS_ENTROPY_LOSS` and
+`COUNT_EQUAL`. See [`gpu-kernels/README.md`](gpu-kernels/README.md).
 
 ## Supported Operations
 

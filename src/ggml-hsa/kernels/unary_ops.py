@@ -12,7 +12,6 @@ from .triton_kernels.spec_utils import (
     ArchKind,
     arch_kind,
     elementwise_block_size,
-    gpu_elementwise_block_size,
     transform_script,
     triton_elt_type,
 )
@@ -95,7 +94,7 @@ def _make_triton_relu_kernel_spec(
         import torch
         import triton
 
-        from .triton_kernels.relu import relu
+        from .triton_kernels.unary_ops import relu
         from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
 
         if len(input_tensors) != 1:
@@ -144,65 +143,47 @@ def _make_triton_relu_kernel_spec(
 
 
 def _make_triton_gpu_relu_kernel_spec(
-    arch: str,
-    input_tensors: list,
-    output_tensor,
+    arch: str, input_tensors: list, output_tensor
 ) -> KernelSpec:
-    """Create a TRITON-backend KernelSpec for RELU targeting an AMD GPU (gfx).
+    """Create a TRITON-backend (GPU AOT) KernelSpec for RELU.
 
-    Ahead-of-time compiles the same relu kernel as the NPU path; see
-    binary_ops._make_triton_gpu_add_kernel_spec for the config contract. Exact in f32: the GPU
-    computes the max natively, unlike the AIE2 transform script.
-
-    Args:
-        arch: Target GPU architecture (e.g. "gfx1151").
-        input_tensors: List of one input tensor.
-        output_tensor: Output tensor.
-
-    Returns:
-        KernelSpec configured for the TRITON backend (GPU AOT path).
-
-    Raises:
-        ValueError: If there is not exactly one input, a tensor is non-contiguous, or the
-            input and output element counts differ (the kernel is unmasked).
+    Every dimension/block parameter is baked as a Triton constexpr; the only runtime kernel
+    arguments are the source and destination pointers, matching the ``gpu-kernel.cpp`` ABI.
     """
     import triton
 
-    from .triton_kernels.relu import relu
+    from .triton_kernels.spec_utils import next_pow2
+    from .triton_kernels.unary_ops import relu_kernel
 
-    if len(input_tensors) != 1:
-        msg = f"Operation requires exactly one input tensor, got {len(input_tensors)}."
-        raise ValueError(msg)
-    if any(not t.contiguous for t in (*input_tensors, output_tensor)):
-        msg = "Non-contiguous tensors detected."
-        raise ValueError(msg)
     n_elements = output_tensor.numel()
     if input_tensors[0].numel() != n_elements:
-        msg = "Triton relu requires matching input and output element counts."
+        msg = "RELU requires matching element counts."
         raise ValueError(msg)
 
-    block_size = gpu_elementwise_block_size(n_elements)
+    block = min(1024, next_pow2(n_elements))
+    num_programs = triton.cdiv(n_elements, block)
+
+    elt = triton_elt_type(output_tensor.dtype)
     signature = {
-        "X": f"*{triton_elt_type(input_tensors[0].dtype)}",
-        "Y": f"*{triton_elt_type(output_tensor.dtype)}",
+        "X": f"*{elt}",
+        "Y": f"*{elt}",
         "n_elements": "constexpr",
-        "BLOCK_SIZE_N": "constexpr",
+        "BLOCK": "constexpr",
     }
     config = {
-        "triton_fn": relu,
+        "triton_fn": relu_kernel,
         "signature": signature,
-        "constexprs": {"n_elements": n_elements, "BLOCK_SIZE_N": block_size},
+        "constexprs": {"n_elements": n_elements, "BLOCK": block},
         "num_warps": 4,
-        "num_programs": triton.cdiv(n_elements, block_size),
+        "num_programs": num_programs,
     }
-
     return KernelSpec(
         backend=Backend.TRITON,
         op_name="GGML_UNARY_OP_RELU",
         arch=arch,
         input_tensors=input_tensors,
         output_tensor=output_tensor,
-        function=relu,
+        function=relu_kernel,
         config=config,
     )
 

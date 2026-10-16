@@ -20,6 +20,6 @@ def test_bare_matmul_is_jit():
 
     sys.path.insert(0, str(KERNELS_DIR))
     triton = pytest.importorskip("triton")
-    from triton_kernels.matmul import bare_matmul
+    from triton_kernels.gemm import bare_matmul
 
     assert isinstance(bare_matmul, triton.runtime.jit.JITFunction)
