@@ -16,7 +16,7 @@ AMD GPUs (`gfx*` HSA agents) are supported experimentally when built with `-DGGM
 elementwise `ADD` and `SCALE` from precompiled HIP code objects and, when JIT compilation is
 enabled, Triton kernels for `ADD` (with broadcast), `MUL_MAT` (non-batched), `RELU`, `SOFT_MAX`
 (no mask or ALiBi), `ARGMAX`, `IM2COL`, `POOL_2D`, `CONV_2D`, `CROSS_ENTROPY_LOSS` and
-`COUNT_EQUAL`. See [`gpu-kernels/README.md`](gpu-kernels/README.md).
+`COUNT_EQUAL`. See [GPU-only Build](#gpu-only-build) and [GPU Kernels](#gpu-kernels).
 
 ## Supported Operations
 
@@ -205,6 +205,34 @@ source .venv/bin/activate        # from env_setup.sh
 ./build/bin/test-vector-hsa 1024 + f32
 ```
 
+### GPU-only Build
+
+A build with only GPU devices does not need a ROCR with NPU support: the system ROCm's ROCR works
+(verified with ROCm 7.2.3 on `gfx1030`).
+
+```bash
+cmake -S . -B build \
+  -DGGML_HSA=ON \
+  -DGGML_HSA_AIE=OFF \
+  -DGGML_HSA_GPU=ON \
+  -DGGML_HSA_JIT_COMPILE=ON \
+  -Dhsa-runtime64_DIR=/opt/rocm/lib/cmake/hsa-runtime64 \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j --target ggml-hsa test-backend-ops
+```
+
+With `GGML_HSA_JIT_COMPILE=ON`, the Triton GPU kernels are compiled at run time, so configure and run
+with the Triton environment active (`source src/ggml-hsa/env_setup.sh triton`). With
+`GGML_HSA_JIT_COMPILE=OFF`, only precompiled HIP kernels are used (see
+[Generating precompiled GPU kernels](#generating-precompiled-gpu-kernels)).
+
+```bash
+LD_LIBRARY_PATH=/opt/rocm/lib ./build/bin/test-backend-ops -o ADD -b HSA0
+```
+
+Operations or shapes without a GPU kernel report `not supported` and are skipped; they are not
+failures.
+
 ### Combined HSA + HIP Build
 
 ```bash
@@ -338,6 +366,58 @@ JIT compilation generates kernels on-the-fly. Precompiled kernels in `GGML_HSA_K
 4. `/tmp/ggml/ggml-hsa`
 
 > **Warning:** Setting `GGML_HSA_KERNEL_CACHE_CLEAR=1` deletes all files in the cache directory.
+
+## GPU Kernels
+
+On a GPU device, the backend loads AMDGPU code objects, searching, in order:
+
+```text
+1. ${GGML_HSA_KERNEL_DIR}/<device_name>/<kernel_name>.hsaco   (precompiled)
+2. <cache_dir>/<device_name>/<kernel_name>.hsaco             (cache)
+```
+
+`<device_name>` is the HSA agent name (e.g. `gfx1151`) and `<kernel_name>` is the sanitized ggml
+kernel name (e.g. `add_8f32_8f32_8f32`). The loader reads the kernel descriptor symbol from the code
+object's metadata rather than deriving it from the file name: kernels from
+`generate_gpu_kernels.py` export the kernel name itself (`add_8f32_8f32_8f32.kd`), and a Triton
+kernel exports its `@triton.jit` function name (e.g. `gemm_kernel.kd`).
+
+A code object without HIP hidden arguments, such as a Triton kernel, bakes its launch geometry in at
+compile time and needs a `<kernel_name>.hsaco.json` sidecar holding `grid_size_x` and
+`workgroup_size_x`, plus an optional `group_segment_size`: the dynamic LDS in bytes the kernel
+requests at launch (Triton's shared memory, e.g. for `tl.dot`), which is added to the code object's
+fixed LDS size. Loading such a kernel fails if its sidecar is missing, and loading any kernel fails
+if its sidecar is malformed. The JIT compiler writes the sidecar with each Triton kernel.
+
+### Generating precompiled GPU kernels
+
+`generate_gpu_kernels.py` compiles HIP elementwise kernels to a `.hsaco` per kernel name, for a build
+without JIT compilation. It reads kernel names (one per line) from a file or stdin and supports
+kernels over contiguous, equally shaped tensors:
+
+- `add_*` for every dtype combination ggml's CPU backend implements: f32, f16 and bf16 with matching
+  dtypes, and an f16 or bf16 source plus an f32 source into either of their dtypes.
+- `scale_*` for f32 only (ggml's CPU backend has no f16/bf16 `SCALE` to check a generated kernel
+  against).
+
+Other names (e.g. broadcasting or non-contiguous kernels) are skipped. By default it writes into the
+kernel cache directory above, so the kernels are found without setting `GGML_HSA_KERNEL_DIR`; pass
+an explicit `out_dir` and point `GGML_HSA_KERNEL_DIR` at it to stage them elsewhere instead.
+
+```text
+generate_gpu_kernels.py [arch] [names_file] [out_dir]
+```
+
+The kernel names a test needs can be captured by running it with logging on, which reports each miss
+as `could not find code object for kernel <name>`:
+
+```bash
+LD_LIBRARY_PATH=/opt/rocm/lib GGML_HSA_ENABLE_LOG=1 \
+  ./build/bin/test-backend-ops -o ADD 2>&1 \
+  | grep -oE 'kernel (add|scale)_[0-9a-zA-Z_]+' | sed 's/kernel //' | sort -u > names.txt
+
+ROCM_PATH=/opt/rocm src/ggml-hsa/generate_gpu_kernels.py gfx1151 names.txt
+```
 
 ## Reference
 

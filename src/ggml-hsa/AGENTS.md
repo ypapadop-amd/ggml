@@ -60,7 +60,7 @@ src/ggml-hsa/
 ├── kernel-discovery.cpp/hpp     # Runtime kernel discovery and loading
 ├── aie-kernel.cpp/hpp           # AIE kernel abstraction layer
 ├── gpu-kernel.cpp/hpp           # GPU kernel (AQL dispatch of .hsaco code objects, GGML_HSA_GPU)
-├── gpu-kernels/                 # Generator + docs for precompiled GPU .hsaco kernels
+├── generate_gpu_kernels.py      # Generator for precompiled GPU .hsaco kernels (HIP add/scale)
 ├── kernel-compiler.cpp/hpp      # JIT compilation interface
 ├── type-traits.hpp              # GGML type to C++ type mapping
 ├── kernels/                     # AIE kernel implementations (two-layer architecture)
