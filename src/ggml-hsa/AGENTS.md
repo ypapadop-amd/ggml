@@ -655,7 +655,7 @@ python3 -m pip install -r requirements-triton.txt
 
 ### MLIR-AIE Version
 
-The project currently uses the **mlir-aie nightly `1.4.5.dev13+g3ceebff`** (`requirements-iron.txt`; the Triton environment gets the matching `mlir_aie_no_rtti` build from `env_setup.sh`). Ensure your environment
+The project currently uses the **mlir-aie nightly `1.4.5.dev48+gcb6f2d1`** (`requirements-iron.txt`; the Triton environment gets the matching `mlir_aie_no_rtti` build from `env_setup.sh`). Ensure your environment
 matches this version to avoid compatibility issues with:
 
 - IRON API changes

@@ -55,7 +55,7 @@ if [[ " ${INSTALL_LIST[*]} " == *" triton "* ]]; then
     echo "Installing the mlir-aie hsaco packer over the Triton dependencies..."
     python3 -m pip install --no-deps \
         --find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2 \
-        mlir_aie_no_rtti==1.4.5.dev13+g3ceebff
+        mlir_aie_no_rtti==1.4.5.dev48+gcb6f2d1
 fi
 
 echo "Environment setup complete. Installed backends: ${INSTALL_LIST[*]}"

@@ -61,28 +61,32 @@ compute that uses it**; flag it with `ggml_set_input()` if its contents change b
 | Component   | Version                                                                            |
 |-------------|------------------------------------------------------------------------------------|
 | OS          | [Ubuntu 24.04.2], [Ubuntu 25.10]                                                   |
-| ROCR        | Built from rocm-systems `users/ypapadop-amd/aie-hsaco`                             |
+| ROCR        | Built from rocm-systems `develop` at or after [`7a71bfb`][ROCR 7a71bfb]            |
 | XDNA Driver | [1.6][XDNA Driver 1.6]                                                             |
-| MLIR-AIE    | [`1.4.5.dev13+g3ceebff`][MLIR-AIE 1.4.5.dev13] (nightly)                           |
+| MLIR-AIE    | [`1.4.5.dev48+gcb6f2d1`][MLIR-AIE 1.4.5.dev48] (nightly, same commit as `1.4.5a1`) |
 | Triton-XDNA | `3.6.0.2026100504+694d60d` ([`requirements-triton.txt`](requirements-triton.txt))  |
 
 [Ubuntu 24.04.2]: https://releases.ubuntu.com/noble/
 [Ubuntu 25.10]: https://releases.ubuntu.com/questing/
 [XDNA Driver 1.6]: https://github.com/amd/xdna-driver/tree/1.6
-[MLIR-AIE 1.4.5.dev13]: https://github.com/Xilinx/mlir-aie/tree/3ceebff581f
+[ROCR 7a71bfb]: https://github.com/ROCm/rocm-systems/commit/7a71bfb024e106a0941d14ad560a2befc5277227
+[MLIR-AIE 1.4.5.dev48]: https://github.com/Xilinx/mlir-aie/tree/cb6f2d14a081ae09386eea05865c755dc0c4a86f
 
 ### ROCm
 
 `ggml-hsa` needs a [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime)
-with NPU support that loads AIE hsacos (HSA code objects). Build it from rocm-systems branch
-[`users/ypapadop-amd/aie-hsaco`](https://github.com/ROCm/rocm-systems/tree/users/ypapadop-amd/aie-hsaco)
-(see [Compiling ROCR from source](#compiling-rocr-from-source)). Triton kernels on aie2p also need
-that branch to include "feat(rocr/aie): Allow a full-ELF kernel to load several PDIs": the full ELF
-Triton-XDNA builds loads two.
+with NPU support that loads AIE hsacos (HSA code objects). That support, including full-ELF kernels
+that load several PDIs (Triton-XDNA's full ELF on aie2p loads two), landed in rocm-systems `develop`
+with [`7a71bfb`][ROCR 7a71bfb] ("feat(rocr/aie): hsaco support for AIE agents",
+[ROCm/rocm-systems#12847](https://github.com/ROCm/rocm-systems/pull/12847)). Build ROCR from
+`develop` at or after that commit (see [Compiling ROCR from source](#compiling-rocr-from-source)).
+
+[TheRock](https://github.com/ROCm/TheRock) nightly wheels do not include it yet: as of the
+`10.2.0a20261016` nightly, TheRock still pins rocm-systems `2a8fffb`, which predates `7a71bfb`. A
+TheRock build can be used once its `rocm-systems` submodule is at or after `7a71bfb`; check the
+`pin_sha` of `rocm-systems` in the wheel's `_rocm_sdk_core/share/therock/therock_manifest.json`.
 
 `ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API.
-
-What an hsaco holds depends on the architecture and the backend:
 
 What an hsaco holds depends on the architecture:
 
@@ -104,14 +108,19 @@ would keep serving the old kernels, and mixing them with new ones fails the batc
 ### Compiling ROCR from source
 
 ```bash
-REPO=/path/to/rocm-systems        # a checkout of https://github.com/ROCm/rocm-systems, `users/ypapadop-amd/aie-hsaco` branch
+REPO=/path/to/rocm-systems        # a checkout of https://github.com/ROCm/rocm-systems, `develop` at or after 7a71bfb
 ROCR=$REPO/projects/rocr-runtime
 PREFIX=$HOME/opt/rocm             # must not be /opt/rocm: that is the system runtime and lacks the AIE header
 
-cmake -S "$ROCR" -B "$ROCR/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX"
+cmake -S "$ROCR" -B "$ROCR/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+  -DIMAGE_SUPPORT=OFF
 cmake --build "$ROCR/build" -j"$(nproc)"
 cmake --install "$ROCR/build"
 ```
+
+`IMAGE_SUPPORT=OFF` skips the GPU image blit kernels, which `ggml-hsa` does not use. With it on, the
+build compiles them for every GPU target ROCR lists, and a clang that does not know one of them (e.g.,
+Ubuntu's clang 22 and `gfx1170`) fails with `invalid target ID`.
 
 Install `libdrm-dev` and `libnuma-dev` first if they are missing. Confirm the AIE header made it into
 the install, since the system runtime does not have it:
@@ -162,7 +171,7 @@ Install Triton dependencies (includes IRON):
 python3 -m pip install -r src/ggml-hsa/requirements-triton.txt
 python3 -m pip install --no-deps \
   --find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2 \
-  mlir_aie_no_rtti==1.4.5.dev13+g3ceebff
+  mlir_aie_no_rtti==1.4.5.dev48+gcb6f2d1
 ```
 
 The second command is needed because MLIR-AIR pins an MLIR-AIE (`1.4.4.dev82`) older than the hsaco
