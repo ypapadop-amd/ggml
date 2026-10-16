@@ -132,6 +132,171 @@ im2col_packed(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, 
 }
 #endif
 
+#if defined(GGML_IM2COL_PAIRS)
+// Pixel-pair word layout, for a 16-bit output (the DMA moves 32-bit words, so it cannot transpose
+// 16-bit elements): the output of pixels 2q and 2q + 1 is 2 * CS values, CS words; word j holds
+// values 2j and 2j + 1, from slots (2j) % CS and (2j + 1) % CS of pixel 2q + (2j) / CS and
+// 2q + (2j + 1) / CS. The call writes its rows as [ROWS][CS][OW / 2] words, each (row, j)'s OW / 2
+// words one run, packed back to back into aligned W-word vectors, and the output fifo's DMA walks
+// the object as [ROWS][OW / 2][CS], the im2col order. A word's low half is input column 2q + c of
+// one row and its high half column 2q + c' of another (or the same), so W words are two V-lane
+// windows, the odd lanes of the second taken over the first, converted together.
+constexpr int32_t V = 16;           // f32 lanes per chunk: W words of two values
+constexpr int32_t W = V / 2;        // words per chunk and per stored vector
+constexpr int32_t q_len = c_ow / 2; // words per run
+constexpr int32_t q_chunks = (q_len + W - 1) / W;
+// Runs after which a run again starts on a vector boundary: the kernel unrolls one such period,
+// so where each chunk lands in a vector, and every shuffle and store point, is a constant. Which
+// slots a run reads is looked up per run (an unrolled whole row of runs outgrew program memory).
+constexpr int32_t period = W / std::gcd(q_len, W);
+constexpr int32_t runs = c_rows * cs;
+static_assert(c_s0 == 1, "the pairs path reads input runs at a column stride of 2 pixels");
+static_assert(c_ow % 2 == 0, "the pairs path pairs pixels");
+static_assert(runs % period == 0, "the object must be a whole number of vectors");
+
+/// One half (low: value 2j, high: 2j + 1) of word index j: its slot's row less the output row's
+/// first input row, and that row's offset from the latter's start; per chunk, where its window
+/// loads, from there in an interior call (pairs_interior) and else from its own row's start (never
+/// left of it), how far it then shifts up, and with the other half, the lanes whose input column
+/// lies in the row (lanes past the run need not be cleared: the next run's words go over them).
+struct pair_half {
+    int32_t offset;
+    int32_t start[q_chunks];
+    int16_t row;
+    int16_t load[q_chunks], shift[q_chunks];
+};
+struct pair_run {
+    pair_half lo, hi;
+    uint16_t bits[q_chunks];
+};
+struct pair_table {
+    pair_run j[cs];
+};
+constexpr pair_table make_pair_table() {
+    pair_table t{};
+    for (int32_t j = 0; j < cs; ++j) {
+        for (int32_t h = 0; h < 2; ++h) {
+            const int32_t e = 2 * j + h, slot = e % cs, px = e / cs;
+            const int32_t iic = slot / (c_kh * c_kw), ikh = slot / c_kw % c_kh, ikw = slot % c_kw;
+            const int32_t col = px + ikw * c_d0 - c_p0; // input column of word 0
+            pair_half & half = h == 0 ? t.j[j].lo : t.j[j].hi;
+            half.row = static_cast<int16_t>(ikh * c_d1 - c_p1);
+            half.offset = iic * c_ih * c_iw + half.row * c_iw;
+            for (int32_t k = 0; k < q_chunks; ++k) {
+                // The high half loads one column early, so column col + 2i lands at lane 2i + 1.
+                const int32_t start = col + V * k - h;
+                half.start[k] = half.offset + start;
+                half.load[k] = static_cast<int16_t>(start < 0 ? 0 : start);
+                half.shift[k] = static_cast<int16_t>(start < 0 ? (-start < V ? -start : V) : 0);
+                for (int32_t i = 0; i < W; ++i) {
+                    const int32_t c = col + 2 * (W * k + i);
+                    if (c >= 0 && c < c_iw) {
+                        t.j[j].bits[k] |= static_cast<uint16_t>(1u << (2 * i + h));
+                    }
+                }
+            }
+        }
+    }
+    return t;
+}
+alignas(32) constexpr pair_table c_pairs = make_pair_table();
+
+/// Whether every window row of the call's rows lies in the image, below its first row: then every
+/// load (starting at most P0 + 1 columns left of its row) stays in the image unshifted.
+constexpr bool pairs_interior(int32_t oh) {
+    return c_iw > c_p0 + 1 && oh * c_s1 - c_p1 >= 1 &&
+           (oh + c_rows - 1) * c_s1 + (c_kh - 1) * c_d1 - c_p1 < c_ih;
+}
+
+template <bool interior>
+inline void
+im2col_pairs(const INPUT_DTYPE * __restrict in, OUTPUT_DTYPE * __restrict out, int32_t oh) {
+    using fvec = aie::vector<INPUT_DTYPE, V>;
+    using wvec = aie::vector<uint32_t, W>;
+    const fvec zeros = aie::zeros<INPUT_DTYPE, V>();
+    wvec acc = aie::zeros<uint32_t, W>(); // the words of the next vector to store gathered so far
+    uint32_t * __restrict o = reinterpret_cast<uint32_t *>(out);
+
+    // A half's row start (the image's, when the row lies in the padding: its lanes are cleared,
+    // and the loads stay in the image) and, when it does not, its lanes to keep.
+    const auto source = [&](int32_t row, int32_t row_start, const pair_half & half, uint32_t lanes,
+                            uint32_t & keep) {
+        const bool y_in = static_cast<uint32_t>(row + half.row) < static_cast<uint32_t>(c_ih);
+        keep |= y_in ? lanes : 0u;
+        return in + (y_in ? row_start + half.offset : 0);
+    };
+
+    // Chunk k of the u-th run of a period, from its two halves' windows and the lanes to keep.
+    const auto chunk = [&]<int u, int k>(const fvec & lo, const fvec & hi, uint32_t keep) {
+        constexpr int32_t pos = u * q_len + k * W; // word offset in the period
+        constexpr int32_t f = pos % W;             // lane of the vector the chunk starts at
+        constexpr int32_t n = q_len - k * W < W ? q_len - k * W : W;
+        fvec v = aie::select(lo, hi, aie::mask<V>::from_uint32(0xaaaau));
+        v = aie::select(zeros, v, aie::mask<V>::from_uint32(keep));
+        // vconv, as the in-order path's static_cast
+        const wvec words = aie::vector_cast<uint32_t>(
+            aie::accum<accfloat, V>(v).template to_vector<OUTPUT_DTYPE>());
+        if constexpr (f == 0) {
+            acc = words;
+        } else {
+            acc = aie::select(acc, aie::shuffle_up(words, f),
+                              aie::mask<W>::from_uint32(((1u << W) - 1) & ~((1u << f) - 1)));
+        }
+        if constexpr (f + n >= W) {
+            aie::store_v(o, acc);
+            o += W;
+            if constexpr (f + n > W) {
+                acc = aie::shuffle_down(words, W - f);
+            }
+        }
+    };
+
+    // The u-th run of a period: word index j of the output row whose first input row (less
+    // padding) is `row`, at `row_start` in the image.
+    const auto run = [&]<int u, int... k>(int32_t row, int32_t row_start, int32_t j,
+                                          std::integer_sequence<int, k...>) {
+        const pair_run & t = c_pairs.j[j];
+        if constexpr (interior) {
+            const INPUT_DTYPE * __restrict r = in + row_start;
+            (chunk.template operator()<u, k>(aie::load_unaligned_v<V>(r + t.lo.start[k]),
+                                             aie::load_unaligned_v<V>(r + t.hi.start[k]),
+                                             t.bits[k]),
+             ...);
+        } else {
+            uint32_t keep = 0;
+            const INPUT_DTYPE * __restrict s_lo = source(row, row_start, t.lo, 0x5555u, keep);
+            const INPUT_DTYPE * __restrict s_hi = source(row, row_start, t.hi, 0xaaaau, keep);
+            (chunk.template operator()<u, k>(
+                 aie::shuffle_up(aie::load_unaligned_v<V>(s_lo + t.lo.load[k]),
+                                 static_cast<unsigned>(t.lo.shift[k])),
+                 aie::shuffle_up(aie::load_unaligned_v<V>(s_hi + t.hi.load[k]),
+                                 static_cast<unsigned>(t.hi.shift[k])),
+                 t.bits[k] & keep),
+             ...);
+        }
+    };
+
+    int32_t row = oh * c_s1;        // the output row's first input row (less padding)
+    int32_t row_start = row * c_iw; // its offset in the image
+    int32_t j = 0;
+    AIE_LOOP_NO_UNROLL
+    for (int32_t w = 0; w < runs; w += period) {
+        [&]<int... u>(std::integer_sequence<int, u...>) {
+            (
+                [&] {
+                    run.template operator()<u>(row, row_start, j,
+                                               std::make_integer_sequence<int, q_chunks>{});
+                    const bool wrap = j == cs - 1;
+                    j = wrap ? 0 : j + 1;
+                    row += wrap ? c_s1 : 0;
+                    row_start += wrap ? c_s1 * c_iw : 0;
+                }(),
+                ...);
+        }(std::make_integer_sequence<int, period>{});
+    }
+}
+#endif
+
 } // namespace
 
 extern "C" {
@@ -145,7 +310,8 @@ extern "C" {
  * the padded input are written as zero rather than skipped, so every column
  * is fully populated. INPUT_DTYPE/OUTPUT_DTYPE may differ: each element is
  * cast on the way out. With GGML_IM2COL_PACKED the rows are written slot-major (see
- * im2col_packed) and the DMA restores the order.
+ * im2col_packed), with GGML_IM2COL_PAIRS as runs of pixel-pair words (see im2col_pairs), and the
+ * DMA restores the order.
  *
  * The extents are compile-time (-DGGML_IM2COL_*); the run-time ones are kept for the
  * kernel's signature only.
@@ -177,6 +343,13 @@ void ggml_op_im2col(const INPUT_DTYPE * __restrict in,
 #if defined(GGML_IM2COL_PACKED)
     static_assert(std::is_same_v<INPUT_DTYPE, OUTPUT_DTYPE>, "the packed path copies, not casts");
     im2col_packed(in, out, oh);
+#elif defined(GGML_IM2COL_PAIRS)
+    static_assert(sizeof(OUTPUT_DTYPE) == 2, "the pairs path packs two 16-bit values a word");
+    if (pairs_interior(oh)) {
+        im2col_pairs<true>(in, out, oh);
+    } else {
+        im2col_pairs<false>(in, out, oh);
+    }
 #else
     // Each (channel, window row, window column) is one output column slot, filled along ox
     // with the padding columns split off at compile time: zeros, then a pipelined copy, then

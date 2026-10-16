@@ -41,6 +41,9 @@ _CORE_BD_MAX_STRIDE = 8192
 _OVERREAD_BYTES = 96
 # Vector chunks the packed kernel unrolls (one period of slot groups; program memory).
 _PACKED_MAX_CHUNKS = 32
+# Words (two 16-bit values) per chunk of the pairs kernel (im2col.cc W), and the chunks it unrolls.
+_PAIR_WORDS = 8
+_PAIRS_MAX_CHUNKS = 32
 
 # Cap on data-parallel workers (compute tiles). Beyond this the per-worker shim/
 # mem-tile DMA channels exhaust the array's routing budget on NPU1 (aie2).
@@ -137,13 +140,12 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     row_bytes = row_size * output_tensor.dtype.itemsize
     image_bytes = image_size * image_tensor.dtype.itemsize
 
-    # Slot-major objects (see im2col.cc), on aie2 only so far (aie2p not run), for a
-    # contiguous f32 copy whose DMA walk fits a core tile's buffer descriptor: several output
-    # rows per object, a whole number of vectors. Otherwise one row per object, written in
-    # order.
+    # Slot-major objects (see im2col.cc) for a contiguous f32 copy whose DMA walk fits a core
+    # tile's buffer descriptor: several output rows per object, a whole number of vectors.
+    # Otherwise, but for the pairs objects below, one row per object, written in order.
     packed = None
     if (
-        arch == "aie2"
+        arch in ("aie2", "aie2p")
         and output_tensor.dtype == np.float32
         and s0 == 1
         and _packed_walk_fits(ow, kw, col_stride)
@@ -151,7 +153,26 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         packed = _rows_per_object(
             arch, oh, row_bytes, image_bytes, multiple=_VECTOR // gcd(row_size, _VECTOR)
         )
-    rows = packed or 1
+    # Pixel-pair word objects (see im2col.cc), on aie2p, for a contiguous copy to a 16-bit
+    # output, whose DMA cannot transpose 16-bit elements: the object is moved as 32-bit words.
+    pairs = None
+    if (
+        arch == "aie2p"
+        and output_tensor.dtype == bfloat16
+        and s0 == 1
+        and ow % 2 == 0
+        and _pairs_walk_fits(ow // 2, col_stride)
+    ):
+        pairs = _rows_per_object(
+            arch,
+            oh,
+            row_bytes,
+            image_bytes,
+            multiple=_pairs_period(ow // 2) // gcd(_pairs_period(ow // 2), col_stride),
+            reserved_bytes=_pairs_overread_bytes(iw, ow, kw, p0, d0)
+            + _pairs_table_bytes(ow // 2, col_stride),
+        )
+    rows = packed or pairs or 1
     obj_size = rows * row_size
 
     function = _create_external_function(
@@ -174,7 +195,10 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
             "D1": d1,
             "ROWS": rows,
             **({"PACKED": 1} if packed else {}),
+            **({"PAIRS": 1} if pairs else {}),
         },
+        # The pairs kernel writes 32-bit words.
+        object_dtype=np.dtype(np.uint32) if pairs else None,
     )
 
     # The batch dimension is embarrassingly parallel: distribute the N images
@@ -199,6 +223,18 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
         if packed
         else None
     )
+    # A pairs object holds [rows][col_stride][ow / 2] words; its DMA streams it as
+    # [rows][ow / 2][col_stride] words. The output is moved as words throughout.
+    out_dtype = output_tensor.dtype
+    if pairs:
+        q = ow // 2
+        out_dtype = np.uint32
+        obj_size //= 2
+        out_per_image //= 2
+        row_tile_ty = np.ndarray[(obj_size,), np.dtype[np.uint32]]
+        to_stream = TensorAccessPattern(
+            (obj_size,), 0, [rows, q, col_stride], [col_stride * q, 1, q]
+        )
 
     of_ins = [ObjectFifo(image_tile_ty, name=f"in{w}") for w in range(num_workers)]
     of_outs = [
@@ -242,7 +278,7 @@ def im2col(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
     kernel_numel = kernel_tensor.numel()
     kernel_tensor_ty = np.ndarray[(kernel_numel,), np.dtype[kernel_tensor.dtype]]
     image_tensor_ty = np.ndarray[(image_size * n,), np.dtype[image_tensor.dtype]]
-    output_tensor_ty = np.ndarray[(out_per_image * n,), np.dtype[output_tensor.dtype]]
+    output_tensor_ty = np.ndarray[(out_per_image * n,), np.dtype[out_dtype]]
 
     def sequence(_a_kernel, a_in, b_out, in_prods, out_conses):
         for w in range(num_workers):
@@ -291,15 +327,89 @@ def _packed_walk_fits(ow: int, kw: int, col_stride: int) -> bool:
     )
 
 
+def _pairs_walk_fits(q: int, col_stride: int) -> bool:
+    """Whether the pairs path's [rows][OW / 2][IC*KH*KW] walk fits and its kernel stays small.
+
+    Args:
+        q: Pixel pairs per output row (OW / 2), the words in one run.
+        col_stride: Column slots per output pixel (IC * KH * KW), the runs per row.
+
+    Returns:
+        True if the walk's sizes and strides (in words) fit a core tile's buffer descriptor
+        and the kernel unrolls at most _PAIRS_MAX_CHUNKS chunks (one period of runs).
+    """
+    chunks = _pairs_period(q) * -(-q // _PAIR_WORDS)
+    return (
+        q <= _CORE_BD_MAX_SIZE
+        and col_stride <= _CORE_BD_MAX_SIZE
+        and col_stride * q <= _CORE_BD_MAX_STRIDE
+        and chunks <= _PAIRS_MAX_CHUNKS
+    )
+
+
+def _pairs_period(q: int) -> int:
+    """Runs of the pairs kernel after which a run again starts on a vector boundary.
+
+    Args:
+        q: Words per run (OW / 2).
+
+    Returns:
+        The period, in runs (im2col.cc period).
+    """
+    return _PAIR_WORDS // gcd(q, _PAIR_WORDS)
+
+
+def _pairs_overread_bytes(iw: int, ow: int, kw: int, p0: int, d0: int) -> int:
+    """How far past an input row the pairs kernel's loads may read, in bytes.
+
+    Chunk k of a run loads 2 * _PAIR_WORDS f32 values from column 2 * _PAIR_WORDS * k plus at
+    most 1 + (KW - 1) * D0 - P0 (or from the row's start, when that is negative).
+
+    Args:
+        iw: Input width.
+        ow: Output width.
+        kw: Window width.
+        p0: Column padding.
+        d0: Column dilation.
+
+    Returns:
+        The bytes read past the end of the last input row, at least 0.
+    """
+    lanes = 2 * _PAIR_WORDS
+    last = lanes * (-(-(ow // 2) // _PAIR_WORDS) - 1) + 1 + (kw - 1) * d0 - p0
+    return 4 * max(0, max(0, last) + lanes - iw)
+
+
+def _pairs_table_bytes(q: int, col_stride: int) -> int:
+    """Bytes of the pairs kernel's per-slot table (im2col.cc pair_table).
+
+    Args:
+        q: Words per run (OW / 2).
+        col_stride: Column slots per output pixel (IC * KH * KW), the table's entries.
+
+    Returns:
+        The table's size in bytes.
+    """
+    chunks = -(-q // _PAIR_WORDS)
+    half = -(-(6 + 8 * chunks) // 4) * 4  # pair_half, 4-byte aligned
+    return col_stride * -(-(2 * half + 2 * chunks) // 4) * 4
+
+
 def _rows_per_object(
-    arch: str, oh: int, row_bytes: int, image_bytes: int, multiple: int
+    arch: str,
+    oh: int,
+    row_bytes: int,
+    image_bytes: int,
+    multiple: int,
+    reserved_bytes: int = _OVERREAD_BYTES,
 ) -> int | None:
-    """Output rows per packed object: the largest divisor of OH that fits.
+    """Output rows per packed or pairs object: the largest divisor of OH that fits.
 
     The input image and the output objects, each double-buffered, must fit half the core
-    data memory, less _OVERREAD_BYTES, which the packed kernel's unaligned loads may read past
-    the image: they must not run off the core's memory (in the MNIST designs the input
-    buffers start at 32 and 48 KB). The row count is also a DMA walk size.
+    data memory, less reserved_bytes: how far the kernel's unaligned loads may read past the
+    image (_OVERREAD_BYTES for the packed kernel), as they must not run off the core's memory
+    (in the MNIST designs the input buffers start at 32 and 48 KB), and the pairs kernel's
+    table. The row count is also a DMA walk size.
 
     Args:
         arch: Target architecture.
@@ -307,6 +417,8 @@ def _rows_per_object(
         row_bytes: Bytes in one output row.
         image_bytes: Bytes in one input image.
         multiple: The row count must be a multiple of this.
+        reserved_bytes: Memory the buffers must leave: how far past the image the kernel's
+            loads may read, and its tables.
 
     Returns:
         The rows per object, a divisor of oh and a multiple of `multiple`, or None if no
@@ -315,7 +427,7 @@ def _rows_per_object(
     budget = (
         _arch_params(arch)["core_data_mem_bytes"] // 2
         - 2 * image_bytes
-        - _OVERREAD_BYTES
+        - reserved_bytes
     )
     cap = min(oh, _CORE_BD_MAX_SIZE, max(0, budget) // (2 * row_bytes))
     return next(
@@ -329,6 +441,7 @@ def _create_external_function(
     image_size: int,
     row_size: int,
     shape: dict[str, int],
+    object_dtype: np.dtype | None = None,
 ) -> ExternalFunction:
     """Create the ExternalFunction for the im2col core function.
 
@@ -340,19 +453,25 @@ def _create_external_function(
         shape: Image and window extents, strides, padding and dilation, passed as
             -DGGML_IM2COL_<key>=<value> as well as at run time, so the kernel can be
             specialized for them (im2col.cc).
+        object_dtype: The output object's element type, if not the output's: the same bytes
+            as row_size output elements.
 
     Returns:
         The configured ExternalFunction.
     """
     op_name = "GGML_OP_IM2COL"
     current_dir = Path(__file__).resolve().parent
+    out_ty = np.ndarray[(row_size,), np.dtype[output_tensor.dtype]]
+    if object_dtype is not None:
+        words = row_size * output_tensor.dtype.itemsize // object_dtype.itemsize
+        out_ty = np.ndarray[(words,), np.dtype[object_dtype.type]]
     return ExternalFunction(
         name=op_name.lower(),
         object_file_name=f"{op_name.lower()}_core_function.o",
         source_file=str(current_dir / "im2col.cc"),
         arg_types=[
             np.ndarray[(image_size,), np.dtype[image_tensor.dtype]],
-            np.ndarray[(row_size,), np.dtype[output_tensor.dtype]],
+            out_ty,
             np.int32,  # oh
             np.int32,  # iw
             np.int32,  # ih
