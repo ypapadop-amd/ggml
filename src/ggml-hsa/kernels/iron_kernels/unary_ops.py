@@ -10,9 +10,12 @@
 from pathlib import Path
 
 import numpy as np
+from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
+    Program,
+    Runtime,
     Worker,
     dtype_to_str,
 )
@@ -21,9 +24,13 @@ from aie.iron.controlflow import range_
 from .utils import (
     CoreFunctionSpec,
     arch_aligned_num_elements,
+    arch_num_columns,
+    arch_to_device,
     core_function_object,
+    divisor_tile_size,
     fill_drain_program,
     max_tile_size,
+    partition_units,
     tiled_tile_size,
     vector_lanes,
 )
@@ -36,6 +43,11 @@ from .utils import (
 # at least 2432 bytes on aie2 (aiecc's lower bound: it has no stack information for the soft-float
 # libcalls the scalar tail reaches), so this matches binary_ops.py's 4096.
 _STACK_SIZE_BYTES = 4096
+# Larger stacks for some aie2p cores, by op. GELU runs two 32-lane vectors of emulated f32
+# arithmetic per loop trip, and LLVM spills its loop invariants (bf16 limbs and accumulators of
+# the constants) to a 5.3 KB frame. LOG's vector body next to scalar_log's tail needs 4544 bytes
+# (aiecc) on a tile with a tail.
+_AIE2P_STACK_SIZE_BYTES = {"GGML_UNARY_OP_GELU": 6144, "GGML_OP_LOG": 6144}
 
 
 def _unary_op(
@@ -43,6 +55,7 @@ def _unary_op(
     input_tensors: list,
     function_spec: CoreFunctionSpec,
     output_tensor,
+    stack_size: int = _STACK_SIZE_BYTES,
 ):
     """Element-wise output_tensor = op(input_tensors[0]).
 
@@ -51,6 +64,7 @@ def _unary_op(
         input_tensors: List of one input tensor.
         function_spec: Core function specification.
         output_tensor: Output tensor.
+        stack_size: Stack size of each worker, in bytes.
 
     Returns:
         The resolved IRON program.
@@ -71,45 +85,85 @@ def _unary_op(
         )
         raise ValueError(msg)
 
-    # AIE-array data movement with object fifos
+    # One core streams one tile at a time through one shim-DMA channel each way, which bounds the
+    # op once the kernel is fast: on aie2 a no-op RELU kernel measured the same as the real one.
+    # So the tiles are split into contiguous bands, one per worker, each with its own fifo pair
+    # and a linear fill/drain of its slice of the tensor. Up to one worker per array column, the
+    # cap of the other fan-out designs here (see fan_out_worker_count), but without their minimum
+    # size: on aie2 the split measured no slower down to 16K elements, and RELU 250000 (MNIST)
+    # went from one worker's ~490 us to ~305 us. Placing the workers in separate columns
+    # measured the same as the default placement.
+    n_workers = min(arch_num_columns(arch), num_tiles)
+    tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
+
     input_tile_ty = np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]]
     output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-    of_in = ObjectFifo(input_tile_ty, name="in")
-    of_out = ObjectFifo(output_tile_ty, name="out")
+    of_ins = [ObjectFifo(input_tile_ty, name=f"in{w}") for w in range(n_workers)]
+    of_outs = [ObjectFifo(output_tile_ty, name=f"out{w}") for w in range(n_workers)]
 
-    # Create a worker to run the task on a compute tile
-    worker = None
     function = function_spec.external_function
 
-    # Task for the core to perform with an external function
-    def ext_core_fn(of_in, of_out, function):
-        # Number of sub-vector "tile" iterations
-        for _ in range_(num_tiles):
+    def ext_core_fn(of_in, of_out, function, n_tiles):
+        for _ in range_(n_tiles):
             elem_in = of_in.acquire(1)
             elem_out = of_out.acquire(1)
             function(elem_in, elem_out, tile_size)
             of_in.release(1)
             of_out.release(1)
 
-    worker = Worker(
-        ext_core_fn,
-        fn_args=[of_in.cons(), of_out.prod(), function],
-        stack_size=_STACK_SIZE_BYTES,
-    )
+    workers = [
+        Worker(
+            ext_core_fn,
+            fn_args=[
+                of_ins[w].cons(),
+                of_outs[w].prod(),
+                function,
+                tiles_per_worker[w],
+            ],
+            stack_size=stack_size,
+        )
+        for w in range(n_workers)
+    ]
 
-    # Runtime operations to move data to/from the AIE-array
     input_tensor_ty = np.ndarray[(num_elements,), np.dtype[input_tensor.dtype]]
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
 
-    # Place program components (assign them resources on the device) and generate MLIR
-    return fill_drain_program(
-        arch,
-        [worker],
-        input_tys=[input_tensor_ty],
-        output_ty=output_tensor_ty,
-        in_prods=[of_in.prod()],
-        out_cons=of_out.cons(),
+    if n_workers == 1:
+        return fill_drain_program(
+            arch,
+            workers,
+            input_tys=[input_tensor_ty],
+            output_ty=output_tensor_ty,
+            in_prods=[of_ins[0].prod()],
+            out_cons=of_outs[0].cons(),
+        )
+
+    def band(w):
+        return TensorAccessPattern(
+            (num_elements,),
+            first_tiles[w] * tile_size,
+            [1, 1, tiles_per_worker[w], tile_size],
+            [0, 0, tile_size, 1],
+        )
+
+    # One host buffer per ggml tensor, src then dst. Every drain is waited on: the bands can
+    # finish in any order.
+    def sequence(in_buf, out_buf, in_prods, out_conses):
+        for w in range(n_workers):
+            in_prods[w].fill(in_buf, band(w))
+        for w in range(n_workers):
+            out_conses[w].drain(out_buf, band(w), wait=True)
+
+    rt = Runtime(
+        sequence,
+        [
+            input_tensor_ty,
+            output_tensor_ty,
+            [of.prod() for of in of_ins],
+            [of.cons() for of in of_outs],
+        ],
     )
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
 # Unary ops with a vectorized body in unary_ops.cc, which stream the large L1-budgeted tile
@@ -127,6 +181,21 @@ _VECTORIZED_OPS = frozenset(
         "GGML_UNARY_OP_RELU",
         "GGML_UNARY_OP_SGN",
         "GGML_UNARY_OP_STEP",
+    }
+)
+
+
+# Unary ops that unary_ops.cc vectorizes on aie2p only; aie2 runs them scalar, on the
+# one-vector-register tile.
+_AIE2P_VECTORIZED_OPS = frozenset(
+    {
+        "GGML_OP_LOG",
+        "GGML_UNARY_OP_CEIL",
+        "GGML_UNARY_OP_FLOOR",
+        "GGML_UNARY_OP_HARDSIGMOID",
+        "GGML_UNARY_OP_HARDSWISH",
+        "GGML_UNARY_OP_ROUND",
+        "GGML_UNARY_OP_TRUNC",
     }
 )
 
@@ -153,17 +222,25 @@ def _create_external_function(
         The core function spec.
     """
     num_elements = arch_aligned_num_elements(arch=arch, tensor=input_tensor)
-    if vectorized:
-        # Two fifos (in, out), whose types need not match: a converting unary op streams
-        # a wider output than input, and the budget has to charge each its own width.
+    # Two fifos (in, out), whose types need not match: a converting unary op streams a wider
+    # output than input, and the budget has to charge each its own width.
+    fifo_dtypes = (input_tensor.dtype, output_tensor.dtype)
+    if not vectorized:
+        tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
+    elif num_elements % vector_lanes(arch, input_tensor.dtype) == 0:
+        # Whole vectors per tile, so the vector body runs aligned.
         tile_size = tiled_tile_size(
-            arch,
-            input_tensor.dtype,
-            num_elements,
-            fifo_dtypes=(input_tensor.dtype, output_tensor.dtype),
+            arch, input_tensor.dtype, num_elements, fifo_dtypes=fifo_dtypes
         )
     else:
-        tile_size = max_tile_size(arch, input_tensor.dtype, num_elements)
+        # A count no vector divides: any width, run as vectors and a scalar tail. tiled_tile_size
+        # would stream tiles of a few elements here (5005 f32: 5005 tiles of 1). A DMA moves
+        # whole 4-byte words, so a tile of an odd number of 2-byte elements keeps that fallback.
+        tile_size = divisor_tile_size(arch, num_elements, fifo_dtypes=fifo_dtypes)
+        if any(tile_size * dtype.itemsize % 4 for dtype in fifo_dtypes):
+            tile_size = tiled_tile_size(
+                arch, input_tensor.dtype, num_elements, fifo_dtypes=fifo_dtypes
+            )
 
     compile_flags = [
         f"-D{op_name}=1",
@@ -176,6 +253,12 @@ def _create_external_function(
         # registers; transform_vector_n static_asserts on this before honouring Aligned=true.
         if tile_size % vector_lanes(arch, output_tensor.dtype) == 0:
             compile_flags.append("-DGGML_TILE_VECTOR_ALIGNED=1")
+    if arch == "aie2" and op_name == "GGML_OP_SQR":
+        # The emulated f32 multiply is one long chain per vector; within Peano's default cap of 3
+        # pipeline stages its loop runs one iteration at a time (II 72 per vector), and 4 stages
+        # pipeline it at II 25. Only SQR: the cheaper bodies (RELU, SGN, STEP) schedule worse
+        # with it. aie2p is left as it was: unmeasured there.
+        compile_flags += ["-mllvm", "--aie-pipeliner-max-stagecount=4"]
 
     current_dir = Path(__file__).resolve().parent
     # Verified to compile with GGML_HSA_KERNEL_INLINE.
@@ -239,7 +322,8 @@ def unary_op(
         op_name=op_name,
         input_tensor=input_tensors[0],
         output_tensor=output_tensor,
-        vectorized=op_name in _VECTORIZED_OPS,
+        vectorized=op_name in _VECTORIZED_OPS
+        or (arch == "aie2p" and op_name in _AIE2P_VECTORIZED_OPS),
     )
 
     return _unary_op(
@@ -247,4 +331,9 @@ def unary_op(
         input_tensors=input_tensors,
         function_spec=function_spec,
         output_tensor=output_tensor,
+        stack_size=(
+            _AIE2P_STACK_SIZE_BYTES.get(op_name, _STACK_SIZE_BYTES)
+            if arch == "aie2p"
+            else _STACK_SIZE_BYTES
+        ),
     )

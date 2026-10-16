@@ -9,8 +9,10 @@
  * This header provides type aliases and type traits used across AIE kernels.
  */
 
+#include <bit>
 #include <cstdint>
 #include <type_traits>
+#include <utility>
 
 #include "aie_api/aie.hpp"
 
@@ -255,9 +257,10 @@ inline std::uint16_t convert_f32_to_f16_scalar(f32 v) {
  */
 template <int V>
 inline aie::mask<V> convert_bf16_to_f16_vector_covers(const aie::vector<std::uint16_t, V> & b) {
+    // A biased exponent in [113, 142] is a magnitude in [0x3880, 0x477f]: one unsigned compare
+    // after an offset that wraps everything below the range to the top.
     const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, b);
-    const aie::vector<std::uint16_t, V> exponent = aie::logical_downshift(mag, 7);
-    return (aie::ge(exponent, std::uint16_t{113}) & aie::le(exponent, std::uint16_t{142})) |
+    return aie::le(aie::sub(mag, std::uint16_t{0x3880}), std::uint16_t{0x477f - 0x3880}) |
            aie::eq(mag, std::uint16_t{0});
 }
 
@@ -266,9 +269,9 @@ inline aie::mask<V> convert_bf16_to_f16_vector_covers(const aie::vector<std::uin
  *
  * bf16 keeps 7 stored mantissa bits and f16 keeps 10, so a result that lands in the normal f16
  * range loses nothing: the conversion is a pure re-pack of the sign, a rebiased exponent and a
- * left-shifted mantissa, with no rounding to get wrong. That is what makes this direction
- * vectorizable with uniform shifts alone, unlike the general f32 -> f16 narrowing, whose subnormal
- * case needs a per-lane variable shift that aie_api cannot express.
+ * left-shifted mantissa, with no rounding to get wrong. Rebiasing the exponent field (127 -> 15) is
+ * subtracting 112 << 7 from the magnitude, and moving the fields up by 3 bits is three doublings,
+ * so no vector shift is needed (on aie2 each one is a round trip through an accumulator).
  *
  * Lanes outside @ref convert_bf16_to_f16_vector_covers get a meaningless value here; the caller
  * must not use the result unless the mask is full.
@@ -282,15 +285,290 @@ inline aie::vector<std::uint16_t, V>
 convert_bf16_to_f16_vector(const aie::vector<std::uint16_t, V> & b) {
     const aie::vector<std::uint16_t, V> sign = aie::bit_and(std::uint16_t{0x8000}, b);
     const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, b);
-    const aie::vector<std::uint16_t, V> exponent = aie::logical_downshift(mag, 7);
-    const aie::vector<std::uint16_t, V> mantissa = aie::bit_and(std::uint16_t{0x7f}, mag);
 
-    // rebias 127 -> 15, and move the 7 mantissa bits up to the top of the f16 field
-    const aie::vector<std::uint16_t, V> packed = aie::bit_or(
-        aie::upshift(aie::sub(exponent, std::uint16_t{112}), 10), aie::upshift(mantissa, 3));
+    const aie::vector<std::uint16_t, V> x1 = aie::sub(mag, std::uint16_t{112 << 7});
+    const aie::vector<std::uint16_t, V> x2 = aie::add(x1, x1);
+    const aie::vector<std::uint16_t, V> x4 = aie::add(x2, x2);
+    const aie::vector<std::uint16_t, V> packed = aie::add(x4, x4);
 
     // select(v, a, m) yields a where m holds: a zero magnitude keeps only its sign
     return aie::bit_or(sign, aie::select(packed, std::uint16_t{0}, aie::eq(mag, std::uint16_t{0})));
+}
+
+/**
+ * @brief Lanes that @ref convert_f16_bits_to_bf16_vector converts correctly.
+ *
+ * A normal f16 (biased exponent in [1, 30], a magnitude in [0x0400, 0x7bff]) and a signed zero.
+ * An f16 subnormal, infinity or NaN is left to the scalar path, which is the reference for those.
+ *
+ * @tparam V Vector width (number of 16-bit lanes).
+ * @param[in] h The raw f16 bit patterns.
+ * @return Mask of the lanes the vector path handles.
+ */
+template <int V>
+inline aie::mask<V>
+convert_f16_bits_to_bf16_vector_covers(const aie::vector<std::uint16_t, V> & h) {
+    const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, h);
+    return aie::le(aie::sub(mag, std::uint16_t{0x0400}), std::uint16_t{0x7bff - 0x0400}) |
+           aie::eq(mag, std::uint16_t{0});
+}
+
+/**
+ * @brief Converts a vector of @p V f16 bit patterns to bf16 bits, for the lanes the predicate
+ * covers.
+ *
+ * Lane-wise replica of @c convert_f32_to_bf16_scalar(convert_f16_bits_to_f32(h)) for a normal f16
+ * or a zero: widening to f32 is exact, so the f32 is the sign, the exponent rebiased by 112 and the
+ * 10 mantissa bits at the top of the f32 mantissa, and narrowing to bf16 drops the low 3 of them,
+ * rounding to nearest even. The magnitude's exponent and mantissa fields are contiguous, so that
+ * is the magnitude divided by 8 and rounded to nearest even -- one shift out of an accumulator in
+ * the conv_even rounding mode, set here and restored on return -- plus the rebias, 112 << 7. A
+ * carry out of the mantissa increments the exponent, as it does in the scalar arithmetic.
+ *
+ * Lanes outside @ref convert_f16_bits_to_bf16_vector_covers get a meaningless value here; the
+ * caller must not use the result unless the mask is full.
+ *
+ * @tparam V Vector width (number of 16-bit lanes).
+ * @param[in] h The raw f16 bit patterns.
+ * @return The bf16 bit patterns.
+ */
+template <int V>
+inline aie::vector<std::uint16_t, V>
+convert_f16_bits_to_bf16_vector(const aie::vector<std::uint16_t, V> & h) {
+    const aie::vector<std::uint16_t, V> sign = aie::bit_and(std::uint16_t{0x8000}, h);
+    const aie::vector<std::uint16_t, V> mag = aie::bit_and(std::uint16_t{0x7fff}, h);
+
+    aie::vector<std::uint16_t, V> rounded;
+    {
+        aie::scoped_mode rnd{aie::rounding_mode::conv_even};
+        rounded = aie::accum<acc32, V>(mag).template to_vector<std::uint16_t>(3);
+    }
+    const aie::vector<std::uint16_t, V> packed = aie::add(rounded, std::uint16_t{112 << 7});
+
+    // select(v, a, m) yields a where m holds: a zero magnitude keeps only its sign
+    return aie::bit_or(sign, aie::select(packed, std::uint16_t{0}, aie::eq(mag, std::uint16_t{0})));
+}
+
+/**
+ * @brief Loads the first @p n (< V) elements at @p p into a vector whose other lanes are zero.
+ *
+ * Reads exactly @p n elements, so nothing past the end of a row or buffer is touched: the neighbour
+ * may be the other half of a ping-pong ObjectFifo. Goes through an aligned bounce buffer.
+ */
+template <int V, typename T>
+inline aie::vector<T, V> load_v_partial(const T * p, std::int32_t n) {
+    alignas(aie::vector_decl_align) T buf[V] = {};
+    for (std::int32_t j = 0; j < n; ++j) {
+        buf[j] = p[j];
+    }
+    return aie::load_v<V>(buf);
+}
+
+/// Stores the first @p n (< V) lanes of @p v at @p p, writing nothing past them.
+template <int V, typename T>
+inline void store_v_partial(T * p, const aie::vector<T, V> & v, std::int32_t n) {
+    alignas(aie::vector_decl_align) T buf[V];
+    aie::store_v(buf, v);
+    for (std::int32_t j = 0; j < n; ++j) {
+        p[j] = buf[j];
+    }
+}
+
+/// How @ref store_v_any stores: see there.
+enum class store_alignment {
+    run_time,  ///< Any address, every store: see store_v_any.
+    aligned,   ///< The caller tested it: aligned for @ref store_v_any's aligned path.
+    unaligned, ///< The caller tested it: not aligned.
+};
+
+/**
+ * @brief Whether @p p takes @ref store_v_any's aligned path for a vector of @p V elements:
+ * aligned to 32 bytes, or to the vector's size if it is smaller.
+ *
+ * A loop whose stores all share one alignment tests this once and passes the result to
+ * @ref store_v_any as store_alignment::aligned or store_alignment::unaligned.
+ */
+template <unsigned V, typename T>
+inline bool store_v_any_aligned(const T * p) {
+    constexpr uintptr_t bytes = V * sizeof(T);
+    constexpr uintptr_t block = bytes < 32 ? bytes : 32;
+    return (reinterpret_cast<uintptr_t>(p) & (block - 1)) == 0;
+}
+
+/**
+ * @brief Stores @p v at @p p, whatever the alignment of @p p, rewriting no memory outside the
+ * 32-byte blocks the vector's bytes lie in.
+ *
+ * aie::store_unaligned_v (aie_api, aie2 and aie2p) stores each 256-bit piece of the vector as a
+ * read-modify-write of the two 32-byte blocks from the piece's address rounded down to 32 bytes,
+ * even when the piece starts on a block: it then also rewrites the whole next block with what it
+ * read there. At the end of a buffer that block belongs to the next buffer, which the DMA may be
+ * filling; inside a loop, it is a stale copy of what the next store writes.
+ *
+ * It also does not round the address: it accesses the blocks through @p p itself, relying on the
+ * hardware ignoring the low address bits (aie_api's floor_ptr), so the compiler sees 32-byte
+ * accesses at @p p and @p p + 32 rather than at the blocks. That is unsafe on aie2p, where a
+ * 512-bit access (aie::load_unaligned_v's, of 16 floats) rounds its address down to 64 bytes, not
+ * 32: a block read at @p p is then taken from an earlier 512-bit load from @p p (same address, no
+ * store in between), which read the 64 bytes from @p p rounded down to 64. When @p p lies in the
+ * second half of a 64-byte block, the vector's first block is rewritten with the block before it:
+ * its bytes below @p p come back as the bytes 32 earlier (16-float vectors loaded and stored in
+ * place at 48 mod 64: the 16 bytes before each vector). And a scalar store just below @p p, in
+ * the block, looks disjoint from the read-modify-write, which is scheduled across it (on aie2
+ * too: its read is hoisted above the store and writes the old value back).
+ *
+ * Here an aligned @p p (@ref store_v_any_aligned) is stored with aligned stores of the vector's
+ * 256-bit pieces (an aligned 256-bit store needs 32 bytes on both archs; a 512-bit one needs 64
+ * on aie2p), touching exactly the vector's bytes. Any other @p p goes, on aie2, through
+ * aie::store_unaligned_v, whose blocks are then exactly those the bytes lie in, rewritten with
+ * what was read from them (for a 128-bit vector, an address off a 16-byte boundary still
+ * rewrites both blocks); on aie2p, through the merge below, at the blocks' own addresses.
+ *
+ * The merge (store_alignment::run_time, and store_alignment::unaligned on aie2p), for vectors of
+ * whole 256-bit pieces, takes either kind of address without a branch (a branch in a loop body
+ * stops Peano pipelining the loop): it reads the blocks from @p p rounded down to 32 bytes, merges
+ * the pieces into them in registers and stores them aligned. When @p p is aligned, the last block
+ * it read lies past the vector: it is stored over the one before it, which is then stored with
+ * its data, so nothing past the vector is written. Its next loads depend on its stores, so in a
+ * loop whose stores share one alignment, testing it once is faster.
+ *
+ * @tparam A store_alignment::run_time for any address; a loop whose stores share one alignment
+ *           tests it once (@ref store_v_any_aligned) and passes aligned or unaligned instead.
+ */
+template <store_alignment A = store_alignment::run_time, unsigned V, typename T>
+inline void store_v_any(T * p, const aie::vector<T, V> & v) {
+    constexpr unsigned bytes = V * sizeof(T);
+    static_assert(bytes >= 16 && bytes % 16 == 0, "store_v_any stores whole 128-bit vectors");
+    // aie2 keeps aie::store_unaligned_v for store_alignment::unaligned (see above).
+    constexpr bool merge_unaligned = __AIEARCH__ != 20;
+    static_assert(!merge_unaligned || A == store_alignment::aligned || bytes % 32 == 0,
+                  "on aie2p, store_v_any stores unaligned vectors of whole 256-bit pieces only");
+    if constexpr ((A == store_alignment::run_time ||
+                   (A == store_alignment::unaligned && merge_unaligned)) &&
+                  bytes % 32 == 0) {
+        using block = aie::vector<std::int8_t, 32>;
+        const auto data = v.template cast_to<std::int8_t>();
+        const unsigned frac = reinterpret_cast<uintptr_t>(p) & 31;
+        // On aie2p the blocks are addressed from p, so they keep its provenance (__restrict):
+        // another buffer's loads need not wait on these stores (an integer address cost MUL's
+        // unaligned row loop II 168 against 124). aie2 keeps its code.
+        std::int8_t * b =
+            merge_unaligned
+                ? reinterpret_cast<std::int8_t *>(p) - frac
+                : reinterpret_cast<std::int8_t *>(reinterpret_cast<uintptr_t>(p) & ~uintptr_t{31});
+        // Bytes [frac, frac + 32) of a piece's two blocks are the piece's.
+        const auto mine = aie::mask<64>::from_uint64(uint64_t{0xffffffff} << frac);
+        block carry = aie::load_v<32>(b);
+        [&]<unsigned... K>(std::integer_sequence<unsigned, K...>) {
+            (
+                [&] {
+                    const auto merged = aie::select(
+                        aie::concat(carry, aie::load_v<32>(b + 32 * (K + 1))),
+                        aie::shuffle_up(aie::concat(data.template extract<32>(K), block{}), frac),
+                        mine);
+                    if constexpr (K + 1 < bytes / 32) {
+                        aie::store_v(b + 32 * K, merged.template extract<32>(0));
+                    } else {
+                        // Aligned p: the block past the vector goes over this one, stored after.
+                        aie::store_v(b + 32 * (K + (frac != 0)), merged.template extract<32>(1));
+                        aie::store_v(b + 32 * K, merged.template extract<32>(0));
+                    }
+                    carry = merged.template extract<32>(1);
+                }(),
+                ...);
+        }(std::make_integer_sequence<unsigned, bytes / 32>{});
+    } else if constexpr (A == store_alignment::run_time) {
+        if (store_v_any_aligned<V>(p)) {
+            store_v_any<store_alignment::aligned>(p, v);
+        } else {
+            store_v_any<store_alignment::unaligned>(p, v);
+        }
+    } else if constexpr (A == store_alignment::unaligned) {
+        aie::store_unaligned_v(p, v);
+    } else if constexpr (bytes <= 32) {
+        aie::store_v(p, v);
+    } else {
+        constexpr unsigned E = 32 / sizeof(T); // elements per 256-bit piece
+        [&]<unsigned... K>(std::integer_sequence<unsigned, K...>) {
+            (aie::store_v(p + K * E, v.template extract<E>(K)), ...);
+        }(std::make_integer_sequence<unsigned, V / E>{});
+    }
+}
+
+/**
+ * @brief Stores the first @p N lanes of @p v at @p p, writing nothing past them.
+ *
+ * Aligned stores of @p v or of its halves, quarters, ... no wider than @p G bytes and no narrower
+ * than 128 bits, then scalar stores for what is left: no bounce buffer (unlike @ref
+ * store_v_partial) and no unaligned vector store (broken for 16-bit types). @p p must be aligned to
+ * min(@p G, the size of @p v).
+ */
+template <int N, int G = 64, unsigned V, typename T>
+inline void store_v_prefix(T * p, const aie::vector<T, V> & v) {
+    constexpr int bytes = static_cast<int>(V * sizeof(T));
+    static_assert(N >= 0 && N <= static_cast<int>(V), "store_v_prefix stores 0 to V lanes");
+    if constexpr (N == static_cast<int>(V) && bytes <= G) {
+        aie::store_v(p, v);
+    } else if constexpr (N > 0) {
+        constexpr unsigned H = V / 2;
+        if constexpr (bytes <= 16) {
+            for (int j = 0; j < N; ++j) {
+                p[j] = v[j];
+            }
+        } else if constexpr (N >= static_cast<int>(H)) {
+            store_v_prefix<H, G>(p, v.template extract<H>(0));
+            store_v_prefix<N - static_cast<int>(H), G>(p + H, v.template extract<H>(1));
+        } else {
+            store_v_prefix<N, G>(p, v.template extract<H>(0));
+        }
+    }
+}
+
+/**
+ * @brief A float's order key: its signed magnitude, as int32.
+ *
+ * Orders non-NaN floats exactly as `<` does, with -0 and +0 equal (both 0), so kernels can compare
+ * floats on the integer unit: the aie2 scalar unit has no float compare, and `a < b` on float is a
+ * runtime call there. A NaN's key lies beyond +inf's or -inf's; callers that can see one must
+ * handle it themselves (@ref float_is_nan).
+ */
+inline std::int32_t float_order_key(float f) {
+    const std::int32_t bits = std::bit_cast<std::int32_t>(f);
+    const std::int32_t magnitude = bits & 0x7fffffff;
+    return bits < 0 ? -magnitude : magnitude;
+}
+
+/// Whether @p f is a NaN, on the integer unit.
+inline bool float_is_nan(float f) {
+    return (std::bit_cast<std::int32_t>(f) & 0x7fffffff) > 0x7f800000;
+}
+
+/// The float whose @ref float_order_key is @p k (+0 for key 0).
+inline float float_from_order_key(std::int32_t k) {
+    return std::bit_cast<float>(k < 0 ? (-k | INT32_MIN) : k);
+}
+
+/// @ref float_order_key lane-wise.
+template <int V>
+inline aie::vector<std::int32_t, V> float_order_keys(const aie::vector<float, V> & v) {
+    const auto bits = v.template cast_to<std::int32_t>();
+    const auto magnitude = aie::bit_and(0x7fffffff, bits);
+    return aie::select(magnitude, aie::neg(magnitude),
+                       aie::lt(bits, aie::zeros<std::int32_t, V>()));
+}
+
+/// @ref float_is_nan lane-wise.
+template <int V>
+inline aie::mask<V> floats_are_nan(const aie::vector<float, V> & v) {
+    return aie::gt(aie::bit_and(0x7fffffff, v.template cast_to<std::int32_t>()), 0x7f800000);
+}
+
+/// @ref float_from_order_key lane-wise.
+template <int V>
+inline aie::vector<float, V> floats_from_order_keys(const aie::vector<std::int32_t, V> & k) {
+    const auto bits = aie::select(k, aie::bit_or(INT32_MIN, aie::neg(k)),
+                                  aie::lt(k, aie::zeros<std::int32_t, V>()));
+    return bits.template cast_to<float>();
 }
 
 /**
@@ -325,4 +603,61 @@ inline aie::vector<bf16, V> convert_f32_to_bf16_vector(const aie::vector<f32, V>
     const aie::vector<std::uint16_t, V> res16 =
         aie::filter_even(aie::vector_cast<std::uint16_t>(res32));
     return aie::vector_cast<bf16>(res16);
+}
+
+/**
+ * @brief Converts a vector of f32 to bf16 like @ref convert_f32_to_bf16_vector, bit for bit, in
+ * fewer vector operations.
+ *
+ * It never shifts the 32-bit lanes right (on aie2 that is a round trip through the accumulator,
+ * which also saves and restores the rounding mode): the result is the high 16-bit half of each
+ * rounded lane, taken with @c filter_odd; the NaN case sets the quiet bit in the high half
+ * (@c 0x400000); and the lane's bit 16, the rounding's tie-breaker, is moved to bit 0 by shifting
+ * the 16-bit view down one lane. aie2: 10 vector ALU operations per vector, II 14 -> 10 in
+ * convert_pad's row loop.
+ *
+ * @tparam V Vector width (number of f32 lanes).
+ * @param[in] fv The f32 vector to convert.
+ * @return The converted bf16 vector.
+ */
+template <int V>
+inline aie::vector<bf16, V> convert_f32_to_bf16_vector_hi16(const aie::vector<f32, V> & fv) {
+    const aie::vector<std::uint32_t, V> u = aie::vector_cast<std::uint32_t>(fv);
+
+    // (u >> 16) & 1, from the 16-bit view shifted down one lane (lane 2i then holds lane i's high
+    // half; the odd lanes are masked off)
+    const aie::vector<std::uint32_t, V> lsb = aie::bit_and(
+        1u,
+        aie::vector_cast<std::uint32_t>(aie::shuffle_down(aie::vector_cast<std::uint16_t>(u), 1)));
+
+    // RNE: u + (0x7fff + lsb); NaN: u | (64 << 16). The result is each lane's high half.
+    const aie::vector<std::uint32_t, V> rounded = aie::add(u, aie::add(lsb, 0x7fffu));
+    const aie::vector<std::uint32_t, V> nan_val = aie::bit_or(0x400000u, u);
+    const auto nan_mask = aie::gt(aie::bit_and(0x7fffffffu, u), 0x7f800000u);
+    const aie::vector<std::uint32_t, V> res32 = aie::select(rounded, nan_val, nan_mask);
+
+    return aie::vector_cast<bf16>(aie::filter_odd(aie::vector_cast<std::uint16_t>(res32)));
+}
+
+/**
+ * @brief 1 / sqrt(a) per lane, for positive normal @p a, within 8e-7 relative.
+ *
+ * The bit-trick estimate aie2's aie::invsqrt uses for f32 (http://rrrola.wz.cz/inv_sqrt.html, up to
+ * 6.5e-4 relative), written with the portable aie API so it builds for every target (the aie2p
+ * f32 aie::invsqrt is a scalar call per lane), then one Newton step, y * (1.5 - 0.5 * a * y * y),
+ * which squares that error. Checked in f32 numpy over 1e-30..1e30: at most 7.6e-7 relative.
+ */
+template <unsigned N>
+inline aie::vector<float, N> invsqrt_newton(const aie::vector<float, N> & a) {
+    constexpr std::int32_t c1 = 0x5F1FFFF9;
+    constexpr float c2 = 0.703952253f;
+    constexpr float c3 = 2.38924456f;
+    const auto mul = [](const aie::vector<float, N> & x, const auto & y) {
+        return aie::mul(x, y).template to_vector<float>();
+    };
+    const aie::vector<float, N> y0 = aie::vector_cast<float>(aie::sub(
+        aie::broadcast<std::int32_t, N>(c1), aie::downshift(aie::vector_cast<std::int32_t>(a), 1)));
+    const aie::vector<float, N> y =
+        mul(y0, aie::sub(aie::broadcast<float, N>(c2 * c3), mul(mul(a, c2), mul(y0, y0))));
+    return mul(y, aie::sub(aie::broadcast<float, N>(1.5f), mul(mul(a, 0.5f), mul(y, y))));
 }

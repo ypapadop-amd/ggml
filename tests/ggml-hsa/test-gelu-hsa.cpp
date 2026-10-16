@@ -57,10 +57,12 @@ bool run_case(ggml_backend_t backend, int64_t ne0, int64_t ne1, const char * nam
         return false;
     }
 
-    // Spread inputs across the saturating and near-zero regions of GELU.
+    // Spread inputs across the saturating and near-zero regions of GELU, in a scattered order so
+    // even a short tensor reaches both ends. Below x = -11 the vector body once gave NaN (its
+    // exp saturated past what aie::inv handles), where GELU is -0.
     std::vector<float> src_host(n);
     for (int64_t i = 0; i < n; ++i) {
-        src_host[i] = (static_cast<float>(i % 201) - 100.0f) * 0.1f;  // [-10, 10]
+        src_host[i] = (static_cast<float>((i * 37) % 401) - 200.0f) * 0.1f;  // [-20, 20]
     }
     ggml_backend_tensor_set(src, src_host.data(), 0, ggml_nbytes(src));
 
@@ -77,7 +79,7 @@ bool run_case(ggml_backend_t backend, int64_t ne0, int64_t ne1, const char * nam
     for (int64_t i = 0; i < n && ok; ++i) {
         const float want = gelu_ref(src_host[i]);
         const float got = dst_host[i];
-        if (std::fabs(got - want) > tol) {
+        if (!(std::fabs(got - want) <= tol)) { // written so that a NaN fails
             printf("  %-14s: mismatch at %lld (x=%g) got %g want %g\n", name, (long long)i,
                    src_host[i], got, want);
             ok = false;
@@ -102,12 +104,10 @@ int main() {
         {64, 1, "1d"},
         {768, 4, "gpt2 embd"},
         {3072, 8, "gpt2 mlp"},
-        // Element counts that are not a multiple of the 16-lane f32 vector. A unary op is
-        // flattened and tiled by max_tile_size, which is a power of two <= 16 dividing the
-        // element count, so the kernel sees N = 8 and N = 1 here and takes the scalar path
-        // end to end. That is the only way to reach it: a partial tail (some lanes vectorized,
-        // some not) cannot occur for a unary op, because N is either 16 or a power of two
-        // below it. These cases check the scalar fallback still agrees with the vector body.
+        // Element counts that are not a multiple of the 16-lane f32 vector. Such a count is
+        // streamed as one tile of the whole count, so the kernel runs vectors and then a scalar
+        // tail: one vector and 8 elements, and 4 vectors and 1. These cases check the scalar
+        // tail still agrees with the vector body.
         {24, 1, "non-multiple (N=8)"},
         {65, 1, "non-multiple (N=1)"},
     };

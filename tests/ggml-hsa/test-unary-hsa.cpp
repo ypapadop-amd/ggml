@@ -199,10 +199,11 @@ bool run_case(ggml_backend_t backend, op_kind kind, int64_t ne0, int64_t ne1, co
 // comparison above cannot distinguish (-0.0 == +0.0 numerically, and NaN fails any tolerance
 // test). ABS must match std::fabs and NEG must match -x down to the sign bit.
 //
-// The element count selects which code path runs: an f32 tile is a whole 16-lane vector only when
-// the count is a multiple of 16, otherwise the tile shrinks below the vector width and the kernel
-// runs entirely scalar. So 32 covers the vector path and 19 the scalar one; both must agree with
-// the host.
+// The element count selects which code path runs: an f32 tile is whole 16-lane vectors only when
+// the count is a multiple of 16; otherwise the tile is the whole count, run as vectors and a
+// scalar tail (19: one vector, a tail of 3). So 32 covers the vector path alone, and a count no
+// vector divides is checked once per rotation of its input, which moves every special value
+// through the tail as well; both paths must agree with the host.
 bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char * name) {
     const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
     ggml_init_params params{
@@ -230,6 +231,9 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
             break;
         case op_kind::sqrt:
             dst = ggml_sqrt(ctx.get(), src);
+            break;
+        case op_kind::relu:
+            dst = ggml_relu(ctx.get(), src);
             break;
         default:
             printf("  %-22s: unsupported op for sign case\n", name);
@@ -273,71 +277,86 @@ bool run_sign_case(ggml_backend_t backend, op_kind kind, int64_t ne0, const char
                          std::numeric_limits<float>::min(), 0x1.000002p-126f, 0x1p-100f,
                          0x1.fffffep-65f, 0x1p-64f});
     }
+    if (kind == op_kind::relu) {
+        // Subnormals of both signs, which a float compare on the AIE vector unit would flush, and
+        // the largest finite values, whose integer keys sit just below +inf's.
+        specials.insert(specials.end(), {0x1p-149f, -0x1p-149f, std::numeric_limits<float>::max(),
+                                         -std::numeric_limits<float>::max()});
+    }
     const auto n_specials = static_cast<int64_t>(specials.size());
 
-    std::vector<float> src_host(ne0);
-    for (int64_t i = 0; i < ne0; ++i) {
-        src_host[i] = (i < n_specials) ? specials[i] : (static_cast<float>(i % 21) - 10.0f) * 0.5f;
-    }
-    ggml_backend_tensor_set(src, src_host.data(), 0, ggml_nbytes(src));
-
-    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
-        printf("  %-22s: graph compute failed\n", name);
-        return false;
-    }
-
-    std::vector<float> dst_host(ne0);
-    ggml_backend_tensor_get(dst, dst_host.data(), 0, ggml_nbytes(dst));
-
-    for (int64_t i = 0; i < ne0; ++i) {
-        const float x = src_host[i];
-        float want = 0.0f;
-        switch (kind) {
-            case op_kind::abs:
-                want = std::fabs(x);
-                break;
-            case op_kind::neg:
-                want = -x;
-                break;
-            // Matches the kernel's scalar tail exactly, including NaN (neither comparison
-            // holds, so 0) and -0.0 (likewise 0, with a positive zero's bit pattern).
-            case op_kind::sgn:
-                want = (x > 0.0f) ? 1.0f : ((x < 0.0f) ? -1.0f : 0.0f);
-                break;
-            case op_kind::step:
-                want = (x > 0.0f) ? 1.0f : 0.0f;
-                break;
-            case op_kind::sqrt:
-                want = std::sqrt(x);
-                break;
-            default:
-                break;
+    const int64_t rotations = (ne0 % 16 == 0) ? 1 : ne0;
+    for (int64_t rotation = 0; rotation < rotations; ++rotation) {
+        std::vector<float> src_host(ne0);
+        for (int64_t i = 0; i < ne0; ++i) {
+            const int64_t k = (i + rotation) % ne0;
+            src_host[i] =
+                (k < n_specials) ? specials[k] : (static_cast<float>(k % 21) - 10.0f) * 0.5f;
         }
-        // SQRT is not bit-exact on ordinary values, and the host's NaN payload for sqrt(-x) is
-        // not the kernel's: accept any NaN where one is wanted, keep the sign of zero exact, and
-        // hold the rest to the ulp bound.
-        if (kind == op_kind::sqrt) {
-            const float got = dst_host[i];
-            const bool ok = std::isnan(want) ? std::isnan(got)
-                                             : (std::signbit(got) == std::signbit(want) &&
-                                                ulp_distance(want, got) <= max_ulp_for(kind));
-            if (!ok) {
-                printf("  %-22s: mismatch at %lld (x=%.9g) got %.9g want %.9g\n", name,
-                       (long long)i, x, got, want);
+        ggml_backend_tensor_set(src, src_host.data(), 0, ggml_nbytes(src));
+
+        if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+            printf("  %-22s: graph compute failed\n", name);
+            return false;
+        }
+
+        std::vector<float> dst_host(ne0);
+        ggml_backend_tensor_get(dst, dst_host.data(), 0, ggml_nbytes(dst));
+
+        for (int64_t i = 0; i < ne0; ++i) {
+            const float x = src_host[i];
+            float want = 0.0f;
+            switch (kind) {
+                case op_kind::abs:
+                    want = std::fabs(x);
+                    break;
+                case op_kind::neg:
+                    want = -x;
+                    break;
+                // Matches the kernel's scalar tail exactly, including NaN (neither comparison
+                // holds, so 0) and -0.0 (likewise 0, with a positive zero's bit pattern).
+                case op_kind::sgn:
+                    want = (x > 0.0f) ? 1.0f : ((x < 0.0f) ? -1.0f : 0.0f);
+                    break;
+                case op_kind::step:
+                    want = (x > 0.0f) ? 1.0f : 0.0f;
+                    break;
+                // ggml's formula: -0.0 and every NaN give +0.0.
+                case op_kind::relu:
+                    want = (x > 0.0f) ? x : 0.0f;
+                    break;
+                case op_kind::sqrt:
+                    want = std::sqrt(x);
+                    break;
+                default:
+                    break;
+            }
+            // SQRT is not bit-exact on ordinary values, and the host's NaN payload for sqrt(-x) is
+            // not the kernel's: accept any NaN where one is wanted, keep the sign of zero exact,
+            // and hold the rest to the ulp bound.
+            if (kind == op_kind::sqrt) {
+                const float got = dst_host[i];
+                const bool ok = std::isnan(want) ? std::isnan(got)
+                                                 : (std::signbit(got) == std::signbit(want) &&
+                                                    ulp_distance(want, got) <= max_ulp_for(kind));
+                if (!ok) {
+                    printf("  %-22s: mismatch at %lld (x=%.9g) got %.9g want %.9g\n", name,
+                           (long long)i, x, got, want);
+                    return false;
+                }
+                continue;
+            }
+            uint32_t got_bits = 0;
+            uint32_t want_bits = 0;
+            std::memcpy(&got_bits, &dst_host[i], sizeof(got_bits));
+            std::memcpy(&want_bits, &want, sizeof(want_bits));
+            if (got_bits != want_bits) {
+                uint32_t src_bits = 0;
+                std::memcpy(&src_bits, &src_host[i], sizeof(src_bits));
+                printf("  %-22s: bit mismatch at %lld (x=0x%08x) got 0x%08x want 0x%08x\n", name,
+                       (long long)i, src_bits, got_bits, want_bits);
                 return false;
             }
-            continue;
-        }
-        uint32_t got_bits = 0;
-        uint32_t want_bits = 0;
-        std::memcpy(&got_bits, &dst_host[i], sizeof(got_bits));
-        std::memcpy(&want_bits, &want, sizeof(want_bits));
-        if (got_bits != want_bits) {
-            uint32_t src_bits = 0;
-            std::memcpy(&src_bits, &src_host[i], sizeof(src_bits));
-            printf("  %-22s: bit mismatch at %lld (x=0x%08x) got 0x%08x want 0x%08x\n", name,
-                   (long long)i, src_bits, got_bits, want_bits);
-            return false;
         }
     }
     return true;
@@ -404,7 +423,8 @@ int main() {
     }
 
     // Bit-exact sign handling. 32 elements tile to a full 16-lane vector (vector path); 19 does
-    // not, so the kernel runs entirely scalar. Both paths must match the host bit for bit.
+    // not, so it runs a vector and a scalar tail, every special value rotated through both. Both
+    // paths must match the host bit for bit.
     struct {
         op_kind kind;
         int64_t ne0;
@@ -415,6 +435,8 @@ int main() {
         {op_kind::abs, 19, "abs signbit scalar"}, {op_kind::neg, 19, "neg signbit scalar"},
         {op_kind::sgn, 19, "sgn signbit scalar"}, {op_kind::step, 19, "step signbit scalar"},
         {op_kind::sqrt, 1024, "sqrt special vector"}, {op_kind::sqrt, 30, "sqrt special scalar"},
+        // The "relu 2d" and "relu ragged" kernels again (same element counts), on special values.
+        {op_kind::relu, 1024, "relu special vector"}, {op_kind::relu, 19, "relu special scalar"},
     };
     for (const auto & c : sign_cases) {
         const bool ok = run_sign_case(backend, c.kind, c.ne0, c.name);

@@ -18,7 +18,12 @@ from aie.iron import (
 )
 from aie.iron.controlflow import range_
 
-from .utils import core_function_object, fill_drain_program, row_dimensions
+from .utils import (
+    core_function_object,
+    divisor_tile_size,
+    fill_drain_program,
+    row_dimensions,
+)
 
 
 def argmax_op(arch: str, input_tensors: list, output_tensor):
@@ -71,26 +76,36 @@ def argmax_op(arch: str, input_tensors: list, output_tensor):
         msg = f"Input tensor dtype must be float32, got {input_tensor.dtype}."
         raise ValueError(msg)
 
+    # Rows per tile: the largest divisor of num_rows whose double-buffered tiles (the rows and
+    # their indices) fit half of L1. One row per tile made MNIST's [10, 500] 500 acquire/release
+    # rounds and kernel calls of 10 elements each. The tiles are counted in rows, so the input
+    # fifo's "element" is one row's bytes and the output fifo's one index.
+    row_bytes = np.dtype((np.void, row_length * input_tensor.dtype.itemsize))
+    rows_per_tile = divisor_tile_size(arch, num_rows, [row_bytes, output_tensor.dtype])
+
     function = _create_external_function(
         op_name="GGML_OP_ARGMAX",
         input_tensor=input_tensor,
         output_tensor=output_tensor,
         row_length=row_length,
+        rows_per_tile=rows_per_tile,
     )
 
-    # One row streamed in, one index streamed out per worker iteration.
-    input_tile_ty = np.ndarray[(row_length,), np.dtype[input_tensor.dtype]]
-    output_tile_ty = np.ndarray[(1,), np.dtype[output_tensor.dtype]]
+    # rows_per_tile rows streamed in, as many indices streamed out per worker iteration.
+    input_tile_ty = np.ndarray[
+        (rows_per_tile * row_length,), np.dtype[input_tensor.dtype]
+    ]
+    output_tile_ty = np.ndarray[(rows_per_tile,), np.dtype[output_tensor.dtype]]
 
     of_in = ObjectFifo(input_tile_ty, name="in")
     of_out = ObjectFifo(output_tile_ty, name="out")
 
     # Task for the core to perform with an external function
     def ext_core_fn(of_in, of_out, function):
-        for _ in range_(num_rows):
+        for _ in range_(num_rows // rows_per_tile):
             elem_in = of_in.acquire(1)
             elem_out = of_out.acquire(1)
-            function(elem_in, elem_out, row_length)
+            function(elem_in, elem_out, row_length, rows_per_tile)
             of_in.release(1)
             of_out.release(1)
 
@@ -118,6 +133,7 @@ def _create_external_function(
     input_tensor,
     output_tensor,
     row_length: int,
+    rows_per_tile: int,
 ) -> ExternalFunction:
     """Create the ExternalFunction wrapping argmax.cc.
 
@@ -126,6 +142,7 @@ def _create_external_function(
         input_tensor: Input tensor.
         output_tensor: Output tensor.
         row_length: Number of elements per row (ne0).
+        rows_per_tile: Number of rows per tile.
 
     Returns:
         The configured ExternalFunction.
@@ -137,9 +154,10 @@ def _create_external_function(
         **core_function_object(f"{op_name.lower()}_core_function"),
         source_file=str(current_dir / "argmax.cc"),
         arg_types=[
-            np.ndarray[(row_length,), np.dtype[input_tensor.dtype]],
-            np.ndarray[(1,), np.dtype[output_tensor.dtype]],
+            np.ndarray[(rows_per_tile * row_length,), np.dtype[input_tensor.dtype]],
+            np.ndarray[(rows_per_tile,), np.dtype[output_tensor.dtype]],
             np.int32,  # row_length (N)
+            np.int32,  # rows_per_tile (num_rows)
         ],
         compile_flags=[
             f"-DINPUT_DTYPE={dtype_to_str(input_tensor.dtype)}",

@@ -114,6 +114,17 @@ int main() {
         {48, 16, 1, 5, "npast5"},
         {32, 32, 4, 0, "3d npast0"},
         {64, 32, 3, 12, "3d npast12"},
+        // Row lengths that are not a whole number of 16-lane vectors: a tail, one shorter than a
+        // vector, and one vector plus one element.
+        {40, 24, 1, 3, "tail npast3"},
+        {10, 12, 1, 0, "narrow npast0"},
+        {17, 20, 1, 2, "17 npast2"},
+        // Tiles of several rows, whose rows start alternately aligned and unaligned for a vector
+        // access: 77 wide (4 vectors and a tail) and 20 wide (1 vector and a tail). Then a cut-off
+        // past the row end on every row.
+        {77, 24, 2, 13, "77 npast13"},
+        {20, 16, 2, 1, "20 npast1"},
+        {33, 16, 2, 40, "33 npast40"},
     };
 
     bool any_fail = false;

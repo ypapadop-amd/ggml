@@ -130,6 +130,10 @@ int main() {
         // k = 128 only, so K = 512 takes four calls
         {128, 64, 512, "32x16 tile, 4 K tiles"},
         {64, 128, 512, "16x32 tile, 4 K tiles"},
+        // 64-wide tiles, whose A block rows and B block columns are interleaved in four groups of
+        // four; the second also reuses each core's C buffer for a second tile
+        {256, 256, 128, "64x64 tile, 4 K tiles"},
+        {512, 256, 256, "64x64 tile, 4 K tiles, 2 tiles per core"},
     };
 
     bool any_fail = false;

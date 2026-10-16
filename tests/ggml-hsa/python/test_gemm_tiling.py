@@ -26,8 +26,10 @@ from iron_kernels.gemm import (  # noqa: E402
     ceildiv,
     microkernel_expansion_map,
     microkernel_mac_dim_map,
+    operand_group_map,
     resolve_expansion,
     resolve_mac_dims,
+    resolve_operand_groups,
     select_gemm_tile,
 )
 
@@ -649,3 +651,23 @@ def test_shift_limits_below_one_group_raise(n_limit, m_limit):
     """No tile exists when B or C is narrower than one minimum column group / row block."""
     with pytest.raises(ValueError, match="minimum"):
         _f32_b_tile(512, 512, 512, n_limit, m_limit)
+
+
+@pytest.mark.parametrize("dev", DEVICE_NAMES)
+@pytest.mark.parametrize("dtype_in_str", sorted(DTYPES))
+def test_operand_groups_hold_whole_expansions(dev, dtype_in_str):
+    """An interleaved group is one microkernel step's blocks, or the plain layout.
+
+    The aie2 4x4 kernel loads the four A (and B) blocks of a K step from one pointer, which is
+    only right if the DMA put all four in one group; and the tile granularity (expansion * mac
+    dim) is then a whole number of groups, so the DMA layout tiles m (n).
+    """
+    a_group, b_group = resolve_operand_groups(dev, dtype_in_str)
+    row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
+    assert a_group in (1, row_expand)
+    assert b_group in (1, col_expand)
+
+
+def test_operand_group_map_entries_exist():
+    for dev, dtypes in operand_group_map.items():
+        assert set(dtypes) <= set(microkernel_mac_dim_map[dev]), dev
