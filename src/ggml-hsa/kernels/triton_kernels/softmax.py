@@ -29,7 +29,8 @@ def softmax_kernel(
     offs = tl.arange(0, BLOCK)
     mask = offs < n_cols
     x = tl.load(X + row * n_cols + offs, mask=mask, other=float("-inf"))
-    x = x * SCALE
+    # Scale only the in-range lanes: -inf * SCALE is NaN for SCALE == 0 and +inf for SCALE < 0.
+    x = tl.where(mask, x * SCALE, float("-inf"))
     x = x - tl.max(x, axis=0)
     e = tl.exp(x)
     s = tl.sum(e, axis=0)

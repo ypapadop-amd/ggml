@@ -23,6 +23,8 @@ def _make_triton_gpu_soft_max_kernel_spec(
     """
     import struct
 
+    import numpy as np
+
     from .triton_kernels.softmax import softmax_kernel
     from .triton_kernels.spec_utils import next_pow2
 
@@ -38,6 +40,10 @@ def _make_triton_gpu_soft_max_kernel_spec(
         raise ValueError(msg)
     if max_bias != 0.0:
         msg = "Triton GPU SOFT_MAX does not support max_bias (ALiBi)."
+        raise ValueError(msg)
+    f32 = np.dtype(np.float32)
+    if input_tensors[0].dtype != f32 or output_tensor.dtype != f32:
+        msg = "Triton GPU SOFT_MAX supports FP32 only."
         raise ValueError(msg)
     if not output_tensor.contiguous or not input_tensors[0].contiguous:
         msg = "Triton GPU SOFT_MAX requires contiguous tensors."

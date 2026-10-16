@@ -299,9 +299,12 @@ def compile_triton_kernel(
     elif kind is ArchKind.GPU:
         # GPU targets ahead-of-time compile to a .hsaco and emit a launch-metadata sidecar
         # (grid/block geometry) required by the C++ dispatch.
-        _compile_triton_gpu_kernel(
-            kernel_spec, exported_name, output_directory, logger, verbose
-        )
+        # Keep Triton's own cache under the kernel's artifact directory, as the NPU path does,
+        # rather than in ~/.triton/cache: it then follows the kernel cache (and its clearing).
+        with TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)):
+            _compile_triton_gpu_kernel(
+                kernel_spec, exported_name, output_directory, logger, verbose
+            )
     else:
         msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"
         logger.error(msg)

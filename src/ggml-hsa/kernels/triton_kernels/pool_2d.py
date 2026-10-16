@@ -51,7 +51,8 @@ def pool2d_kernel(
     plane_off = plane * IWIH
 
     if OP == 0:
-        acc = tl.full((BLOCK,), float("-inf"), dtype=tl.float32)
+        # -FLT_MAX, as ggml's CPU backend starts: a window entirely in the padding yields it, not -inf
+        acc = tl.full((BLOCK,), -3.4028234663852886e38, dtype=tl.float32)
     else:
         acc = tl.zeros((BLOCK,), dtype=tl.float32)
 
