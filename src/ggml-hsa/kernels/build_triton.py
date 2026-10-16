@@ -118,9 +118,10 @@ def _compile_triton_gpu_kernel(
 
     Uses the upstream Triton AMD backend to ahead-of-time compile the same @triton.jit kernel
     used by the AIE path. Emits ``<exported_name>.hsaco`` plus a launch-metadata sidecar
-    ``<exported_name>.hsaco.json`` = {"grid_size_x", "workgroup_size_x"} because the launch
-    geometry (workgroup size, number of workgroups) is fixed at compile time and is not
-    recoverable from the code object alone; the C++ dispatch reads it back from the sidecar.
+    ``<exported_name>.hsaco.json`` = {"grid_size_x", "workgroup_size_x", "group_segment_size"}
+    because the launch geometry (workgroup size, number of workgroups) is fixed at compile time
+    and the dynamic LDS size is set at launch, and neither is recoverable from the code object
+    alone; the C++ dispatch reads them back from the sidecar.
 
     Parameters:
         kernel_spec: The KernelSpec; config carries triton_fn, signature, constexprs,
@@ -155,6 +156,9 @@ def _compile_triton_gpu_kernel(
     launch = {
         "grid_size_x": int(num_programs * block_x),  # total work-items (AQL grid_size)
         "workgroup_size_x": int(block_x),  # work-items per workgroup
+        # Triton requests its shared memory (e.g. for tl.dot) as dynamic LDS, which the code
+        # object's fixed group segment size does not include, so the launcher must reserve it.
+        "group_segment_size": int(compiled.metadata.shared),
     }
     sidecar_path = output_directory / f"{exported_name}.hsaco.json"
     sidecar_path.write_text(json.dumps(launch))

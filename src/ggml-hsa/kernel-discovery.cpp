@@ -430,10 +430,15 @@ enum class ggml_hsa_sidecar_status {
  *
  * @p grid_size_x and @p workgroup_size_x are set only if the sidecar is valid: both are present,
  * positive, fit in their AQL packet fields, and the grid is a whole number of workgroups.
+ *
+ * The optional @c group_segment_size key is the dynamic LDS, in bytes, the kernel requests at
+ * launch (Triton's shared memory, e.g. for @c tl.dot), which the code object's fixed group segment
+ * size does not include. @p dynamic_group_segment_size is set to it, or to 0 if it is absent.
  */
 static ggml_hsa_sidecar_status ggml_hsa_read_launch_sidecar(const fs::path & hsaco_path,
                                                             std::uint32_t & grid_size_x,
-                                                            std::uint32_t & workgroup_size_x) {
+                                                            std::uint32_t & workgroup_size_x,
+                                                            std::uint32_t & dynamic_group_segment_size) {
     fs::path sidecar = hsaco_path;
     sidecar += ".json";
     if (!ggml_hsa_is_file(sidecar)) {
@@ -467,8 +472,14 @@ static ggml_hsa_sidecar_status ggml_hsa_read_launch_sidecar(const fs::path & hsa
         grid % workgroup != 0) {
         return ggml_hsa_sidecar_status::malformed;
     }
+    std::uint64_t dynamic_lds = 0;
+    if (text.find("\"group_segment_size\"") != std::string::npos &&
+        (!read_uint("\"group_segment_size\"", dynamic_lds) || dynamic_lds > UINT32_MAX)) {
+        return ggml_hsa_sidecar_status::malformed;
+    }
     grid_size_x = static_cast<std::uint32_t>(grid);
     workgroup_size_x = static_cast<std::uint32_t>(workgroup);
+    dynamic_group_segment_size = static_cast<std::uint32_t>(dynamic_lds);
     return ggml_hsa_sidecar_status::valid;
 }
 
@@ -621,8 +632,15 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
         std::any_of(gpu_kernel->args.begin(), gpu_kernel->args.end(),
                     [](const auto & arg) { return arg.value_kind.rfind("hidden_", 0) == 0; });
     switch (ggml_hsa_read_launch_sidecar(hsaco_path, gpu_kernel->grid_size_x,
-                                         gpu_kernel->workgroup_size_x)) {
+                                         gpu_kernel->workgroup_size_x,
+                                         gpu_kernel->dynamic_group_segment_size)) {
         case ggml_hsa_sidecar_status::valid:
+            if (gpu_kernel->dynamic_group_segment_size >
+                UINT32_MAX - gpu_kernel->group_segment_size) {
+                GGML_HSA_LOG_ERROR("%s: %s needs more LDS than an AQL packet can describe",
+                                   __func__, hsaco_path.c_str());
+                return GGML_STATUS_FAILED;
+            }
             break;
         case ggml_hsa_sidecar_status::absent:
             if (!has_hidden_args) {

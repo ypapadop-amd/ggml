@@ -17,7 +17,10 @@ itself (`add_8f32_8f32_8f32.kd`), while a Triton-compiled kernel exports its
 
 A code object without HIP hidden arguments, such as a Triton kernel, bakes its
 launch geometry in at compile time and needs a `<kernel_name>.hsaco.json`
-sidecar holding `grid_size_x` and `workgroup_size_x`. Loading such a kernel
+sidecar holding `grid_size_x` and `workgroup_size_x`, plus an optional
+`group_segment_size`: the dynamic LDS in bytes the kernel requests at launch
+(Triton's shared memory, e.g. for `tl.dot`), which is added to the code
+object's fixed LDS size. Loading such a kernel
 fails if its sidecar is missing, and loading any kernel fails if its sidecar is
 malformed.
 

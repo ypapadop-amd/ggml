@@ -205,7 +205,9 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.grid_size_y = 1;
     pkt.grid_size_z = 1;
     pkt.private_segment_size = private_segment_size;
-    pkt.group_segment_size = group_segment_size;
+    // Triton kernels request their shared memory as dynamic LDS, which the code object does not
+    // count in its fixed group segment size; the launch sidecar carries it instead.
+    pkt.group_segment_size = group_segment_size + dynamic_group_segment_size;
     pkt.kernel_object = kernel_object;
     pkt.kernarg_address = kernarg;
     pkt.completion_signal = ctx.dispatch_signal;
