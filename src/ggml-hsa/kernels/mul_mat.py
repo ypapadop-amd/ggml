@@ -224,11 +224,17 @@ def _make_triton_matmul_kernel_spec(
     )
 
 
-# Output tile and reduction step of the GPU matmul. Accesses are masked, so these need not
-# divide the matrix dimensions; tl.dot needs each to be at least 16.
-_GPU_BLOCK_M = 64
-_GPU_BLOCK_N = 64
-_GPU_BLOCK_K = 32
+# GPU matmul launch configurations: (BM, BN, BK, num_warps). Accesses are masked, so the tile
+# sizes need not divide the matrix dimensions; tl.dot needs each to be at least 16. Picked from a
+# sweep on gfx1030 (RX 6800 XT) over the MNIST shapes. A thin operand (M or N at most 16, e.g.
+# MNIST's 10-row output layer or a matrix-vector product) gets 16x16 tiles, so the masked-off rows
+# of a 64-row tile are not computed and the grid has enough programs to fill the GPU.
+_GPU_TILE_THIN = (16, 16, 64, 2)
+_GPU_TILE = (64, 64, 16, 4)
+_GPU_THIN_LIMIT = 16
+# Triton's default software pipelining (2 stages) made every swept configuration slower, and the
+# kernels spill to scratch; one stage was faster throughout.
+_GPU_NUM_STAGES = 1
 
 
 def _make_triton_gpu_matmul_kernel_spec(
@@ -273,8 +279,11 @@ def _make_triton_gpu_matmul_kernel_spec(
         msg = "Triton GPU MUL_MAT: src0/src1 inner dimension mismatch."
         raise ValueError(msg)
 
-    num_pid_m = triton.cdiv(m, _GPU_BLOCK_M)
-    num_pid_n = triton.cdiv(n, _GPU_BLOCK_N)
+    block_m, block_n, block_k, num_warps = (
+        _GPU_TILE_THIN if min(m, n) <= _GPU_THIN_LIMIT else _GPU_TILE
+    )
+    num_pid_m = triton.cdiv(m, block_m)
+    num_pid_n = triton.cdiv(n, block_n)
     num_programs = num_pid_m * num_pid_n
 
     signature = {
@@ -296,12 +305,13 @@ def _make_triton_gpu_matmul_kernel_spec(
             "M": m,
             "N": n,
             "K": k,
-            "BM": _GPU_BLOCK_M,
-            "BN": _GPU_BLOCK_N,
-            "BK": _GPU_BLOCK_K,
+            "BM": block_m,
+            "BN": block_n,
+            "BK": block_k,
             "NUM_PID_N": num_pid_n,
         },
-        "num_warps": 4,
+        "num_warps": num_warps,
+        "num_stages": _GPU_NUM_STAGES,
         "num_programs": num_programs,
     }
     return KernelSpec(

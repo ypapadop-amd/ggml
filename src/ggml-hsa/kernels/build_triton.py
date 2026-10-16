@@ -125,7 +125,7 @@ def _compile_triton_gpu_kernel(
 
     Parameters:
         kernel_spec: The KernelSpec; config carries triton_fn, signature, constexprs,
-            num_warps and num_programs.
+            num_warps, num_programs and, optionally, num_stages (Triton's default if absent).
         exported_name: Base name for the output files.
         output_directory: Directory for the .hsaco and sidecar.
         logger: Logger for status messages.
@@ -146,7 +146,10 @@ def _compile_triton_gpu_kernel(
     # wavefront). The actual workgroup size is read back from the compiled kernel metadata.
     target = GPUTarget("hip", kernel_spec.arch, 64)
     src = triton.compiler.ASTSource(fn=fn, signature=signature, constexprs=constexprs)
-    compiled = triton.compile(src, target=target, options={"num_warps": num_warps})
+    options = {"num_warps": num_warps}
+    if "num_stages" in cfg:
+        options["num_stages"] = int(cfg["num_stages"])
+    compiled = triton.compile(src, target=target, options=options)
 
     hsaco = compiled.asm["hsaco"]
     hsaco_path = output_directory / f"{exported_name}.hsaco"
