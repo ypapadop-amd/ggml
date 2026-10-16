@@ -334,7 +334,7 @@ ggml_hsa_comgr_lookup_string(amd_comgr_metadata_node_t map, const char * key, st
  * and reading the layout avoids hardcoding the kernarg ABI.
  *
  * @param[in] blob in-memory code object bytes
- * @param[out] out_symbol kernel descriptor symbol (e.g. "add_8f32_8f32_8f32.kd" or "vecadd.kd")
+ * @param[out] out_symbol kernel descriptor symbol (e.g. "add_8f32_8f32_8f32.kd" or "gemm_kernel.kd")
  * @param[out] out_args parsed argument descriptors
  */
 static bool ggml_hsa_parse_kernel_metadata(const std::vector<char> & blob,
@@ -364,7 +364,10 @@ static bool ggml_hsa_parse_kernel_metadata(const std::vector<char> & blob,
         }
 
         std::size_t nkernels = 0;
-        amd_comgr_get_metadata_list_size(kernels, &nkernels);
+        if (amd_comgr_get_metadata_list_size(kernels, &nkernels) != AMD_COMGR_STATUS_SUCCESS) {
+            amd_comgr_destroy_metadata(kernels);
+            break;
+        }
         // Each code object we load contains exactly one kernel; use the first.
         for (std::size_t i = 0; i < nkernels && !result; ++i) {
             amd_comgr_metadata_node_t kernel;
@@ -375,31 +378,42 @@ static bool ggml_hsa_parse_kernel_metadata(const std::vector<char> & blob,
             if (ggml_hsa_comgr_lookup_string(kernel, ".symbol", out_symbol)) {
                 amd_comgr_metadata_node_t args;
                 if (amd_comgr_metadata_lookup(kernel, ".args", &args) == AMD_COMGR_STATUS_SUCCESS) {
+                    // Dispatch fills the arguments by position, so an argument that cannot be read
+                    // completely rejects the code object rather than being skipped or defaulted.
+                    const auto parse_u32 = [](const std::string & text, std::uint32_t & value) {
+                        const char * end = text.data() + text.size();
+                        const auto [last, ec] = std::from_chars(text.data(), end, value);
+                        return !text.empty() && ec == std::errc{} && last == end;
+                    };
                     std::size_t nargs = 0;
-                    amd_comgr_get_metadata_list_size(args, &nargs);
-                    for (std::size_t j = 0; j < nargs; ++j) {
+                    bool args_ok = amd_comgr_get_metadata_list_size(args, &nargs) ==
+                                   AMD_COMGR_STATUS_SUCCESS;
+                    for (std::size_t j = 0; args_ok && j < nargs; ++j) {
                         amd_comgr_metadata_node_t arg;
                         if (amd_comgr_index_list_metadata(args, j, &arg) !=
                             AMD_COMGR_STATUS_SUCCESS) {
-                            continue;
+                            args_ok = false;
+                            break;
                         }
                         std::string name, kind, off, size;
                         ggml_hsa_comgr_lookup_string(arg, ".name", name); // explicit args only
-                        ggml_hsa_comgr_lookup_string(arg, ".value_kind", kind);
-                        ggml_hsa_comgr_lookup_string(arg, ".offset", off);
-                        ggml_hsa_comgr_lookup_string(arg, ".size", size);
                         ggml_hsa_gpu_kernel_arg info;
-                        info.name = std::move(name);
-                        info.value_kind = std::move(kind);
-                        info.offset =
-                            off.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(off));
-                        info.size =
-                            size.empty() ? 0u : static_cast<std::uint32_t>(std::stoul(size));
-                        out_args.push_back(std::move(info));
+                        args_ok = ggml_hsa_comgr_lookup_string(arg, ".value_kind", kind) &&
+                                  ggml_hsa_comgr_lookup_string(arg, ".offset", off) &&
+                                  ggml_hsa_comgr_lookup_string(arg, ".size", size) &&
+                                  parse_u32(off, info.offset) && parse_u32(size, info.size);
                         amd_comgr_destroy_metadata(arg);
+                        if (args_ok) {
+                            info.name = std::move(name);
+                            info.value_kind = std::move(kind);
+                            out_args.push_back(std::move(info));
+                        }
                     }
                     amd_comgr_destroy_metadata(args);
-                    result = !out_args.empty() && !out_symbol.empty();
+                    if (!args_ok) {
+                        out_args.clear();
+                    }
+                    result = args_ok && !out_args.empty() && !out_symbol.empty();
                 }
             }
             amd_comgr_destroy_metadata(kernel);
@@ -458,12 +472,22 @@ static ggml_hsa_sidecar_status ggml_hsa_read_launch_sidecar(const fs::path & hsa
         if (pos == std::string::npos) {
             return false;
         }
-        const char * first = text.c_str() + pos + 1;
-        while (*first == ' ') {
-            ++first;
+        const char * end = text.c_str() + text.size();
+        const auto skip_space = [end](const char * p) {
+            while (p < end && std::isspace(static_cast<unsigned char>(*p))) {
+                ++p;
+            }
+            return p;
+        };
+        const char * first = skip_space(text.c_str() + pos + 1);
+        const auto [last, ec] = std::from_chars(first, end, out);
+        if (ec != std::errc{} || last == first) {
+            return false;
         }
-        const auto [last, ec] = std::from_chars(first, text.c_str() + text.size(), out);
-        return ec == std::errc{} && last != first;
+        // The value must be complete: a sidecar cut short mid-number (e.g. by an interrupted
+        // write) is malformed, not a smaller value.
+        const char * next = skip_space(last);
+        return next < end && (*next == ',' || *next == '}');
     };
     std::uint64_t grid = 0;
     std::uint64_t workgroup = 0;

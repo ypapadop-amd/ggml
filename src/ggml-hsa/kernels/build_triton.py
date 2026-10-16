@@ -156,6 +156,14 @@ def _compile_triton_gpu_kernel(
     hsaco_path.write_bytes(bytes(hsaco))
 
     block_x = int(compiled.metadata.num_warps) * int(compiled.metadata.warp_size)
+    # The AQL dispatch packet holds the grid in 32 bits and the workgroup in 16; the loader
+    # rejects a sidecar outside them, so fail here with the reason instead.
+    if num_programs * block_x > 0xFFFFFFFF or block_x > 0xFFFF:
+        msg = (
+            f"{exported_name}: launch of {num_programs} programs x {block_x} work-items does "
+            f"not fit an AQL packet (grid at most 2^32 - 1, workgroup at most 2^16 - 1)"
+        )
+        raise ValueError(msg)
     launch = {
         "grid_size_x": int(num_programs * block_x),  # total work-items (AQL grid_size)
         "workgroup_size_x": int(block_x),  # work-items per workgroup

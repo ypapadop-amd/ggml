@@ -22,7 +22,7 @@ endif()
 find_package(hsa-runtime64 1.0 REQUIRED)
 
 option(GGML_HSA_AIE         "ggml-hsa: enable the AIE (XDNA NPU) backend"  ON)
-option(GGML_HSA_GPU         "ggml-hsa: enable the GPU (ROCm/HIP) backend"  OFF)
+option(GGML_HSA_GPU         "ggml-hsa: enable the GPU backend"  OFF)
 option(GGML_HSA_JIT_COMPILE "ggml-hsa: enable JIT compilation of kernels"  ON)
 
 if (NOT GGML_HSA_AIE AND NOT GGML_HSA_GPU)

@@ -10,6 +10,9 @@
 from .kernel import Backend, KernelSpec
 from .triton_kernels.spec_utils import ArchKind, arch_kind
 
+# Widest row block the GPU SOFT_MAX kernel takes (one program per row).
+_GPU_MAX_ROW_BLOCK = 32768
+
 
 def _make_triton_gpu_soft_max_kernel_spec(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
@@ -52,6 +55,11 @@ def _make_triton_gpu_soft_max_kernel_spec(
     n_cols = int(output_tensor.shape[0])
     n_rows = output_tensor.numel() // n_cols
     block = next_pow2(n_cols)
+    # One program holds a whole row in registers, so a very wide row (e.g. a vocabulary-sized
+    # softmax) would compile slowly or not at all; leave it to another backend.
+    if block > _GPU_MAX_ROW_BLOCK:
+        msg = f"Triton GPU SOFT_MAX supports rows of at most {_GPU_MAX_ROW_BLOCK} elements."
+        raise ValueError(msg)
 
     signature = {
         "X": "*fp32",

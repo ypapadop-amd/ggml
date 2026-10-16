@@ -9,8 +9,9 @@ own process. Usage:
     TRITON_INTERPRET=1 python triton_interpret_run.py ARGS_JSON
 
 ARGS_JSON holds ``module``, ``fn`` (a dispatch function in kernels/<module>.py), ``arch``,
-``inputs`` (GGML shapes), ``output`` (GGML shape), ``input_files`` (.npy, f32) and
-``output_file`` (.npy written with the flat f32 result).
+``inputs`` (GGML shapes), ``output`` (GGML shape), ``input_files`` (.npy, f32), ``output_file``
+(.npy written with the flat result) and, optionally, ``op_params`` (a list of bytes, default
+empty) and ``out_dtype`` (the output's GGML dtype, ``f32`` or ``i32``, default ``f32``).
 """
 
 import importlib
@@ -32,15 +33,24 @@ def main() -> None:
     module = importlib.import_module(f"{_PKG}.{args['module']}")
     TensorDesc = importlib.import_module(f"{_PKG}.tensor_desc").TensorDesc
 
-    def td(shape):
-        return TensorDesc(dtype="f32", shape=(*shape, *(1,) * (4 - len(shape))))
+    def td(shape, dtype="f32"):
+        return TensorDesc(dtype=dtype, shape=(*shape, *(1,) * (4 - len(shape))))
 
+    out_dtype = args.get("out_dtype", "f32")
     (spec,) = getattr(module, args["fn"])(
-        args["arch"], [td(s) for s in args["inputs"]], td(args["output"]), bytearray()
+        args["arch"],
+        [td(s) for s in args["inputs"]],
+        td(args["output"], out_dtype),
+        bytearray(args.get("op_params", [])),
     )
     cfg = spec.config
     inputs = [torch.from_numpy(np.load(f)) for f in args["input_files"]]
-    output = torch.full((int(np.prod(args["output"])),), float("nan"))
+    n_out = int(np.prod(args["output"]))
+    output = (
+        torch.full((n_out,), -1, dtype=torch.int32)
+        if out_dtype == "i32"
+        else torch.full((n_out,), float("nan"))
+    )
     pointers = [name for name, kind in cfg["signature"].items() if kind != "constexpr"]
     cfg["triton_fn"][(cfg["num_programs"],)](
         **dict(zip(pointers, [*inputs, output], strict=True)), **cfg["constexprs"]

@@ -225,10 +225,10 @@ def _make_triton_matmul_kernel_spec(
 
 
 # GPU matmul launch configurations: (BM, BN, BK, num_warps). Accesses are masked, so the tile
-# sizes need not divide the matrix dimensions; tl.dot needs each to be at least 16. Picked from a
-# sweep on gfx1030 (RX 6800 XT) over the MNIST shapes. A thin operand (M or N at most 16, e.g.
-# MNIST's 10-row output layer or a matrix-vector product) gets 16x16 tiles, so the masked-off rows
-# of a 64-row tile are not computed and the grid has enough programs to fill the GPU.
+# sizes need not divide the matrix dimensions; tl.dot needs each to be at least 16. A thin operand
+# (M or N at most 16, e.g. MNIST's 10-row output layer or a matrix-vector product) gets 16x16
+# tiles, so the masked-off rows of a 64-row tile are not computed and the grid has enough programs
+# to fill the GPU.
 _GPU_TILE_THIN = (16, 16, 64, 2)
 _GPU_TILE = (64, 64, 16, 4)
 _GPU_THIN_LIMIT = 16
