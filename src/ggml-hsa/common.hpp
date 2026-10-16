@@ -621,11 +621,17 @@ struct ggml_backend_hsa_context {
     std::int32_t device{};              ///< Device ID.
     std::string name;                   ///< Device name.
     hsa_queue_t * queue{};              ///< HSA queue.
-    hsa_signal_t dispatch_signal{};     ///< Signal for packet completion.
+    /// @brief Completion signal of each ring slot, indexed by packet index modulo the queue size.
+    ///
+    /// A slot's signal is set to 1 when a packet is written into the slot and the packet processor
+    /// decrements it to 0 when that packet completes. The host only writes a signal at 0, when no
+    /// packet references it: a GPU's completion decrement is not atomic with respect to a
+    /// concurrent host update, so a signal shared by in-flight packets loses host increments.
+    std::vector<hsa_signal_t> slot_signals;
     ggml_hsa_kernarg_pool kernargs;     ///< Per-ring-slot kernarg buffers for in-flight packets.
     std::size_t dispatch_batch_size{1}; ///< Packets accumulated before the doorbell is rung.
     std::size_t n_batched{};            ///< Packets written since the last doorbell ring.
-    /// @brief Queue write index at the last full drain: every packet before it has completed.
+    /// @brief Every packet before this queue write index is known to have completed.
     std::uint64_t completed_write_index{};
 
     /// @brief First error reported by the queue's error callback, or @c HSA_STATUS_SUCCESS.
@@ -666,6 +672,26 @@ struct ggml_backend_hsa_context {
  *         never will. Nothing was waited for: callers must propagate rather than read results
  */
 [[nodiscard]] ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
+
+/**
+ * @brief Reserves the next queue ring slot for a packet and arms its completion signal.
+ *
+ * Waits until the packet that last used the slot has completed, so the slot, its kernarg slot and
+ * its completion signal are all free, then advances the write index and sets the slot's signal to
+ * 1. The caller must write the packet into the slot, with @p completion_signal as its completion
+ * signal, and publish its header; nothing may fail between this call and the publication, since
+ * an armed signal whose packet is never published is never released.
+ *
+ * @param[in]  ctx               backend context
+ * @param[out] write_index       index of the reserved packet; its slot is @c write_index modulo
+ *                               the queue size
+ * @param[out] completion_signal completion signal of the reserved slot, set to 1
+ * @retval GGML_STATUS_SUCCESS the slot was reserved
+ * @retval GGML_STATUS_FAILED  the queue is suspended, so the slot never frees; nothing was reserved
+ */
+[[nodiscard]] ggml_status ggml_hsa_acquire_packet_slot(ggml_backend_hsa_context & ctx,
+                                                       std::uint64_t & write_index,
+                                                       hsa_signal_t & completion_signal);
 
 /**
  * @brief Rings the doorbell for any packets accumulated since the last ring.

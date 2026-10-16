@@ -67,19 +67,6 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor & dst_tensor) const {
     auto * queue = ctx.queue;
 
-    // A kernarg segment must stay unchanged until its kernel completes, but the packet processor
-    // consumes a packet (advancing the read index) when it launches it. The kernarg slot this
-    // packet takes was last used queue->size packets earlier, so drain unless that packet is known
-    // to have completed. This also covers a full ring, whose oldest packet was not even consumed.
-    // Drain before reserving the slot: the drain flushes, and ringing the doorbell past a reserved
-    // slot whose header is still invalid would stall the packet processor.
-    if (hsa_queue_load_write_index_relaxed(queue) >= ctx.completed_write_index + queue->size) {
-        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
-            status != GGML_STATUS_SUCCESS) {
-            return status;
-        }
-    }
-
     if (kernarg_size > ctx.kernargs.slot_size() || kernarg_align > ggml_hsa_gpu_kernarg_alignment) {
         GGML_HSA_LOG_ERROR("%s: kernarg segment (%u bytes, alignment %u) does not fit a kernarg "
                            "slot (%zu bytes, alignment %zu)",
@@ -114,8 +101,14 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     }
     const auto num_groups_x = static_cast<std::uint32_t>(grid_size_total / wg);
 
-    // reserve the queue slot; its kernarg slot is reused only once the device consumed the packet
-    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
+    // Reserve the queue slot. A kernarg segment must stay unchanged until its kernel completes, so
+    // the acquire waits for the slot's previous packet to complete, not merely to be consumed.
+    std::uint64_t wr_idx = 0;
+    hsa_signal_t completion_signal{};
+    if (const ggml_status status = ggml_hsa_acquire_packet_slot(ctx, wr_idx, completion_signal);
+        status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
     const std::uint64_t packet_id = wr_idx % queue->size;
     auto * kernarg = static_cast<std::byte *>(ctx.kernargs.slot(packet_id));
 
@@ -210,13 +203,9 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.group_segment_size = group_segment_size + dynamic_group_segment_size;
     pkt.kernel_object = kernel_object;
     pkt.kernarg_address = kernarg;
-    pkt.completion_signal = ctx.dispatch_signal;
+    pkt.completion_signal = completion_signal;
 
     write_aql_to_queue(pkt, queue, wr_idx);
-
-    // Account for this dispatch on the completion signal; the packet processor decrements it back
-    // to zero when the kernel finishes (see ggml_hsa_wait_dispatches).
-    hsa_signal_add_relaxed(ctx.dispatch_signal, 1);
 
     // The barrier bit makes the packet processor wait for every earlier packet to complete before
     // launching this one; without it, consecutive dispatches may overlap, and a dispatch would race

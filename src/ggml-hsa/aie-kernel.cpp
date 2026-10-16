@@ -27,7 +27,6 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                  (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE);
     pkt.opcode = HSA_AMD_AIE_PACKET_OPCODE_KMQ;
     pkt.count = aie_packet_count;
-    pkt.completion_signal = ctx.dispatch_signal;
     pkt.insts_addr_low = reinterpret_cast<std::uintptr_t>(insts.data()) & 0xFFFFFFFF;
     pkt.insts_addr_high = reinterpret_cast<std::uintptr_t>(insts.data()) >> 32;
     pkt.num_kernargs = num_kernargs;
@@ -36,31 +35,19 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
 
     auto queue = ctx.queue;
 
-    // Wait for a free ring slot (queue full when write_index - read_index >= queue->size) and
-    // drain; this also drains completed packets. Safe under HSA_QUEUE_TYPE_SINGLE: no other thread
-    // advances the write index between this check and the reservation below, so the free slot stays
-    // free.
-    while (hsa_queue_load_write_index_relaxed(queue) - hsa_queue_load_read_index_scacquire(queue) >=
-           queue->size) {
-        // A suspended queue never consumes its packets, so the read index stops advancing and the
-        // slot this is waiting for never frees. The wait reports that rather than draining, which
-        // is what keeps this loop from spinning; fail the dispatch and let graph_compute report it.
-        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
-            status != GGML_STATUS_SUCCESS) {
-            return status;
-        }
+    // Reserve the queue slot: the acquire waits for the slot's previous packet to complete, which
+    // also frees its kernarg slot, and arms the slot's completion signal for this packet.
+    std::uint64_t wr_idx = 0;
+    if (const ggml_status status =
+            ggml_hsa_acquire_packet_slot(ctx, wr_idx, pkt.completion_signal);
+        status != GGML_STATUS_SUCCESS) {
+        return status;
     }
-
-    // reserve the queue slot
-    const std::uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queue, 1);
     const std::uint64_t packet_id = wr_idx % queue->size;
 
     // Each ring slot owns a fixed kernarg slot of the same index, sized for the worst case, so the
-    // slot claimed above always has room. Reusing slot packet_id is safe only once the prior kernel
-    // using it has finished reading its kernargs.
+    // slot claimed above always has room; the prior kernel using it has completed.
     // kernarg buffer layout (uint64_t entries): [src_ptrs..., dst_ptr, src_sizes..., dst_size]
-    // NOTE: under async submission, we need to revisit if reuse must be gated on the completion
-    // signal.
     auto * kernargs = static_cast<uint64_t *>(ctx.kernargs.slot(packet_id));
 
     // add tensor kernargs
@@ -85,8 +72,6 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.kernarg_address = kernargs;
 
     *(static_cast<hsa_amd_aie_kernel_dispatch_packet_t *>(queue->base_address) + packet_id) = pkt;
-
-    hsa_signal_add_relaxed(ctx.dispatch_signal, 1);
 
     // Ring the doorbell only once a full batch is written; it submits every packet up to the most
     // recent write index. Synchronization points flush any remaining pending packets separately.
