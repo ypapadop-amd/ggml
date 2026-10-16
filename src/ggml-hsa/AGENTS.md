@@ -609,18 +609,18 @@ To add a new backend, follow the pattern used for the Triton backend. This examp
 
 ## Supported Operations
 
-### Fully Implemented
+The per-device, per-backend table with shape and dtype limits is "Supported Operations" in
+`README.md`; keep the two in sync. The dispatch functions in `kernels/*.py` are the source of truth:
+each returns IRON (and sometimes a Triton fallback) for an NPU arch and Triton for a GPU arch, via
+`arch_kind()`.
 
-These operations have complete AIE kernel implementations:
-
-| Category | Operations |
-| -------- | ---------- |
-| Binary | `ADD`, `SUB`, `MUL`, `DIV` (with broadcast support) |
-| Unary (GGML_UNARY_OP) | `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` |
-| Unary (GGML_OP) | `SQR`, `SQRT`, `LOG` |
-| Pooling | `POOL_2D` (`MAX` and `AVG`, with padding) |
-| Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
-| Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE; a dtype-only `ggml_cast` runs as `HSA_CONVERT`) |
+| Backend | Operations |
+| ------- | ---------- |
+| NPU, IRON | `ADD`, `SUB`, `MUL`, `DIV` (broadcast), `SCALE`, `CLAMP`, `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `GELU`, `SQR`, `SQRT`, `LOG`, `MUL_MAT`, `SOFT_MAX`, `NORM`, `DIAG_MASK_INF`, `POOL_2D`, `IM2COL`, `CONV_2D`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, plus the internal `HSA_CONVERT` and `HSA_CONVERT_PAD` |
+| NPU, Triton-XDNA (fallback) | `ADD`, `RELU`, `MUL_MAT` |
+| GPU, Triton (JIT) | `ADD` (broadcast), `RELU`, `MUL_MAT`, `SOFT_MAX`, `POOL_2D`, `IM2COL`, `CONV_2D`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS` |
+| GPU, HIP (`generate_gpu_kernels.py`) | `ADD`, `SCALE` (`f32`) |
+| Host, both devices | `DUP`, `CPY`, `CONT`, `GET_ROWS` (a dtype-only `ggml_cast` on the NPU runs as `HSA_CONVERT`) |
 
 ### Registered but Not Implemented
 
@@ -628,7 +628,7 @@ These operations are registered in `build.py` but raise `NotImplementedError`:
 
 - `SIN`, `COS` (require math library functions)
 - `TANH`, `ELU`, `SIGMOID`, `SILU`, `EXP` (require exp/transcendental functions)
-- `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` (require erf or approximations)
+- `GELU_QUICK`, `GELU_ERF`, `XIELU` (require erf or approximations)
 
 These are placeholders for future implementation. The `aie_kernel_math.h` header provides
 utility functions like `scalar_exp`, `scalar_log`, `pow2`, and `vec_exp` that can be used as building
@@ -664,10 +664,24 @@ source ./env_setup.sh triton
 python3 -m pip install -r requirements-triton.txt
 ```
 
+### Tested Versions
+
+See "Tested Configurations" in `README.md` for the full list. In short:
+
+- **ROCR:** the NPU needs a ROCR with XDNA vmem support: TheRock nightly `10.2.0a20261016`
+  or one built from `rocm-systems` `develop`. A system ROCm (e.g. 10.1.0) builds and dispatches to the NPU
+  but fails in `hsa_amd_vmem_unmap`. GPU-only builds work with ROCm 10.1.0.
+- **GPU kernel driver:** `amdgpu-dkms` 7.1.9; Linux 6.17's in-tree `amdgpu` corrupts GPU results
+  under the vmem API.
+- **XDNA driver:** `amdxdna` 2.23.0 with XRT 2.23.0.
+- **Builds with GPU devices** must take comgr from the same ROCm as the ROCR
+  (`-Damd_comgr_DIR=...`), or the binary loads the system ROCR.
+
 ### MLIR-AIE Version
 
-The project currently uses **mlir-aie v1.4.4**. Ensure your environment
-matches this version to avoid compatibility issues with:
+The project currently uses **mlir-aie v1.4.4** (pinned in `requirements-iron.txt`, with
+`llvm-aie>=22.0.0`). Ensure your environment matches this version to avoid compatibility issues
+with:
 
 - IRON API changes
 - ObjectFifo semantics

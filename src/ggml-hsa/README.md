@@ -12,28 +12,51 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 [AMD XDNA]: https://www.amd.com/en/technologies/xdna.html
 [AMD XDNA2]: https://www.amd.com/en/technologies/xdna.html#xdna2
 
-AMD GPUs (`gfx*` HSA agents) are supported experimentally when built with `-DGGML_HSA_GPU=ON`:
-elementwise `ADD` and `SCALE` from precompiled HIP code objects and, when JIT compilation is
-enabled, Triton kernels for `ADD` (with broadcast), `MUL_MAT` (non-batched), `RELU`, `SOFT_MAX`
-(no mask or ALiBi), `ARGMAX`, `IM2COL`, `POOL_2D`, `CONV_2D`, `CROSS_ENTROPY_LOSS` and
-`COUNT_EQUAL`. See [GPU-only Build](#gpu-only-build) and [GPU Kernels](#gpu-kernels).
+AMD GPUs (`gfx*` HSA agents) are supported experimentally when built with `-DGGML_HSA_GPU=ON`.
+See [Supported Operations](#supported-operations), [GPU-only Build](#gpu-only-build) and
+[GPU Kernels](#gpu-kernels).
 
 ## Supported Operations
 
-| Category  | Operations                                                     |
-|-----------|----------------------------------------------------------------|
-| Binary    | `ADD`, `SUB`, `MUL`, `DIV` (with multi-dimensional broadcast)  |
-| Unary     | `SQR`, `SQRT`, `LOG`, `ABS`, `SGN`, `NEG`, `STEP`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `RELU`, `HARDSWISH`, `HARDSIGMOID` |
-| Matrix    | `MUL_MAT`                                                      |
-| Pooling   | `POOL_2D` (`MAX` and `AVG`, with padding)                     |
-| Convolution | `IM2COL` (2D, `f32` image, `f32`/`bf16` output)             |
-| Reduction | `ARGMAX`, `COUNT_EQUAL`                                        |
-| Loss      | `CROSS_ENTROPY_LOSS`                                           |
-| Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                   |
-| Host-only | `DUP`, `CPY`, `CONT` (CPU execution; a dtype-only `CPY`/`DUP` runs on the NPU) |
+Each device has its own kernel backends:
 
-> **Note:** Operations like `SIN`, `COS`, `EXP`, `TANH`, `ELU`, `SIGMOID`, `SILU`,
-> `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` are registered but not yet implemented.
+- **NPU, IRON:** [IRON](#iron-mlir-aie) designs, JIT-compiled to a PDI; the default NPU backend.
+- **NPU, Triton:** [Triton-XDNA](#triton-xdna) kernels, tried only when the IRON kernel cannot be
+  compiled (or first, with `GGML_HSA_JIT_COMPILER_ORDER=triton,iron`).
+- **GPU, Triton:** Triton kernels compiled ahead of time to a `.hsaco` by the JIT compiler.
+- **GPU, HIP:** HIP kernels precompiled with [`generate_gpu_kernels.py`](#generating-precompiled-gpu-kernels),
+  for builds without JIT compilation.
+
+An operation is supported on a device only for the shapes and types one of its backends can build a
+kernel for; anything else reports `not supported` and runs elsewhere. Blank cells have no kernel.
+
+| Operation | NPU: IRON | NPU: Triton | GPU: Triton | GPU: HIP |
+|-----------|-----------|-------------|-------------|----------|
+| `ADD` | ✓ broadcast | equal shapes, contiguous | ✓ broadcast of `src1`, contiguous | equal shapes, contiguous; `f32`, `f16` or `bf16`, or an `f16`/`bf16` source with an `f32` source |
+| `SUB`, `MUL`, `DIV` | ✓ broadcast | | | |
+| `SCALE` | ✓ | | | `f32`, contiguous |
+| `CLAMP` | ✓ | | | |
+| `RELU` | ✓ | contiguous; `f32` rounded to `bf16` precision | contiguous | |
+| `ABS`, `SGN`, `NEG`, `STEP`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` | ✓ | | | |
+| `GELU` | ✓ (see [Known Issues](#known-issues)) | | | |
+| `SQR`, `SQRT`, `LOG` | ✓ | | | |
+| `MUL_MAT` | ✓ | 2-D `bf16`, contiguous | 2-D (no batch), contiguous | |
+| `SOFT_MAX` | ✓ (no ALiBi with a mask) | | `f32`, no mask, no ALiBi, rows of at most 32768 elements, contiguous | |
+| `NORM` | ✓ | | | |
+| `DIAG_MASK_INF` | ✓ | | | |
+| `POOL_2D` | ✓ `MAX`, `AVG`, with padding | | `f32`/`f16` input, `f32` output, contiguous | |
+| `IM2COL` | ✓ 2-D, `f32` image, `f32`/`bf16` output | | 2-D `f32`, contiguous | |
+| `CONV_2D` | ✓ `f32`, contiguous | | `f32`, contiguous | |
+| `ARGMAX` | ✓ | | `f32`, contiguous | |
+| `COUNT_EQUAL` | ✓ | | `i32`, contiguous | |
+| `CROSS_ENTROPY_LOSS` | ✓ | | `f32`, contiguous | |
+
+`DUP`, `CPY`, `CONT` and `GET_ROWS` run on the host CPU for both devices. On the NPU, a `CPY` that
+only changes the dtype of a contiguous tensor runs on the device as an `HSA_CONVERT` kernel (IRON),
+and an `f32` `MUL_MAT` operand is converted and padded by an `HSA_CONVERT_PAD` kernel (IRON).
+
+`SIN`, `COS`, `EXP`, `TANH`, `ELU`, `SIGMOID`, `SILU`, `GELU_QUICK`, `GELU_ERF` and `XIELU` are
+registered but have no kernel on any device.
 
 ### Broadcasting
 
@@ -64,18 +87,25 @@ compute that uses it**; flag it with `ggml_set_input()` if its contents change b
 
 ### Tested Configurations
 
-| Component   | Version                                                                            |
-|-------------|------------------------------------------------------------------------------------|
-| OS          | [Ubuntu 24.04.2], [Ubuntu 25.10]                                                   |
-| ROCR        | [TheRock] nightly `10.2.0a20261006` (rocm-systems `81d4fa3`), or built from source |
-| XDNA Driver | [1.6][XDNA Driver 1.6]                                                             |
-| MLIR-AIE    | [1.4.4][MLIR-AIE 1.4.4]                                                            |
-| Triton-XDNA | `3.6.0.2026100504+694d60d` ([`requirements-triton.txt`](requirements-triton.txt))  |
+Last verified 2026-10-16 on an `aie2` NPU (Phoenix) and a `gfx1103` GPU (Radeon 780M).
+
+| Component                | Version                                                                            |
+|--------------------------|------------------------------------------------------------------------------------|
+| OS                       | [Ubuntu 25.10], Linux 6.17.0-41 (earlier: [Ubuntu 24.04.2])                         |
+| ROCR                     | [TheRock] nightly `10.2.0a20261016` (rocm-systems `2a8fffb`), or built from source  |
+| ROCR (GPU only)          | also ROCm 10.1.0 (HSA runtime 1.21)                                                |
+| GPU kernel driver        | `amdgpu-dkms` 7.1.9 (`7.1.9.31600000`)                                             |
+| XDNA driver              | `amdxdna` 2.23.0, with XRT 2.23.0                                                  |
+| MLIR-AIE                 | [1.4.4][MLIR-AIE 1.4.4], with `llvm-aie` `22.0.0.2026101601`                       |
+| Triton-XDNA              | `3.6.0.2026100504+694d60d` ([`requirements-triton.txt`](requirements-triton.txt))  |
+
+MLIR-AIE and Triton-XDNA are pinned in [`requirements-iron.txt`](requirements-iron.txt) and
+[`requirements-triton.txt`](requirements-triton.txt); `llvm-aie` only has a lower bound (`>=22.0.0`)
+and resolves to the latest nightly.
 
 [Ubuntu 24.04.2]: https://releases.ubuntu.com/noble/
 [Ubuntu 25.10]: https://releases.ubuntu.com/questing/
 [TheRock]: https://github.com/ROCm/TheRock/blob/main/RELEASES.md
-[XDNA Driver 1.6]: https://github.com/amd/xdna-driver/tree/1.6
 [MLIR-AIE 1.4.4]: https://github.com/Xilinx/mlir-aie/tree/v1.4.4
 
 ### ROCm
@@ -83,20 +113,24 @@ compute that uses it**; flag it with `ggml_set_input()` if its contents change b
 `ggml-hsa` needs a [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime)
 with NPU support, from either:
 
-- [TheRock](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)'s nightly pip wheels, from
-  `10.2.0a20261006` on (see [Using TheRock's ROCR](#using-therocks-rocr)).
+- [TheRock](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)'s nightly pip wheel
+  `10.2.0a20261016` (see [Using TheRock's ROCR](#using-therocks-rocr)).
 - A ROCR built from [`develop`](https://github.com/ROCm/rocm-systems/tree/develop) at or after
   [`512eb6021e7`](https://github.com/ROCm/rocm-systems/commit/512eb6021e7) (see
   [Compiling ROCR from source](#compiling-rocr-from-source)).
 
-`ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API.
+`ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API, and the NPU needs a ROCR
+whose vmem unmap supports XDNA. A system ROCm is not enough, even when it ships the AIE header:
+ROCm 10.1.0's ROCR (HSA runtime 1.21) builds and dispatches to the NPU, but `hsa_amd_vmem_unmap`
+then fails with `HSA_STATUS_ERROR` and the backend aborts. A GPU-only build can use the system
+ROCm (see [GPU-only Build](#gpu-only-build)).
 
 ### Using TheRock's ROCR
 
 ```bash
 python3 -m venv .venv-rocm
 .venv-rocm/bin/pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
-  "rocm[devel]==10.2.0a20261006"
+  "rocm[devel]==10.2.0a20261016"
 .venv-rocm/bin/rocm-sdk init                        # expands the devel tree
 ROCM_SDK="$(.venv-rocm/bin/rocm-sdk path --root)"
 ls "$ROCM_SDK/include/hsa/hsa_ext_amd_aie.h"        # the AIE header
@@ -110,7 +144,7 @@ The build records the library's path, so no `LD_LIBRARY_PATH` is needed at run t
 ```bash
 REPO=/path/to/rocm-systems        # a checkout of https://github.com/ROCm/rocm-systems, `develop` branch
 ROCR=$REPO/projects/rocr-runtime
-PREFIX=$HOME/opt/rocm             # must not be /opt/rocm: that is the system runtime and lacks the AIE header
+PREFIX=$HOME/opt/rocm             # must not be /opt/rocm: that is the system runtime, without NPU vmem support
 
 cmake -S "$ROCR" -B "$ROCR/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX"
 cmake --build "$ROCR/build" -j"$(nproc)"
@@ -118,7 +152,7 @@ cmake --install "$ROCR/build"
 ```
 
 Install `libdrm-dev` and `libnuma-dev` first if they are missing. Confirm the AIE header made it into
-the install, since the system runtime does not have it:
+the install:
 
 ```bash
 ls "$PREFIX/include/hsa/hsa_ext_amd_aie.h"
@@ -205,10 +239,18 @@ source .venv/bin/activate        # from env_setup.sh
 ./build/bin/test-vector-hsa 1024 + f32
 ```
 
+A build with GPU devices (`-DGGML_HSA_GPU=ON`) also links comgr. Take it from the same ROCm as the
+ROCR, e.g. `-Damd_comgr_DIR="$ROCM_SDK/lib/cmake/amd_comgr"`. Otherwise CMake finds the system
+ROCm's comgr, puts `/opt/rocm/lib` first in the binary's run path, and the binary silently loads the
+system ROCR instead of the one `hsa-runtime64_DIR` names. Check with
+`ldd build/bin/test-backend-ops | grep hsa-runtime`.
+
 ### GPU-only Build
 
 A build with only GPU devices does not need a ROCR with NPU support: the system ROCm's ROCR works
-(verified with ROCm 7.2.3 on `gfx1030`).
+(verified with ROCm 7.2.3 on `gfx1030`, and with ROCm 10.1.0 and TheRock `10.2.0a20261016` on
+`gfx1103`). On `gfx1103`, Linux 6.17's in-tree `amdgpu` driver corrupts results under the vmem API
+and `amdgpu-dkms` 7.1.9 does not (see [Known Issues](#known-issues)).
 
 ```bash
 cmake -S . -B build \
@@ -259,7 +301,7 @@ A process loads only one `libhsa-runtime64.so.1`, and HIP and `ggml-hsa` must sh
 ROCR with NPU support, which a system ROCm usually does not provide: for example, ROCm 7.2.4's
 `libamdhip64` links its own `libhsa-runtime64` without AIE support.
 
-TheRock's nightly wheels (`10.2.0a20261006` or later) provide both. Running HIP and `ggml-hsa`
+TheRock's nightly wheel `10.2.0a20261016` provides both. Running HIP and `ggml-hsa`
 together on the wheel's ROCR has not been verified yet; the setup below, with a ROCR built from
 source, is the verified one.
 
@@ -418,6 +460,32 @@ LD_LIBRARY_PATH=/opt/rocm/lib GGML_HSA_ENABLE_LOG=1 \
 
 ROCM_PATH=/opt/rocm src/ggml-hsa/generate_gpu_kernels.py gfx1151 names.txt
 ```
+
+## Known Issues
+
+Observed with the [tested configuration](#tested-configurations) on an `aie2` NPU and a `gfx1103`
+GPU.
+
+- **32 kernels per NPU queue.** After about 32 distinct NPU kernels in one process, the runtime
+  suspends the queue with `HSA_STATUS_ERROR_OUT_OF_RESOURCES` and every later operation fails.
+  `test-backend-ops` over a whole operation exceeds this, especially with `f16` (which adds
+  `HSA_CONVERT` kernels), so run NPU cases in separate processes, e.g. one `-o '<full case>'` each.
+- **`f16` on the NPU is computed in `bf16`.** `f16` results differ from the CPU backend by more than
+  `test-backend-ops`'s tolerance, so its `f16` cases fail on the NPU.
+- **NPU `GELU`:** `f32` `ne=[128,2,2,2]` returns NaN; `ne=[5,7,11,13]` is correct.
+- **NPU `MUL_MAT`:** `bf16` × permuted `f32` (`per=[0,2,1,3]`) with `m=1056`/`1057`, `n=1` returns NaN.
+- **Host `CPY`.** The host copy accepts every type and layout, but a permuted destination or a
+  quantized destination type gives wrong results, on both devices.
+- **GPU vmem corruption with the in-tree `amdgpu` driver.** With Linux 6.17's in-tree driver, a GPU
+  buffer whose address range overlaps one freed just before can be written through the freed
+  range's stale translation, one page off. `amdgpu-dkms` 7.1.9 does not show it, even when the
+  overlap is forced.
+- **LLVM option clash.** Two copies of LLVM in one process abort the first JIT compilation with
+  `Option 'print-inst-addrs' registered more than once`. HIP causes this (see
+  [Avoiding the LLVM clash with the JIT compiler](#avoiding-the-llvm-clash-with-the-jit-compiler)),
+  and so does a build with both device types and JIT compilation linked against ROCm 10.1.0's
+  comgr, which loads ROCm's `libLLVM`. TheRock's comgr does not: an NPU+GPU JIT build against
+  `10.2.0a20261016` compiles NPU kernels and runs both devices.
 
 ## Reference
 
