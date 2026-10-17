@@ -8,7 +8,13 @@
 """Top-level entry points for GGML unary operations."""
 
 from .kernel import Backend, KernelSpec
-from .triton_kernels.spec_utils import elementwise_block_size, transform_script
+from .triton_kernels.spec_utils import (
+    ArchKind,
+    arch_kind,
+    elementwise_block_size,
+    transform_script,
+    triton_elt_type,
+)
 
 
 def _make_iron_unary_kernel_spec(
@@ -88,7 +94,7 @@ def _make_triton_relu_kernel_spec(
         import torch
         import triton
 
-        from .triton_kernels.relu import relu
+        from .triton_kernels.unary_ops import relu
         from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
 
         if len(input_tensors) != 1:
@@ -133,6 +139,52 @@ def _make_triton_relu_kernel_spec(
         config={
             "transform_script": transform_script("relu", arch, output_tensor.dtype),
         },
+    )
+
+
+def _make_triton_gpu_relu_kernel_spec(
+    arch: str, input_tensors: list, output_tensor
+) -> KernelSpec:
+    """Create a TRITON-backend (GPU AOT) KernelSpec for RELU.
+
+    Every dimension/block parameter is baked as a Triton constexpr; the only runtime kernel
+    arguments are the source and destination pointers, matching the ``gpu-kernel.cpp`` ABI.
+    """
+    import triton
+
+    from .triton_kernels.spec_utils import next_pow2
+    from .triton_kernels.unary_ops import relu_kernel
+
+    n_elements = output_tensor.numel()
+    if input_tensors[0].numel() != n_elements:
+        msg = "RELU requires matching element counts."
+        raise ValueError(msg)
+
+    block = min(1024, next_pow2(n_elements))
+    num_programs = triton.cdiv(n_elements, block)
+
+    elt = triton_elt_type(output_tensor.dtype)
+    signature = {
+        "X": f"*{elt}",
+        "Y": f"*{elt}",
+        "n_elements": "constexpr",
+        "BLOCK": "constexpr",
+    }
+    config = {
+        "triton_fn": relu_kernel,
+        "signature": signature,
+        "constexprs": {"n_elements": n_elements, "BLOCK": block},
+        "num_warps": 4,
+        "num_programs": num_programs,
+    }
+    return KernelSpec(
+        backend=Backend.TRITON,
+        op_name="GGML_UNARY_OP_RELU",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        function=relu_kernel,
+        config=config,
     )
 
 
@@ -364,8 +416,9 @@ def ggml_unary_op_relu(
 ) -> list[KernelSpec]:
     """Return KernelSpecs for GGML_UNARY_OP_RELU (IRON primary, Triton fallback).
 
-    IRON is tried first; the Triton spec is the fallback, reached only if IRON
-    compilation fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the
+    On GPU (gfx) targets only the Triton -> hsaco AOT spec is returned, or none if the tensors
+    are unsupported. On NPU targets IRON is tried first; the Triton spec is the fallback,
+    reached only if IRON compilation fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the
     order so Triton is tried first (used to benchmark or exercise the Triton path).
 
     Args:
@@ -381,6 +434,13 @@ def ggml_unary_op_relu(
         ``GGML_HSA_JIT_COMPILER_ORDER``).
 
     """
+    if arch_kind(arch) is ArchKind.GPU:
+        try:
+            return [
+                _make_triton_gpu_relu_kernel_spec(arch, input_tensors, output_tensor)
+            ]
+        except ValueError:
+            return []
     return [
         _make_iron_unary_kernel_spec(
             arch, input_tensors, output_tensor, "GGML_UNARY_OP_RELU"

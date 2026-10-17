@@ -9,11 +9,43 @@ in an IRON-only environment. ``utils`` imports ``torch`` at module scope and is
 therefore only safe to import from inside a KernelSpec's compile function.
 """
 
+from enum import Enum, auto
 from pathlib import Path
 
 import numpy as np
 
 _SCRIPT_DIR = Path(__file__).parent
+
+# NPU architecture strings, as reported by the HSA agent name, and their Triton targets.
+NPU_ARCH_MAP = {
+    "aie2": "npu1",
+    "aie2p": "npu2",
+}
+
+
+class ArchKind(Enum):
+    """Kind of device an architecture string names."""
+
+    NPU = auto()
+    GPU = auto()
+    UNSUPPORTED = auto()
+
+
+def arch_kind(arch: str) -> ArchKind:
+    """Classify an architecture string.
+
+    Args:
+        arch: Architecture string, e.g. "aie2", "aie2p" or "gfx1151".
+
+    Returns:
+        ArchKind.NPU for an XDNA NPU, ArchKind.GPU for an AMD GPU ("gfx*"), and
+        ArchKind.UNSUPPORTED for anything else.
+    """
+    if arch in NPU_ARCH_MAP:
+        return ArchKind.NPU
+    if arch.startswith("gfx"):
+        return ArchKind.GPU
+    return ArchKind.UNSUPPORTED
 
 
 def transform_script(stem: str, arch: str, dtype=None) -> str:
@@ -68,3 +100,42 @@ def elementwise_block_size(n_elements: int, max_block: int = 1024) -> int:
         )
         raise ValueError(msg)
     return block
+
+
+_TRITON_ELT_TYPES = {
+    "float32": "fp32",
+    "float16": "fp16",
+    "bfloat16": "bf16",
+    "int8": "i8",
+    "int16": "i16",
+    "int32": "i32",
+    "int64": "i64",
+}
+
+
+def triton_elt_type(dtype) -> str:
+    """Map a numpy dtype to a Triton pointer element type string (e.g. 'fp32').
+
+    Args:
+        dtype: The numpy dtype to map.
+
+    Returns:
+        The Triton element type name, used as ``f"*{...}"`` in a kernel signature.
+
+    Raises:
+        ValueError: If the dtype has no Triton element-type equivalent.
+    """
+    name = np.dtype(dtype).name
+    try:
+        return _TRITON_ELT_TYPES[name]
+    except KeyError:
+        msg = f"Unsupported dtype for Triton GPU kernel: {name}"
+        raise ValueError(msg) from None
+
+
+def next_pow2(n: int) -> int:
+    """Return the smallest power of two that is >= ``n`` (>= 1)."""
+    p = 1
+    while p < n:
+        p <<= 1
+    return p
