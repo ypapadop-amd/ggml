@@ -36,7 +36,8 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     auto queue = ctx.queue;
 
     // Reserve the queue slot: the acquire waits for the slot's previous packet to complete, which
-    // also frees its kernarg slot, and arms the slot's completion signal for this packet.
+    // also frees its kernarg slot. The AIE queue runs packets in order, which the shared
+    // completion count relies on.
     std::uint64_t wr_idx = 0;
     if (const ggml_status status =
             ggml_hsa_acquire_packet_slot(ctx, wr_idx, pkt.completion_signal);
