@@ -34,7 +34,10 @@ the kernel compilation pipeline.
 ### Memory Sharing with HIP
 
 HSA backend buffers are allocated with the HSA vmem API (`ggml_hsa_vmem_allocation` in
-`ggml-hsa.cpp`). The same class imports another ROCm backend's buffer from a dma-buf:
+`ggml-hsa.cpp`). On a GPU device, `ggml_hsa_allocate` maps internal storage and kernargs with the
+vmem API too, instead of the pool allocator it uses for other devices: a GPU dispatch's kernarg
+segment and scratch buffers must be reachable the same way its tensor buffers are. The same
+class imports another ROCm backend's buffer from a dma-buf:
 `ggml_backend_hsa_buffer_import` wraps the mapping in an ordinary HSA buffer whose base is offset
 into the mapping so offsets match the source buffer, and `ggml_backend_hsa_tensor_alloc_alias`
 places an HSA tensor (an NPU input or an op result) on a source tensor's memory.
@@ -56,6 +59,8 @@ src/ggml-hsa/
 ├── host-ops.cpp/hpp             # Host-side operation implementations
 ├── kernel-discovery.cpp/hpp     # Runtime kernel discovery and loading
 ├── aie-kernel.cpp/hpp           # AIE kernel abstraction layer
+├── gpu-kernel.cpp/hpp           # GPU kernel (AQL dispatch of .hsaco code objects, GGML_HSA_GPU)
+├── generate_gpu_kernels.py      # Generator for precompiled GPU .hsaco kernels (HIP add/scale)
 ├── kernel-compiler.cpp/hpp      # JIT compilation interface
 ├── type-traits.hpp              # GGML type to C++ type mapping
 ├── kernels/                     # AIE kernel implementations (two-layer architecture)
@@ -75,12 +80,21 @@ src/ggml-hsa/
 │   ├── argmax.py                # Top-level argmax op dispatch
 │   ├── count_equal.py           # Top-level count_equal op dispatch
 │   ├── cross_entropy_loss.py    # Top-level cross entropy loss op dispatch
-│   ├── triton/                  # Triton kernel implementations
+│   ├── triton_kernels/          # Triton kernels (NPU and GPU); files named like iron_kernels/
 │   │   ├── __init__.py          # Subpackage init
-│   │   ├── utils.py             # Shared utilities (dtype conversion)
-│   │   ├── vecadd.py            # Vector addition Triton kernel
-│   │   ├── vecadd_aie2.mlir     # MLIR transform/tiling script for AIE2
-│   │   └── vecadd_aie2p.mlir    # MLIR transform/tiling script for AIE2P
+│   │   ├── spec_utils.py        # KernelSpec helpers importable without torch (arch kind, dtypes)
+│   │   ├── utils.py             # Shared utilities (dtype conversion; imports torch)
+│   │   ├── binary_ops.py        # vecadd (NPU ADD) + bcast_binary_kernel (GPU ADD with broadcast)
+│   │   ├── unary_ops.py         # relu (NPU) + relu_kernel (GPU)
+│   │   ├── gemm.py              # bare_matmul (NPU) + gemm_kernel (GPU MUL_MAT)
+│   │   ├── softmax.py           # GPU SOFT_MAX kernel
+│   │   ├── argmax.py            # GPU ARGMAX kernel
+│   │   ├── im2col.py            # GPU IM2COL kernel
+│   │   ├── pool_2d.py           # GPU POOL_2D kernel
+│   │   ├── conv_2d.py           # GPU CONV_2D kernel
+│   │   ├── cross_entropy_loss.py # GPU CROSS_ENTROPY_LOSS kernel
+│   │   ├── count_equal.py       # GPU COUNT_EQUAL kernel
+│   │   └── *_aie2{,p}{,_f32}.mlir # Triton-XDNA transform/tiling scripts (vecadd, relu, matmul)
 │   └── iron_kernels/            # IRON kernel implementations
 │       ├── __init__.py          # Subpackage init
 │       ├── utils.py             # Shared utilities (alignment, device mapping)
@@ -595,18 +609,18 @@ To add a new backend, follow the pattern used for the Triton backend. This examp
 
 ## Supported Operations
 
-### Fully Implemented
+The per-device, per-backend table with shape and dtype limits is "Supported Operations" in
+`README.md`; keep the two in sync. The dispatch functions in `kernels/*.py` are the source of truth:
+each returns IRON (and sometimes a Triton fallback) for an NPU arch and Triton for a GPU arch, via
+`arch_kind()`.
 
-These operations have complete AIE kernel implementations:
-
-| Category | Operations |
-| -------- | ---------- |
-| Binary | `ADD`, `SUB`, `MUL`, `DIV` (with broadcast support) |
-| Unary (GGML_UNARY_OP) | `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` |
-| Unary (GGML_OP) | `SQR`, `SQRT`, `LOG` |
-| Pooling | `POOL_2D` (`MAX` and `AVG`, with padding) |
-| Other | `SCALE`, `SOFT_MAX`, `CLAMP`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, `MUL_MAT` |
-| Host-only | `DUP`, `CPY`, `CONT` (run on CPU, not AIE; a dtype-only `ggml_cast` runs as `HSA_CONVERT`) |
+| Backend | Operations |
+| ------- | ---------- |
+| NPU, IRON | `ADD`, `SUB`, `MUL`, `DIV` (broadcast), `SCALE`, `CLAMP`, `ABS`, `SGN`, `NEG`, `STEP`, `RELU`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `GELU`, `SQR`, `SQRT`, `LOG`, `MUL_MAT`, `SOFT_MAX`, `NORM`, `DIAG_MASK_INF`, `POOL_2D`, `IM2COL`, `CONV_2D`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS`, plus the internal `HSA_CONVERT` and `HSA_CONVERT_PAD` |
+| NPU, Triton-XDNA (fallback) | `ADD`, `RELU`, `MUL_MAT` |
+| GPU, Triton (JIT) | `ADD` (broadcast), `RELU`, `MUL_MAT`, `SOFT_MAX`, `POOL_2D`, `IM2COL`, `CONV_2D`, `ARGMAX`, `COUNT_EQUAL`, `CROSS_ENTROPY_LOSS` |
+| GPU, HIP (`generate_gpu_kernels.py`) | `ADD`, `SCALE` (`f32`) |
+| Host, both devices | `DUP`, `CPY`, `CONT`, `GET_ROWS` (a dtype-only `ggml_cast` on the NPU runs as `HSA_CONVERT`) |
 
 ### Registered but Not Implemented
 
@@ -614,7 +628,7 @@ These operations are registered in `build.py` but raise `NotImplementedError`:
 
 - `SIN`, `COS` (require math library functions)
 - `TANH`, `ELU`, `SIGMOID`, `SILU`, `EXP` (require exp/transcendental functions)
-- `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` (require erf or approximations)
+- `GELU_QUICK`, `GELU_ERF`, `XIELU` (require erf or approximations)
 
 These are placeholders for future implementation. The `aie_kernel_math.h` header provides
 utility functions like `scalar_exp`, `scalar_log`, `pow2`, and `vec_exp` that can be used as building
@@ -650,10 +664,25 @@ source ./env_setup.sh triton
 python3 -m pip install -r requirements-triton.txt
 ```
 
+### Tested Versions
+
+See "Tested Configurations" in `README.md` for the full list. In short:
+
+- **ROCR:** the NPU needs a ROCR with XDNA vmem support: TheRock nightly `10.2.0a20261016`
+  or one built from `rocm-systems` `develop`. A system ROCm (e.g. 10.1.0) builds and dispatches to the NPU
+  but fails in `hsa_amd_vmem_unmap`. GPU-only builds work with ROCm 10.1.0.
+- **GPU kernel driver:** `amdgpu-dkms` 7.1.9; Linux 6.17's in-tree `amdgpu` corrupts GPU results
+  under the vmem API.
+- **XDNA driver:** `amdxdna` 2.23.0 with XRT 2.23.0.
+- **Builds with GPU devices** must take comgr from the same ROCm as the ROCR
+  (`-Damd_comgr_DIR=...`), or the binary loads the system ROCR.
+
 ### MLIR-AIE Version
 
-The project currently uses **mlir-aie v1.4.4**. Ensure your environment
-matches this version to avoid compatibility issues with:
+The project currently uses **mlir-aie v1.4.5-alpha.1** (pinned in `requirements-iron.txt`, with
+`llvm-aie>=22.0.0`). 1.4.4 gives wrong `MUL_MAT` results on aie2 (see the comment in
+`requirements-iron.txt`). Ensure your environment matches this version to avoid compatibility issues
+with:
 
 - IRON API changes
 - ObjectFifo semantics
@@ -665,6 +694,9 @@ matches this version to avoid compatibility issues with:
 - Build with `GGML_HSA=ON` and optionally `GGML_HSA_JIT_COMPILE=ON`
 - Test files are in `tests/test-backend-ops.cpp` (shared) and `tests/ggml-hsa/` (HSA-specific: `test-mul-mat-hsa.cpp`, `test-vector-hsa.cpp`, `test-backend-ops-mnist.cpp`, and `test-hip-zero-copy-hsa.cpp`, built only with `GGML_HIP=ON`)
 - Ensure kernels work for both `aie2` and `aie2p` architectures
+- Python tests for the kernel dispatch layer are in `tests/ggml-hsa/python` (run with `pytest` there).
+  The Triton GPU kernel tests (`test_triton_gpu_kernels.py`) need the target set, e.g.
+  `GGML_HSA_TEST_GPU_ARCH=gfx1030`; they fail when it is not set.
 - **Success:** Look for `<N>/<N> tests passed`.
 - **Failure:** Look for `0/0 tests passed` or `Could not create kernel for tensor`.
 

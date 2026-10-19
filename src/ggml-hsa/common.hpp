@@ -308,6 +308,33 @@ struct ggml_hsa_delete {
 template <typename T>
 using ggml_hsa_unique_ptr = std::unique_ptr<T, ggml_hsa_delete<T>>;
 
+class ggml_hsa_vmem_allocation;
+
+/**
+ * @brief Frees device memory allocated by @ref ggml_hsa_allocate.
+ */
+struct ggml_hsa_device_delete {
+    /// @brief Mapping that owns the memory, or @c nullptr if it is from the pool allocator.
+    ggml_hsa_vmem_allocation * vmem{};
+
+    void operator()(std::byte * ptr) const;
+};
+
+/// @brief Device memory allocated by @ref ggml_hsa_allocate.
+using ggml_hsa_device_ptr = std::unique_ptr<std::byte, ggml_hsa_device_delete>;
+
+/**
+ * @brief Allocates @p size bytes from @p pool for @p agent, a device of type @p type, into @p ptr.
+ *
+ * GPU memory is mapped with the HSA vmem API, accessible to the host and @p agent; any other
+ * device's memory comes from the pool allocator. On failure, @p ptr is left unchanged.
+ */
+hsa_status_t ggml_hsa_allocate(hsa_agent_t agent,
+                               hsa_device_type_t type,
+                               hsa_amd_memory_pool_t pool,
+                               std::size_t size,
+                               ggml_hsa_device_ptr & ptr);
+
 /**
  * @brief Fixed-slot kernarg pool over a single HSA memory-pool buffer.
  *
@@ -323,6 +350,8 @@ class ggml_hsa_kernarg_pool {
     /**
      * @brief Constructs a pool of @p slot_count slots, each at least @p slot_size bytes.
      *
+     * @param[in] agent device agent the kernargs are for
+     * @param[in] type device type of @p agent
      * @param[in] memory_pool HSA memory pool to allocate the backing buffer from
      * @param[in] slot_count number of fixed slots (one per HSA queue ring slot)
      * @param[in] slot_size minimum size of each slot in bytes
@@ -330,7 +359,9 @@ class ggml_hsa_kernarg_pool {
      * @throws std::invalid_argument if @p alignment is not a power of two
      * @throws std::runtime_error if the backing buffer cannot be allocated
      */
-    ggml_hsa_kernarg_pool(hsa_amd_memory_pool_t memory_pool,
+    ggml_hsa_kernarg_pool(hsa_agent_t agent,
+                          hsa_device_type_t type,
+                          hsa_amd_memory_pool_t memory_pool,
                           std::size_t slot_count,
                           std::size_t slot_size,
                           std::size_t alignment) :
@@ -340,15 +371,13 @@ class ggml_hsa_kernarg_pool {
         }
         // Pad each slot to alignment so every slot start is aligned.
         m_slot_size = GGML_PAD(slot_size, alignment);
-        void * buffer = nullptr;
         if (auto status =
-                hsa_amd_memory_pool_allocate(memory_pool, m_slot_size * m_slot_count, 0, &buffer);
+                ggml_hsa_allocate(agent, type, memory_pool, m_slot_size * m_slot_count, m_buffer);
             status != HSA_STATUS_SUCCESS) {
             throw std::runtime_error{std::string("Could not allocate kernarg pool buffer (")
                                          .append(ggml_hsa_get_status_string(status))
                                          .append(")")};
         }
-        m_buffer.reset(buffer);
     }
 
     /**
@@ -358,8 +387,11 @@ class ggml_hsa_kernarg_pool {
      */
     void * slot(std::size_t index) const {
         assert(index < m_slot_count);
-        return static_cast<std::byte *>(m_buffer.get()) + index * m_slot_size;
+        return m_buffer.get() + index * m_slot_size;
     }
+
+    /// @brief Returns the size of each slot in bytes.
+    std::size_t slot_size() const { return m_slot_size; }
 
     /**
      * @brief Abandons the backing buffer instead of freeing it.
@@ -371,9 +403,9 @@ class ggml_hsa_kernarg_pool {
     void leak() { static_cast<void>(m_buffer.release()); }
 
   private:
-    ggml_hsa_unique_ptr<void> m_buffer; ///< Backing storage.
-    std::size_t m_slot_size{};          ///< Size of each slot in bytes (padded to alignment).
-    std::size_t m_slot_count{};         ///< Number of slots.
+    ggml_hsa_device_ptr m_buffer; ///< Backing storage.
+    std::size_t m_slot_size{};    ///< Size of each slot in bytes (padded to alignment).
+    std::size_t m_slot_count{};   ///< Number of slots.
 };
 
 struct ggml_backend_hsa_context;
@@ -538,8 +570,8 @@ struct ggml_backend_hsa_tensor_extra {
     /// @brief A converted copy of a graph-constant tensor, made for consumers that cannot read the
     /// tensor as-is (see @ref source_node_t::is_constant).
     struct conversion_t {
-        ggml_tensor tensor{};                  ///< The converted tensor; its data is @c buffer.
-        ggml_hsa_unique_ptr<std::byte> buffer; ///< Device storage of the converted tensor.
+        ggml_tensor tensor{};       ///< The converted tensor; its data is @c buffer.
+        ggml_hsa_device_ptr buffer; ///< Device storage of the converted tensor.
         /// @brief The parent data pointer whose converted contents @c buffer holds, or null if
         /// none (no conversion yet, or the last one failed).
         const void * converted_ptr{nullptr};
@@ -552,7 +584,7 @@ struct ggml_backend_hsa_tensor_extra {
     /// @brief Kernel associated with the tensor.
     std::shared_ptr<ggml_hsa_kernel> kernel;
     /// @brief Temporary storage for tensor data, allocated only if needed.
-    ggml_hsa_unique_ptr<std::byte> buffer;
+    ggml_hsa_device_ptr buffer;
     /// @brief Bytes allocated for @c buffer.
     std::size_t buffer_capacity{};
     /// @brief Converted copies of this tensor when it is a graph constant, one per distinct
@@ -578,9 +610,20 @@ struct ggml_backend_hsa_tensor_extra {
      * caller, so a recycled extra's storage is never freed while earlier dispatches may use it.
      */
     ggml_status allocate_internal_storage(const ggml_hsa_device_info::device_info & dev_info,
-                                          ggml_hsa_unique_ptr<std::byte> & spare,
+                                          ggml_hsa_device_ptr & spare,
                                           std::size_t spare_capacity);
 };
+
+/**
+ * @brief Initial value of @ref ggml_backend_hsa_context::dispatch_signal.
+ *
+ * Each completed packet decrements the signal by 1, so it stays positive for 2^62 packets, which
+ * never runs out. Half the signed range leaves headroom for the wait target arithmetic
+ * (start - index, + 1) to never overflow, and a value at or below 0 then reads as more completions
+ * than packets written, which is reported as a corrupt count.
+ */
+static_assert(sizeof(hsa_signal_value_t) == 8, "the dispatch count needs 64-bit signal values");
+inline constexpr hsa_signal_value_t ggml_hsa_dispatch_signal_start = hsa_signal_value_t{1} << 62;
 
 /**
  * @brief Context for HSA backend operations.
@@ -589,10 +632,20 @@ struct ggml_backend_hsa_context {
     std::int32_t device{};              ///< Device ID.
     std::string name;                   ///< Device name.
     hsa_queue_t * queue{};              ///< HSA queue.
-    hsa_signal_t dispatch_signal{};     ///< Signal for packet completion.
+    /// @brief Completion signal of every packet, counting down from
+    /// @ref ggml_hsa_dispatch_signal_start.
+    ///
+    /// The packet processor decrements it by 1 as each packet completes and the host never writes
+    /// it after creation: a GPU's completion decrement is not atomic with respect to a concurrent
+    /// host update, so a host increment per dispatch would be lost now and then. Packets complete
+    /// in order (barrier bit on GPU packets, in-order execution on AIE queues), so the packets
+    /// before write index @c ggml_hsa_dispatch_signal_start - value have all completed.
+    hsa_signal_t dispatch_signal{};
     ggml_hsa_kernarg_pool kernargs;     ///< Per-ring-slot kernarg buffers for in-flight packets.
     std::size_t dispatch_batch_size{1}; ///< Packets accumulated before the doorbell is rung.
     std::size_t n_batched{};            ///< Packets written since the last doorbell ring.
+    /// @brief Every packet before this queue write index is known to have completed.
+    std::uint64_t completed_write_index{};
 
     /// @brief First error reported by the queue's error callback, or @c HSA_STATUS_SUCCESS.
     std::atomic<hsa_status_t> queue_error{HSA_STATUS_SUCCESS};
@@ -632,6 +685,24 @@ struct ggml_backend_hsa_context {
  *         never will. Nothing was waited for: callers must propagate rather than read results
  */
 [[nodiscard]] ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx);
+
+/**
+ * @brief Reserves the next queue ring slot for a packet.
+ *
+ * Waits until the packet that last used the slot has completed, so the slot and its kernarg slot
+ * are free, then advances the write index. The caller must write the packet into the slot, with
+ * @ref ggml_backend_hsa_context::dispatch_signal as its completion signal, and publish its header;
+ * nothing may fail between this call and the publication, since a reserved packet that is never
+ * published stalls the queue and the completion count behind it.
+ *
+ * @param[in]  ctx         backend context
+ * @param[out] write_index index of the reserved packet; its slot is @c write_index modulo the queue
+ *                         size
+ * @retval GGML_STATUS_SUCCESS the slot was reserved
+ * @retval GGML_STATUS_FAILED  the queue is suspended, so the slot never frees; nothing was reserved
+ */
+[[nodiscard]] ggml_status ggml_hsa_acquire_packet_slot(ggml_backend_hsa_context & ctx,
+                                                       std::uint64_t & write_index);
 
 /**
  * @brief Rings the doorbell for any packets accumulated since the last ring.

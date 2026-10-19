@@ -114,7 +114,8 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
            │
            ▼
  ggml_hsa_wait_dispatches()                   ─── ggml-hsa.cpp
-   hsa_signal_wait_scacquire(signal, EQ, 0)
+   wait for the completion count to reach the write index
+   (one countdown signal per context; packets complete in order)
    free kernargs
 ```
 
