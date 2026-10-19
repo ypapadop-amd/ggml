@@ -21,17 +21,33 @@ endif()
 
 find_package(hsa-runtime64 1.0 REQUIRED)
 
-option(GGML_HSA_JIT_COMPILE "ggml-hsa: enable JIT compilation of kernels" ON)
+option(GGML_HSA_AIE         "ggml-hsa: enable the AIE (XDNA NPU) backend"  ON)
+option(GGML_HSA_GPU         "ggml-hsa: enable the GPU backend"  OFF)
+option(GGML_HSA_JIT_COMPILE "ggml-hsa: enable JIT compilation of kernels"  ON)
+
+if (NOT GGML_HSA_AIE AND NOT GGML_HSA_GPU)
+    message(FATAL_ERROR "ggml-hsa: at least one of GGML_HSA_AIE or GGML_HSA_GPU must be enabled")
+endif ()
+
+# JIT compilation (Python/pybind) is shared by the AIE (IRON/Triton -> pdi) and GPU
+# (Triton -> hsaco) backends.
 
 set(GGML_HEADERS_HSA ../../include/ggml-hsa.h)
 set(GGML_SOURCES_HSA
-    aie-kernel.cpp
     gemm.cpp
     ggml-hsa.cpp
     host-ops.cpp
     kernel-discovery.cpp
     kernel.cpp
     )
+
+if (GGML_HSA_AIE)
+    list(APPEND GGML_SOURCES_HSA aie-kernel.cpp)
+endif ()
+
+if (GGML_HSA_GPU)
+    list(APPEND GGML_SOURCES_HSA gpu-kernel.cpp)
+endif ()
 
 if (GGML_HSA_JIT_COMPILE)
     include(FetchContent)
@@ -59,7 +75,6 @@ target_include_directories(ggml-hsa PRIVATE . ..)
 
 target_sources(ggml-hsa
     PRIVATE
-        aie-kernel.hpp
         common.hpp
         gemm.hpp
         host-ops.hpp
@@ -67,6 +82,21 @@ target_sources(ggml-hsa
         kernel.hpp
         type-traits.hpp
     )
+
+if (GGML_HSA_AIE)
+    target_sources(ggml-hsa PRIVATE aie-kernel.hpp)
+    target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_AIE)
+endif ()
+
+if (GGML_HSA_GPU)
+    # comgr (Code Object Manager) is used to read kernel argument metadata from .hsaco files.
+    # Its package target keeps the ROCm include directory out of the plain include path, where it
+    # would shadow the HSA headers of the hsa-runtime64 found above.
+    find_package(amd_comgr REQUIRED)
+    target_sources(ggml-hsa PRIVATE gpu-kernel.hpp)
+    target_compile_definitions(ggml-hsa PRIVATE -DGGML_HSA_GPU)
+    target_link_libraries(ggml-hsa PRIVATE amd_comgr)
+endif ()
 
 if (GGML_HSA_JIT_COMPILE)
     target_sources(ggml-hsa PRIVATE kernel-compiler.hpp)

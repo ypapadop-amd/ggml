@@ -2,13 +2,15 @@
 
 # The MLIR-AIE and LLVM-AIE (Peano) packages are not on the official PyPI, so
 # we add them as additional indices here.
---find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
+--extra-index-url https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.5-alpha.1
 --extra-index-url https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 --extra-index-url https://pypi.org/simple
 
-# A nightly rather than the 1.4.4 release: the hsaco packer's full-ELF kernel selection
-# (Xilinx/mlir-aie#3881) is not in 1.4.4. Same commit as the v1.4.5-alpha.1 release (1.4.5a1).
-mlir_aie==1.4.5.dev48+gcb6f2d1
+# A pre-release, not 1.4.4. 1.4.4 lacks the hsaco packer's full-ELF kernel selection
+# (Xilinx/mlir-aie#3881), and it lowers a runtime-configured mem tile BD on aie2 without the
+# mem tile's own-memory offset, so the BD addresses its west neighbour (fixed in Xilinx/mlir-aie
+# 3eea85e, #3903). The GEMM drains C through such a BD, so every MUL_MAT on aie2 is wrong on 1.4.4.
+mlir_aie==1.4.5a1
 
 # Floor, not an exact pin: llvm-aie only publishes rolling nightlies and the index retains
 # roughly the last three months, so an exact pin would stop resolving and break a fresh install.

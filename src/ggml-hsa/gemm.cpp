@@ -48,6 +48,11 @@ bool ggml_hsa_prepare_mul_mat_f32(const ggml_hsa_device_info::device_info & dev_
                                   ggml_backend_hsa_tensor_extra::sources_t & sources) {
     ggml_tensor & dst = node.tensor;
 
+    // The padding below targets the AIE GEMM tiling; other devices take MUL_MAT as is.
+    if (dev_info.type != HSA_DEVICE_TYPE_AIE) {
+        return false;
+    }
+
     // The GEMM microkernel runs in bf16, so A is converted to bf16 below (an f32 B is converted on
     // the cores instead; see below); the destination must be f32 (ggml's native MUL_MAT output).
     if (dst.op != GGML_OP_MUL_MAT || dst.type != GGML_TYPE_F32 || sources.count != 2) {
