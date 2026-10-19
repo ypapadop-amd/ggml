@@ -188,8 +188,8 @@ def _make_triton_gpu_binary_kernel_spec(
         KernelSpec configured for the TRITON backend (GPU AOT path).
 
     Raises:
-        ValueError: If the tensors are non-contiguous, src0 is not dst-shaped, or src1 cannot be
-            repeated to the destination shape.
+        ValueError: If the output is empty, the tensors are non-contiguous, src0 is not
+            dst-shaped, or src1 cannot be repeated to the destination shape.
 
     """
     import triton
@@ -198,6 +198,10 @@ def _make_triton_gpu_binary_kernel_spec(
     from .triton_kernels.spec_utils import next_pow2
 
     n_elements = output_tensor.numel()
+    if n_elements == 0:
+        # A launch needs at least one program; empty tensors are never dispatched anyway.
+        msg = "Triton GPU binary op requires a non-empty output."
+        raise ValueError(msg)
 
     src0, src1 = input_tensors[0], input_tensors[1]
     # src0 must match the destination shape; src1 is repeated over it (ggml_can_repeat: each

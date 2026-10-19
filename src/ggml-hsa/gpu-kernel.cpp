@@ -131,6 +131,13 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
         assert(static_cast<std::size_t>(off) + sz <= kernarg_size);
         std::memcpy(kernarg + off, src, sz);
     };
+    // Stores a scalar into an argument whose size comes from the metadata: copying arg.size bytes
+    // straight from the scalar would read past it when the argument is wider. Copy at most the
+    // scalar's own bytes; a wider argument keeps the zeroed high bytes (zero-extension, since the
+    // target is little-endian) and a narrower one gets the low bytes.
+    const auto put_scalar = [&](const auto & arg, auto value) {
+        put(arg.offset, &value, std::min<std::uint32_t>(arg.size, sizeof(value)));
+    };
     // The HIP kernel ABI is positional (argument names are not emitted in the code object
     // metadata, so arguments are matched by kind and position rather than by name). Explicit
     // arguments are, in order:
@@ -155,12 +162,11 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
             } else if (global_buffer_idx == num_src_tensors) {
                 ptr = dst_tensor.data;
             }
-            std::uint64_t v = reinterpret_cast<std::uintptr_t>(ptr);
-            put(arg.offset, &v, arg.size);
+            put_scalar(arg, std::uint64_t{reinterpret_cast<std::uintptr_t>(ptr)});
             ++global_buffer_idx;
         } else if (arg.value_kind == "by_value") {
             if (by_value_idx == 0) {
-                put(arg.offset, &n_elements, arg.size); // first scalar is the element count
+                put_scalar(arg, n_elements); // first scalar is the element count
             } else if (op_params_cursor + arg.size <= sizeof(dst_tensor.op_params)) {
                 // subsequent scalars come from the op parameter block, in order
                 put(arg.offset, op_params_bytes + op_params_cursor, arg.size);
@@ -172,24 +178,19 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
             }
             ++by_value_idx;
         } else if (arg.value_kind == "hidden_block_count_x") {
-            put(arg.offset, &num_groups_x, arg.size);
+            put_scalar(arg, num_groups_x);
         } else if (arg.value_kind == "hidden_block_count_y" ||
                    arg.value_kind == "hidden_block_count_z") {
-            std::uint32_t v = 1;
-            put(arg.offset, &v, arg.size);
+            put_scalar(arg, std::uint32_t{1});
         } else if (arg.value_kind == "hidden_group_size_x") {
-            std::uint16_t v = static_cast<std::uint16_t>(wg);
-            put(arg.offset, &v, arg.size);
+            put_scalar(arg, static_cast<std::uint16_t>(wg));
         } else if (arg.value_kind == "hidden_group_size_y" ||
                    arg.value_kind == "hidden_group_size_z") {
-            std::uint16_t v = 1;
-            put(arg.offset, &v, arg.size);
+            put_scalar(arg, std::uint16_t{1});
         } else if (arg.value_kind == "hidden_remainder_x") {
-            auto v = static_cast<std::uint16_t>(n_elements % wg);
-            put(arg.offset, &v, arg.size);
+            put_scalar(arg, static_cast<std::uint16_t>(n_elements % wg));
         } else if (arg.value_kind == "hidden_grid_dims") {
-            std::uint16_t v = 1; // 1D grid
-            put(arg.offset, &v, arg.size);
+            put_scalar(arg, std::uint16_t{1}); // 1D grid
         }
         // all other hidden arguments (remainder_y/z, global_offset_*, etc.) remain zero
     }

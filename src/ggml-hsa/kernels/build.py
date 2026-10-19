@@ -116,7 +116,7 @@ def _get_compiler(backend: Backend, arch: str) -> Callable:
 
         return compile_iron_kernel
     if backend.name == Backend.TRITON.name:
-        from triton_kernels.utils import ArchKind, arch_kind
+        from triton_kernels.spec_utils import ArchKind, arch_kind
 
         if arch_kind(arch) is ArchKind.NPU:
             # aie.iron must load before triton or a later import aborts on an

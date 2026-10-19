@@ -244,6 +244,13 @@ def test_unsupported_gpu_cases_yield_no_spec(mods, arch):
         )
         == []
     )
+    # empty output: a launch needs at least one program
+    assert (
+        mods["binary_ops"].ggml_op_add(
+            arch, [_td(mods, (0,)), _td(mods, (1,))], _td(mods, (0,)), bytearray()
+        )
+        == []
+    )
 
 
 def _has_hip_backend():

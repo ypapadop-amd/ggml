@@ -12,7 +12,7 @@ from pathlib import Path
 
 import triton
 from kernel import KernelSpec
-from triton_kernels.utils import NPU_ARCH_MAP, ArchKind, arch_kind
+from triton_kernels.spec_utils import NPU_ARCH_MAP, ArchKind, arch_kind
 
 
 class TempEnvSet(ContextDecorator):
