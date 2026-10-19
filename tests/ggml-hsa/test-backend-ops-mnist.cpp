@@ -2358,9 +2358,12 @@ struct test_pool2d : public test_case {
     // padding
     const int p0;
     const int p1;
+    // pool relu(input), as the MNIST CNN does: windows of +0 and windows mixing +0 with positives
+    const bool relu;
 
     std::string vars() override {
-        return VARS_TO_STR9(pool_type, type_input, ne_input, k0, k1, s0, s1, p0, p1);
+        return VARS_TO_STR9(pool_type, type_input, ne_input, k0, k1, s0, s1, p0, p1) +
+               (relu ? ",relu=1" : "");
     }
 
     test_pool2d(ggml_op_pool pool_type = GGML_OP_POOL_AVG,
@@ -2372,7 +2375,8 @@ struct test_pool2d : public test_case {
                 int s0 = 1,
                 int s1 = 1,
                 int p0 = 1,
-                int p1 = 1) :
+                int p1 = 1,
+                bool relu = false) :
         pool_type(pool_type),
         type_input(type_input),
         ne_input(ne_input),
@@ -2381,14 +2385,16 @@ struct test_pool2d : public test_case {
         s0(s0),
         s1(s1),
         p0(p0),
-        p1(p1) {}
+        p1(p1),
+        relu(relu) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * input = ggml_new_tensor(ctx, type_input, 4, ne_input.data());
         ggml_set_param(input);
         ggml_set_name(input, "input");
 
-        ggml_tensor * out = ggml_pool_2d(ctx, input, pool_type, k0, k1, s0, s1, p0, p1);
+        ggml_tensor * pooled = relu ? ggml_relu(ctx, input) : input;
+        ggml_tensor * out = ggml_pool_2d(ctx, pooled, pool_type, k0, k1, s0, s1, p0, p1);
         ggml_set_name(out, "out");
 
         return out;
@@ -2714,6 +2720,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // 3-chunk rows at stride 1 with both borders padded; stride 3 (the scalar path).
     test_cases.emplace_back(
         new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {28, 28, 8, 13}, 2, 2, 2, 2, 0, 0));
+    // Max pooling after a ReLU, as in the MNIST CNN (pool1 and pool2 extents, smaller batch).
+    test_cases.emplace_back(new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {28, 28, 8, 13}, 2, 2,
+                                            2, 2, 0, 0, true));
+    test_cases.emplace_back(new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {14, 14, 16, 9}, 2, 2,
+                                            2, 2, 0, 0, true));
     test_cases.emplace_back(
         new test_pool2d(GGML_OP_POOL_MAX, GGML_TYPE_F32, {40, 6, 3, 2}, 3, 3, 1, 1, 1, 1));
     test_cases.emplace_back(
