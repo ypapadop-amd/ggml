@@ -39,11 +39,11 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // also frees its kernarg slot. The AIE queue runs packets in order, which the shared
     // completion count relies on.
     std::uint64_t wr_idx = 0;
-    if (const ggml_status status =
-            ggml_hsa_acquire_packet_slot(ctx, wr_idx, pkt.completion_signal);
+    if (const ggml_status status = ggml_hsa_acquire_packet_slot(ctx, wr_idx);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
+    pkt.completion_signal = ctx.dispatch_signal;
     const std::uint64_t packet_id = wr_idx % queue->size;
 
     // Each ring slot owns a fixed kernarg slot of the same index, sized for the worst case, so the

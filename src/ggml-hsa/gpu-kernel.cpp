@@ -111,8 +111,7 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // Reserve the queue slot. A kernarg segment must stay unchanged until its kernel completes, so
     // the acquire waits for the slot's previous packet to complete, not merely to be consumed.
     std::uint64_t wr_idx = 0;
-    hsa_signal_t completion_signal{};
-    if (const ggml_status status = ggml_hsa_acquire_packet_slot(ctx, wr_idx, completion_signal);
+    if (const ggml_status status = ggml_hsa_acquire_packet_slot(ctx, wr_idx);
         status != GGML_STATUS_SUCCESS) {
         return status;
     }
@@ -210,13 +209,15 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     pkt.group_segment_size = group_segment_size + dynamic_group_segment_size;
     pkt.kernel_object = kernel_object;
     pkt.kernarg_address = kernarg;
-    pkt.completion_signal = completion_signal;
+    pkt.completion_signal = ctx.dispatch_signal;
 
     write_aql_to_queue(pkt, queue, wr_idx);
 
     // The barrier bit makes the packet processor wait for every earlier packet to complete before
     // launching this one; without it, consecutive dispatches may overlap, and a dispatch would race
-    // with the one producing its sources.
+    // with the one producing its sources. Completion tracking needs it too: packets must complete
+    // in order for the count in ggml_backend_hsa_context::dispatch_signal to say which packets
+    // finished, and so which ring and kernarg slots are free.
     std::uint16_t header = HSA_PACKET_TYPE_KERNEL_DISPATCH << HSA_PACKET_HEADER_TYPE;
     header |= 1 << HSA_PACKET_HEADER_BARRIER;
     header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE;

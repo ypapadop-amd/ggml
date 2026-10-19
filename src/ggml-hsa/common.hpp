@@ -691,21 +691,18 @@ struct ggml_backend_hsa_context {
  *
  * Waits until the packet that last used the slot has completed, so the slot and its kernarg slot
  * are free, then advances the write index. The caller must write the packet into the slot, with
- * @p completion_signal as its completion signal, and publish its header; nothing may fail between
- * this call and the publication, since a reserved packet that is never published stalls the queue
- * and the completion count behind it.
+ * @ref ggml_backend_hsa_context::dispatch_signal as its completion signal, and publish its header;
+ * nothing may fail between this call and the publication, since a reserved packet that is never
+ * published stalls the queue and the completion count behind it.
  *
- * @param[in]  ctx               backend context
- * @param[out] write_index       index of the reserved packet; its slot is @c write_index modulo
- *                               the queue size
- * @param[out] completion_signal completion signal for the packet
- *                               (@ref ggml_backend_hsa_context::dispatch_signal)
+ * @param[in]  ctx         backend context
+ * @param[out] write_index index of the reserved packet; its slot is @c write_index modulo the queue
+ *                         size
  * @retval GGML_STATUS_SUCCESS the slot was reserved
  * @retval GGML_STATUS_FAILED  the queue is suspended, so the slot never frees; nothing was reserved
  */
 [[nodiscard]] ggml_status ggml_hsa_acquire_packet_slot(ggml_backend_hsa_context & ctx,
-                                                       std::uint64_t & write_index,
-                                                       hsa_signal_t & completion_signal);
+                                                       std::uint64_t & write_index);
 
 /**
  * @brief Rings the doorbell for any packets accumulated since the last ring.
