@@ -123,11 +123,13 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     std::memset(kernarg, 0, kernarg_size);
 
     // Populate the kernarg segment using the layout parsed from the code object metadata. Explicit
-    // global_buffer arguments are filled in order (sources first, then destination); the single
-    // by_value argument is the element count; the HIP hidden arguments are derived from the grid
-    // configuration. Offsets/sizes come from the kernel itself, so the layout is ABI-robust.
-    // ggml_hsa_create_gpu_kernel rejects a kernel whose arguments do not all lie in its segment, or
-    // whose arguments filled from a fixed-size value below differ from ggml_hsa_gpu_fixed_arg_size.
+    // global_buffer arguments are filled in order (sources first, then destination); the first
+    // by_value argument is the element count and later ones come from op_params (see below); the
+    // HIP hidden arguments are derived from the grid configuration. Offsets/sizes come from the
+    // kernel itself, so the layout is ABI-robust.
+    // ggml_hsa_create_gpu_kernel rejects a kernel whose arguments do not all lie in its segment,
+    // whose arguments filled from a fixed-size value below differ from ggml_hsa_gpu_fixed_arg_size,
+    // or whose later by_value arguments do not fit in op_params.
     // put_scalar checks the value's type against that too, in every build: a mismatch would
     // over-read the value or write past the argument.
     const auto put = [&](std::uint32_t off, const void * src, std::uint32_t sz) {
@@ -168,14 +170,11 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
             if (by_value_idx == 0) {
                 // first scalar is the element count
                 put_scalar(arg, ggml_hsa_gpu_element_count_arg_t{n_elements});
-            } else if (op_params_cursor + arg.size <= sizeof(dst_tensor.op_params)) {
+            } else {
                 // subsequent scalars come from the op parameter block, in order
+                GGML_ASSERT(op_params_cursor + arg.size <= sizeof(dst_tensor.op_params));
                 put(arg.offset, op_params_bytes + op_params_cursor, arg.size);
                 op_params_cursor += arg.size;
-            } else {
-                GGML_HSA_LOG_WARN("%s: by_value kernarg #%zu (name \"%s\", size %u) exceeds "
-                                  "op_params; zeroed",
-                                  __func__, by_value_idx, arg.name.c_str(), arg.size);
             }
             ++by_value_idx;
         } else if (arg.value_kind == "hidden_block_count_x") {
