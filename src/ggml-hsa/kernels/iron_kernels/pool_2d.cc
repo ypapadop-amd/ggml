@@ -5,6 +5,7 @@
 
 #include <aie_api/aie.hpp>
 
+#include "aie_kernel_utils.h"
 #include "ggml-aie.hpp"
 
 // Pooling op selector (matches enum ggml_op_pool in include/ggml.h).
@@ -27,10 +28,28 @@ constexpr int32_t out_plane = ow * oh;
 // share key 0, so a window whose maximum is a zero returns +0.
 constexpr int32_t kLowestKey = -0x7f7fffff; // key(-FLT_MAX), the reference's starting value
 
+// aie2p takes a window's max on the taps' raw bits, as int32, with no key per tap: among floats
+// of either sign the largest bits are the largest float, and among negative ones (all bits
+// negative) the smallest bits are. So the max is the bits' max if it is >= 0, else their min,
+// raised to -FLT_MAX's bits (the reference's starting value; -inf and negative NaNs lie above it
+// as int32, so this also covers windows of only those). Two integer ops a tap where the keys
+// take seven. A window holding a positive NaN returns it (its bits lie above +inf's), so a tile
+// with one is redone on the keys, which drop NaNs. A window of zeros returns -0 only if all its
+// zeros are -0. Only for windows of at most 4 loads a chunk (k1 rows of the tap groups below):
+// their loops unroll whole, so the row loop pipelines, where a 7x7 window's frame would outgrow
+// the stack (2.6 KB). aie2 (unmeasured) keeps the keys.
+constexpr bool raw_bits_max = is_max && __AIEARCH__ != 20 && k1 * ((k0 + s0 - 1) / s0) <= 4;
+constexpr int32_t kNegMaxBits = static_cast<int32_t>(0xff7fffffu); // bits of -FLT_MAX
+constexpr int32_t kInfBits = 0x7f800000;                           // bits of +inf
+
 // Output rows run in chunks of V columns. Tap group g of a chunk is one load of L = s0 * V
 // input columns starting at its window column g * s0: with s0 = 1 the load is the taps kx = g of
-// all V outputs, with s0 = 2 its even lanes are kx = 2g and its odd lanes kx = 2g + 1.
-constexpr int32_t V = 16; // f32 lanes per 512-bit vector, on aie2 and aie2p
+// all V outputs, with s0 = 2 its even lanes are kx = 2g and its odd lanes kx = 2g + 1. V is 16,
+// the f32 lanes of a 512-bit vector; on aie2p's max, 8 for rows of at most 8 outputs, which would
+// leave half a 16-lane chunk idle (MNIST pool2, ow = 7: row loop II 41 -> 25). (Average pooling
+// keeps 16: at 8 lanes its k0 = 1, k1 = 3 windows came out wrong, the window-row loop pipelined
+// over its 3 trips in 3 stages; not reduced.)
+constexpr int32_t V = raw_bits_max && ow <= 8 ? 8 : 16;
 constexpr bool vector_path = s0 == 1 || s0 == 2;
 constexpr int32_t L = vector_path ? s0 * V : V; // (any width when unused)
 constexpr int32_t groups = (k0 + s0 - 1) / s0;
@@ -113,6 +132,13 @@ inline aie::vector<int32_t, V> taps_max(const aie::vector<int32_t, 2 * V> & k, b
     return odd ? aie::max(even, aie::filter_odd(k)) : even;
 }
 
+/// The min over a group's taps, as @ref taps_max.
+inline aie::vector<int32_t, V> taps_min(const aie::vector<int32_t, V> & k, bool) { return k; }
+inline aie::vector<int32_t, V> taps_min(const aie::vector<int32_t, 2 * V> & k, bool odd) {
+    const auto even = aie::filter_even(k);
+    return odd ? aie::min(even, aie::filter_odd(k)) : even;
+}
+
 /// @p sum plus a group's taps, in column order (see @ref taps_max).
 inline aie::vector<float, V>
 add_taps(const aie::vector<float, V> & sum, const aie::vector<float, V> & v, bool) {
@@ -125,12 +151,56 @@ add_taps(const aie::vector<float, V> & sum, const aie::vector<float, 2 * V> & v,
 }
 
 /// Output row oy of the plane at tile[base], chunk c, as float lanes. Checked rows skip window
-/// rows outside the plane and load through @ref load's bounds check.
-template <bool Checked, typename T>
-inline aie::vector<float, V>
-pool_chunk(const T * __restrict tile, int32_t len, int32_t base, int32_t oy, int32_t c) {
+/// rows outside the plane and load through @ref load's bounds check. With @p Bits (max only),
+/// the max is taken on raw bits (see raw_bits_max) and @p seen, one vector, is raised to its
+/// lanes' bits, above +inf's if a window held a positive NaN. (A pack, so the keys' functions
+/// keep their parameters, and aie2 its code.)
+template <bool Checked, bool Bits, typename T, typename... Seen>
+inline aie::vector<float, V> pool_chunk(
+    const T * __restrict tile, int32_t len, int32_t base, int32_t oy, int32_t c, Seen &... seen) {
     const int32_t x0 = c * V * s0 - p0;
-    if constexpr (is_max) {
+    if constexpr (Bits) {
+        aie::vector<int32_t, L> hi[groups], lo[groups];
+        AIE_LOOP_UNROLL_FULL
+        for (int32_t g = 0; g < groups; ++g) {
+            hi[g] = aie::broadcast<int32_t, L>(INT32_MIN);
+            lo[g] = aie::broadcast<int32_t, L>(INT32_MAX);
+        }
+        // Unrolled (raw_bits_max), so an unchecked row is one block and its loop pipelines.
+        AIE_LOOP_UNROLL_FULL
+        for (int32_t ky = 0; ky < k1; ++ky) {
+            const int32_t y = oy * s1 - p1 + ky;
+            if (Checked && (y < 0 || y >= ih)) {
+                continue;
+            }
+            AIE_LOOP_UNROLL_FULL
+            for (int32_t g = 0; g < groups; ++g) {
+                const int32_t x = x0 + g * s0;
+                const auto b =
+                    load<Checked>(tile, base + y * iw + x, len).template cast_to<int32_t>();
+                if constexpr (col_mask) {
+                    const auto out = ~in_row(x);
+                    hi[g] =
+                        aie::max(hi[g], aie::select(b, aie::broadcast<int32_t, L>(INT32_MIN), out));
+                    lo[g] =
+                        aie::min(lo[g], aie::select(b, aie::broadcast<int32_t, L>(INT32_MAX), out));
+                } else {
+                    hi[g] = aie::max(hi[g], b);
+                    lo[g] = aie::min(lo[g], b);
+                }
+            }
+        }
+        aie::vector<int32_t, V> top = taps_max(hi[0], k0 > 1);
+        aie::vector<int32_t, V> bottom = taps_min(lo[0], k0 > 1);
+        AIE_LOOP_UNROLL_FULL
+        for (int32_t g = 1; g < groups; ++g) {
+            top = aie::max(top, taps_max(hi[g], g * s0 + 1 < k0));
+            bottom = aie::min(bottom, taps_min(lo[g], g * s0 + 1 < k0));
+        }
+        ((seen = aie::max(seen, top)), ...);
+        return aie::select(aie::min(bottom, kNegMaxBits), top, aie::ge(top, int32_t{0}))
+            .template cast_to<float>();
+    } else if constexpr (is_max) {
         // Max is order-free: each group's keys take their max over the window rows first, and
         // its phases are paired up once.
         aie::vector<int32_t, L> acc[groups];
@@ -187,7 +257,7 @@ pool_chunk(const T * __restrict tile, int32_t len, int32_t base, int32_t oy, int
 /// Output rows [lo, hi) of the plane at tile[base] (out[out_base]). Chunks may write up to V - 1
 /// lanes past a row: the next row (or chunk) overwrites them, and the tile's last chunk, which
 /// has no next, stores only its lanes.
-template <bool Checked, typename T>
+template <bool Checked, bool Bits, typename T, typename... Seen>
 inline void pool_rows(const T * __restrict tile,
                       int32_t len,
                       float * __restrict out,
@@ -195,10 +265,11 @@ inline void pool_rows(const T * __restrict tile,
                       int32_t base,
                       int32_t out_base,
                       int32_t lo,
-                      int32_t hi) {
+                      int32_t hi,
+                      Seen &... seen) {
     for (int32_t oy = lo; oy < hi; ++oy) {
         for (int32_t c = 0; c < chunks; ++c) {
-            const auto r = pool_chunk<Checked>(tile, len, base, oy, c);
+            const auto r = pool_chunk<Checked, Bits>(tile, len, base, oy, c, seen...);
             const int32_t at = out_base + oy * ow + c * V;
             if (Checked && at + V > out_len) {
                 store_v_partial<V>(out + at, r, out_len - at);
@@ -210,14 +281,18 @@ inline void pool_rows(const T * __restrict tile,
 }
 
 /// Plane @p p of the tile: rows [lo, hi) unchecked (compile-time bounds), the rest checked.
-template <int32_t lo, int32_t hi, typename T>
-inline void pool_plane(
-    const T * __restrict tile, int32_t len, float * __restrict out, int32_t out_len, int32_t p) {
+template <int32_t lo, int32_t hi, bool Bits, typename T, typename... Seen>
+inline void pool_plane(const T * __restrict tile,
+                       int32_t len,
+                       float * __restrict out,
+                       int32_t out_len,
+                       int32_t p,
+                       Seen &... seen) {
     const int32_t base = p * plane;
     const int32_t out_base = p * out_plane;
-    pool_rows<true>(tile, len, out, out_len, base, out_base, 0, lo);
-    pool_rows<false>(tile, len, out, out_len, base, out_base, lo, hi);
-    pool_rows<true>(tile, len, out, out_len, base, out_base, hi, oh);
+    pool_rows<true, Bits>(tile, len, out, out_len, base, out_base, 0, lo, seen...);
+    pool_rows<false, Bits>(tile, len, out, out_len, base, out_base, lo, hi, seen...);
+    pool_rows<true, Bits>(tile, len, out, out_len, base, out_base, hi, oh, seen...);
 }
 
 /// The scalar fallback for strides above 2.
@@ -303,10 +378,22 @@ void ggml_op_pool_2d(const INPUT_DTYPE * __restrict in,
         constexpr row_range last = interior_rows(plane, true);
         const int32_t len = num_planes * plane;
         const int32_t out_len = num_planes * out_plane;
-        for (int32_t p = 0; p + 1 < num_planes; ++p) {
-            pool_plane<inner.lo, inner.hi>(in, len, out, out_len, p);
+        bool keys = !raw_bits_max;
+        if constexpr (raw_bits_max) {
+            auto seen = aie::broadcast<int32_t, V>(INT32_MIN);
+            for (int32_t p = 0; p + 1 < num_planes; ++p) {
+                pool_plane<inner.lo, inner.hi, true>(in, len, out, out_len, p, seen);
+            }
+            pool_plane<last.lo, last.hi, true>(in, len, out, out_len, num_planes - 1, seen);
+            // A window held a positive NaN: redo the tile on the keys, which drop it.
+            keys = !aie::gt(seen, kInfBits).empty();
         }
-        pool_plane<last.lo, last.hi>(in, len, out, out_len, num_planes - 1);
+        if (keys) {
+            for (int32_t p = 0; p + 1 < num_planes; ++p) {
+                pool_plane<inner.lo, inner.hi, false>(in, len, out, out_len, p);
+            }
+            pool_plane<last.lo, last.hi, false>(in, len, out, out_len, num_planes - 1);
+        }
     } else {
         for (int32_t p = 0; p < num_planes; ++p) {
             pool_plane_scalar(in + p * plane, out + p * out_plane);
