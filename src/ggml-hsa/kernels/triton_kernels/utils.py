@@ -7,6 +7,8 @@ import ml_dtypes
 import numpy as np
 import torch
 
+from .spec_utils import NPU_ARCH_MAP, ArchKind, arch_kind  # noqa: F401
+
 _NUMPY_TO_TORCH_DTYPE = {
     np.float16: torch.float16,
     np.float32: torch.float32,
@@ -15,36 +17,6 @@ _NUMPY_TO_TORCH_DTYPE = {
     np.int32: torch.int32,
     ml_dtypes.bfloat16: torch.bfloat16,
 }
-
-
-NPU_ARCH_MAP = {
-    "aie2": "npu1",
-    "aie2p": "npu2",
-}
-
-
-def is_npu_arch(arch: str) -> bool:
-    """Return True if arch is a raw NPU architecture string (e.g. "aie2", "aie2p").
-
-    Args:
-        arch: Architecture string to check.
-
-    Returns:
-        True if arch is a recognised NPU architecture string.
-    """
-    return arch in NPU_ARCH_MAP
-
-
-def is_gpu_arch(arch: str) -> bool:
-    """Return True if arch is an AMD GPU architecture string (e.g. "gfx942").
-
-    Args:
-        arch: Architecture string to check.
-
-    Returns:
-        True if arch starts with "gfx".
-    """
-    return arch.startswith("gfx")
 
 
 def triton_device(arch: str) -> str:
@@ -59,9 +31,10 @@ def triton_device(arch: str) -> str:
     Raises:
         ValueError: If arch is not a recognised NPU or GPU architecture.
     """
-    if is_npu_arch(arch):
+    kind = arch_kind(arch)
+    if kind is ArchKind.NPU:
         return "cpu"
-    if is_gpu_arch(arch):
+    if kind is ArchKind.GPU:
         return "cuda"
     msg = f"Unsupported architecture: {arch!r}"
     raise ValueError(msg)
