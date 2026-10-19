@@ -649,22 +649,10 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
                                gpu_kernel->kernarg_size);
             return GGML_STATUS_FAILED;
         }
-        std::uint32_t expected_size = 0; // 0: not filled from a fixed-size value
-        if (arg.value_kind == "global_buffer") {
-            expected_size = sizeof(std::uint64_t); // pointer
-        } else if (arg.value_kind == "by_value") {
-            if (by_value_idx++ == 0) {
-                expected_size = sizeof(std::uint64_t); // element count
-            }
-        } else if (arg.value_kind == "hidden_block_count_x" ||
-                   arg.value_kind == "hidden_block_count_y" ||
-                   arg.value_kind == "hidden_block_count_z") {
-            expected_size = sizeof(std::uint32_t);
-        } else if (arg.value_kind == "hidden_group_size_x" ||
-                   arg.value_kind == "hidden_group_size_y" ||
-                   arg.value_kind == "hidden_group_size_z" ||
-                   arg.value_kind == "hidden_remainder_x" || arg.value_kind == "hidden_grid_dims") {
-            expected_size = sizeof(std::uint16_t);
+        const std::uint32_t expected_size =
+            ggml_hsa_gpu_fixed_arg_size(arg.value_kind, by_value_idx);
+        if (arg.value_kind == "by_value") {
+            ++by_value_idx;
         }
         if (expected_size != 0 && arg.size != expected_size) {
             GGML_HSA_LOG_ERROR("%s: %s argument at offset %u of %s is %u bytes, expected %u",
