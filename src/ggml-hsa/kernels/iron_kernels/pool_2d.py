@@ -7,6 +7,7 @@
 
 """IRON design for GGML_OP_POOL_2D (max/avg pooling)."""
 
+import math
 import struct
 from pathlib import Path
 
@@ -38,6 +39,11 @@ _GGML_OP_POOL_AVG = 1
 # The kernel's frame holds a row's vector accumulators and bounce buffers: up to ~1.4 KB measured
 # (aie2 and aie2p, windows up to 7x7), over the 1 KB default. aiecc checks the declaration.
 _STACK_SIZE_BYTES = 2048
+
+# aie2p: a worker adds a fixed cost to every dispatch, which in a graph, where pooling sits between
+# two other kernels, outweighs its share of the bandwidth until the op is large: workers =
+# sqrt(input elements / this), rounded, at most one per column.
+_AIE2P_WORKER_ELEMENTS = 128 * 1024
 
 
 def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -131,8 +137,15 @@ def pool_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     # Two workers per column, each on its own shim DMA channel each way (a shim tile has two):
     # the op is bound by those channels (a kernel returning at entry scales with the worker
     # count), and on aie2 a second worker per column measured faster down to 4 tiles of MNIST
-    # planes.
-    n_workers = min(2 * arch_num_columns(arch), num_tiles)
+    # planes. aie2p: by the time in a graph (see _AIE2P_WORKER_ELEMENTS); there a kernel
+    # returning at entry measures the same on 8 and 16 workers.
+    max_workers = 2 * arch_num_columns(arch)
+    if arch == "aie2p":
+        max_workers = min(
+            arch_num_columns(arch),
+            max(1, round(math.sqrt(in_plane * num_planes / _AIE2P_WORKER_ELEMENTS))),
+        )
+    n_workers = min(max_workers, num_tiles)
     tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
 
     function = _create_external_function(
