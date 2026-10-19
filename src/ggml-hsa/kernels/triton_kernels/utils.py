@@ -7,7 +7,7 @@ import ml_dtypes
 import numpy as np
 import torch
 
-from .spec_utils import NPU_ARCH_MAP, ArchKind, arch_kind  # noqa: F401
+from .spec_utils import ArchKind, arch_kind
 
 _NUMPY_TO_TORCH_DTYPE = {
     np.float16: torch.float16,

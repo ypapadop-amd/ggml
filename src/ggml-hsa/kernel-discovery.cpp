@@ -638,13 +638,38 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
     }
 
     // Dispatch writes each argument at its metadata offset, so check once that they all lie in the
-    // kernarg segment the symbol reports.
+    // kernarg segment the symbol reports, and that each argument dispatch fills from a fixed-size
+    // value has that size: a mismatch would otherwise be truncated or over-read at every launch.
+    std::size_t by_value_idx = 0;
     for (const auto & arg : gpu_kernel->args) {
         if (static_cast<std::uint64_t>(arg.offset) + arg.size > gpu_kernel->kernarg_size) {
             GGML_HSA_LOG_ERROR("%s: argument at offset %u (%u bytes) of %s exceeds its %u-byte "
                                "kernarg segment",
                                __func__, arg.offset, arg.size, symbol_name.c_str(),
                                gpu_kernel->kernarg_size);
+            return GGML_STATUS_FAILED;
+        }
+        std::uint32_t expected_size = 0; // 0: not filled from a fixed-size value
+        if (arg.value_kind == "global_buffer") {
+            expected_size = sizeof(std::uint64_t); // pointer
+        } else if (arg.value_kind == "by_value") {
+            if (by_value_idx++ == 0) {
+                expected_size = sizeof(std::uint64_t); // element count
+            }
+        } else if (arg.value_kind == "hidden_block_count_x" ||
+                   arg.value_kind == "hidden_block_count_y" ||
+                   arg.value_kind == "hidden_block_count_z") {
+            expected_size = sizeof(std::uint32_t);
+        } else if (arg.value_kind == "hidden_group_size_x" ||
+                   arg.value_kind == "hidden_group_size_y" ||
+                   arg.value_kind == "hidden_group_size_z" ||
+                   arg.value_kind == "hidden_remainder_x" || arg.value_kind == "hidden_grid_dims") {
+            expected_size = sizeof(std::uint16_t);
+        }
+        if (expected_size != 0 && arg.size != expected_size) {
+            GGML_HSA_LOG_ERROR("%s: %s argument at offset %u of %s is %u bytes, expected %u",
+                               __func__, arg.value_kind.c_str(), arg.offset, symbol_name.c_str(),
+                               arg.size, expected_size);
             return GGML_STATUS_FAILED;
         }
     }

@@ -126,17 +126,15 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // global_buffer arguments are filled in order (sources first, then destination); the single
     // by_value argument is the element count; the HIP hidden arguments are derived from the grid
     // configuration. Offsets/sizes come from the kernel itself, so the layout is ABI-robust.
-    // ggml_hsa_create_gpu_kernel rejects a kernel whose arguments do not all lie in its segment.
+    // ggml_hsa_create_gpu_kernel rejects a kernel whose arguments do not all lie in its segment, or
+    // whose arguments filled from a fixed-size value below have another size.
     const auto put = [&](std::uint32_t off, const void * src, std::uint32_t sz) {
         assert(static_cast<std::size_t>(off) + sz <= kernarg_size);
         std::memcpy(kernarg + off, src, sz);
     };
-    // Stores a scalar into an argument whose size comes from the metadata: copying arg.size bytes
-    // straight from the scalar would read past it when the argument is wider. Copy at most the
-    // scalar's own bytes; a wider argument keeps the zeroed high bytes (zero-extension, since the
-    // target is little-endian) and a narrower one gets the low bytes.
     const auto put_scalar = [&](const auto & arg, auto value) {
-        put(arg.offset, &value, std::min<std::uint32_t>(arg.size, sizeof(value)));
+        assert(arg.size == sizeof(value));
+        put(arg.offset, &value, sizeof(value));
     };
     // The HIP kernel ABI is positional (argument names are not emitted in the code object
     // metadata, so arguments are matched by kind and position rather than by name). Explicit
