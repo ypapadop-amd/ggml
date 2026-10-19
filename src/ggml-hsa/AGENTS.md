@@ -679,8 +679,9 @@ See "Tested Configurations" in `README.md` for the full list. In short:
 
 ### MLIR-AIE Version
 
-The project currently uses **mlir-aie v1.4.4** (pinned in `requirements-iron.txt`, with
-`llvm-aie>=22.0.0`). Ensure your environment matches this version to avoid compatibility issues
+The project currently uses **mlir-aie v1.4.5-alpha.1** (pinned in `requirements-iron.txt`, with
+`llvm-aie>=22.0.0`). 1.4.4 gives wrong `MUL_MAT` results on aie2 (see the comment in
+`requirements-iron.txt`). Ensure your environment matches this version to avoid compatibility issues
 with:
 
 - IRON API changes

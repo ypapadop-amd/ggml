@@ -96,7 +96,7 @@ Last verified 2026-10-16 on an `aie2` NPU (Phoenix) and a `gfx1103` GPU (Radeon 
 | ROCR (GPU only)          | also ROCm 10.1.0 (HSA runtime 1.21)                                                |
 | GPU kernel driver        | `amdgpu-dkms` 7.1.9 (`7.1.9.31600000`)                                             |
 | XDNA driver              | `amdxdna` 2.23.0, with XRT 2.23.0                                                  |
-| MLIR-AIE                 | [1.4.4][MLIR-AIE 1.4.4], with `llvm-aie` `22.0.0.2026101601`                       |
+| MLIR-AIE                 | [1.4.5-alpha.1][MLIR-AIE 1.4.5-alpha.1], with `llvm-aie` `22.0.0.2026101601`       |
 | Triton-XDNA              | `3.6.0.2026100504+694d60d` ([`requirements-triton.txt`](requirements-triton.txt))  |
 
 MLIR-AIE and Triton-XDNA are pinned in [`requirements-iron.txt`](requirements-iron.txt) and
@@ -106,7 +106,7 @@ and resolves to the latest nightly.
 [Ubuntu 24.04.2]: https://releases.ubuntu.com/noble/
 [Ubuntu 25.10]: https://releases.ubuntu.com/questing/
 [TheRock]: https://github.com/ROCm/TheRock/blob/main/RELEASES.md
-[MLIR-AIE 1.4.4]: https://github.com/Xilinx/mlir-aie/tree/v1.4.4
+[MLIR-AIE 1.4.5-alpha.1]: https://github.com/Xilinx/mlir-aie/tree/v1.4.5-alpha.1
 
 ### ROCm
 
@@ -473,7 +473,6 @@ GPU.
 - **`f16` on the NPU is computed in `bf16`.** `f16` results differ from the CPU backend by more than
   `test-backend-ops`'s tolerance, so its `f16` cases fail on the NPU.
 - **NPU `GELU`:** `f32` `ne=[128,2,2,2]` returns NaN; `ne=[5,7,11,13]` is correct.
-- **NPU `MUL_MAT`:** `bf16` × permuted `f32` (`per=[0,2,1,3]`) with `m=1056`/`1057`, `n=1` returns NaN.
 - **Host `CPY`.** The host copy accepts every type and layout, but a permuted destination or a
   quantized destination type gives wrong results, on both devices.
 - **GPU vmem corruption with the in-tree `amdgpu` driver.** With Linux 6.17's in-tree driver, a GPU
