@@ -638,13 +638,42 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
     }
 
     // Dispatch writes each argument at its metadata offset, so check once that they all lie in the
-    // kernarg segment the symbol reports.
+    // kernarg segment the symbol reports, and that each argument dispatch fills from a fixed-size
+    // value has that size: a mismatch would otherwise be truncated or over-read at every launch.
+    // The by_value arguments after the element count are copied from ggml_tensor::op_params in
+    // order, so together they must fit in it.
+    std::size_t by_value_idx = 0;
+    std::size_t op_params_bytes = 0;
     for (const auto & arg : gpu_kernel->args) {
         if (static_cast<std::uint64_t>(arg.offset) + arg.size > gpu_kernel->kernarg_size) {
             GGML_HSA_LOG_ERROR("%s: argument at offset %u (%u bytes) of %s exceeds its %u-byte "
                                "kernarg segment",
                                __func__, arg.offset, arg.size, symbol_name.c_str(),
                                gpu_kernel->kernarg_size);
+            return GGML_STATUS_FAILED;
+        }
+        const std::uint32_t expected_size =
+            ggml_hsa_gpu_fixed_arg_size(arg.value_kind, by_value_idx);
+        if (arg.value_kind == "by_value") {
+            const bool from_op_params = by_value_idx > 0;
+            ++by_value_idx;
+            if (from_op_params) {
+                op_params_bytes += arg.size;
+                // The same bound the dispatch asserts.
+                if (op_params_bytes > sizeof(ggml_tensor::op_params)) {
+                    GGML_HSA_LOG_ERROR("%s: the scalar arguments of %s after the element count "
+                                       "take %zu bytes, more than the %zu-byte op_params they are "
+                                       "copied from",
+                                       __func__, symbol_name.c_str(), op_params_bytes,
+                                       sizeof(ggml_tensor::op_params));
+                    return GGML_STATUS_FAILED;
+                }
+            }
+        }
+        if (expected_size != 0 && arg.size != expected_size) {
+            GGML_HSA_LOG_ERROR("%s: %s argument at offset %u of %s is %u bytes, expected %u",
+                               __func__, arg.value_kind.c_str(), arg.offset, symbol_name.c_str(),
+                               arg.size, expected_size);
             return GGML_STATUS_FAILED;
         }
     }
