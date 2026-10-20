@@ -90,10 +90,11 @@ Two compilation backends exist: **IRON** (MLIR-AIE) and **Triton-XDNA**.
  │    artifacts written to cache_dir/<device>/
  │
  │  load from disk:
- │    ggml_hsa_kernel::load()                 ─── kernel.cpp
- │      hsa_code_object_reader_create_from_file(.hsaco)
- │      hsa_executable_load_agent_code_object() + freeze
- │      symbol <name> → HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT
+ │    ggml_hsa_aie_kernel::load()             ─── aie-kernel.cpp
+ │      ggml_hsa_kernel::load_executable()    ─── kernel.cpp (shared with GPU)
+ │        reads .hsaco into memory; hsa_code_object_reader_create_from_memory()
+ │        hsa_executable_load_agent_code_object() + freeze
+ │      by-kind symbol search → HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT
  │
  └─ ggml_hsa_cache_kernel()                   ─── ggml-hsa.cpp
       insert into in-memory map
@@ -287,8 +288,9 @@ Kernargs live in a fixed per-ring-slot pool (`ctx.kernargs`) allocated from the
   `GGML_STATUS_FAILED`. An invalid backend name in `GGML_HSA_JIT_COMPILER_ORDER`
   raises `ValueError` from `_make_kernel_specs()` and surfaces the same way; an
   order that drops every candidate for an op logs a warning before failing.
-- **Code object load failure:** `ggml_hsa_kernel::load()` logs the failing
-  HSA call and returns `GGML_STATUS_FAILED`.
+- **Code object load failure:** `ggml_hsa_kernel::load_executable()` (shared by
+  `ggml_hsa_aie_kernel::load()` and the GPU loader) logs the failing HSA call
+  and returns `GGML_STATUS_FAILED`.
 - **Kernel not found and JIT disabled:** returns `GGML_STATUS_FAILED`,
   causing `ggml_backend_hsa_tensor_extra` constructor to throw.
 - **Duplicate cache insert:** `GGML_ABORT` — indicates a logic error.
