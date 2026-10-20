@@ -119,3 +119,26 @@ def test_packer_cli_failure_without_parseable_reason_uses_exit_code(tmp_path, mo
         aie_hsaco.pack_aie_hsaco(
             _spec(), "k", tmp_path, xclbin_path=tmp_path / "a.xclbin", insts_path=tmp_path / "a.bin"
         )
+
+
+def test_packer_cli_failure_with_no_exit_code_normalizes_to_one(tmp_path, monkeypatch):
+    def fake_main(argv):
+        raise SystemExit  # e.code is None, not 0 or a string
+
+    monkeypatch.setattr(aie_hsaco.pack, "main", fake_main)
+    with pytest.raises(RuntimeError, match="exit status 1"):
+        aie_hsaco.pack_aie_hsaco(
+            _spec(), "k", tmp_path, xclbin_path=tmp_path / "a.xclbin", insts_path=tmp_path / "a.bin"
+        )
+
+
+def test_output_directory_is_created_if_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        aie_hsaco.pack, "kernels_from_full_elf", lambda *a, **k: [{"name": "main:sequence"}]
+    )
+    monkeypatch.setattr(aie_hsaco.pack, "build_section", lambda *a, **k: b"")
+    monkeypatch.setattr(aie_hsaco.pack, "ensure_hsaco", lambda p, *a, **k: Path(p).touch())
+    monkeypatch.setattr(aie_hsaco.pack, "inject", lambda *a, **k: None)
+    missing_dir = tmp_path / "does" / "not" / "exist"
+    out = aie_hsaco.pack_aie_hsaco(_spec(), "k", missing_dir, full_elf_path=tmp_path / "a.elf")
+    assert out == missing_dir / "k.hsaco"

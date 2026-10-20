@@ -74,6 +74,9 @@ def pack_aie_hsaco(
     num_kernargs = len(kernel_spec.input_tensors) + 1  # inputs, then the output
     kernarg_size = _KERNARG_BYTES_PER_ARG * num_kernargs
     hsaco_path = output_directory / f"{exported_name}.hsaco"
+    # TemporaryDirectory(dir=...) needs the parent to exist; callers may be packing into a cache
+    # directory that has not been created yet.
+    output_directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output_directory) as scratch_dir:
         scratch = Path(scratch_dir) / hsaco_path.name
         if full_elf_path is not None:
@@ -114,7 +117,7 @@ def pack_aie_hsaco(
             start = report.find("aie-hsaco: error:")
             reason = (report[start:] if start >= 0 else report).strip()
             msg = f"aie-hsaco could not pack kernel {exported_name}: " + (
-                reason or f"exit status {e.code}"
+                reason or f"exit status {e.code if e.code is not None else 1}"
             )
             raise RuntimeError(msg) from e
         scratch.replace(hsaco_path)

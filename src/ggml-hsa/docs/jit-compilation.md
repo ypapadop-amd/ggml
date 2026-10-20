@@ -9,7 +9,8 @@ instruction sequence, which are packed into one artifact:
 
 | Artifact | Contents |
 |---|---|
-| `<name>.hsaco` | HSA code object with an `aie2`/`aie2p` section holding one `PdiInsts` kernel named `<name>` (see ROCr `docs/aie-hsaco-format.md`) |
+| `<name>.hsaco` (aie2, from an xclbin) | HSA code object with an `aie2` section holding one `PdiInsts` kernel named `<name>` (see ROCr `docs/aie-hsaco-format.md`) |
+| `<name>.hsaco` (aie2p, from a full ELF) | HSA code object with an `aie2p` section holding one full-ELF kernel, named after the ELF's own kernel (e.g. `main:sequence`), not `<name>` |
 
 Packing runs mlir-aie's `aie-hsaco` packer (`aie.compiler.hsaco.pack`, called from
 `kernels/aie_hsaco.py`), which reads the PDI and the partition column count from

@@ -280,8 +280,8 @@ def _compile_npu_kernel(
                 kernel_spec,
                 exported_name,
                 output_directory,
-                npu_artifacts_path / "aie.xclbin",
-                npu_artifacts_path / "insts.bin",
+                xclbin_path=npu_artifacts_path / "aie.xclbin",
+                insts_path=npu_artifacts_path / "insts.bin",
             )
 
         logger.info("Triton-XDNA compilation successful\n  HSACO Path: %s", hsaco_path)

@@ -38,8 +38,8 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                  (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE);
     pkt.opcode = HSA_AMD_AIE_PACKET_OPCODE_KMQ;
     pkt.count = aie_packet_count;
-    pkt.kernel_object_low = kernel_object() & 0xFFFFFFFF;
-    pkt.kernel_object_high = kernel_object() >> 32;
+    pkt.kernel_object_low = static_cast<std::uint32_t>(kernel_object() & 0xFFFFFFFF);
+    pkt.kernel_object_high = static_cast<std::uint32_t>(kernel_object() >> 32);
     pkt.num_kernargs = num_kernargs;
 
     auto queue = ctx.queue;

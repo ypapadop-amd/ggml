@@ -114,7 +114,11 @@ def compile_iron_kernel(
             work_dir=str(work_dir),
         )
         hsaco_path = pack_aie_hsaco(
-            kernel_spec, exported_name, output_directory, xclbin_path, insts_path
+            kernel_spec,
+            exported_name,
+            output_directory,
+            xclbin_path=xclbin_path,
+            insts_path=insts_path,
         )
 
     logger.info("IRON compilation successful\n  HSACO Path: %s", hsaco_path)
