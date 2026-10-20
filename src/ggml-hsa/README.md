@@ -120,10 +120,11 @@ with [`7a71bfb`][ROCR 7a71bfb] ("feat(rocr/aie): hsaco support for AIE agents",
 [ROCm/rocm-systems#12847](https://github.com/ROCm/rocm-systems/pull/12847)). Build ROCR from
 `develop` at or after that commit (see [Compiling ROCR from source](#compiling-rocr-from-source)).
 
-[TheRock] nightly wheels do not include it yet: nightlies through `10.2.0a20261019` pin rocm-systems
-`2a8fffb`, which predates `7a71bfb`. TheRock moved its pin to `4b7b5e1`, which includes `7a71bfb`, on
-2026-10-19 ([ROCm/TheRock#9353](https://github.com/ROCm/TheRock/pull/9353)), so the first nightly
-built after that should have it; see [Using TheRock's ROCR](#using-therocks-rocr).
+[TheRock] nightly wheels include it as of `10.2.0a20261020`: TheRock moved its rocm-systems pin from
+`2a8fffb` to `4b7b5e1`, which includes `7a71bfb`, on 2026-10-19
+([ROCm/TheRock#9353](https://github.com/ROCm/TheRock/pull/9353)), and that landed in the next day's
+nightly. Earlier nightlies predate the bump; see [Using TheRock's ROCR](#using-therocks-rocr) to
+check a wheel's pin before relying on it.
 
 `ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API, and the NPU needs a ROCR
 whose vmem unmap supports XDNA. A system ROCm is not enough, even when it ships the AIE header:
@@ -151,14 +152,22 @@ would keep serving the old kernels, and mixing them with new ones fails the batc
 ### Using TheRock's ROCR
 
 A [TheRock] wheel can replace the ROCR built from source once its rocm-systems pin is at or after
-`7a71bfb`. Check the pin before using a wheel:
+`7a71bfb`; `10.2.0a20261020` and later nightlies qualify (see [ROCm](#rocm)). Verified on an `aie2p`
+NPU (Strix) against `10.2.0a20261020`: `ctest -R 'hsa|mnist'` from a cold kernel cache matches the
+ROCR-from-source result.
 
 ```bash
 python3 -m venv .venv-rocm
 .venv-rocm/bin/pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
-  "rocm[devel]==<version>"
+  "rocm[devel]==10.2.0a20261020"
 .venv-rocm/bin/rocm-sdk init                        # expands the devel tree
 ROCM_SDK="$(.venv-rocm/bin/rocm-sdk path --root)"
+ls "$ROCM_SDK/include/hsa/hsa_ext_amd_aie.h"        # the AIE header
+```
+
+To check an earlier or different wheel's pin before relying on it:
+
+```bash
 SITE="$(.venv-rocm/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
 jq -r '.submodules[] | select(.submodule_name == "rocm-systems") | .pin_sha' \
   "$SITE/_rocm_sdk_core/share/therock/therock_manifest.json"   # must be 7a71bfb or later

@@ -672,8 +672,9 @@ python3 -m pip install -r requirements-triton.txt
 See "Tested Configurations" in `README.md` for the full list. In short:
 
 - **ROCR:** the NPU needs a ROCR that loads AIE hsacos, built from `rocm-systems` `develop` at or
-  after `7a71bfb`; TheRock nightlies through `10.2.0a20261019` predate it. A system ROCm (e.g.
-  10.1.0) lacks it and also fails in `hsa_amd_vmem_unmap`. GPU-only builds work with ROCm 10.1.0.
+  after `7a71bfb`, or a TheRock nightly `10.2.0a20261020` or later (earlier ones predate it). A
+  system ROCm (e.g. 10.1.0) lacks it and also fails in `hsa_amd_vmem_unmap`. GPU-only builds work
+  with ROCm 10.1.0.
 - **GPU kernel driver:** `amdgpu-dkms` 7.1.9; Linux 6.17's in-tree `amdgpu` corrupts GPU results
   under the vmem API.
 - **XDNA driver:** `amdxdna` 2.23.0 with XRT 2.23.0.
