@@ -67,22 +67,11 @@ struct add_graph {
     std::set<const void *> extras() const { return {x->extra, y->extra, c->extra}; }
 };
 
-// Sets the inputs of C = X + Y, computes the graph and checks C.
-bool compute_add(ggml_backend_t backend,
-                 ggml_cgraph * gf,
-                 ggml_tensor * x,
-                 ggml_tensor * y,
-                 ggml_tensor * c,
-                 int seed,
-                 const char * label) {
-    const auto hx = pattern(seed);
-    const auto hy = pattern(seed + 1);
-    ggml_backend_tensor_set(x, hx.data(), 0, ggml_nbytes(x));
-    ggml_backend_tensor_set(y, hy.data(), 0, ggml_nbytes(y));
-    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
-        printf("  %s: graph compute failed\n", label);
-        return false;
-    }
+// Checks that C holds X + Y for the host inputs hx and hy.
+bool check_add(const ggml_tensor * c,
+               const std::vector<ggml_fp16_t> & hx,
+               const std::vector<ggml_fp16_t> & hy,
+               const char * label) {
     std::vector<ggml_fp16_t> got(n);
     ggml_backend_tensor_get(c, got.data(), 0, ggml_nbytes(c));
     int64_t mismatches = 0;
@@ -101,6 +90,25 @@ bool compute_add(ggml_backend_t backend,
                (long long)n);
     }
     return mismatches == 0;
+}
+
+// Sets the inputs of C = X + Y, computes the graph and checks C.
+bool compute_add(ggml_backend_t backend,
+                 ggml_cgraph * gf,
+                 ggml_tensor * x,
+                 ggml_tensor * y,
+                 ggml_tensor * c,
+                 int seed,
+                 const char * label) {
+    const auto hx = pattern(seed);
+    const auto hy = pattern(seed + 1);
+    ggml_backend_tensor_set(x, hx.data(), 0, ggml_nbytes(x));
+    ggml_backend_tensor_set(y, hy.data(), 0, ggml_nbytes(y));
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        printf("  %s: graph compute failed\n", label);
+        return false;
+    }
+    return check_add(c, hx, hy, label);
 }
 
 // Rebuilds C = X + Y over one allocator: each rebuild must recycle the first graph's extras.
@@ -153,7 +161,9 @@ bool run_realloc_case(ggml_backend_t backend) {
 // Allocates a new graph while the previous one may still be running, as the scheduler does after
 // ggml_backend_sched_graph_compute_async: the recycled extras' storage must stay valid for the
 // running graph. Freed device memory usually stays mapped, so this checks that the path works, not
-// that nothing was freed early.
+// that nothing was freed early. The second graph reuses the first one's memory, and a host write
+// is not ordered with a running graph, so the backend is synchronized before the second graph's
+// inputs are written, as a scheduler user does.
 bool run_async_case(ggml_backend_t backend) {
     gallocr_ptr galloc = make_galloc(backend);
     add_graph first;
@@ -174,7 +184,10 @@ bool run_async_case(ggml_backend_t backend) {
         printf("  second graph allocation failed\n");
         return false;
     }
-    return compute_add(backend, second.gf, second.x, second.y, second.c, 32, "second graph");
+    ggml_backend_synchronize(backend);
+    const bool first_ok = check_add(first.c, hx, hy, "first graph");
+    return compute_add(backend, second.gf, second.x, second.y, second.c, 32, "second graph") &&
+           first_ok;
 }
 
 // Two same-shaped ADDs in one graph have extras of their own.
