@@ -132,6 +132,44 @@ def test_packer_cli_failure_with_no_exit_code_normalizes_to_one(tmp_path, monkey
         )
 
 
+def test_packer_cli_failure_with_string_exit_code_is_included(tmp_path, monkeypatch):
+    def fake_main(argv):
+        raise SystemExit("boom")  # argparse itself never does this, but sys.exit(str) can
+
+    monkeypatch.setattr(aie_hsaco.pack, "main", fake_main)
+    with pytest.raises(RuntimeError, match=r"exit status 1 \(boom\)"):
+        aie_hsaco.pack_aie_hsaco(
+            _spec(), "k", tmp_path, xclbin_path=tmp_path / "a.xclbin", insts_path=tmp_path / "a.bin"
+        )
+
+
+def test_packer_argv_matches_kernel_spec(tmp_path, monkeypatch):
+    captured_argv = []
+
+    def fake_main(argv):
+        captured_argv.append(argv)
+        # pack_aie_hsaco renames --hsaco's path into place afterward; stand in for the real
+        # packer actually producing it.
+        Path(dict(zip(argv[::2], argv[1::2]))["--hsaco"]).touch()
+
+    monkeypatch.setattr(aie_hsaco.pack, "main", fake_main)
+    # 3 inputs + 1 output = 4 kernargs, 16 bytes each (see _KERNARG_BYTES_PER_ARG)
+    aie_hsaco.pack_aie_hsaco(
+        _spec(num_inputs=3),
+        "my_kernel",
+        tmp_path,
+        xclbin_path=tmp_path / "a.xclbin",
+        insts_path=tmp_path / "a.bin",
+    )
+    (argv,) = captured_argv
+    fields = dict(zip(argv[::2], argv[1::2]))
+    assert fields["--arch"] == "aie2p"
+    assert fields["--kernel-name"] == "my_kernel"
+    assert fields["--kernel-xclbin"] == str(tmp_path / "a.xclbin")
+    assert fields["--kernel-insts"] == str(tmp_path / "a.bin")
+    assert fields["--kernel-kernarg"] == str(4 * 16)
+
+
 def test_output_directory_is_created_if_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(
         aie_hsaco.pack, "kernels_from_full_elf", lambda *a, **k: [{"name": "main:sequence"}]

@@ -62,6 +62,8 @@ ggml_status ggml_hsa_kernel::load_executable(hsa_agent_t agent,
             hsa_executable_load_agent_code_object(m_executable, agent, reader, nullptr, nullptr);
         status != HSA_STATUS_SUCCESS) {
         hsa_code_object_reader_destroy(reader);
+        GGML_HSA_CHECK_WARN(hsa_executable_destroy(m_executable));
+        m_executable = {};
         GGML_HSA_LOG_ERROR("%s: could not load code object %s (%s)", __func__, path.c_str(),
                            ggml_hsa_get_status_string(status));
         return GGML_STATUS_FAILED;
@@ -69,6 +71,8 @@ ggml_status ggml_hsa_kernel::load_executable(hsa_agent_t agent,
 
     if (auto status = hsa_executable_freeze(m_executable, nullptr); status != HSA_STATUS_SUCCESS) {
         hsa_code_object_reader_destroy(reader);
+        GGML_HSA_CHECK_WARN(hsa_executable_destroy(m_executable));
+        m_executable = {};
         GGML_HSA_LOG_ERROR("%s: could not freeze executable for %s (%s)", __func__, path.c_str(),
                            ggml_hsa_get_status_string(status));
         return GGML_STATUS_FAILED;

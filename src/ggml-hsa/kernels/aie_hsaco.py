@@ -116,8 +116,18 @@ def pack_aie_hsaco(
             report = stderr.getvalue()
             start = report.find("aie-hsaco: error:")
             reason = (report[start:] if start >= 0 else report).strip()
+            # SystemExit.code is an int, a str (the message passed to sys.exit()), or None (a
+            # bare `raise SystemExit`, equivalent to exit code 0). Only an int is a sensible
+            # "exit status"; fold the rest (None, 0, or a non-empty message) into 1, carrying the
+            # message along if there was one and stderr had nothing more specific to say.
+            if isinstance(e.code, int):
+                exit_status = str(e.code)
+            elif e.code:
+                exit_status = f"1 ({e.code})"
+            else:
+                exit_status = "1"
             msg = f"aie-hsaco could not pack kernel {exported_name}: " + (
-                reason or f"exit status {e.code if e.code is not None else 1}"
+                reason or f"exit status {exit_status}"
             )
             raise RuntimeError(msg) from e
         scratch.replace(hsaco_path)
