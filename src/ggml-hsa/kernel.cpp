@@ -2,6 +2,8 @@
 
 #include "ggml-hsa/kernel.hpp"
 
+#include <cerrno>
+#include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -19,10 +21,19 @@ ggml_hsa_kernel::~ggml_hsa_kernel() {
 ggml_status ggml_hsa_kernel::load(hsa_agent_t agent,
                                   const std::filesystem::path & path,
                                   const std::string & kernel_name) {
+    // load() is single-use: it is only ever called once, right after construction (see
+    // ggml_hsa_create_kernel in kernel-discovery.cpp), and a second call would leak the first
+    // executable/reader rather than replace them.
+    if (m_executable.handle != 0) {
+        GGML_HSA_LOG_ERROR("%s: kernel %s is already loaded", __func__, kernel_name.c_str());
+        return GGML_STATUS_FAILED;
+    }
+
     // the reader maps the file, so the descriptor is not needed once the reader exists
     const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        GGML_HSA_LOG_ERROR("%s: could not open file %s", __func__, path.c_str());
+        GGML_HSA_LOG_ERROR("%s: could not open file %s (%s)", __func__, path.c_str(),
+                           std::strerror(errno));
         return GGML_STATUS_FAILED;
     }
     const hsa_status_t reader_status = hsa_code_object_reader_create_from_file(fd, &m_reader);

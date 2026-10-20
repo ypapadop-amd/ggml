@@ -49,7 +49,8 @@ def pack_aie_hsaco(
         xclbin_path: xclbin holding the kernel's PDI.
         insts_path: Instruction sequence (``insts.bin``).
         full_elf_path: Full ELF (``aiecc --get-full-elf``).
-        elf_kernel_name: The full ELF's kernel to pack; every kernel in it if None.
+        elf_kernel_name: The full ELF's kernel to pack; the ELF's only kernel if None (an ELF
+            with more than one then needs it, since the hsaco holds exactly one kernel).
 
     Returns:
         The path of the written hsaco.
@@ -58,8 +59,17 @@ def pack_aie_hsaco(
         ValueError: If not given exactly one of the two input forms.
         RuntimeError: If the packer rejects the inputs.
     """
-    if (full_elf_path is None) == (xclbin_path is None or insts_path is None):
-        msg = "pack_aie_hsaco needs either xclbin_path and insts_path, or full_elf_path"
+    has_full_elf = full_elf_path is not None
+    has_xclbin_form = xclbin_path is not None and insts_path is not None
+    if has_full_elf and (xclbin_path is not None or insts_path is not None):
+        msg = "pack_aie_hsaco: full_elf_path is mutually exclusive with xclbin_path/insts_path"
+        raise ValueError(msg)
+    if not has_full_elf and not has_xclbin_form:
+        if xclbin_path is None and insts_path is None:
+            msg = "pack_aie_hsaco needs either xclbin_path and insts_path, or full_elf_path"
+        else:
+            missing = "insts_path" if xclbin_path is not None else "xclbin_path"
+            msg = f"pack_aie_hsaco: xclbin_path and insts_path must be given together ({missing} is missing)"
         raise ValueError(msg)
     num_kernargs = len(kernel_spec.input_tensors) + 1  # inputs, then the output
     kernarg_size = _KERNARG_BYTES_PER_ARG * num_kernargs
@@ -136,6 +146,15 @@ def _pack_full_elf(
         if not kernels:
             msg = f"{error}: {full_elf_path} has no kernel named {elf_kernel_name!r}"
             raise RuntimeError(msg)
+    elif len(kernels) != 1:
+        # The runtime loader (ggml_hsa_kernel::load) requires exactly one kernel per hsaco; catch
+        # an ELF with more here, with the names, instead of a load-time failure far from the cause.
+        names = [k["name"] for k in kernels]
+        msg = (
+            f"{error}: {full_elf_path} holds {len(kernels)} kernels ({names}), expected exactly "
+            "one; pass elf_kernel_name to select one"
+        )
+        raise RuntimeError(msg)
     try:
         section = pack.build_section(arch, kernels)
         pack.ensure_hsaco(str(hsaco_path))

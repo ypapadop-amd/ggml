@@ -16,8 +16,16 @@ ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor & dst_tensor) const {
     const auto num_kernargs = num_src_tensors + 1 /* destination tensor */;
 
-    // each kernarg is an address and a size entry (see hsa_amd_aie_kernel_dispatch_packet_t)
-    assert(kernarg_size() == num_kernargs * 2 * sizeof(std::uint64_t));
+    // each kernarg is an address and a size entry (see hsa_amd_aie_kernel_dispatch_packet_t); this
+    // is reported by the hsaco itself, so check it at runtime rather than assert, which release
+    // builds compile out, and dispatching a mismatched layout would write past the kernarg slot
+    const auto expected_kernarg_size = num_kernargs * 2 * sizeof(std::uint64_t);
+    if (kernarg_size() != expected_kernarg_size) {
+        GGML_HSA_LOG_ERROR("%s: kernel kernarg size %u does not match the %zu bytes expected for "
+                           "%zu arguments",
+                           __func__, kernarg_size(), expected_kernarg_size, num_kernargs);
+        return GGML_STATUS_FAILED;
+    }
 
     // number of bytes in the packet after completion_signal up to kernarg_address; the AIE dispatch
     // packet ABI requires this to be exactly 24 (see hsa_amd_aie_kernel_dispatch_packet_t)

@@ -228,11 +228,17 @@ def _compile_npu_kernel(
         if full_elf:
             # MLIR-AIR's full ELF also holds an internal sequence that loads no PDI,
             # which ROCR refuses to load; pack only the kernel Triton-XDNA dispatches.
-            elf_kernel_name = (
-                (npu_artifacts_path / "elf_kernel_name.txt")
-                .read_text(encoding="utf-8")
-                .strip()
-            )
+            elf_kernel_name_path = npu_artifacts_path / "elf_kernel_name.txt"
+            try:
+                elf_kernel_name = elf_kernel_name_path.read_text(
+                    encoding="utf-8"
+                ).strip()
+            except OSError as e:
+                msg = (
+                    f"{exported_name}: could not read {elf_kernel_name_path}: {e}; the "
+                    f"Triton-XDNA pipeline did not produce it in {npu_artifacts_path}"
+                )
+                raise RuntimeError(msg) from e
             hsaco_path = pack_aie_hsaco(
                 kernel_spec,
                 exported_name,
