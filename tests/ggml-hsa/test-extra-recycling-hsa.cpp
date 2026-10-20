@@ -72,10 +72,15 @@ bool check_add(const ggml_tensor * c,
                const std::vector<ggml_fp16_t> & hx,
                const std::vector<ggml_fp16_t> & hy,
                const char * label) {
-    std::vector<ggml_fp16_t> got(n);
+    const int64_t count = static_cast<int64_t>(hx.size());
+    if (hy.size() != hx.size() || ggml_nbytes(c) != hx.size() * sizeof(ggml_fp16_t)) {
+        printf("  %s: C and the inputs differ in size\n", label);
+        return false;
+    }
+    std::vector<ggml_fp16_t> got(count);
     ggml_backend_tensor_get(c, got.data(), 0, ggml_nbytes(c));
     int64_t mismatches = 0;
-    for (int64_t i = 0; i < n; ++i) {
+    for (int64_t i = 0; i < count; ++i) {
         const float want = ggml_fp16_to_fp32(hx[i]) + ggml_fp16_to_fp32(hy[i]);
         if (ggml_fp16_to_fp32(got[i]) != want) {
             if (mismatches < 4) {
@@ -87,7 +92,7 @@ bool check_add(const ggml_tensor * c,
     }
     if (mismatches != 0) {
         printf("  %s: %lld / %lld elements mismatched\n", label, (long long)mismatches,
-               (long long)n);
+               (long long)count);
     }
     return mismatches == 0;
 }
