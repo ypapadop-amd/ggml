@@ -57,4 +57,16 @@ for backend in "${INSTALL_LIST[@]}"; do
     fi
 done
 
+# mlir-air pins an mlir-aie older than the hsaco packer that every kernel is packed with, so
+# requirements-triton.txt cannot ask for a newer one. Install the build IRON pins over it.
+if [[ " ${INSTALL_LIST[*]} " == *" triton "* ]]; then
+    echo "Installing the mlir-aie hsaco packer over the Triton dependencies..."
+    if ! python3 -m pip install --no-deps \
+        --find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2 \
+        mlir_aie_no_rtti==1.4.5.dev48+gcb6f2d1; then
+        echo "Error: could not install the mlir-aie hsaco packer"
+        return 1 2>/dev/null || exit 1
+    fi
+fi
+
 echo "Environment setup complete. Installed backends: ${INSTALL_LIST[*]}"

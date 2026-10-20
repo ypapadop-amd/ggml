@@ -38,6 +38,7 @@ set(GGML_SOURCES_HSA
     ggml-hsa.cpp
     host-ops.cpp
     kernel-discovery.cpp
+    kernel.cpp
     )
 
 if (GGML_HSA_AIE)
@@ -78,6 +79,7 @@ target_sources(ggml-hsa
         gemm.hpp
         host-ops.hpp
         kernel-discovery.hpp
+        kernel.hpp
         type-traits.hpp
     )
 

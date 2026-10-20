@@ -6,7 +6,8 @@
 --extra-index-url https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 --extra-index-url https://pypi.org/simple
 
-# A pre-release, not 1.4.4: 1.4.4 lowers a runtime-configured mem tile BD on aie2 without the
+# A pre-release, not 1.4.4. 1.4.4 lacks the hsaco packer's full-ELF kernel selection
+# (Xilinx/mlir-aie#3881), and it lowers a runtime-configured mem tile BD on aie2 without the
 # mem tile's own-memory offset, so the BD addresses its west neighbour (fixed in Xilinx/mlir-aie
 # 3eea85e, #3903). The GEMM drains C through such a BD, so every MUL_MAT on aie2 is wrong on 1.4.4.
 mlir_aie==1.4.5a1

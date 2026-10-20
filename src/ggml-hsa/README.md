@@ -87,12 +87,14 @@ compute that uses it**; flag it with `ggml_set_input()` if its contents change b
 
 ### Tested Configurations
 
-Last verified 2026-10-16 on an `aie2` NPU (Phoenix) and a `gfx1103` GPU (Radeon 780M).
+Last verified 2026-10-16 on an `aie2` NPU (Phoenix) and a `gfx1103` GPU (Radeon 780M), before the
+move to hsaco dispatch; the hsaco dispatch was verified on an `aie2p` NPU (Strix) with ROCR built
+from `7a71bfb`.
 
 | Component                | Version                                                                            |
 |--------------------------|------------------------------------------------------------------------------------|
 | OS                       | [Ubuntu 25.10], Linux 6.17.0-41 (earlier: [Ubuntu 24.04.2])                         |
-| ROCR                     | [TheRock] nightly `10.2.0a20261016` (rocm-systems `2a8fffb`), or built from source  |
+| ROCR                     | Built from rocm-systems `develop` at or after [`7a71bfb`][ROCR 7a71bfb]            |
 | ROCR (GPU only)          | also ROCm 10.1.0 (HSA runtime 1.21)                                                |
 | GPU kernel driver        | `amdgpu-dkms` 7.1.9 (`7.1.9.31600000`)                                             |
 | XDNA driver              | `amdxdna` 2.23.0, with XRT 2.23.0                                                  |
@@ -106,18 +108,23 @@ and resolves to the latest nightly.
 [Ubuntu 24.04.2]: https://releases.ubuntu.com/noble/
 [Ubuntu 25.10]: https://releases.ubuntu.com/questing/
 [TheRock]: https://github.com/ROCm/TheRock/blob/main/RELEASES.md
+[ROCR 7a71bfb]: https://github.com/ROCm/rocm-systems/commit/7a71bfb024e106a0941d14ad560a2befc5277227
 [MLIR-AIE 1.4.5-alpha.1]: https://github.com/Xilinx/mlir-aie/tree/v1.4.5-alpha.1
 
 ### ROCm
 
 `ggml-hsa` needs a [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime)
-with NPU support, from either:
+with NPU support that loads AIE hsacos (HSA code objects). That support, including full-ELF kernels
+that load several PDIs (Triton-XDNA's full ELF on aie2p loads two), landed in rocm-systems `develop`
+with [`7a71bfb`][ROCR 7a71bfb] ("feat(rocr/aie): hsaco support for AIE agents",
+[ROCm/rocm-systems#12847](https://github.com/ROCm/rocm-systems/pull/12847)). Build ROCR from
+`develop` at or after that commit (see [Compiling ROCR from source](#compiling-rocr-from-source)).
 
-- [TheRock](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)'s nightly pip wheel
-  `10.2.0a20261016` (see [Using TheRock's ROCR](#using-therocks-rocr)).
-- A ROCR built from [`develop`](https://github.com/ROCm/rocm-systems/tree/develop) at or after
-  [`512eb6021e7`](https://github.com/ROCm/rocm-systems/commit/512eb6021e7) (see
-  [Compiling ROCR from source](#compiling-rocr-from-source)).
+[TheRock] nightly wheels include it as of `10.2.0a20261020`: TheRock moved its rocm-systems pin from
+`2a8fffb` to `4b7b5e1`, which includes `7a71bfb`, on 2026-10-19
+([ROCm/TheRock#9353](https://github.com/ROCm/TheRock/pull/9353)), and that landed in the next day's
+nightly. Earlier nightlies predate the bump; see [Using TheRock's ROCR](#using-therocks-rocr) to
+check a wheel's pin before relying on it.
 
 `ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API, and the NPU needs a ROCR
 whose vmem unmap supports XDNA. A system ROCm is not enough, even when it ships the AIE header:
@@ -125,15 +132,45 @@ ROCm 10.1.0's ROCR (HSA runtime 1.21) builds and dispatches to the NPU, but `hsa
 then fails with `HSA_STATUS_ERROR` and the backend aborts. A GPU-only build can use the system
 ROCm (see [GPU-only Build](#gpu-only-build)).
 
+What an hsaco holds depends on the architecture:
+
+- **aie2p:** a full ELF (IRON: `aiecc --get-full-elf`; Triton: Triton-XDNA's `elf` output), which
+  carries its own PDI. A queue can run any number of distinct full-ELF kernels.
+- **aie2:** a PDI and an instruction sequence. A queue holds at most 32 distinct PDIs (a
+  driver/firmware limit), so at most 32 distinct kernels can share a queue.
+
+ROCR rejects a dispatch batch that mixes the two kinds. Every kernel built for one architecture is of
+the same kind, so that cannot happen unless the kernel cache holds kernels from an older build.
+
+Packing a PDI-plus-instructions kernel reads its PDI out of its xclbin with `xclbinutil`, from
+[XRT](https://github.com/Xilinx/XRT). If it is not on `PATH`, point `AIE_XCLBINUTIL` at it.
+
+After upgrading from a build that packed aie2p kernels as PDI plus instructions, clear the kernel
+cache once (`GGML_HSA_KERNEL_CACHE_CLEAR=1`): the cache is keyed by op, shapes and dtypes only, so it
+would keep serving the old kernels, and mixing them with new ones fails the batch.
+
 ### Using TheRock's ROCR
+
+A [TheRock] wheel can replace the ROCR built from source once its rocm-systems pin is at or after
+`7a71bfb`; `10.2.0a20261020` and later nightlies qualify (see [ROCm](#rocm)). Verified on an `aie2p`
+NPU (Strix) against `10.2.0a20261020`: `ctest -R 'hsa|mnist'` from a cold kernel cache matches the
+ROCR-from-source result.
 
 ```bash
 python3 -m venv .venv-rocm
 .venv-rocm/bin/pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
-  "rocm[devel]==10.2.0a20261016"
+  "rocm[devel]==10.2.0a20261020"
 .venv-rocm/bin/rocm-sdk init                        # expands the devel tree
 ROCM_SDK="$(.venv-rocm/bin/rocm-sdk path --root)"
 ls "$ROCM_SDK/include/hsa/hsa_ext_amd_aie.h"        # the AIE header
+```
+
+To check an earlier or different wheel's pin before relying on it:
+
+```bash
+SITE="$(.venv-rocm/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+jq -r '.submodules[] | select(.submodule_name == "rocm-systems") | .pin_sha' \
+  "$SITE/_rocm_sdk_core/share/therock/therock_manifest.json"   # must be 7a71bfb or later
 ```
 
 Build with `-Dhsa-runtime64_DIR="$ROCM_SDK/lib/cmake/hsa-runtime64"` (see [Building](#building)).
@@ -142,14 +179,19 @@ The build records the library's path, so no `LD_LIBRARY_PATH` is needed at run t
 ### Compiling ROCR from source
 
 ```bash
-REPO=/path/to/rocm-systems        # a checkout of https://github.com/ROCm/rocm-systems, `develop` branch
+REPO=/path/to/rocm-systems        # a checkout of https://github.com/ROCm/rocm-systems, `develop` at or after 7a71bfb
 ROCR=$REPO/projects/rocr-runtime
 PREFIX=$HOME/opt/rocm             # must not be /opt/rocm: that is the system runtime, without NPU vmem support
 
-cmake -S "$ROCR" -B "$ROCR/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX"
+cmake -S "$ROCR" -B "$ROCR/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+  -DIMAGE_SUPPORT=OFF
 cmake --build "$ROCR/build" -j"$(nproc)"
 cmake --install "$ROCR/build"
 ```
+
+`IMAGE_SUPPORT=OFF` skips the GPU image blit kernels, which `ggml-hsa` does not use. With it on, the
+build compiles them for every GPU target ROCR lists, and a clang that does not know one of them (e.g.,
+Ubuntu's clang 22 and `gfx1170`) fails with `invalid target ID`.
 
 Install `libdrm-dev` and `libnuma-dev` first if they are missing. Confirm the AIE header made it into
 the install:
@@ -198,15 +240,23 @@ Install Triton dependencies (includes IRON):
 
 ```bash
 python3 -m pip install -r src/ggml-hsa/requirements-triton.txt
+python3 -m pip install --no-deps \
+  --find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2 \
+  mlir_aie_no_rtti==1.4.5.dev48+gcb6f2d1
 ```
 
-Or use the setup script:
+The second command is needed because MLIR-AIR pins an MLIR-AIE (`1.4.4.dev82`) older than the hsaco
+packer (`aie.compiler.hsaco`) that every kernel is packed with, so `requirements-triton.txt` cannot
+request a newer one. `pip check` does not report the override: it does not check the extra that
+carries MLIR-AIR's pin.
+
+Or use the setup script, which does both:
 
 ```bash
 source src/ggml-hsa/env_setup.sh triton
 ```
 
-Compiling a Triton kernel packages an xclbin with `xclbinutil`, from [XRT](https://github.com/Xilinx/XRT),
+On aie2, compiling a Triton kernel packages an xclbin with `xclbinutil`, from [XRT](https://github.com/Xilinx/XRT),
 and `ggml-hsa` reads the PDI back out of it with the same tool. If it is not on `PATH`, point
 `AIE_XCLBINUTIL` at it:
 
@@ -224,14 +274,13 @@ export AIE_XCLBINUTIL=/opt/xilinx/xrt/bin/xclbinutil
 cmake -S . -B build \
   -DGGML_HSA=ON \
   -DGGML_HSA_JIT_COMPILE=ON \
-  -Dhsa-runtime64_DIR="$ROCM_SDK/lib/cmake/hsa-runtime64" \
+  -Dhsa-runtime64_DIR="$PREFIX/lib/cmake/hsa-runtime64" \
   -DCMAKE_BUILD_TYPE=Release
 
 cmake --build build --config Release -j
 ```
 
-`hsa-runtime64_DIR` is the ROCR from [ROCm](#rocm): `$ROCM_SDK` for TheRock's, or
-`$PREFIX/lib/cmake/hsa-runtime64` for one built from source. With JIT compilation, configure and
+`$PREFIX` is where the ROCR from [ROCm](#rocm) was installed. With JIT compilation, configure and
 run with the backend's environment active, so that the embedded interpreter finds its packages:
 
 ```bash
@@ -301,9 +350,8 @@ A process loads only one `libhsa-runtime64.so.1`, and HIP and `ggml-hsa` must sh
 ROCR with NPU support, which a system ROCm usually does not provide: for example, ROCm 7.2.4's
 `libamdhip64` links its own `libhsa-runtime64` without AIE support.
 
-TheRock's nightly wheel `10.2.0a20261016` provides both. Running HIP and `ggml-hsa`
-together on the wheel's ROCR has not been verified yet; the setup below, with a ROCR built from
-source, is the verified one.
+One way to get a matching HIP is [TheRock]'s nightly pip wheels, run against the ROCR built from
+source:
 
 ```bash
 python3 -m venv build/.venv-rocm
@@ -466,7 +514,8 @@ ROCM_PATH=/opt/rocm src/ggml-hsa/generate_gpu_kernels.py gfx1151 names.txt
 Observed with the [tested configuration](#tested-configurations) on an `aie2` NPU and a `gfx1103`
 GPU.
 
-- **32 kernels per NPU queue.** After about 32 distinct NPU kernels in one process, the runtime
+- **32 kernels per NPU queue on aie2.** aie2p kernels are full ELFs and are not limited (see
+  [ROCm](#rocm)). On aie2, after about 32 distinct NPU kernels in one process, the runtime
   suspends the queue with `HSA_STATUS_ERROR_OUT_OF_RESOURCES` and every later operation fails.
   `test-backend-ops` over a whole operation exceeds this, especially with `f16` (which adds
   `HSA_CONVERT` kernels), so run NPU cases in separate processes, e.g. one `-o '<full case>'` each.

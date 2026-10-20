@@ -410,26 +410,7 @@ class ggml_hsa_kernarg_pool {
 
 struct ggml_backend_hsa_context;
 
-/**
- * @brief Base class for HSA kernels.
- */
-class ggml_hsa_kernel {
-  public:
-    virtual ~ggml_hsa_kernel() = default;
-
-    /**
-     * @brief Dispatches the kernel.
-     *
-     * @param[in] ctx backend context
-     * @param[in] src_tensors source tensors
-     * @param[in] num_src_tensors number of source tensors
-     * @param[out] dst_tensor destination tensor
-     */
-    virtual ggml_status dispatch(ggml_backend_hsa_context & ctx,
-                                 ggml_tensor * src_tensors[],
-                                 std::size_t num_src_tensors,
-                                 ggml_tensor & dst_tensor) const = 0;
-};
+class ggml_hsa_kernel;
 
 /**
  * @brief Device information.

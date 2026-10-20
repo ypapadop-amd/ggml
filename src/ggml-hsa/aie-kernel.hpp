@@ -1,55 +1,30 @@
-// Copyright (c) 2025 Advanced Micro Devices, Inc. All Rights Reserved.
+// Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "ggml-hsa/common.hpp"
-#include "ggml.h"
+#include "ggml-hsa/kernel.hpp"
 
 #include <cstddef>
-#include <utility>
+#include <filesystem>
+#include <string>
 
 /**
- * @brief Buffer for AIE agent kernels.
- *
- * This buffer is used to hold the PDI and instruction data for AIE kernels.
+ * @brief Kernel for AIE agents, dispatched with an AIE agent dispatch packet.
  */
-class ggml_hsa_aie_buffer {
-    ggml_hsa_unique_ptr<std::byte> m_data;
-    std::size_t m_size{};
-
+class ggml_hsa_aie_kernel final : public ggml_hsa_kernel {
   public:
-    constexpr ggml_hsa_aie_buffer() = default;
-    ggml_hsa_aie_buffer(std::byte * data, std::size_t size) : m_data{data}, m_size{size} {}
-
-    ggml_hsa_aie_buffer(ggml_hsa_aie_buffer && other) noexcept :
-        m_data{std::exchange(other.m_data, nullptr)}, m_size{std::exchange(other.m_size, 0)} {}
-
-    ~ggml_hsa_aie_buffer() = default;
-
-    ggml_hsa_aie_buffer & operator=(ggml_hsa_aie_buffer && other) noexcept {
-        m_data = std::exchange(other.m_data, nullptr);
-        m_size = std::exchange(other.m_size, 0);
-        return *this;
-    }
-
     /**
-     * @brief Returns the size of the buffer in bytes.
+     * @brief Loads the kernel in the hsaco at @p path on @p agent.
+     *
+     * The hsaco must hold exactly one kernel. It is found by kind, not by name, since a kernel
+     * packed from a full ELF keeps the ELF's name.
+     *
+     * @param[in] agent agent to load the kernel on
+     * @param[in] path hsaco path
+     * @param[in] kernel_name ggml's name for the kernel, used in error messages
      */
-    std::size_t size() const { return m_size; }
-
-    /**
-     * @brief Returns a pointer to the buffer data.
-     */
-    std::byte * data() const { return m_data.get(); }
-};
-
-/**
- * @brief Kernel for AIE agents.
- */
-class ggml_hsa_aie_kernel : public ggml_hsa_kernel {
-  public:
-    ggml_hsa_aie_buffer pdi;
-    ggml_hsa_aie_buffer insts;
+    ggml_status
+    load(hsa_agent_t agent, const std::filesystem::path & path, const std::string & kernel_name);
 
     ggml_status dispatch(ggml_backend_hsa_context & ctx,
                          ggml_tensor * src_tensors[],
