@@ -1185,6 +1185,15 @@ static std::uint64_t ggml_hsa_completed_packets(const ggml_backend_hsa_context &
 }
 
 /**
+ * @brief Returns the number of packets of @p ctx known to have completed, in queue write order.
+ *
+ * @param[in] ctx backend context
+ */
+static std::uint64_t ggml_hsa_completed_packets(const ggml_backend_hsa_context & ctx) {
+    return ggml_hsa_completed_packets(ctx, hsa_signal_load_scacquire(ctx.dispatch_signal));
+}
+
+/**
  * @brief Waits for every packet before @p end_index to complete, or for the queue of @p ctx to be
  * suspended.
  *
@@ -1193,16 +1202,13 @@ static std::uint64_t ggml_hsa_completed_packets(const ggml_backend_hsa_context &
  * possibly after the wait started, so @c queue_error is checked between bounded waits rather than
  * only before them.
  *
- * @param[in]  ctx       backend context
- * @param[in]  end_index queue write index; the packets before it are waited for
- * @param[out] completed on success, the number of completed packets observed; at least
- *                       @p end_index
- * @retval true  the packets completed
- * @retval false the queue was suspended first; the packets may never complete
+ * @param[in] ctx       backend context
+ * @param[in] end_index queue write index; the packets before it are waited for
+ * @return the number of completed packets observed, at least @p end_index, or nothing if the
+ *         queue was suspended first; the packets may then never complete
  */
-static bool ggml_hsa_wait_for_packets(const ggml_backend_hsa_context & ctx,
-                                      std::uint64_t end_index,
-                                      std::uint64_t & completed) {
+static std::optional<std::uint64_t> ggml_hsa_wait_for_packets(const ggml_backend_hsa_context & ctx,
+                                                              std::uint64_t end_index) {
     // The wait timeout is a hint in system timestamp ticks; check the queue every ~10 ms.
     static const std::uint64_t timeout_hint = [] {
         std::uint64_t ticks_per_second = 0;
@@ -1221,11 +1227,10 @@ static bool ggml_hsa_wait_for_packets(const ggml_backend_hsa_context & ctx,
             hsa_signal_wait_scacquire(ctx.dispatch_signal, HSA_SIGNAL_CONDITION_LT, target + 1,
                                       timeout_hint, HSA_WAIT_STATE_BLOCKED);
         if (value <= target) {
-            completed = ggml_hsa_completed_packets(ctx, value);
-            return true;
+            return ggml_hsa_completed_packets(ctx, value);
         }
         if (ctx.queue_error.load(std::memory_order_relaxed) != HSA_STATUS_SUCCESS) {
-            return false;
+            return std::nullopt;
         }
     }
 }
@@ -1247,8 +1252,7 @@ static bool ggml_hsa_drain_after_queue_error(ggml_backend_hsa_context & ctx) {
     constexpr std::chrono::milliseconds poll_interval{1};
     const auto deadline = std::chrono::steady_clock::now() + g_ggml_hsa_queue_error_drain_timeout;
     const std::uint64_t written = hsa_queue_load_write_index_relaxed(ctx.queue);
-    while (ggml_hsa_completed_packets(ctx, hsa_signal_load_scacquire(ctx.dispatch_signal)) <
-           written) {
+    while (ggml_hsa_completed_packets(ctx) < written) {
         if (std::chrono::steady_clock::now() >= deadline) {
             return false;
         }
@@ -1325,8 +1329,7 @@ ggml_status ggml_hsa_acquire_packet_slot(ggml_backend_hsa_context & ctx,
     // processor, so it is rung before the reservation below.
     if (index >= queue->size && ctx.completed_write_index <= index - queue->size) {
         const std::uint64_t needed = index - queue->size + 1;
-        ctx.completed_write_index =
-            ggml_hsa_completed_packets(ctx, hsa_signal_load_scacquire(ctx.dispatch_signal));
+        ctx.completed_write_index = ggml_hsa_completed_packets(ctx);
         if (ctx.completed_write_index < needed) {
             if (const ggml_status status = ggml_hsa_flush_dispatches(ctx);
                 status != GGML_STATUS_SUCCESS) {
@@ -1334,9 +1337,11 @@ ggml_status ggml_hsa_acquire_packet_slot(ggml_backend_hsa_context & ctx,
             }
             // Keep the count the wait observed, not just `needed`: on a saturated queue the extra
             // completions let the next acquires skip the signal load.
-            if (!ggml_hsa_wait_for_packets(ctx, needed, ctx.completed_write_index)) {
+            const auto completed = ggml_hsa_wait_for_packets(ctx, needed);
+            if (!completed) {
                 return GGML_STATUS_FAILED;
             }
+            ctx.completed_write_index = *completed;
         }
     }
 
@@ -1360,9 +1365,13 @@ ggml_status ggml_hsa_wait_dispatches(ggml_backend_hsa_context & ctx) {
     // Single producer: no packet is written during the wait, so once every packet before the write
     // index has completed, the queue is idle.
     const std::uint64_t write_index = hsa_queue_load_write_index_relaxed(ctx.queue);
-    if (!ggml_hsa_wait_for_packets(ctx, write_index, ctx.completed_write_index)) {
-        ctx.pending_conversions.clear();
-        return GGML_STATUS_FAILED;
+    if (ctx.completed_write_index < write_index) {
+        const auto completed = ggml_hsa_wait_for_packets(ctx, write_index);
+        if (!completed) {
+            ctx.pending_conversions.clear();
+            return GGML_STATUS_FAILED;
+        }
+        ctx.completed_write_index = *completed;
     }
 
     // Every packet ran, so the constant conversions among them may now be reused by any context; a
@@ -2438,7 +2447,7 @@ ggml_tensor * ggml_hsa_convert(ggml_context * ctx, ggml_tensor * a, ggml_type ty
  * completed once the context's completion count reaches it.
  */
 struct ggml_hsa_event_context {
-    /// Backend context the event was recorded on, used to flush pending packets before waiting.
+    /// Backend context the event was recorded on, whose completion signal the wait reads.
     /// Only valid when @ref fence_index is non-zero. Not owned; the caller must ensure the
     /// recording backend outlives every wait on this event.
     ggml_backend_hsa_context * ctx{};
@@ -2462,18 +2471,14 @@ static bool ggml_hsa_event_wait_for_fence(const ggml_hsa_event_context & ec) {
     // A non-zero fence index is only ever set together with ec.ctx, so ctx is valid here.
     assert(ec.ctx != nullptr);
     auto & ctx = *ec.ctx;
-    // The waiter may run on another thread than the producer, so it touches no producer state: it
-    // must not ring the doorbell (n_batched is not atomic, and a ring past a reserved slot whose
-    // header is still invalid stalls the queue) nor read completed_write_index. No ring is needed:
+    // The waiter may run on another thread than the producer, so it touches no producer state
+    // (n_batched, the doorbell, completed_write_index). It needs no flush either:
     // ggml_backend_hsa_event_record rang every packet before fence_index.
     //
-    // A suspended queue never drains, so there is nothing to wait for, including when it is
-    // suspended during the wait. The event interface returns void, so the caller is warned here
-    // and failed via dependency_failed in ggml_backend_hsa_event_wait.
-    std::uint64_t completed_packets = 0;
-    const bool completed = ctx.queue_error.load(std::memory_order_relaxed) == HSA_STATUS_SUCCESS &&
-                           ggml_hsa_wait_for_packets(ctx, ec.fence_index, completed_packets);
-    if (!completed) {
+    // The wait gives up once the queue is suspended, since the fenced packets may then never
+    // complete. The event interface returns void, so the caller is warned here and failed via
+    // dependency_failed in ggml_backend_hsa_event_wait.
+    if (!ggml_hsa_wait_for_packets(ctx, ec.fence_index).has_value()) {
         GGML_HSA_LOG_WARN("%s: queue suspended; the work this event fences did not run and is not "
                           "being waited for",
                           __func__);

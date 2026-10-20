@@ -99,7 +99,7 @@ from `7a71bfb`.
 | GPU kernel driver        | `amdgpu-dkms` 7.1.9 (`7.1.9.31600000`)                                             |
 | XDNA driver              | `amdxdna` 2.23.0, with XRT 2.23.0                                                  |
 | MLIR-AIE                 | [1.4.5-alpha.1][MLIR-AIE 1.4.5-alpha.1], with `llvm-aie` `22.0.0.2026101601`       |
-| Triton-XDNA              | `3.6.0.2026100504+694d60d` ([`requirements-triton.txt`](requirements-triton.txt))  |
+| Triton-XDNA              | `3.6.0.2026101704+7a8fa24` ([`requirements-triton.txt`](requirements-triton.txt))  |
 
 MLIR-AIE and Triton-XDNA are pinned in [`requirements-iron.txt`](requirements-iron.txt) and
 [`requirements-triton.txt`](requirements-triton.txt); `llvm-aie` only has a lower bound (`>=22.0.0`)

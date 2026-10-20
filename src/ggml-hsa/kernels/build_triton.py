@@ -4,6 +4,7 @@
 
 import logging
 import os
+import tempfile
 from contextlib import ContextDecorator
 from dataclasses import MISSING
 from pathlib import Path
@@ -84,12 +85,40 @@ def _get_triton_target(kernel_spec: KernelSpec) -> str:
     raise ValueError(msg)
 
 
+# The process umask, read once at import: reading it means setting it, which is not thread-safe.
+_UMASK = os.umask(0)
+os.umask(_UMASK)
+
+
+def _write_atomically(path: Path, data: bytes) -> None:
+    """Write data to path so that a concurrent reader sees either no file or all of it.
+
+    Args:
+        path: Destination file.
+        data: Contents to write.
+    """
+    # A unique temporary per call, so concurrent writers (other processes or threads) never share
+    # one; it is in the destination directory so the rename stays on one filesystem.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            # mkstemp creates the file 0600; give it the permissions a plain write would have.
+            os.fchmod(f.fileno(), 0o666 & ~_UMASK)
+            f.write(data)
+        tmp_path.replace(path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def _compile_triton_gpu_kernel(
     kernel_spec: KernelSpec,
     exported_name: str,
     output_directory: Path,
     logger: logging.Logger,
-    verbose: bool,
 ) -> None:
     """Compile a Triton kernel to a GPU code object (.hsaco) ahead of time.
 
@@ -106,7 +135,6 @@ def _compile_triton_gpu_kernel(
         exported_name: Base name for the output files.
         output_directory: Directory for the .hsaco and sidecar.
         logger: Logger for status messages.
-        verbose: If True, enables verbose output.
     """
     import json
 
@@ -134,10 +162,6 @@ def _compile_triton_gpu_kernel(
         options["num_stages"] = int(cfg["num_stages"])
     compiled = triton.compile(src, target=target, options=options)
 
-    hsaco = compiled.asm["hsaco"]
-    hsaco_path = output_directory / f"{exported_name}.hsaco"
-    hsaco_path.write_bytes(bytes(hsaco))
-
     block_x = int(compiled.metadata.num_warps) * int(compiled.metadata.warp_size)
     # The AQL dispatch packet holds the grid in 32 bits and the workgroup in 16; the loader
     # rejects a sidecar outside them, so fail here with the reason instead.
@@ -154,8 +178,13 @@ def _compile_triton_gpu_kernel(
         # object's fixed group segment size does not include, so the launcher must reserve it.
         "group_segment_size": int(compiled.metadata.shared),
     }
+    # The loader treats an existing .hsaco as a cached kernel and then reads its sidecar, so write
+    # the sidecar first and the .hsaco last, each atomically: a concurrent loader then sees either
+    # no kernel or a complete one, and a failed compile leaves no .hsaco behind.
     sidecar_path = output_directory / f"{exported_name}.hsaco.json"
-    sidecar_path.write_text(json.dumps(launch))
+    _write_atomically(sidecar_path, json.dumps(launch).encode())
+    hsaco_path = output_directory / f"{exported_name}.hsaco"
+    _write_atomically(hsaco_path, bytes(compiled.asm["hsaco"]))
 
     logger.info(
         "Triton GPU compilation successful\n  hsaco: %s\n  launch: %s",
@@ -299,7 +328,7 @@ def compile_triton_kernel(
         # rather than in ~/.triton/cache: it then follows the kernel cache (and its clearing).
         with TempEnvSet("TRITON_CACHE_DIR", str(cache_dir)):
             _compile_triton_gpu_kernel(
-                kernel_spec, exported_name, output_directory, logger, verbose
+                kernel_spec, exported_name, output_directory, logger
             )
     else:
         msg = f"Unsupported architecture for Triton kernel: {kernel_spec.arch}"

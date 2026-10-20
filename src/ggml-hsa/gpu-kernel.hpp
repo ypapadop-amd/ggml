@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <hsa/hsa.h>
@@ -30,6 +31,45 @@ struct ggml_hsa_gpu_kernel_arg {
     std::uint32_t offset{}; ///< Byte offset of the argument within the kernarg segment.
     std::uint32_t size{};   ///< Argument size in bytes.
 };
+
+/// @name Types of the arguments @ref ggml_hsa_gpu_kernel::dispatch fills from fixed-size values
+/// @{
+using ggml_hsa_gpu_pointer_arg_t = std::uint64_t;       ///< @c global_buffer
+using ggml_hsa_gpu_element_count_arg_t = std::uint64_t; ///< the first @c by_value argument
+using ggml_hsa_gpu_block_count_arg_t = std::uint32_t;   ///< @c hidden_block_count_{x,y,z}
+/// @c hidden_group_size_{x,y,z}, @c hidden_remainder_x and @c hidden_grid_dims
+using ggml_hsa_gpu_group_dim_arg_t = std::uint16_t;
+/// @}
+
+/**
+ * @brief Returns the size @ref ggml_hsa_gpu_kernel::dispatch writes for an argument, or 0 if it
+ * does not fill the argument from a fixed-size value.
+ *
+ * The single source of the sizes both the load-time check and the dispatch use.
+ *
+ * @param[in] value_kind     argument kind from the code object metadata
+ * @param[in] by_value_index position of the argument among the @c by_value arguments; only the
+ *                           first, the element count, has a fixed size
+ */
+inline std::uint32_t ggml_hsa_gpu_fixed_arg_size(std::string_view value_kind,
+                                                 std::size_t by_value_index) {
+    if (value_kind == "global_buffer") {
+        return sizeof(ggml_hsa_gpu_pointer_arg_t);
+    }
+    if (value_kind == "by_value") {
+        return by_value_index == 0 ? sizeof(ggml_hsa_gpu_element_count_arg_t) : 0;
+    }
+    if (value_kind == "hidden_block_count_x" || value_kind == "hidden_block_count_y" ||
+        value_kind == "hidden_block_count_z") {
+        return sizeof(ggml_hsa_gpu_block_count_arg_t);
+    }
+    if (value_kind == "hidden_group_size_x" || value_kind == "hidden_group_size_y" ||
+        value_kind == "hidden_group_size_z" || value_kind == "hidden_remainder_x" ||
+        value_kind == "hidden_grid_dims") {
+        return sizeof(ggml_hsa_gpu_group_dim_arg_t);
+    }
+    return 0;
+}
 
 /**
  * @brief Kernel for GPU agents (ROCm/HIP code objects loaded from @c .hsaco files).

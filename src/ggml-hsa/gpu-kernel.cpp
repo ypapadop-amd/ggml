@@ -123,20 +123,23 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     std::memset(kernarg, 0, kernarg_size);
 
     // Populate the kernarg segment using the layout parsed from the code object metadata. Explicit
-    // global_buffer arguments are filled in order (sources first, then destination); the single
-    // by_value argument is the element count; the HIP hidden arguments are derived from the grid
-    // configuration. Offsets/sizes come from the kernel itself, so the layout is ABI-robust.
-    // ggml_hsa_create_gpu_kernel rejects a kernel whose arguments do not all lie in its segment.
+    // global_buffer arguments are filled in order (sources first, then destination); the first
+    // by_value argument is the element count and later ones come from op_params (see below); the
+    // HIP hidden arguments are derived from the grid configuration. Offsets/sizes come from the
+    // kernel itself, so the layout is ABI-robust.
+    // ggml_hsa_create_gpu_kernel rejects a kernel whose arguments do not all lie in its segment,
+    // whose arguments filled from a fixed-size value below differ from ggml_hsa_gpu_fixed_arg_size,
+    // or whose later by_value arguments do not fit in op_params.
+    // put_scalar asserts, in every build, that the metadata size equals the size of the value it
+    // writes; the values are of the types whose sizes ggml_hsa_gpu_fixed_arg_size returns, so the
+    // two checks agree. A mismatch would over-read the value or write past the argument.
     const auto put = [&](std::uint32_t off, const void * src, std::uint32_t sz) {
         assert(static_cast<std::size_t>(off) + sz <= kernarg_size);
         std::memcpy(kernarg + off, src, sz);
     };
-    // Stores a scalar into an argument whose size comes from the metadata: copying arg.size bytes
-    // straight from the scalar would read past it when the argument is wider. Copy at most the
-    // scalar's own bytes; a wider argument keeps the zeroed high bytes (zero-extension, since the
-    // target is little-endian) and a narrower one gets the low bytes.
     const auto put_scalar = [&](const auto & arg, auto value) {
-        put(arg.offset, &value, std::min<std::uint32_t>(arg.size, sizeof(value)));
+        GGML_ASSERT(arg.size == sizeof(value));
+        put(arg.offset, &value, sizeof(value));
     };
     // The HIP kernel ABI is positional (argument names are not emitted in the code object
     // metadata, so arguments are matched by kind and position rather than by name). Explicit
@@ -162,35 +165,33 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
             } else if (global_buffer_idx == num_src_tensors) {
                 ptr = dst_tensor.data;
             }
-            put_scalar(arg, std::uint64_t{reinterpret_cast<std::uintptr_t>(ptr)});
+            put_scalar(arg, ggml_hsa_gpu_pointer_arg_t{reinterpret_cast<std::uintptr_t>(ptr)});
             ++global_buffer_idx;
         } else if (arg.value_kind == "by_value") {
             if (by_value_idx == 0) {
-                put_scalar(arg, n_elements); // first scalar is the element count
-            } else if (op_params_cursor + arg.size <= sizeof(dst_tensor.op_params)) {
+                // first scalar is the element count
+                put_scalar(arg, ggml_hsa_gpu_element_count_arg_t{n_elements});
+            } else {
                 // subsequent scalars come from the op parameter block, in order
+                GGML_ASSERT(op_params_cursor + arg.size <= sizeof(dst_tensor.op_params));
                 put(arg.offset, op_params_bytes + op_params_cursor, arg.size);
                 op_params_cursor += arg.size;
-            } else {
-                GGML_HSA_LOG_WARN("%s: by_value kernarg #%zu (name \"%s\", size %u) exceeds "
-                                  "op_params; zeroed",
-                                  __func__, by_value_idx, arg.name.c_str(), arg.size);
             }
             ++by_value_idx;
         } else if (arg.value_kind == "hidden_block_count_x") {
-            put_scalar(arg, num_groups_x);
+            put_scalar(arg, ggml_hsa_gpu_block_count_arg_t{num_groups_x});
         } else if (arg.value_kind == "hidden_block_count_y" ||
                    arg.value_kind == "hidden_block_count_z") {
-            put_scalar(arg, std::uint32_t{1});
+            put_scalar(arg, ggml_hsa_gpu_block_count_arg_t{1});
         } else if (arg.value_kind == "hidden_group_size_x") {
-            put_scalar(arg, static_cast<std::uint16_t>(wg));
+            put_scalar(arg, static_cast<ggml_hsa_gpu_group_dim_arg_t>(wg));
         } else if (arg.value_kind == "hidden_group_size_y" ||
                    arg.value_kind == "hidden_group_size_z") {
-            put_scalar(arg, std::uint16_t{1});
+            put_scalar(arg, ggml_hsa_gpu_group_dim_arg_t{1});
         } else if (arg.value_kind == "hidden_remainder_x") {
-            put_scalar(arg, static_cast<std::uint16_t>(n_elements % wg));
+            put_scalar(arg, static_cast<ggml_hsa_gpu_group_dim_arg_t>(n_elements % wg));
         } else if (arg.value_kind == "hidden_grid_dims") {
-            put_scalar(arg, std::uint16_t{1}); // 1D grid
+            put_scalar(arg, ggml_hsa_gpu_group_dim_arg_t{1}); // 1D grid
         }
         // all other hidden arguments (remainder_y/z, global_offset_*, etc.) remain zero
     }
