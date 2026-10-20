@@ -2473,12 +2473,10 @@ static bool ggml_hsa_event_wait_for_fence(const ggml_hsa_event_context & ec) {
     // (n_batched, the doorbell, completed_write_index). It needs no flush either:
     // ggml_backend_hsa_event_record rang every packet before fence_index.
     //
-    // A suspended queue never drains, so there is nothing to wait for. The event interface returns
-    // void, so the caller is warned here and failed via dependency_failed in
-    // ggml_backend_hsa_event_wait.
-    const bool completed = ctx.queue_error.load(std::memory_order_relaxed) == HSA_STATUS_SUCCESS &&
-                           ggml_hsa_wait_for_packets(ctx, ec.fence_index).has_value();
-    if (!completed) {
+    // The wait gives up once the queue is suspended, since the fenced packets may then never
+    // complete. The event interface returns void, so the caller is warned here and failed via
+    // dependency_failed in ggml_backend_hsa_event_wait.
+    if (!ggml_hsa_wait_for_packets(ctx, ec.fence_index).has_value()) {
         GGML_HSA_LOG_WARN("%s: queue suspended; the work this event fences did not run and is not "
                           "being waited for",
                           __func__);

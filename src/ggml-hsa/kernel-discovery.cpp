@@ -654,15 +654,20 @@ static ggml_status ggml_hsa_create_gpu_kernel(const ggml_hsa_device_info::device
         }
         const std::uint32_t expected_size =
             ggml_hsa_gpu_fixed_arg_size(arg.value_kind, by_value_idx);
-        if (arg.value_kind == "by_value" && by_value_idx++ > 0) {
-            op_params_bytes += arg.size;
-            if (op_params_bytes > GGML_MAX_OP_PARAMS) {
-                GGML_HSA_LOG_ERROR("%s: the scalar arguments of %s after the element count take "
-                                   "%zu bytes, more than the %d-byte op_params they are copied "
-                                   "from",
-                                   __func__, symbol_name.c_str(), op_params_bytes,
-                                   GGML_MAX_OP_PARAMS);
-                return GGML_STATUS_FAILED;
+        if (arg.value_kind == "by_value") {
+            const bool from_op_params = by_value_idx > 0;
+            ++by_value_idx;
+            if (from_op_params) {
+                op_params_bytes += arg.size;
+                // The same bound the dispatch asserts.
+                if (op_params_bytes > sizeof(ggml_tensor::op_params)) {
+                    GGML_HSA_LOG_ERROR("%s: the scalar arguments of %s after the element count "
+                                       "take %zu bytes, more than the %zu-byte op_params they are "
+                                       "copied from",
+                                       __func__, symbol_name.c_str(), op_params_bytes,
+                                       sizeof(ggml_tensor::op_params));
+                    return GGML_STATUS_FAILED;
+                }
             }
         }
         if (expected_size != 0 && arg.size != expected_size) {

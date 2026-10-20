@@ -130,8 +130,9 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // ggml_hsa_create_gpu_kernel rejects a kernel whose arguments do not all lie in its segment,
     // whose arguments filled from a fixed-size value below differ from ggml_hsa_gpu_fixed_arg_size,
     // or whose later by_value arguments do not fit in op_params.
-    // put_scalar checks the value's type against that too, in every build: a mismatch would
-    // over-read the value or write past the argument.
+    // put_scalar asserts, in every build, that the metadata size equals the size of the value it
+    // writes; the values are of the types whose sizes ggml_hsa_gpu_fixed_arg_size returns, so the
+    // two checks agree. A mismatch would over-read the value or write past the argument.
     const auto put = [&](std::uint32_t off, const void * src, std::uint32_t sz) {
         assert(static_cast<std::size_t>(off) + sz <= kernarg_size);
         std::memcpy(kernarg + off, src, sz);

@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 from contextlib import ContextDecorator
 from dataclasses import MISSING
 from pathlib import Path
@@ -107,6 +108,11 @@ def _get_triton_target(kernel_spec: KernelSpec) -> str:
     raise ValueError(msg)
 
 
+# The process umask, read once at import: reading it means setting it, which is not thread-safe.
+_UMASK = os.umask(0)
+os.umask(_UMASK)
+
+
 def _write_atomically(path: Path, data: bytes) -> None:
     """Write data to path so that a concurrent reader sees either no file or all of it.
 
@@ -114,9 +120,21 @@ def _write_atomically(path: Path, data: bytes) -> None:
         path: Destination file.
         data: Contents to write.
     """
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp_path.write_bytes(data)
-    tmp_path.replace(path)
+    # A unique temporary per call, so concurrent writers (other processes or threads) never share
+    # one; it is in the destination directory so the rename stays on one filesystem.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            # mkstemp creates the file 0600; give it the permissions a plain write would have.
+            os.fchmod(f.fileno(), 0o666 & ~_UMASK)
+            f.write(data)
+        tmp_path.replace(path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _compile_triton_gpu_kernel(
