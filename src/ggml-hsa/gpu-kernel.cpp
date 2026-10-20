@@ -55,22 +55,17 @@ void atomic_set_packet_header(std::uint16_t header,
 
 } // namespace
 
-ggml_hsa_gpu_kernel::~ggml_hsa_gpu_kernel() {
-    if (executable.handle != 0) {
-        hsa_executable_destroy(executable);
-    }
-}
-
 ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor * src_tensors[],
                                           std::size_t num_src_tensors,
                                           ggml_tensor & dst_tensor) const {
     auto * queue = ctx.queue;
 
-    if (kernarg_size > ctx.kernargs.slot_size() || kernarg_align > ggml_hsa_gpu_kernarg_alignment) {
+    if (kernarg_size() > ctx.kernargs.slot_size() ||
+        kernarg_align > ggml_hsa_gpu_kernarg_alignment) {
         GGML_HSA_LOG_ERROR("%s: kernarg segment (%u bytes, alignment %u) does not fit a kernarg "
                            "slot (%zu bytes, alignment %zu)",
-                           __func__, kernarg_size, kernarg_align, ctx.kernargs.slot_size(),
+                           __func__, kernarg_size(), kernarg_align, ctx.kernargs.slot_size(),
                            ggml_hsa_gpu_kernarg_alignment);
         return GGML_STATUS_FAILED;
     }
@@ -120,7 +115,7 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
 
     // Zero the entire kernarg segment so any hidden fields we do not set explicitly are well
     // defined.
-    std::memset(kernarg, 0, kernarg_size);
+    std::memset(kernarg, 0, kernarg_size());
 
     // Populate the kernarg segment using the layout parsed from the code object metadata. Explicit
     // global_buffer arguments are filled in order (sources first, then destination); the first
@@ -134,7 +129,7 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // writes; the values are of the types whose sizes ggml_hsa_gpu_fixed_arg_size returns, so the
     // two checks agree. A mismatch would over-read the value or write past the argument.
     const auto put = [&](std::uint32_t off, const void * src, std::uint32_t sz) {
-        assert(static_cast<std::size_t>(off) + sz <= kernarg_size);
+        assert(static_cast<std::size_t>(off) + sz <= kernarg_size());
         std::memcpy(kernarg + off, src, sz);
     };
     const auto put_scalar = [&](const auto & arg, auto value) {
@@ -209,7 +204,7 @@ ggml_status ggml_hsa_gpu_kernel::dispatch(ggml_backend_hsa_context & ctx,
     // Triton kernels request their shared memory as dynamic LDS, which the code object does not
     // count in its fixed group segment size; the launch sidecar carries it instead.
     pkt.group_segment_size = group_segment_size + dynamic_group_segment_size;
-    pkt.kernel_object = kernel_object;
+    pkt.kernel_object = kernel_object();
     pkt.kernarg_address = kernarg;
     pkt.completion_signal = ctx.dispatch_signal;
 

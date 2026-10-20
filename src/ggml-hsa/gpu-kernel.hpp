@@ -74,18 +74,17 @@ inline std::uint32_t ggml_hsa_gpu_fixed_arg_size(std::string_view value_kind,
 /**
  * @brief Kernel for GPU agents (ROCm/HIP code objects loaded from @c .hsaco files).
  *
- * The kernel is dispatched using a standard HSA AQL kernel dispatch packet. The
- * code object is loaded into an @c hsa_executable_t at creation time; the kernel
- * descriptor handle, segment sizes, and argument layout are queried from the
- * resolved symbol and the code object metadata.
+ * The kernel is dispatched using a standard HSA AQL kernel dispatch packet. The code object is
+ * loaded into an executable with @ref ggml_hsa_kernel::load_executable at creation time; the
+ * kernel descriptor handle and kernarg segment size are the base class's (resolved by name, from
+ * the code object's comgr metadata, rather than by kind as @ref ggml_hsa_aie_kernel does); the
+ * remaining segment sizes and the argument layout below are GPU-specific and have no base-class
+ * equivalent.
  */
 class ggml_hsa_gpu_kernel : public ggml_hsa_kernel {
   public:
-    hsa_executable_t executable{};        ///< Loaded executable owning the code object.
-    std::uint64_t kernel_object{};        ///< HSA kernel descriptor handle.
     std::uint32_t private_segment_size{}; ///< Kernel private segment size in bytes.
     std::uint32_t group_segment_size{};   ///< Kernel group (LDS) segment size in bytes.
-    std::uint32_t kernarg_size{};         ///< Kernel argument segment size in bytes.
     std::uint32_t kernarg_align{};        ///< Kernel argument segment alignment in bytes.
     std::uint32_t work_group_size{64};    ///< Default workgroup size when launch geometry is unset.
     std::uint32_t grid_size_x{}; ///< Fixed AQL grid size (total work-items); 0 = derive from N.
@@ -94,7 +93,6 @@ class ggml_hsa_gpu_kernel : public ggml_hsa_kernel {
     std::vector<ggml_hsa_gpu_kernel_arg> args; ///< Argument layout from code object metadata.
 
     ggml_hsa_gpu_kernel() = default;
-    ~ggml_hsa_gpu_kernel() override;
 
     ggml_hsa_gpu_kernel(const ggml_hsa_gpu_kernel &) = delete;
     ggml_hsa_gpu_kernel & operator=(const ggml_hsa_gpu_kernel &) = delete;

@@ -5,10 +5,78 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "hsa/hsa_ext_amd_aie.h"
 
 #include "ggml-impl.h"
+
+ggml_status ggml_hsa_aie_kernel::load(hsa_agent_t agent,
+                                      const std::filesystem::path & path,
+                                      const std::string & kernel_name) {
+    std::vector<char> blob; // not needed afterward: the kernel is found by kind, not metadata
+    if (auto status = load_executable(agent, path, kernel_name, blob);
+        status != GGML_STATUS_SUCCESS) {
+        return status;
+    }
+
+    // Each hsaco holds exactly one kernel, found by kind rather than by name: a kernel packed from
+    // a full ELF is named by the ELF (e.g. "main:sequence"), not after the hsaco.
+    struct kernel_search {
+        hsa_executable_symbol_t symbol{};
+        std::size_t count = 0;
+    } search;
+    if (auto status = hsa_executable_iterate_agent_symbols(
+            executable(), agent,
+            [](hsa_executable_t, hsa_agent_t, hsa_executable_symbol_t symbol, void * data) {
+                hsa_symbol_kind_t kind{};
+                if (auto status = hsa_executable_symbol_get_info(
+                        symbol, HSA_EXECUTABLE_SYMBOL_INFO_TYPE, &kind);
+                    status != HSA_STATUS_SUCCESS) {
+                    return status;
+                }
+                if (kind == HSA_SYMBOL_KIND_KERNEL) {
+                    auto & search = *static_cast<kernel_search *>(data);
+                    search.symbol = symbol;
+                    ++search.count;
+                }
+                return HSA_STATUS_SUCCESS;
+            },
+            &search);
+        status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: could not list the kernels in %s (%s)", __func__, path.c_str(),
+                           ggml_hsa_get_status_string(status));
+        return GGML_STATUS_FAILED;
+    }
+    if (search.count != 1) {
+        GGML_HSA_LOG_ERROR("%s: %s holds %zu kernels, expected exactly one for kernel %s", __func__,
+                           path.c_str(), search.count, kernel_name.c_str());
+        return GGML_STATUS_FAILED;
+    }
+    const hsa_executable_symbol_t symbol = search.symbol;
+
+    std::uint64_t kernel_obj{};
+    if (auto status = hsa_executable_symbol_get_info(
+            symbol, HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT, &kernel_obj);
+        status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: could not get kernel object of %s (%s)", __func__,
+                           kernel_name.c_str(), ggml_hsa_get_status_string(status));
+        return GGML_STATUS_FAILED;
+    }
+    set_kernel_object(kernel_obj);
+
+    std::uint32_t kernarg_sz{};
+    if (auto status = hsa_executable_symbol_get_info(
+            symbol, HSA_EXECUTABLE_SYMBOL_INFO_KERNEL_KERNARG_SEGMENT_SIZE, &kernarg_sz);
+        status != HSA_STATUS_SUCCESS) {
+        GGML_HSA_LOG_ERROR("%s: could not get kernarg size of %s (%s)", __func__,
+                           kernel_name.c_str(), ggml_hsa_get_status_string(status));
+        return GGML_STATUS_FAILED;
+    }
+    set_kernarg_size(kernarg_sz);
+
+    return GGML_STATUS_SUCCESS;
+}
 
 ggml_status ggml_hsa_aie_kernel::dispatch(ggml_backend_hsa_context & ctx,
                                           ggml_tensor * src_tensors[],
