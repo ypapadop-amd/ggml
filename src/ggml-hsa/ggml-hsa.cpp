@@ -2632,13 +2632,6 @@ void ggml_backend_hsa_get_device_memory(std::int32_t device, size_t * free, size
     *free = *total;
 }
 
-bool ggml_backend_hsa_register_host_buffer(void * /* buffer */, size_t /* size */) {
-    NOT_IMPLEMENTED();
-    return false;
-}
-
-void ggml_backend_hsa_unregister_host_buffer(void * /* buffer */) { NOT_IMPLEMENTED(); }
-
 // backend device
 
 /**
@@ -2989,12 +2982,6 @@ static bool ggml_backend_hsa_comm_allreduce_tensor(void * comm_ctx, ggml_tensor 
 
 static void * ggml_backend_hsa_reg_get_proc_address(ggml_backend_reg_t /* reg */,
                                                     const char * name) {
-    if (strcmp(name, "ggml_backend_register_host_buffer") == 0) {
-        return reinterpret_cast<void *>(ggml_backend_hsa_register_host_buffer);
-    }
-    if (strcmp(name, "ggml_backend_unregister_host_buffer") == 0) {
-        return reinterpret_cast<void *>(ggml_backend_hsa_unregister_host_buffer);
-    }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return reinterpret_cast<void *>(ggml_backend_hsa_get_features);
     }

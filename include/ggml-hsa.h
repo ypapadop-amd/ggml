@@ -36,9 +36,6 @@ GGML_BACKEND_API int32_t ggml_backend_hsa_get_device_count(void);
 GGML_BACKEND_API void ggml_backend_hsa_get_device_description(int32_t device, char * description, size_t description_size);
 GGML_BACKEND_API void ggml_backend_hsa_get_device_memory(int32_t device, size_t * free, size_t * total);
 
-GGML_BACKEND_API bool ggml_backend_hsa_register_host_buffer(void * buffer, size_t size);
-GGML_BACKEND_API void ggml_backend_hsa_unregister_host_buffer(void * buffer);
-
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_hsa_reg(void);
 
 /**
