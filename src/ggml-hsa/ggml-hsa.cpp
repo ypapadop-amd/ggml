@@ -1683,6 +1683,13 @@ static enum ggml_status ggml_backend_hsa_buffer_init_tensor(ggml_backend_buffer_
 
     assert(tensor->extra == nullptr);
 
+    // A compute node without sources is not wired yet (the meta backend initializes its
+    // per-device copy of a node before it sets src[]): graph_compute attaches its extra on the
+    // first dispatch instead.
+    if (!ggml_op_is_empty(tensor->op) && (ggml_hsa_nsrcs(*tensor) == 0)) {
+        return GGML_STATUS_SUCCESS;
+    }
+
     auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(buffer->context);
     try {
         if (auto status = buf_ctx.attach_extra(*tensor); status != GGML_STATUS_SUCCESS) {
@@ -2332,6 +2339,27 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
                 continue;
             default:
                 break;
+        }
+
+        // a node initialized before its sources were wired gets its extra now (see
+        // ggml_backend_hsa_buffer_init_tensor)
+        if (node->extra == nullptr) {
+            if ((node->buffer == nullptr) || !ggml_backend_buffer_is_hsa(node->buffer)) {
+                GGML_HSA_LOG_ERROR("%s: tensor \"%s\" (%s) is not in an HSA buffer", __func__,
+                                   node->name, ggml_hsa_tensor_op_desc(*node));
+                status = GGML_STATUS_FAILED;
+                break;
+            }
+            auto & buf_ctx = *static_cast<ggml_backend_hsa_buffer_context *>(node->buffer->context);
+            try {
+                status = buf_ctx.attach_extra(*node);
+            } catch (const std::exception & ex) {
+                GGML_HSA_LOG_ERROR("%s: exception caught: %s", __func__, ex.what());
+                status = GGML_STATUS_FAILED;
+            }
+            if (status != GGML_STATUS_SUCCESS) {
+                break;
+            }
         }
 
         auto & tensor_extra = *static_cast<ggml_backend_hsa_tensor_extra *>(node->extra);
