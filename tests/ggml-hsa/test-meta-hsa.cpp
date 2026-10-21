@@ -11,6 +11,11 @@
 //     transformer does after such a MUL_MAT: C = A x B + D, with the generic AllReduce in between.
 // Inputs are small integers, so every product and partial sum is exact and the result must match a
 // host reference bit for bit.
+//
+// MUL_MAT always produces f32, so the cases above only reduce f32. The AllReduce hook the backend
+// exports for the meta backend (ggml_backend_comm_allreduce_tensor) is also called directly, on one
+// tensor per device, for f32, f16 and bf16, and with one device's node marked as not computed (an
+// empty slice), which must count as zero.
 
 #include <cstdint>
 #include <cstdio>
@@ -230,6 +235,100 @@ run_case(ggml_backend_dev_t devs[2], split_config config, int64_t M, int64_t N, 
     return check_result(got, fa, fb, fd, M, N, K);
 }
 
+// Calls the backend's AllReduce hook on one tensor of @p type per device of @p devs, holding
+// different small integers, and checks every tensor then holds their sum. With @p skip_second,
+// the second tensor's node is marked as not computed, so the sum is the first tensor alone.
+case_result run_allreduce_case(ggml_backend_dev_t devs[2], ggml_type type, bool skip_second) {
+    ggml_backend_reg_t reg = ggml_backend_hsa_reg();
+    auto comm_init = reinterpret_cast<ggml_backend_comm_init_t>(
+        ggml_backend_reg_get_proc_address(reg, "ggml_backend_comm_init"));
+    auto comm_free = reinterpret_cast<ggml_backend_comm_free_t>(
+        ggml_backend_reg_get_proc_address(reg, "ggml_backend_comm_free"));
+    auto comm_allreduce = reinterpret_cast<ggml_backend_comm_allreduce_tensor_t>(
+        ggml_backend_reg_get_proc_address(reg, "ggml_backend_comm_allreduce_tensor"));
+    if (comm_init == nullptr || comm_free == nullptr || comm_allreduce == nullptr) {
+        printf("  the backend does not export the AllReduce hook\n");
+        return case_result::fail;
+    }
+
+    using backend_ptr = std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)>;
+    using context_ptr = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
+    using buffer_ptr = std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)>;
+    constexpr int64_t n = 1000;
+    std::vector<backend_ptr> backends;
+    std::vector<context_ptr> ctxs;
+    std::vector<buffer_ptr> bufs;
+    ggml_backend_t raw_backends[2];
+    ggml_tensor * tensors[2];
+    std::vector<float> values[2];
+    for (int d = 0; d < 2; ++d) {
+        backends.emplace_back(ggml_backend_dev_init(devs[d], nullptr), ggml_backend_free);
+        ggml_init_params params{
+            /*.mem_size   =*/ggml_tensor_overhead(),
+            /*.mem_buffer =*/nullptr,
+            /*.no_alloc   =*/true,
+        };
+        ctxs.emplace_back(ggml_init(params), ggml_free);
+        if (backends.back() == nullptr || ctxs.back() == nullptr) {
+            printf("  could not create backend %d\n", d);
+            return case_result::fail;
+        }
+        tensors[d] = ggml_new_tensor_1d(ctxs.back().get(), type, n);
+        bufs.emplace_back(ggml_backend_alloc_ctx_tensors(ctxs.back().get(), backends.back().get()),
+                          ggml_backend_buffer_free);
+        if (bufs.back() == nullptr) {
+            printf("  could not allocate on backend %d\n", d);
+            return case_result::fail;
+        }
+        if (!(skip_second && d == 1)) {
+            tensors[d]->flags |= GGML_TENSOR_FLAG_COMPUTE;
+        }
+        values[d].resize(n);
+        for (int64_t k = 0; k < n; ++k) {
+            values[d][k] = static_cast<float>((k * (d + 3) + d) % 9 - 4);
+        }
+        set_values(tensors[d], values[d]);
+        raw_backends[d] = backends.back().get();
+    }
+
+    std::unique_ptr<void, decltype(comm_free)> comm_ctx{comm_init(raw_backends, 2), comm_free};
+    if (comm_ctx == nullptr) {
+        printf("  comm_init refused two HSA backends\n");
+        return case_result::fail;
+    }
+    if (!comm_allreduce(comm_ctx.get(), tensors)) {
+        printf("  allreduce declined the tensors\n");
+        return case_result::fail;
+    }
+
+    int64_t mismatches = 0;
+    std::vector<std::uint8_t> bytes(ggml_nbytes(tensors[0]));
+    std::vector<float> got(n);
+    for (int d = 0; d < 2; ++d) {
+        ggml_backend_tensor_get(tensors[d], bytes.data(), 0, bytes.size());
+        if (type == GGML_TYPE_F32) {
+            std::memcpy(got.data(), bytes.data(), bytes.size());
+        } else {
+            ggml_get_type_traits(type)->to_float(bytes.data(), got.data(), n);
+        }
+        for (int64_t k = 0; k < n; ++k) {
+            const float want = values[0][k] + (skip_second ? 0.0f : values[1][k]);
+            if (got[k] != want) {
+                if (mismatches < 8) {
+                    printf("  device %d element %lld: got %g want %g\n", d, (long long)k, got[k],
+                           want);
+                }
+                ++mismatches;
+            }
+        }
+    }
+    if (mismatches != 0) {
+        printf("  %lld / %lld elements mismatched\n", (long long)mismatches, (long long)(2 * n));
+        return case_result::fail;
+    }
+    return case_result::pass;
+}
+
 // Returns the first HSA device of type @p type, or @c nullptr.
 ggml_backend_dev_t find_device(ggml_backend_reg_t reg, enum ggml_backend_dev_type type) {
     for (std::size_t i = 0; i < ggml_backend_reg_dev_count(reg); ++i) {
@@ -289,7 +388,28 @@ int main() {
         }
     }
 
+    struct allreduce_case {
+        const char * name;
+        ggml_type type;
+        bool skip_second;
+    };
+    const allreduce_case allreduce_cases[] = {
+        {"allreduce f32", GGML_TYPE_F32, false},
+        {"allreduce f16", GGML_TYPE_F16, false},
+        {"allreduce bf16", GGML_TYPE_BF16, false},
+        {"allreduce bf16, second slice empty", GGML_TYPE_BF16, true},
+    };
+    for (const allreduce_case & tc : allreduce_cases) {
+        printf("case %s\n", tc.name);
+        if (run_allreduce_case(devs, tc.type, tc.skip_second) == case_result::pass) {
+            printf("  OK\n");
+        } else {
+            printf("  FAILED\n");
+            ++failures;
+        }
+    }
+
     printf("test-meta-hsa: %d failed, %d skipped, %zu total\n", failures, skips,
-           std::size(cases));
+           std::size(cases) + std::size(allreduce_cases));
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

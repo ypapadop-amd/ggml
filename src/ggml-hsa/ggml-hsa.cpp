@@ -2911,7 +2911,9 @@ static void * ggml_backend_hsa_comm_init(ggml_backend_t * backends, size_t n_bac
             return nullptr;
         }
     }
-    return new ggml_backend_hsa_comm_context{{backends, backends + n_backends}};
+    auto * comm_ctx = new ggml_backend_hsa_comm_context;
+    comm_ctx->backends.assign(backends, backends + n_backends);
+    return comm_ctx;
 }
 
 /**
@@ -2930,8 +2932,9 @@ static void ggml_backend_hsa_comm_free(void * comm_ctx) {
  * host-accessible, so the reduction drains every backend's queue and sums on the host in f32. A
  * tensor whose node was not computed (its slice was empty) counts as zero.
  *
- * @return @c true; a failed queue wait is recorded on the backend's context, so its next
- * graph_compute fails.
+ * @return @c true, also when a queue wait fails: the failure comes from the queue's error, which
+ * stays set and fails every later flush, so the meta backend's next graph_compute on that backend
+ * reports it. @c false would not report an error, it would select the fallback.
  */
 static bool ggml_backend_hsa_comm_allreduce_tensor(void * comm_ctx, ggml_tensor ** tensors) {
     const auto & backends = static_cast<ggml_backend_hsa_comm_context *>(comm_ctx)->backends;
@@ -2952,6 +2955,7 @@ static bool ggml_backend_hsa_comm_allreduce_tensor(void * comm_ctx, ggml_tensor 
         auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
         if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
             status != GGML_STATUS_SUCCESS) {
+            // no reduction: the device data is unsound, and the error is reported (see above)
             GGML_HSA_LOG_ERROR("%s: failed to wait for dispatches", __func__);
             return true;
         }
