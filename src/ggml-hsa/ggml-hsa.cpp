@@ -1944,17 +1944,6 @@ ggml_backend_buffer_type_t ggml_backend_hsa_buffer_type(std::int32_t device) {
     }
 }
 
-// HSA split buffer
-
-// TODO
-
-// HSA split buffer type
-
-/**
- * @brief Returns if @p buft is a split buffer.
- */
-static bool ggml_backend_buft_is_hsa_split(ggml_backend_buffer_type_t /* buft */) { return false; }
-
 // host buffer type
 
 static const char * ggml_backend_hsa_host_buffer_type_name(ggml_backend_buffer_type_t /* buft */) {
@@ -2310,8 +2299,10 @@ static enum ggml_status ggml_backend_hsa_graph_compute(ggml_backend_t backend,
     for (std::int32_t i = 0; (i < node_count) && (status == GGML_STATUS_SUCCESS); ++i) {
         ggml_tensor * node = ggml_graph_node(cgraph, i);
 
-        // early exit if operation does not require a dispatch
-        if (ggml_op_is_empty(node->op) || ggml_is_empty(node)) {
+        // early exit if operation does not require a dispatch or was disabled (e.g., by the meta
+        // backend for a device whose slice is empty)
+        if (ggml_op_is_empty(node->op) || ggml_is_empty(node) ||
+            ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0)) {
             continue;
         }
 
@@ -2764,8 +2755,7 @@ static bool ggml_backend_hsa_device_supports_op(ggml_backend_dev_t dev, const gg
 
 static bool ggml_backend_hsa_device_supports_buft(ggml_backend_dev_t dev,
                                                   ggml_backend_buffer_type_t buft) {
-    return (ggml_backend_buft_is_hsa(buft) || ggml_backend_buft_is_hsa_split(buft)) &&
-           buft->device == dev;
+    return ggml_backend_buft_is_hsa(buft) && buft->device == dev;
 }
 
 static std::int64_t get_op_batch_size(const ggml_tensor * op) {
@@ -2875,6 +2865,96 @@ static ggml_backend_feature * ggml_backend_hsa_get_features(ggml_backend_reg_t r
     return reg_ctx.features.data();
 }
 
+/**
+ * @brief Communication context for an AllReduce across HSA backends (see
+ * @ref ggml_backend_hsa_comm_allreduce_tensor).
+ */
+struct ggml_backend_hsa_comm_context {
+    std::vector<ggml_backend_t> backends;
+};
+
+/**
+ * @brief Creates the communication context for @p backends, or returns @c nullptr if one of them
+ * is not an HSA backend.
+ */
+static void * ggml_backend_hsa_comm_init(ggml_backend_t * backends, size_t n_backends) {
+    for (size_t i = 0; i < n_backends; ++i) {
+        if (!ggml_backend_is_hsa(backends[i])) {
+            return nullptr;
+        }
+    }
+    return new ggml_backend_hsa_comm_context{{backends, backends + n_backends}};
+}
+
+/**
+ * @brief Frees a communication context created by @ref ggml_backend_hsa_comm_init.
+ */
+static void ggml_backend_hsa_comm_free(void * comm_ctx) {
+    delete static_cast<ggml_backend_hsa_comm_context *>(comm_ctx);
+}
+
+/**
+ * @brief Sums @p tensors, one per backend of @p comm_ctx, and writes the sum to each of them.
+ *
+ * The meta backend calls this to combine partial results. Its fallback when this returns @c false
+ * dispatches an in-place ADD view and a FILL that have no tensor extra, which this backend cannot
+ * run, so this never returns @c false: it aborts on a tensor it cannot reduce. HSA buffers are
+ * host-accessible, so the reduction drains every backend's queue and sums on the host in f32. A
+ * tensor whose node was not computed (its slice was empty) counts as zero.
+ *
+ * @return @c true; a failed queue wait is recorded on the backend's context, so its next
+ * graph_compute fails.
+ */
+static bool ggml_backend_hsa_comm_allreduce_tensor(void * comm_ctx, ggml_tensor ** tensors) {
+    const auto & backends = static_cast<ggml_backend_hsa_comm_context *>(comm_ctx)->backends;
+    const ggml_type type = tensors[0]->type;
+    const std::int64_t ne = ggml_nelements(tensors[0]);
+    for (size_t i = 0; i < backends.size(); ++i) {
+        if (((type != GGML_TYPE_F32) && (type != GGML_TYPE_F16) && (type != GGML_TYPE_BF16)) ||
+            (tensors[i]->type != type) || (ggml_nelements(tensors[i]) != ne) ||
+            !ggml_is_contiguously_allocated(tensors[i])) {
+            GGML_ABORT("%s: cannot reduce tensor \"%s\" (%s, %s)", __func__, tensors[i]->name,
+                       ggml_type_name(tensors[i]->type),
+                       ggml_is_contiguously_allocated(tensors[i]) ? "contiguous"
+                                                                  : "not contiguous");
+        }
+    }
+
+    for (ggml_backend_t backend : backends) {
+        auto & ctx = *static_cast<ggml_backend_hsa_context *>(backend->context);
+        if (const ggml_status status = ggml_hsa_wait_dispatches(ctx);
+            status != GGML_STATUS_SUCCESS) {
+            GGML_HSA_LOG_ERROR("%s: failed to wait for dispatches", __func__);
+            return true;
+        }
+    }
+
+    const auto * traits = ggml_get_type_traits(type);
+    std::vector<float> sum(ne, 0.0f);
+    std::vector<float> partial(type == GGML_TYPE_F32 ? 0 : ne);
+    for (size_t i = 0; i < backends.size(); ++i) {
+        if ((tensors[i]->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+            continue;
+        }
+        const float * data = static_cast<const float *>(tensors[i]->data);
+        if (type != GGML_TYPE_F32) {
+            traits->to_float(tensors[i]->data, partial.data(), ne);
+            data = partial.data();
+        }
+        for (std::int64_t k = 0; k < ne; ++k) {
+            sum[k] += data[k];
+        }
+    }
+    for (size_t i = 0; i < backends.size(); ++i) {
+        if (type == GGML_TYPE_F32) {
+            std::memcpy(tensors[i]->data, sum.data(), ne * sizeof(float));
+        } else {
+            traits->from_float_ref(sum.data(), tensors[i]->data, ne);
+        }
+    }
+    return true;
+}
+
 static void * ggml_backend_hsa_reg_get_proc_address(ggml_backend_reg_t /* reg */,
                                                     const char * name) {
     if (strcmp(name, "ggml_backend_register_host_buffer") == 0) {
@@ -2885,6 +2965,15 @@ static void * ggml_backend_hsa_reg_get_proc_address(ggml_backend_reg_t /* reg */
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return reinterpret_cast<void *>(ggml_backend_hsa_get_features);
+    }
+    if (strcmp(name, "ggml_backend_comm_init") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_hsa_comm_init);
+    }
+    if (strcmp(name, "ggml_backend_comm_free") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_hsa_comm_free);
+    }
+    if (strcmp(name, "ggml_backend_comm_allreduce_tensor") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_hsa_comm_allreduce_tensor);
     }
     return nullptr;
 }
