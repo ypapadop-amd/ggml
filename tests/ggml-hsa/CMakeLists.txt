@@ -207,6 +207,10 @@ set_property(TEST ${TEST_TARGET} PROPERTY ENVIRONMENT "LLVM_PROFILE_FILE=${TEST_
 add_test(NAME ${TEST_TARGET}-permuted COMMAND $<TARGET_FILE:${TEST_TARGET}> 32 + 4)
 set_property(TEST ${TEST_TARGET}-permuted PROPERTY ENVIRONMENT
              "LLVM_PROFILE_FILE=${TEST_TARGET}-permuted.profraw")
+# a chain of two transposes composes back to the original layout and needs no copy (#155)
+add_test(NAME ${TEST_TARGET}-double-transposed COMMAND $<TARGET_FILE:${TEST_TARGET}> 32 + 4 2)
+set_property(TEST ${TEST_TARGET}-double-transposed PROPERTY ENVIRONMENT
+             "LLVM_PROFILE_FILE=${TEST_TARGET}-double-transposed.profraw")
 
 #
 # Kernel-inlining variants

@@ -50,8 +50,16 @@ int main(int argc, char * argv[]) {
     if (argc > 3) {
         rows = std::atoi(argv[3]);
     }
+    // each input goes through a chain of this many transposes; an even count composes back to the
+    // original layout, so the backend must not copy the inputs even though they are views of views
+    std::size_t transposes = 1;
+    if (argc > 4) {
+        transposes = std::atoi(argv[4]);
+    }
+    const bool transposed = (transposes % 2) != 0;
 
-    std::cout << "Creating " << rows << "x" << N << " arrays and doing A^T " << op << " B^T.\n";
+    std::cout << "Creating " << rows << "x" << N << " arrays and doing op(A, B) after "
+              << transposes << " transposes.\n";
 
     // create data
     using value_type = std::int32_t;
@@ -78,7 +86,7 @@ int main(int argc, char * argv[]) {
         std::cerr << "Could not create backend\n";
         return EXIT_FAILURE;
     }
-    const std::size_t tensor_count = 5;
+    const std::size_t tensor_count = 3 + 2 * transposes;
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
 
     // allocate tensors on HSA memory
@@ -91,14 +99,15 @@ int main(int argc, char * argv[]) {
     ggml_tensor * tensor_a = ggml_new_tensor_2d(ctx, ggml_type, N, rows);
     ggml_tensor * tensor_b = ggml_new_tensor_2d(ctx, ggml_type, N, rows);
 
-    ggml_tensor * tensor_a_trans = ggml_transpose(ctx, tensor_a);
-    ggml_tensor * tensor_b_trans = ggml_transpose(ctx, tensor_b);
+    ggml_tensor * input_a = tensor_a;
+    ggml_tensor * input_b = tensor_b;
+    for (std::size_t i = 0; i < transposes; ++i) {
+        input_a = ggml_transpose(ctx, input_a);
+        input_b = ggml_transpose(ctx, input_b);
+    }
 
     // create graph
     ggml_cgraph * gf = ggml_new_graph_custom(ctx, tensor_count, /*grads*/ false);
-
-    auto input_a = tensor_a_trans;
-    auto input_b = tensor_b_trans;
 
     // add operation
     ggml_tensor * tensor_result = nullptr;
@@ -147,13 +156,13 @@ int main(int argc, char * argv[]) {
     ggml_backend_tensor_get(tensor_result, std::data(result), 0, ggml_nbytes(tensor_result));
     std::cout << "A =         " << A << '\n'
               << "B =         " << B << '\n'
-              << "A^T " << op << " B^T = " << result << '\n';
+              << "op(A, B) =  " << result << '\n';
 
-    // check result: the result is contiguous with rows elements per row, and element (r, i) of
-    // the transposes is element (i, r) of A and B
+    // check result: the result is contiguous; after an odd number of transposes it has rows
+    // elements per row and element (r, i) is element (i, r) of A and B, otherwise it is in order
     std::size_t errors = 0;
     for (std::size_t i = 0; i < N * rows; ++i) {
-        const std::size_t j = (i % rows) * N + (i / rows);
+        const std::size_t j = transposed ? (i % rows) * N + (i / rows) : i;
         value_type expected = {};
         switch (op[0]) {
             case '+':
