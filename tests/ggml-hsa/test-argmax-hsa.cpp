@@ -211,6 +211,53 @@ int main() {
         {"1-wide -0", {-0.f}},    {"1-wide +inf", {kInf}}, {"1-wide -2", {-2.f}},
     };
 
+    // 16 and 13 wide, 20 rows: a tile of whole rows, so on aie2p the first 16 rows are reduced
+    // together as a tree that pairs adjacent column runs, 1 | 1, 2 | 2, 4 | 4, 8 | 8. Each tie
+    // below straddles one of those pairings, and the reference wants the later column.
+    const auto tree_rows = [](std::size_t n) {
+        std::vector<test_row> rows = {
+            sparse_row("tie 0, 1", n, {{0, 9.f}, {1, 9.f}}),
+            sparse_row("tie 1, 2", n, {{1, 9.f}, {2, 9.f}}),
+            sparse_row("tie 3, 4", n, {{3, 9.f}, {4, 9.f}}),
+            sparse_row("tie 2, 5", n, {{2, 9.f}, {5, 9.f}}),
+            sparse_row("tie 7, 8", n, {{7, 9.f}, {8, 9.f}}),
+            sparse_row("tie 0, 8", n, {{0, 9.f}, {8, 9.f}}),
+            sparse_row("tie 6, 9, 11", n, {{6, 9.f}, {9, 9.f}, {11, 9.f}}),
+            sparse_row("tie 0 and last", n, {{0, 9.f}, {n - 1, 9.f}}),
+            sparse_row("tie 4, last - 1", n, {{4, 9.f}, {n - 2, 9.f}}),
+            sparse_row("max at last", n, {{n - 1, 9.f}}),
+            sparse_row("max at 0", n, {{0, 9.f}}),
+            sparse_row("-0 at 12 ties +0", n, {{3, 0.f}, {12, -0.f}}),
+            sparse_row("+0 at 12 ties -0", n, {{3, -0.f}, {12, 0.f}}),
+            sparse_row("-NaN at 5 discards", n, {{2, 9.f}, {5, -kNaN}}),
+            {"all -inf", std::vector<float>(n, -kInf)},
+            {"all equal", std::vector<float>(n, 5.f)},
+            // Rows 16-19: past the tree's block.
+            sparse_row("NaN at 1 discards", n, {{0, 9.f}, {1, kNaN}}),
+            sparse_row("tie 1, 2 (row 17)", n, {{1, 9.f}, {2, 9.f}}),
+            sparse_row("+inf at 10", n, {{10, kInf}}),
+            sparse_row("tie 5, 6 (row 19)", n, {{5, 9.f}, {6, 9.f}}),
+        };
+        return rows;
+    };
+    const std::vector<test_row> rows16x20 = tree_rows(16);
+    const std::vector<test_row> rows13x20 = tree_rows(13);
+
+    // 100 wide: 6 whole vectors and a tail of 4, so a row runs the whole-vector loop at its
+    // promised minimum trip count and over.
+    const std::vector<test_row> rows100 = {
+        sparse_row("100-wide max at 0", 100, {{0, 9.f}}),
+        sparse_row("100-wide max at 95 (whole)", 100, {{95, 9.f}}),
+        sparse_row("100-wide max in tail at 98", 100, {{98, 9.f}}),
+        sparse_row("100-wide tie 3, 83 (one lane)", 100, {{3, 9.f}, {83, 9.f}}),
+        sparse_row("100-wide tie 70, 5 (two lanes)", 100, {{5, 9.f}, {70, 9.f}}),
+        sparse_row("100-wide tie 17, 97 (tail)", 100, {{17, 9.f}, {97, 9.f}}),
+        sparse_row("100-wide -0 at 64 ties +0", 100, {{2, 0.f}, {64, -0.f}}),
+        sparse_row("100-wide NaN at 50 discards", 100, {{2, 9.f}, {50, kNaN}}),
+        sparse_row("100-wide -NaN at 80", 100, {{90, 9.f}, {80, -kNaN}, {85, 0.5f}}),
+        {"100-wide all -inf", std::vector<float>(100, -kInf)},
+    };
+
     bool all_ok = true;
     printf("ARGMAX 10-wide:\n");
     all_ok = run_rows(backend, rows10) && all_ok;
@@ -224,6 +271,12 @@ int main() {
     all_ok = run_rows(backend, rows32) && all_ok;
     printf("ARGMAX 1-wide:\n");
     all_ok = run_rows(backend, rows1) && all_ok;
+    printf("ARGMAX 16-wide x 20:\n");
+    all_ok = run_rows(backend, rows16x20) && all_ok;
+    printf("ARGMAX 13-wide x 20:\n");
+    all_ok = run_rows(backend, rows13x20) && all_ok;
+    printf("ARGMAX 100-wide:\n");
+    all_ok = run_rows(backend, rows100) && all_ok;
 
     ggml_backend_free(backend);
     printf("%s\n", all_ok ? "ALL PASSED" : "FAILURES");
