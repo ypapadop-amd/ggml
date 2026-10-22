@@ -161,6 +161,12 @@ extern "C" {
  * so loads are unaligned; a load may run past its row into the next, whose lanes are ignored,
  * but never past the tile.
  *
+ * On aie2p, two paths replace single-row @ref row_search instead: rows no longer than a vector
+ * are folded V at a time through a reduction tree (@ref fold_rows, @ref fold) rather than one
+ * horizontal reduction per row, and a row's own whole-vector loop overlaps several vectors at
+ * once (@ref row_search::step_all) instead of waiting on one compare-then-select chain per
+ * vector. Both still flag a NaN rather than resolve it inline, same as @ref row_search.
+ *
  * @param[in]  in       num_rows rows of N elements each.
  * @param[out] out      Index of each row's max element.
  * @param[in]  N        Number of elements per row.
