@@ -5,6 +5,8 @@
  * @brief Clamp operation for AIE kernels.
  */
 
+#include <bit>
+#include <cstdint>
 #include <type_traits>
 
 #include "ggml-aie.hpp"
@@ -59,26 +61,74 @@ void ggml_op_clamp(const INPUT_DTYPE * __restrict in,
             },
             in);
 #else  // __AIEARCH__ != 20
-        const std::int32_t klo = float_order_key(min_val);
-        const std::int32_t khi = float_order_key(max_val);
-        const std::int32_t blo = __builtin_bit_cast(std::int32_t, min_val);
-        const std::int32_t bhi = __builtin_bit_cast(std::int32_t, max_val);
-        transform_vector_n<aligned>(
-            reinterpret_cast<std::int32_t *>(out), N,
-            [=](auto v) {
-                using IV = decltype(v);
-                const auto k =
-                    aie::select(v, aie::sub(aie::broadcast<std::int32_t, IV::size()>(INT32_MIN), v),
-                                aie::lt(v, aie::zeros<std::int32_t, IV::size()>()));
-                const auto m = aie::select(bhi, v, aie::lt(k, khi));
-                return aie::select(blo, m, aie::gt(aie::min(k, khi), klo));
-            },
-            [=](std::int32_t v) {
-                const std::int32_t k = v < 0 ? INT32_MIN - v : v;
-                const std::int32_t m = k < khi ? v : bhi;
-                return (k < khi ? k : khi) > klo ? m : blo;
-            },
-            reinterpret_cast<const std::int32_t *>(in));
+       // MAX(MIN(x,max),min) is x > min ? (x >= max ? max : x) : min, and whenever min < max
+       // (x >= max then implies x > min). Each test becomes one compare of x's bits against a
+       // threshold, signed or unsigned by the bound's sign: signed int32 order matches float
+       // order on non-negative floats, and unsigned order reverses float order on negative ones
+       // and puts every non-negative float below them.
+       //
+       // - x >= max: max > 0, bits >= max's bits signed (-0 and every negative float are negative
+       //   ints); max a zero, bits <= 0x80000000 unsigned (every non-negative float and -0); max
+       //   < 0, bits <= max's bits unsigned.
+       // - x > min: min a zero, bits > 0 signed; min > 0, bits > min's bits signed; min < 0, bits
+       //   < min's bits unsigned. When min is not below max the result is min everywhere: the
+       //   threshold is set so the test is never true (bits > INT32_MAX signed, never).
+       //
+       // The threshold can differ from the bound's own bits (the zero and "not below" cases
+       // above), so the output keeps the bound's bits separately: selecting the threshold itself
+       // would store -0 for a +0 bound, or garbage for a min-not-below-max range.
+       //
+       // Every non-NaN result is the CPU's bit for bit (a zero bound included). A NaN with the
+       // sign bit clear clamps to max_val, as on the CPU; one with it set to min_val, where the
+       // CPU gives max_val.
+        const std::int32_t blo = std::bit_cast<std::int32_t>(min_val);
+        const std::int32_t bhi = std::bit_cast<std::int32_t>(max_val);
+        const bool hi_signed = bhi > 0;
+        const std::int32_t hi_thresh = bhi == 0 ? INT32_MIN : bhi;
+        const bool below = float_order_key(min_val) < float_order_key(max_val);
+        const bool lo_signed = !below || blo >= 0 || blo == INT32_MIN;
+        const std::int32_t lo_thresh = !below ? INT32_MAX : (blo == INT32_MIN ? 0 : blo);
+        const auto uhi = static_cast<std::uint32_t>(hi_thresh);
+        const auto ulo = static_cast<std::uint32_t>(lo_thresh);
+
+        const auto run = [&](auto hi_signed_c, auto lo_signed_c) {
+            constexpr bool HiSigned = decltype(hi_signed_c)::value;
+            constexpr bool LoSigned = decltype(lo_signed_c)::value;
+            transform_vector_n<aligned>(
+                reinterpret_cast<std::int32_t *>(out), N,
+                [=](auto v) {
+                    const auto u = v.template cast_to<std::uint32_t>();
+                    const auto at_hi = [&] {
+                        if constexpr (HiSigned) {
+                            return aie::ge(v, hi_thresh);
+                        } else {
+                            return aie::le(u, uhi);
+                        }
+                    }();
+                    const auto above_lo = [&] {
+                        if constexpr (LoSigned) {
+                            return aie::gt(v, lo_thresh);
+                        } else {
+                            return aie::lt(u, ulo);
+                        }
+                    }();
+                    return aie::select(blo, aie::select(v, bhi, at_hi), above_lo);
+                },
+                [=](std::int32_t b) {
+                    const auto u = static_cast<std::uint32_t>(b);
+                    const bool at_hi = HiSigned ? b >= hi_thresh : u <= uhi;
+                    const bool above_lo = LoSigned ? b > lo_thresh : u < ulo;
+                    return above_lo ? (at_hi ? bhi : b) : blo;
+                },
+                reinterpret_cast<const std::int32_t *>(in));
+        };
+        if (hi_signed) {
+            lo_signed ? run(std::true_type{}, std::true_type{})
+                      : run(std::true_type{}, std::false_type{});
+        } else {
+            lo_signed ? run(std::false_type{}, std::true_type{})
+                      : run(std::false_type{}, std::false_type{});
+        }
 #endif // __AIEARCH__ == 20
     } else {
         const auto lo = static_cast<INPUT_DTYPE>(min_val);

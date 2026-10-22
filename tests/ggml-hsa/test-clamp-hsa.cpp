@@ -159,6 +159,19 @@ int main() {
         {8192, 0.0f, std::numeric_limits<float>::max(), "vector [0, max]"},
         {19, 0.0f, std::numeric_limits<float>::max(), "scalar [0, max]"},
         {8192, -inf, -0.0f, "vector [-inf, -0]"},
+        // aie2p picks its compare mode from each bound's sign (signed or unsigned bit compare):
+        // both bounds positive, both negative, each zero-bound combination, and min == max, on
+        // both paths.
+        {8192, 0.25f, 0.5f, "vector [0.25, 0.5]"},
+        {19, 0.25f, 0.5f, "scalar [0.25, 0.5]"},
+        {8192, -0.5f, -0.25f, "vector [-0.5, -0.25]"},
+        {19, -0.5f, -0.25f, "scalar [-0.5, -0.25]"},
+        {8192, -0.0f, 0.5f, "vector [-0, 0.5]"},
+        {8192, -0.5f, 0.0f, "vector [-0.5, 0]"},
+        {19, -0.5f, 0.0f, "scalar [-0.5, 0]"},
+        {8192, -0.0f, 0.0f, "vector [-0, 0]"},
+        {8192, 0.5f, 0.5f, "vector min=max"},
+        {19, 0.5f, 0.5f, "scalar min=max"},
     };
 
     bool all_ok = true;
