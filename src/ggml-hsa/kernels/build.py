@@ -116,9 +116,9 @@ def _get_compiler(backend: Backend, arch: str) -> Callable:
 
         return compile_iron_kernel
     if backend.name == Backend.TRITON.name:
-        from triton_kernels.utils import is_npu_arch
+        from triton_kernels.spec_utils import ArchKind, arch_kind
 
-        if is_npu_arch(arch):
+        if arch_kind(arch) is ArchKind.NPU:
             # aie.iron must load before triton or a later import aborts on an
             # LLVM CommandLine clash; build_triton imports triton at module
             # scope, so the order has to be set here. NPU only, since the gfx*
@@ -281,7 +281,7 @@ def ggml_compile_op(
     exported_name: str,
     config: CompilerConfig,
 ) -> None:
-    """Compile a GGML operation kernel to PDI and instruction files.
+    """Compile a GGML operation kernel to an hsaco.
 
     Main entry point for kernel compilation: looks up the dispatch module,
     calls it to obtain a KernelSpec (backend + function), then invokes the

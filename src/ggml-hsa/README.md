@@ -12,22 +12,51 @@ The GGML HSA (`ggml-hsa`) backend enables GGML tensor operations to run on AMD X
 [AMD XDNA]: https://www.amd.com/en/technologies/xdna.html
 [AMD XDNA2]: https://www.amd.com/en/technologies/xdna.html#xdna2
 
+AMD GPUs (`gfx*` HSA agents) are supported experimentally when built with `-DGGML_HSA_GPU=ON`.
+See [Supported Operations](#supported-operations), [GPU-only Build](#gpu-only-build) and
+[GPU Kernels](#gpu-kernels).
+
 ## Supported Operations
 
-| Category  | Operations                                                     |
-|-----------|----------------------------------------------------------------|
-| Binary    | `ADD`, `SUB`, `MUL`, `DIV` (with multi-dimensional broadcast)  |
-| Unary     | `SQR`, `SQRT`, `LOG`, `ABS`, `SGN`, `NEG`, `STEP`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC`, `RELU`, `HARDSWISH`, `HARDSIGMOID` |
-| Matrix    | `MUL_MAT`                                                      |
-| Pooling   | `POOL_2D` (`MAX` and `AVG`, with padding)                     |
-| Convolution | `IM2COL` (2D, `f32` image, `f32`/`bf16` output)             |
-| Reduction | `ARGMAX`, `COUNT_EQUAL`                                        |
-| Loss      | `CROSS_ENTROPY_LOSS`                                           |
-| Other     | `SCALE`, `SOFT_MAX`, `CLAMP`                                   |
-| Host-only | `DUP`, `CPY`, `CONT` (CPU execution; a dtype-only `CPY`/`DUP` runs on the NPU) |
+Each device has its own kernel backends:
 
-> **Note:** Operations like `SIN`, `COS`, `EXP`, `TANH`, `ELU`, `SIGMOID`, `SILU`,
-> `GELU`, `GELU_QUICK`, `GELU_ERF`, `XIELU` are registered but not yet implemented.
+- **NPU, IRON:** [IRON](#iron-mlir-aie) designs, JIT-compiled to a PDI; the default NPU backend.
+- **NPU, Triton:** [Triton-XDNA](#triton-xdna) kernels, tried only when the IRON kernel cannot be
+  compiled (or first, with `GGML_HSA_JIT_COMPILER_ORDER=triton,iron`).
+- **GPU, Triton:** Triton kernels compiled ahead of time to a `.hsaco` by the JIT compiler.
+- **GPU, HIP:** HIP kernels precompiled with [`generate_gpu_kernels.py`](#generating-precompiled-gpu-kernels),
+  for builds without JIT compilation.
+
+An operation is supported on a device only for the shapes and types one of its backends can build a
+kernel for; anything else reports `not supported` and runs elsewhere. Blank cells have no kernel.
+
+| Operation | NPU: IRON | NPU: Triton | GPU: Triton | GPU: HIP |
+|-----------|-----------|-------------|-------------|----------|
+| `ADD` | ✓ broadcast | equal shapes, contiguous | ✓ broadcast of `src1`, contiguous | equal shapes, contiguous; `f32`, `f16` or `bf16`, or an `f16`/`bf16` source with an `f32` source |
+| `SUB`, `MUL`, `DIV` | ✓ broadcast | | | |
+| `SCALE` | ✓ | | | `f32`, contiguous |
+| `CLAMP` | ✓ | | | |
+| `RELU` | ✓ | contiguous; `f32` rounded to `bf16` precision | contiguous | |
+| `ABS`, `SGN`, `NEG`, `STEP`, `HARDSWISH`, `HARDSIGMOID`, `FLOOR`, `CEIL`, `ROUND`, `TRUNC` | ✓ | | | |
+| `GELU` | ✓ (see [Known Issues](#known-issues)) | | | |
+| `SQR`, `SQRT`, `LOG` | ✓ | | | |
+| `MUL_MAT` | ✓ | 2-D `bf16`, contiguous | 2-D (no batch), contiguous | |
+| `SOFT_MAX` | ✓ (no ALiBi with a mask) | | `f32`, no mask, no ALiBi, rows of at most 32768 elements, contiguous | |
+| `NORM` | ✓ | | | |
+| `DIAG_MASK_INF` | ✓ | | | |
+| `POOL_2D` | ✓ `MAX`, `AVG`, with padding | | `f32`/`f16` input, `f32` output, contiguous | |
+| `IM2COL` | ✓ 2-D, `f32` image, `f32`/`bf16` output | | 2-D `f32`, contiguous | |
+| `CONV_2D` | ✓ `f32`, contiguous | | `f32`, contiguous | |
+| `ARGMAX` | ✓ | | `f32`, contiguous | |
+| `COUNT_EQUAL` | ✓ | | `i32`, contiguous | |
+| `CROSS_ENTROPY_LOSS` | ✓ | | `f32`, contiguous | |
+
+`DUP`, `CPY`, `CONT` and `GET_ROWS` run on the host CPU for both devices. On the NPU, a `CPY` that
+only changes the dtype of a contiguous tensor runs on the device as an `HSA_CONVERT` kernel (IRON),
+and an `f32` `MUL_MAT` operand is converted and padded by an `HSA_CONVERT_PAD` kernel (IRON).
+
+`SIN`, `COS`, `EXP`, `TANH`, `ELU`, `SIGMOID`, `SILU`, `GELU_QUICK`, `GELU_ERF` and `XIELU` are
+registered but have no kernel on any device.
 
 ### Broadcasting
 
@@ -58,42 +87,90 @@ compute that uses it**; flag it with `ggml_set_input()` if its contents change b
 
 ### Tested Configurations
 
-| Component   | Version                                                                            |
-|-------------|------------------------------------------------------------------------------------|
-| OS          | [Ubuntu 24.04.2], [Ubuntu 25.10]                                                   |
-| ROCR        | [TheRock] nightly `10.2.0a20261006` (rocm-systems `81d4fa3`), or built from source |
-| XDNA Driver | [1.6][XDNA Driver 1.6]                                                             |
-| MLIR-AIE    | [1.4.4][MLIR-AIE 1.4.4]                                                            |
-| Triton-XDNA | `3.6.0.2026100504+694d60d` ([`requirements-triton.txt`](requirements-triton.txt))  |
+Last verified 2026-10-16 on an `aie2` NPU (Phoenix) and a `gfx1103` GPU (Radeon 780M), before the
+move to hsaco dispatch; the hsaco dispatch was verified on an `aie2p` NPU (Strix) with ROCR built
+from `7a71bfb`.
+
+| Component                | Version                                                                            |
+|--------------------------|------------------------------------------------------------------------------------|
+| OS                       | [Ubuntu 25.10], Linux 6.17.0-41 (earlier: [Ubuntu 24.04.2])                         |
+| ROCR                     | Built from rocm-systems `develop` at or after [`7a71bfb`][ROCR 7a71bfb]            |
+| ROCR (GPU only)          | also ROCm 10.1.0 (HSA runtime 1.21)                                                |
+| GPU kernel driver        | `amdgpu-dkms` 7.1.9 (`7.1.9.31600000`)                                             |
+| XDNA driver              | `amdxdna` 2.23.0, with XRT 2.23.0                                                  |
+| MLIR-AIE                 | [1.4.5-alpha.1][MLIR-AIE 1.4.5-alpha.1], with `llvm-aie` `22.0.0.2026101601`       |
+| Triton-XDNA              | `3.6.0.2026101704+7a8fa24` ([`requirements-triton.txt`](requirements-triton.txt))  |
+
+MLIR-AIE and Triton-XDNA are pinned in [`requirements-iron.txt`](requirements-iron.txt) and
+[`requirements-triton.txt`](requirements-triton.txt); `llvm-aie` only has a lower bound (`>=22.0.0`)
+and resolves to the latest nightly.
 
 [Ubuntu 24.04.2]: https://releases.ubuntu.com/noble/
 [Ubuntu 25.10]: https://releases.ubuntu.com/questing/
 [TheRock]: https://github.com/ROCm/TheRock/blob/main/RELEASES.md
-[XDNA Driver 1.6]: https://github.com/amd/xdna-driver/tree/1.6
-[MLIR-AIE 1.4.4]: https://github.com/Xilinx/mlir-aie/tree/v1.4.4
+[ROCR 7a71bfb]: https://github.com/ROCm/rocm-systems/commit/7a71bfb024e106a0941d14ad560a2befc5277227
+[MLIR-AIE 1.4.5-alpha.1]: https://github.com/Xilinx/mlir-aie/tree/v1.4.5-alpha.1
 
 ### ROCm
 
 `ggml-hsa` needs a [ROCR](https://github.com/ROCm/rocm-systems/tree/develop/projects/rocr-runtime)
-with NPU support, from either:
+with NPU support that loads AIE hsacos (HSA code objects). That support, including full-ELF kernels
+that load several PDIs (Triton-XDNA's full ELF on aie2p loads two), landed in rocm-systems `develop`
+with [`7a71bfb`][ROCR 7a71bfb] ("feat(rocr/aie): hsaco support for AIE agents",
+[ROCm/rocm-systems#12847](https://github.com/ROCm/rocm-systems/pull/12847)). Build ROCR from
+`develop` at or after that commit (see [Compiling ROCR from source](#compiling-rocr-from-source)).
 
-- [TheRock](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)'s nightly pip wheels, from
-  `10.2.0a20261006` on (see [Using TheRock's ROCR](#using-therocks-rocr)).
-- A ROCR built from [`develop`](https://github.com/ROCm/rocm-systems/tree/develop) at or after
-  [`512eb6021e7`](https://github.com/ROCm/rocm-systems/commit/512eb6021e7) (see
-  [Compiling ROCR from source](#compiling-rocr-from-source)).
+[TheRock] nightly wheels include it as of `10.2.0a20261020`: TheRock moved its rocm-systems pin from
+`2a8fffb` to `4b7b5e1`, which includes `7a71bfb`, on 2026-10-19
+([ROCm/TheRock#9353](https://github.com/ROCm/TheRock/pull/9353)), and that landed in the next day's
+nightly. Earlier nightlies predate the bump; see [Using TheRock's ROCR](#using-therocks-rocr) to
+check a wheel's pin before relying on it.
 
-`ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API.
+`ggml-hsa` allocates its buffers with the HSA virtual memory (vmem) API, and the NPU needs a ROCR
+whose vmem unmap supports XDNA. A system ROCm is not enough, even when it ships the AIE header:
+ROCm 10.1.0's ROCR (HSA runtime 1.21) builds and dispatches to the NPU, but `hsa_amd_vmem_unmap`
+then fails with `HSA_STATUS_ERROR` and the backend aborts. A GPU-only build can use the system
+ROCm (see [GPU-only Build](#gpu-only-build)).
+
+What an hsaco holds depends on the architecture:
+
+- **aie2p:** a full ELF (IRON: `aiecc --get-full-elf`; Triton: Triton-XDNA's `elf` output), which
+  carries its own PDI. A queue can run any number of distinct full-ELF kernels.
+- **aie2:** a PDI and an instruction sequence. A queue holds at most 32 distinct PDIs (a
+  driver/firmware limit), so at most 32 distinct kernels can share a queue.
+
+ROCR rejects a dispatch batch that mixes the two kinds. Every kernel built for one architecture is of
+the same kind, so that cannot happen unless the kernel cache holds kernels from an older build.
+
+Packing a PDI-plus-instructions kernel reads its PDI out of its xclbin with `xclbinutil`, from
+[XRT](https://github.com/Xilinx/XRT). If it is not on `PATH`, point `AIE_XCLBINUTIL` at it.
+
+After upgrading from a build that packed aie2p kernels as PDI plus instructions, clear the kernel
+cache once (`GGML_HSA_KERNEL_CACHE_CLEAR=1`): the cache is keyed by op, shapes and dtypes only, so it
+would keep serving the old kernels, and mixing them with new ones fails the batch.
 
 ### Using TheRock's ROCR
+
+A [TheRock] wheel can replace the ROCR built from source once its rocm-systems pin is at or after
+`7a71bfb`; `10.2.0a20261020` and later nightlies qualify (see [ROCm](#rocm)). Verified on an `aie2p`
+NPU (Strix) against `10.2.0a20261020`: `ctest -R 'hsa|mnist'` from a cold kernel cache matches the
+ROCR-from-source result.
 
 ```bash
 python3 -m venv .venv-rocm
 .venv-rocm/bin/pip install --index-url https://nightly.repo.amd.com/rocm/whl-next/ \
-  "rocm[devel]==10.2.0a20261006"
+  "rocm[devel]==10.2.0a20261020"
 .venv-rocm/bin/rocm-sdk init                        # expands the devel tree
 ROCM_SDK="$(.venv-rocm/bin/rocm-sdk path --root)"
 ls "$ROCM_SDK/include/hsa/hsa_ext_amd_aie.h"        # the AIE header
+```
+
+To check an earlier or different wheel's pin before relying on it:
+
+```bash
+SITE="$(.venv-rocm/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+jq -r '.submodules[] | select(.submodule_name == "rocm-systems") | .pin_sha' \
+  "$SITE/_rocm_sdk_core/share/therock/therock_manifest.json"   # must be 7a71bfb or later
 ```
 
 Build with `-Dhsa-runtime64_DIR="$ROCM_SDK/lib/cmake/hsa-runtime64"` (see [Building](#building)).
@@ -102,17 +179,22 @@ The build records the library's path, so no `LD_LIBRARY_PATH` is needed at run t
 ### Compiling ROCR from source
 
 ```bash
-REPO=/path/to/rocm-systems        # a checkout of https://github.com/ROCm/rocm-systems, `develop` branch
+REPO=/path/to/rocm-systems        # a checkout of https://github.com/ROCm/rocm-systems, `develop` at or after 7a71bfb
 ROCR=$REPO/projects/rocr-runtime
-PREFIX=$HOME/opt/rocm             # must not be /opt/rocm: that is the system runtime and lacks the AIE header
+PREFIX=$HOME/opt/rocm             # must not be /opt/rocm: that is the system runtime, without NPU vmem support
 
-cmake -S "$ROCR" -B "$ROCR/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX"
+cmake -S "$ROCR" -B "$ROCR/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+  -DIMAGE_SUPPORT=OFF
 cmake --build "$ROCR/build" -j"$(nproc)"
 cmake --install "$ROCR/build"
 ```
 
+`IMAGE_SUPPORT=OFF` skips the GPU image blit kernels, which `ggml-hsa` does not use. With it on, the
+build compiles them for every GPU target ROCR lists, and a clang that does not know one of them (e.g.,
+Ubuntu's clang 22 and `gfx1170`) fails with `invalid target ID`.
+
 Install `libdrm-dev` and `libnuma-dev` first if they are missing. Confirm the AIE header made it into
-the install, since the system runtime does not have it:
+the install:
 
 ```bash
 ls "$PREFIX/include/hsa/hsa_ext_amd_aie.h"
@@ -158,15 +240,23 @@ Install Triton dependencies (includes IRON):
 
 ```bash
 python3 -m pip install -r src/ggml-hsa/requirements-triton.txt
+python3 -m pip install --no-deps \
+  --find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2 \
+  mlir_aie_no_rtti==1.4.5.dev48+gcb6f2d1
 ```
 
-Or use the setup script:
+The second command is needed because MLIR-AIR pins an MLIR-AIE (`1.4.4.dev82`) older than the hsaco
+packer (`aie.compiler.hsaco`) that every kernel is packed with, so `requirements-triton.txt` cannot
+request a newer one. `pip check` does not report the override: it does not check the extra that
+carries MLIR-AIR's pin.
+
+Or use the setup script, which does both:
 
 ```bash
 source src/ggml-hsa/env_setup.sh triton
 ```
 
-Compiling a Triton kernel packages an xclbin with `xclbinutil`, from [XRT](https://github.com/Xilinx/XRT),
+On aie2, compiling a Triton kernel packages an xclbin with `xclbinutil`, from [XRT](https://github.com/Xilinx/XRT),
 and `ggml-hsa` reads the PDI back out of it with the same tool. If it is not on `PATH`, point
 `AIE_XCLBINUTIL` at it:
 
@@ -184,20 +274,55 @@ export AIE_XCLBINUTIL=/opt/xilinx/xrt/bin/xclbinutil
 cmake -S . -B build \
   -DGGML_HSA=ON \
   -DGGML_HSA_JIT_COMPILE=ON \
-  -Dhsa-runtime64_DIR="$ROCM_SDK/lib/cmake/hsa-runtime64" \
+  -Dhsa-runtime64_DIR="$PREFIX/lib/cmake/hsa-runtime64" \
   -DCMAKE_BUILD_TYPE=Release
 
 cmake --build build --config Release -j
 ```
 
-`hsa-runtime64_DIR` is the ROCR from [ROCm](#rocm): `$ROCM_SDK` for TheRock's, or
-`$PREFIX/lib/cmake/hsa-runtime64` for one built from source. With JIT compilation, configure and
+`$PREFIX` is where the ROCR from [ROCm](#rocm) was installed. With JIT compilation, configure and
 run with the backend's environment active, so that the embedded interpreter finds its packages:
 
 ```bash
 source .venv/bin/activate        # from env_setup.sh
 ./build/bin/test-vector-hsa 1024 + f32
 ```
+
+A build with GPU devices (`-DGGML_HSA_GPU=ON`) also links comgr. Take it from the same ROCm as the
+ROCR, e.g. `-Damd_comgr_DIR="$ROCM_SDK/lib/cmake/amd_comgr"`. Otherwise CMake finds the system
+ROCm's comgr, puts `/opt/rocm/lib` first in the binary's run path, and the binary silently loads the
+system ROCR instead of the one `hsa-runtime64_DIR` names. Check with
+`ldd build/bin/test-backend-ops | grep hsa-runtime`.
+
+### GPU-only Build
+
+A build with only GPU devices does not need a ROCR with NPU support: the system ROCm's ROCR works
+(verified with ROCm 7.2.3 on `gfx1030`, and with ROCm 10.1.0 and TheRock `10.2.0a20261016` on
+`gfx1103`). On `gfx1103`, Linux 6.17's in-tree `amdgpu` driver corrupts results under the vmem API
+and `amdgpu-dkms` 7.1.9 does not (see [Known Issues](#known-issues)).
+
+```bash
+cmake -S . -B build \
+  -DGGML_HSA=ON \
+  -DGGML_HSA_AIE=OFF \
+  -DGGML_HSA_GPU=ON \
+  -DGGML_HSA_JIT_COMPILE=ON \
+  -Dhsa-runtime64_DIR=/opt/rocm/lib/cmake/hsa-runtime64 \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j --target ggml-hsa test-backend-ops
+```
+
+With `GGML_HSA_JIT_COMPILE=ON`, the Triton GPU kernels are compiled at run time, so configure and run
+with the Triton environment active (`source src/ggml-hsa/env_setup.sh triton`). With
+`GGML_HSA_JIT_COMPILE=OFF`, only precompiled HIP kernels are used (see
+[Generating precompiled GPU kernels](#generating-precompiled-gpu-kernels)).
+
+```bash
+LD_LIBRARY_PATH=/opt/rocm/lib ./build/bin/test-backend-ops -o ADD -b HSA0
+```
+
+Operations or shapes without a GPU kernel report `not supported` and are skipped; they are not
+failures.
 
 ### Combined HSA + HIP Build
 
@@ -225,9 +350,8 @@ A process loads only one `libhsa-runtime64.so.1`, and HIP and `ggml-hsa` must sh
 ROCR with NPU support, which a system ROCm usually does not provide: for example, ROCm 7.2.4's
 `libamdhip64` links its own `libhsa-runtime64` without AIE support.
 
-TheRock's nightly wheels (`10.2.0a20261006` or later) provide both. Running HIP and `ggml-hsa`
-together on the wheel's ROCR has not been verified yet; the setup below, with a ROCR built from
-source, is the verified one.
+One way to get a matching HIP is [TheRock]'s nightly pip wheels, run against the ROCR built from
+source:
 
 ```bash
 python3 -m venv build/.venv-rocm
@@ -333,6 +457,84 @@ JIT compilation generates kernels on-the-fly. Precompiled kernels in `GGML_HSA_K
 
 > **Warning:** Setting `GGML_HSA_KERNEL_CACHE_CLEAR=1` deletes all files in the cache directory.
 
+## GPU Kernels
+
+On a GPU device, the backend loads AMDGPU code objects, searching, in order:
+
+```text
+1. ${GGML_HSA_KERNEL_DIR}/<device_name>/<kernel_name>.hsaco   (precompiled)
+2. <cache_dir>/<device_name>/<kernel_name>.hsaco             (cache)
+```
+
+`<device_name>` is the HSA agent name (e.g. `gfx1151`) and `<kernel_name>` is the sanitized ggml
+kernel name (e.g. `add_8f32_8f32_8f32`). The loader reads the kernel descriptor symbol from the code
+object's metadata rather than deriving it from the file name: kernels from
+`generate_gpu_kernels.py` export the kernel name itself (`add_8f32_8f32_8f32.kd`), and a Triton
+kernel exports its `@triton.jit` function name (e.g. `gemm_kernel.kd`).
+
+A code object without HIP hidden arguments, such as a Triton kernel, bakes its launch geometry in at
+compile time and needs a `<kernel_name>.hsaco.json` sidecar holding `grid_size_x` and
+`workgroup_size_x`, plus an optional `group_segment_size`: the dynamic LDS in bytes the kernel
+requests at launch (Triton's shared memory, e.g. for `tl.dot`), which is added to the code object's
+fixed LDS size. Loading such a kernel fails if its sidecar is missing, and loading any kernel fails
+if its sidecar is malformed. The JIT compiler writes the sidecar with each Triton kernel.
+
+### Generating precompiled GPU kernels
+
+`generate_gpu_kernels.py` compiles HIP elementwise kernels to a `.hsaco` per kernel name, for a build
+without JIT compilation. It reads kernel names (one per line) from a file or stdin and supports
+kernels over contiguous, equally shaped tensors:
+
+- `add_*` for every dtype combination ggml's CPU backend implements: f32, f16 and bf16 with matching
+  dtypes, and an f16 or bf16 source plus an f32 source into either of their dtypes.
+- `scale_*` for f32 only (ggml's CPU backend has no f16/bf16 `SCALE` to check a generated kernel
+  against).
+
+Other names (e.g. broadcasting or non-contiguous kernels) are skipped. By default it writes into the
+kernel cache directory above, so the kernels are found without setting `GGML_HSA_KERNEL_DIR`; pass
+an explicit `out_dir` and point `GGML_HSA_KERNEL_DIR` at it to stage them elsewhere instead.
+
+```text
+generate_gpu_kernels.py [arch] [names_file] [out_dir]
+```
+
+The kernel names a test needs can be captured by running it with logging on, which reports each miss
+as `could not find code object for kernel <name>`:
+
+```bash
+LD_LIBRARY_PATH=/opt/rocm/lib GGML_HSA_ENABLE_LOG=1 \
+  ./build/bin/test-backend-ops -o ADD 2>&1 \
+  | grep -oE 'kernel (add|scale)_[0-9a-zA-Z_]+' | sed 's/kernel //' | sort -u > names.txt
+
+ROCM_PATH=/opt/rocm src/ggml-hsa/generate_gpu_kernels.py gfx1151 names.txt
+```
+
+## Known Issues
+
+Observed with the [tested configuration](#tested-configurations) on an `aie2` NPU and a `gfx1103`
+GPU.
+
+- **32 kernels per NPU queue on aie2.** aie2p kernels are full ELFs and are not limited (see
+  [ROCm](#rocm)). On aie2, after about 32 distinct NPU kernels in one process, the runtime
+  suspends the queue with `HSA_STATUS_ERROR_OUT_OF_RESOURCES` and every later operation fails.
+  `test-backend-ops` over a whole operation exceeds this, especially with `f16` (which adds
+  `HSA_CONVERT` kernels), so run NPU cases in separate processes, e.g. one `-o '<full case>'` each.
+- **`f16` on the NPU is computed in `bf16`.** `f16` results differ from the CPU backend by more than
+  `test-backend-ops`'s tolerance, so its `f16` cases fail on the NPU.
+- **NPU `GELU`:** `f32` `ne=[128,2,2,2]` returns NaN; `ne=[5,7,11,13]` is correct.
+- **Host `CPY`.** The host copy accepts every type and layout, but a permuted destination or a
+  quantized destination type gives wrong results, on both devices.
+- **GPU vmem corruption with the in-tree `amdgpu` driver.** With Linux 6.17's in-tree driver, a GPU
+  buffer whose address range overlaps one freed just before can be written through the freed
+  range's stale translation, one page off. `amdgpu-dkms` 7.1.9 does not show it, even when the
+  overlap is forced.
+- **LLVM option clash.** Two copies of LLVM in one process abort the first JIT compilation with
+  `Option 'print-inst-addrs' registered more than once`. HIP causes this (see
+  [Avoiding the LLVM clash with the JIT compiler](#avoiding-the-llvm-clash-with-the-jit-compiler)),
+  and so does a build with both device types and JIT compilation linked against ROCm 10.1.0's
+  comgr, which loads ROCm's `libLLVM`. TheRock's comgr does not: an NPU+GPU JIT build against
+  `10.2.0a20261016` compiles NPU kernels and runs both devices.
+
 ## Reference
 
 ### CMake Options
@@ -340,7 +542,9 @@ JIT compilation generates kernels on-the-fly. Precompiled kernels in `GGML_HSA_K
 | Option                 | Description                                                        |
 |------------------------|--------------------------------------------------------------------|
 | `GGML_HSA`             | Enable HSA backend                                                 |
-| `GGML_HSA_JIT_COMPILE` | Enable JIT compilation (requires IRON environment)                 |
+| `GGML_HSA_AIE`         | Enable AIE (XDNA NPU) devices (default `ON`)                       |
+| `GGML_HSA_GPU`         | Enable GPU devices (default `OFF`)                                 |
+| `GGML_HSA_JIT_COMPILE` | Enable JIT compilation (needs an IRON environment for AIE kernels; a GPU-only build, `GGML_HSA_AIE=OFF`, uses Triton instead and does not build `iron_kernels`, though installing Triton's own requirements pulls in IRON packages transitively) |
 
 ### Environment Variables
 
@@ -351,7 +555,7 @@ JIT compilation generates kernels on-the-fly. Precompiled kernels in `GGML_HSA_K
 | `GGML_HSA_KERNEL_CACHE_DIR`             | JIT cache directory                                                                                                                                                                                     |
 | `GGML_HSA_KERNEL_CACHE_CLEAR`           | Clear JIT cache on startup (`1`, `true`, or `on`)                                                                                                                                                       |
 | `GGML_HSA_JIT_VERBOSE`                  | Verbose JIT output (`1`, `true`, or `on`)                                                                                                                                                               |
-| `GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS` | Milliseconds teardown waits for work still in flight when the runtime suspended the queue (default `1000`, `0` disables the wait). On timeout the dispatch signal is leaked instead of destroyed.        |
+| `GGML_HSA_QUEUE_ERROR_DRAIN_TIMEOUT_MS` | Milliseconds teardown waits for work still in flight when the runtime suspended the queue (default `1000`, `0` disables the wait). On timeout the completion signal is leaked instead of destroyed.     |
 | `GGML_HSA_JIT_COMPILER_ORDER`           | Comma-separated JIT backend order (e.g. `triton,iron`, case-insensitive); backends not listed are not used. Unset keeps each operation's own order.                                                     |
 | `AIE_XCLBINUTIL`                        | `xclbinutil` (a path, or a name looked up on `PATH`) that the Triton backend uses to package its xclbin (MLIR-AIE's `aiecc`) and to extract the PDI from it; default: `xclbinutil` on `PATH`.            |
 | `GGML_HSA_KERNEL_INLINE`                | Inline supported kernels' core functions into the tile loop instead of linking them as a `.o` (mlir-aie `ExternalFunction(inline=True)`) (`1`, `true`, or `on`); default off. Support varies by kernel; see `core_function_object()` in `kernels/iron_kernels/utils.py`.        |

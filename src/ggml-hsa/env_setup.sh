@@ -29,11 +29,16 @@ for backend in "${BACKEND_LIST[@]}"; do
 done
 
 # Create and activate virtual environment
-python3 -m venv ${VENV_NAME}
-source ${VENV_NAME}/bin/activate
+if ! python3 -m venv ${VENV_NAME} || ! source ${VENV_NAME}/bin/activate; then
+    echo "Error: could not create or activate virtual environment '${VENV_NAME}'"
+    return 1 2>/dev/null || exit 1
+fi
 
 # Upgrade pip
-python3 -m pip install --upgrade pip
+if ! python3 -m pip install --upgrade pip; then
+    echo "Error: could not upgrade pip"
+    return 1 2>/dev/null || exit 1
+fi
 
 # If both iron and triton are selected, only install triton requirements
 INSTALL_LIST=("${BACKEND_LIST[@]}")
@@ -46,7 +51,22 @@ for backend in "${INSTALL_LIST[@]}"; do
     backend=$(echo "$backend" | xargs)
     REQUIREMENTS_FILE="${SCRIPT_DIR_NAME}/requirements-${backend}.txt"
     echo "Installing ${backend} backend dependencies from ${REQUIREMENTS_FILE}..."
-    python3 -m pip install -r ${REQUIREMENTS_FILE}
+    if ! python3 -m pip install -r ${REQUIREMENTS_FILE}; then
+        echo "Error: could not install ${backend} backend dependencies from ${REQUIREMENTS_FILE}"
+        return 1 2>/dev/null || exit 1
+    fi
 done
+
+# mlir-air pins an mlir-aie older than the hsaco packer that every kernel is packed with, so
+# requirements-triton.txt cannot ask for a newer one. Install the build IRON pins over it.
+if [[ " ${INSTALL_LIST[*]} " == *" triton "* ]]; then
+    echo "Installing the mlir-aie hsaco packer over the Triton dependencies..."
+    if ! python3 -m pip install --no-deps \
+        --find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2 \
+        mlir_aie_no_rtti==1.4.5.dev48+gcb6f2d1; then
+        echo "Error: could not install the mlir-aie hsaco packer"
+        return 1 2>/dev/null || exit 1
+    fi
+fi
 
 echo "Environment setup complete. Installed backends: ${INSTALL_LIST[*]}"

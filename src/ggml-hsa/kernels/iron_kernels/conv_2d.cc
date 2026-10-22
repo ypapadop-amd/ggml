@@ -247,6 +247,111 @@ __attribute__((always_inline)) inline void store_row(float * __restrict out_row,
 } // namespace limb
 #endif
 
+#if __AIEARCH__ != 20 && defined(GGML_CONV2D_FLAT)
+// f32 convolution on 64-lane bf16 limb products, for aie2p at s0 = s1 = 1 (conv_2d.py selects it).
+//
+// aie2p has no f32 vector multiplier either: aie::mac on f32 splits both operands into three bf16
+// limbs and sums nine limb products, on every call, and the border-peeled path below pays a
+// runtime call (__mulsf3) per scalar tap. Here each image is split into limbs once
+// (ggml_op_conv_2d_flat_image) and each call's weights once, and a tap is six 64-lane bf16 macs.
+//
+// Flat layout: input channel c's padded image (IH + 2 * P1 rows of pw >= OW + (KW - 1) * D0
+// columns, input pixel (r, j) at row r + P1 and column j + P0, zeros elsewhere) is stored row after
+// row as one flat run of L bf16 per limb. Output pixel (oy, ox) is computed at flat position
+// q = oy * pw + ox, and tap (ikh, ikw) reads position q + ikh * D1 * pw + ikw * D0: for every tap,
+// 64 consecutive positions read 64 consecutive elements. Positions with ox >= OW are computed and
+// dropped; the output object holds the flat positions and its DMA streams only the OW columns.
+namespace flat {
+
+// bf16 lanes of one product, and how far a row's last tap reads past its first.
+constexpr int32_t V = 64;
+constexpr int32_t span = (GGML_CONV2D_KW - 1) * GGML_CONV2D_D0;
+static_assert(span < 32, "conv_2d.py takes the flat path only for (KW - 1) * D0 < 32");
+
+// Whether every row a tap reads, at pitch p, starts at most 31 - span elements past a 64-byte
+// granule, so each of its taps' windows lies in three aligned 32-element chunks.
+constexpr bool pitch_fits(int32_t p) {
+    for (int32_t ikh = 0; ikh < GGML_CONV2D_KH; ++ikh) {
+        if ((ikh * GGML_CONV2D_D1 * p) % 32 + span > 31) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The row pitch: the narrowest at least OW + span that fits (a multiple of 32 always does).
+constexpr int32_t pitch() {
+    int32_t p = GGML_CONV2D_OW + span;
+    while (!pitch_fits(p)) {
+        ++p;
+    }
+    return p;
+}
+
+constexpr int32_t pw = pitch();
+// Output vectors per plane, in pairs (see ggml_op_conv_2d_flat).
+constexpr int32_t n_vec = (GGML_CONV2D_OH * pw + 2 * V - 1) / (2 * V) * 2;
+// Limb plane length: the chunks the last vector's last row reads, in whole 64-byte granules.
+constexpr int32_t L = (n_vec * V + (GGML_CONV2D_KH - 1) * GGML_CONV2D_D1 * pw + 32 + 31) / 32 * 32;
+static_assert(n_vec % 2 == 0, "output vectors come in pairs");
+constexpr int32_t n_wts = GGML_CONV2D_IC * GGML_CONV2D_KH * GGML_CONV2D_KW; // per output channel
+constexpr int32_t n_wts_pad = (n_wts + 31) / 32 * 32;
+// Kernel rows per pass over the plane: all of them for windows of up to 9 taps (a 3.4 KB table of
+// broadcast weights), else one. conv_2d.py sizes the tile's memory with the same rule.
+constexpr int32_t pass_rows = GGML_CONV2D_KW * GGML_CONV2D_KH <= 9 ? GGML_CONV2D_KH : 1;
+static_assert(GGML_CONV2D_IC * 3 * L == GGML_CONV2D_FLAT,
+              "conv_2d.py sized the split image differently");
+static_assert(GGML_CONV2D_P0 + GGML_CONV2D_IW <= pw, "s0 == 1 only");
+
+using vec = aie::vector<bfloat16, V>;
+using acc = aie::accum<accfloat, V>;
+using half = aie::vector<bfloat16, 32>;
+using table = bfloat16[pass_rows * GGML_CONV2D_KW][3][V];
+
+// Five aligned 32-element chunks of a limb plane; window<0>(at) is the 64 elements from at < 32,
+// window<1>(at) the 64 after those.
+struct chunks {
+    half c0, c1, c2, c3, c4;
+
+    __attribute__((always_inline)) explicit chunks(const bfloat16 * p) :
+        c0(aie::load_v<32>(p)),
+        c1(aie::load_v<32>(p + 32)),
+        c2(aie::load_v<32>(p + 64)),
+        c3(aie::load_v<32>(p + 96)),
+        c4(aie::load_v<32>(p + 128)) {}
+
+    template <int32_t I>
+    __attribute__((always_inline)) vec window(int32_t at) const {
+        const uint32_t bytes = static_cast<uint32_t>(at) * sizeof(bfloat16);
+        if constexpr (I == 0) {
+            return aie::concat(half(::shift_bytes(c0, c1, bytes)),
+                               half(::shift_bytes(c1, c2, bytes)));
+        } else {
+            return aie::concat(half(::shift_bytes(c2, c3, bytes)),
+                               half(::shift_bytes(c3, c4, bytes)));
+        }
+    }
+};
+
+// Splits the 32 floats at src into limbs at dst, dst + stride and dst + 2 * stride: hi, mid and lo,
+// each from the exact residual of the ones before (msc in the accumulator).
+__attribute__((always_inline)) inline void
+split32(bfloat16 * __restrict dst, int32_t stride, const float * __restrict src) {
+    const aie::vector<bfloat16, 32> one = aie::broadcast<bfloat16, 32>(1.0f);
+    aie::accum<accfloat, 32> r;
+    r.from_vector(aie::load_v<32>(src));
+    const aie::vector<bfloat16, 32> hi = r.template to_vector<bfloat16>();
+    r = aie::msc(r, hi, one);
+    const aie::vector<bfloat16, 32> mid = r.template to_vector<bfloat16>();
+    r = aie::msc(r, mid, one);
+    aie::store_v(dst, hi);
+    aie::store_v(dst + stride, mid);
+    aie::store_v(dst + 2 * stride, r.template to_vector<bfloat16>());
+}
+
+} // namespace flat
+#endif
+
 /**
  * @brief Direct 2D convolution over one output plane.
  *
@@ -822,6 +927,159 @@ void ggml_op_conv_2d_split(const bfloat16 * __restrict img,
     }
     event1();
 }
+#elif defined(GGML_CONV2D_FLAT) // aie2p (conv_2d.py defines it only there)
+
+/**
+ * @brief Split one input image into flat bf16 limb planes, for every output channel's
+ * ggml_op_conv_2d_flat.
+ *
+ * @param[in]  in   Input image: IC planes of IH * IW f32 elements.
+ * @param[out] img  Split image: for each input channel, hi, mid and lo planes of flat::L bf16.
+ */
+void ggml_op_conv_2d_flat_image(const float * __restrict in, bfloat16 * __restrict img) {
+    // The padded channel in f32: padding positions are zeroed once, and each channel writes only
+    // the image positions, which are the same for every channel.
+    alignas(aie::vector_decl_align) float stage[flat::L];
+    for (int32_t t = 0; t < flat::L; t += 16) {
+        aie::store_v(stage + t, aie::zeros<float, 16>());
+    }
+    const aie::rounding_mode rnd = aie::get_rounding();
+    aie::set_rounding(aie::rounding_mode::floor);
+    for (int32_t c = 0; c < GGML_CONV2D_IC; ++c) {
+        const float * __restrict src = in + c * GGML_CONV2D_IH * GGML_CONV2D_IW;
+        for (int32_t r = 0; r < GGML_CONV2D_IH; ++r) {
+            float * __restrict dst = stage + (r + GGML_CONV2D_P1) * flat::pw + GGML_CONV2D_P0;
+            for (int32_t j = 0; j < GGML_CONV2D_IW; ++j) {
+                dst[j] = src[r * GGML_CONV2D_IW + j];
+            }
+        }
+        bfloat16 * __restrict dst = img + c * 3 * flat::L;
+        for (int32_t t = 0; t < flat::L; t += 32) {
+            flat::split32(dst + t, flat::L, stage + t);
+        }
+    }
+    aie::set_rounding(rnd);
+}
+
+/**
+ * @brief Compute one output plane, at flat positions, from an image split by
+ * ggml_op_conv_2d_flat_image.
+ *
+ * Each tap adds six limb products of its input limbs (h, m, l) and weight limbs (a, b, c): h * a,
+ * h * b, h * c, m * a, m * b and l * a, over three sums added once per pass. The dropped products
+ * (m * c, l * b, l * c) are within about 2^-24 of the tap's product.
+ *
+ * @param[in]  img     Split image.
+ * @param[in]  wts     Weight tensor: KW*KH*IC*OC f32 elements, layout [KW,KH,IC,OC].
+ * @param[out] out     Output plane at flat positions: flat::n_vec * 64 f32.
+ * @param[in]  oc_idx  Output channel index.
+ */
+void ggml_op_conv_2d_flat(const bfloat16 * __restrict img,
+                          const float * __restrict wts,
+                          float * __restrict out,
+                          int32_t oc_idx) {
+    event0();
+    alignas(aie::vector_decl_align) bfloat16 wl[3][flat::n_wts_pad];
+    {
+        alignas(aie::vector_decl_align) float stage[32];
+        const float * __restrict wsrc = wts + oc_idx * flat::n_wts;
+        const aie::rounding_mode rnd = aie::get_rounding();
+        aie::set_rounding(aie::rounding_mode::floor);
+        for (int32_t k = 0; k < flat::n_wts_pad; k += 32) {
+            for (int32_t l = 0; l < 32; ++l) {
+                stage[l] = (k + l < flat::n_wts) ? wsrc[k + l] : 0.0f;
+            }
+            flat::split32(wl[0] + k, flat::n_wts_pad, stage);
+        }
+        aie::set_rounding(rnd);
+    }
+
+    // Each tap's weight limbs broadcast to 64 lanes, for the rows of one pass: loaded like the
+    // input chunks, they leave the vector shuffle slot to the windows' shifts. Static, so the
+    // core's stack holds neither it nor its copies.
+    alignas(aie::vector_decl_align) static flat::table tb;
+    for (int32_t c = 0; c < GGML_CONV2D_IC; ++c) {
+        for (int32_t r0 = 0; r0 < GGML_CONV2D_KH; r0 += flat::pass_rows) {
+            const int32_t kb = (c * GGML_CONV2D_KH + r0) * GGML_CONV2D_KW;
+            for (int32_t t = 0; t < flat::pass_rows * GGML_CONV2D_KW; ++t) {
+                for (int32_t limb = 0; limb < 3; ++limb) {
+                    aie::store_v(tb[t][limb], aie::broadcast<bfloat16, flat::V>(wl[limb][kb + t]));
+                }
+            }
+            const bool first = c == 0 && r0 == 0;
+            // Two output vectors at a time, so each weight load serves both; two sums each, three
+            // products a tap each, to overlap the macs' accumulator latency.
+            for (int32_t v = 0; v < flat::n_vec; v += 2) {
+                float * __restrict o = out + v * flat::V;
+                flat::acc a0 =
+                    first ? aie::zeros<accfloat, flat::V>() : flat::acc(aie::load_v<flat::V>(o));
+                flat::acc a1 = first ? aie::zeros<accfloat, flat::V>()
+                                     : flat::acc(aie::load_v<flat::V>(o + flat::V));
+                flat::acc b0 = aie::zeros<accfloat, flat::V>();
+                flat::acc b1 = aie::zeros<accfloat, flat::V>();
+                GGML_CONV2D_UNROLL_TAPS
+                for (int32_t dr = 0; dr < flat::pass_rows; ++dr) {
+                    const int32_t ikh = r0 + dr;
+                    // The row's first window starts sh elements into an aligned chunk, and its
+                    // last one ends inside the third (flat::pitch_fits).
+                    const int32_t sh = (ikh * GGML_CONV2D_D1 * flat::pw) & 31;
+                    const bfloat16 * __restrict al =
+                        img + c * 3 * flat::L + ikh * GGML_CONV2D_D1 * flat::pw + v * flat::V - sh;
+                    const auto * w = &tb[dr * GGML_CONV2D_KW];
+                    // One input limb at a time, so only its chunks are live: h against all three
+                    // weight limbs, m against a and b, l against a.
+                    {
+                        const flat::chunks h(al);
+                        GGML_CONV2D_UNROLL_TAPS
+                        for (int32_t ikw = 0; ikw < GGML_CONV2D_KW; ++ikw) {
+                            const int32_t at = sh + ikw * GGML_CONV2D_D0;
+                            const flat::vec x0 = h.window<0>(at);
+                            const flat::vec x1 = h.window<1>(at);
+                            const flat::vec wa = aie::load_v<flat::V>(w[ikw][0]);
+                            a0 = aie::mac(a0, x0, wa);
+                            a1 = aie::mac(a1, x1, wa);
+                            const flat::vec wb = aie::load_v<flat::V>(w[ikw][1]);
+                            b0 = aie::mac(b0, x0, wb);
+                            b1 = aie::mac(b1, x1, wb);
+                            const flat::vec wc = aie::load_v<flat::V>(w[ikw][2]);
+                            b0 = aie::mac(b0, x0, wc);
+                            b1 = aie::mac(b1, x1, wc);
+                        }
+                    }
+                    {
+                        const flat::chunks m(al + flat::L);
+                        GGML_CONV2D_UNROLL_TAPS
+                        for (int32_t ikw = 0; ikw < GGML_CONV2D_KW; ++ikw) {
+                            const int32_t at = sh + ikw * GGML_CONV2D_D0;
+                            const flat::vec x0 = m.window<0>(at);
+                            const flat::vec x1 = m.window<1>(at);
+                            const flat::vec wa = aie::load_v<flat::V>(w[ikw][0]);
+                            b0 = aie::mac(b0, x0, wa);
+                            b1 = aie::mac(b1, x1, wa);
+                            const flat::vec wb = aie::load_v<flat::V>(w[ikw][1]);
+                            a0 = aie::mac(a0, x0, wb);
+                            a1 = aie::mac(a1, x1, wb);
+                        }
+                    }
+                    {
+                        const flat::chunks l(al + 2 * flat::L);
+                        GGML_CONV2D_UNROLL_TAPS
+                        for (int32_t ikw = 0; ikw < GGML_CONV2D_KW; ++ikw) {
+                            const int32_t at = sh + ikw * GGML_CONV2D_D0;
+                            const flat::vec wa = aie::load_v<flat::V>(w[ikw][0]);
+                            a0 = aie::mac(a0, l.window<0>(at), wa);
+                            a1 = aie::mac(a1, l.window<1>(at), wa);
+                        }
+                    }
+                }
+                aie::store_v(o, aie::add(a0, b0).template to_vector<float>());
+                aie::store_v(o + flat::V, aie::add(a1, b1).template to_vector<float>());
+            }
+        }
+    }
+    event1();
+}
+
 #else
 
 /**

@@ -10,7 +10,12 @@
 from functools import partial
 
 from .kernel import Backend, KernelSpec
-from .triton_kernels.spec_utils import transform_script
+from .triton_kernels.spec_utils import (
+    ArchKind,
+    arch_kind,
+    transform_script,
+    triton_elt_type,
+)
 
 # Per-arch L3 block sizes, matching the upstream matmul_bf16_m64_n64_k64
 # example. The transform tiles each block across the herd, so M and N must
@@ -86,7 +91,7 @@ def _make_triton_matmul_kernel_spec(
         import torch
         import triton
 
-        from .triton_kernels.matmul import bare_matmul
+        from .triton_kernels.gemm import bare_matmul
         from .triton_kernels.utils import numpy_dtype_to_torch, triton_device
 
         if len(input_tensors) != 2:
@@ -219,10 +224,114 @@ def _make_triton_matmul_kernel_spec(
     )
 
 
+# GPU matmul launch configurations: (BM, BN, BK, num_warps). Accesses are masked, so the tile
+# sizes need not divide the matrix dimensions; tl.dot needs each to be at least 16. A thin operand
+# (M or N at most 16, e.g. MNIST's 10-row output layer or a matrix-vector product) gets 16x16
+# tiles, so the masked-off rows of a 64-row tile are not computed and the grid has enough programs
+# to fill the GPU.
+_GPU_TILE_THIN = (16, 16, 64, 2)
+_GPU_TILE = (64, 64, 16, 4)
+_GPU_THIN_LIMIT = 16
+# Triton's default software pipelining (2 stages) made every swept configuration slower, and the
+# kernels spill to scratch; one stage was faster throughout.
+_GPU_NUM_STAGES = 1
+
+
+def _make_triton_gpu_matmul_kernel_spec(
+    arch: str, input_tensors: list, output_tensor
+) -> KernelSpec:
+    """Create a TRITON-backend (GPU AOT) KernelSpec for MUL_MAT.
+
+    GGML MUL_MAT computes dst = src0 @ src1^T with
+        src0 (A): ne=[K, M] (row-major -> logically (M, K))
+        src1 (B): ne=[K, N] (row-major -> logically (N, K))
+        dst     : ne0=M, ne1=N, dst(im, in) = sum_k A(im, k) * B(in, k)
+
+    Only the plain 2-D case (no batching / broadcasting) is handled on the GPU. Each tensor keeps
+    its own dtype (any that triton_elt_type maps, e.g. f32/f16/bf16 or i16): operands are widened
+    to f32 in the kernel and the f32 accumulator is cast to the destination's dtype. Other cases
+    raise ValueError so the op is reported unsupported. All dims/block sizes are baked as Triton
+    constexprs; the only runtime kernel args are the src0, src1 and dst pointers.
+    """
+    import triton
+
+    from .triton_kernels.gemm import gemm_kernel
+
+    src0, src1 = input_tensors[0], input_tensors[1]
+
+    # only contiguous, non-batched matmul
+    if any(not t.contiguous for t in (src0, src1, output_tensor)):
+        msg = "Triton GPU MUL_MAT requires contiguous tensors."
+        raise ValueError(msg)
+    if (
+        src0.shape[2] != 1
+        or src0.shape[3] != 1
+        or src1.shape[2] != 1
+        or src1.shape[3] != 1
+    ):
+        msg = "Triton GPU MUL_MAT supports 2-D (non-batched) matmul only."
+        raise ValueError(msg)
+
+    k = int(src0.shape[0])
+    m = int(src0.shape[1])
+    n = int(src1.shape[1])
+    if int(src1.shape[0]) != k:
+        msg = "Triton GPU MUL_MAT: src0/src1 inner dimension mismatch."
+        raise ValueError(msg)
+
+    block_m, block_n, block_k, num_warps = (
+        _GPU_TILE_THIN if min(m, n) <= _GPU_THIN_LIMIT else _GPU_TILE
+    )
+    num_pid_m = triton.cdiv(m, block_m)
+    num_pid_n = triton.cdiv(n, block_n)
+    num_programs = num_pid_m * num_pid_n
+
+    signature = {
+        "A": f"*{triton_elt_type(src0.dtype)}",
+        "B": f"*{triton_elt_type(src1.dtype)}",
+        "C": f"*{triton_elt_type(output_tensor.dtype)}",
+        "M": "constexpr",
+        "N": "constexpr",
+        "K": "constexpr",
+        "BM": "constexpr",
+        "BN": "constexpr",
+        "BK": "constexpr",
+        "NUM_PID_N": "constexpr",
+    }
+    config = {
+        "triton_fn": gemm_kernel,
+        "signature": signature,
+        "constexprs": {
+            "M": m,
+            "N": n,
+            "K": k,
+            "BM": block_m,
+            "BN": block_n,
+            "BK": block_k,
+            "NUM_PID_N": num_pid_n,
+        },
+        "num_warps": num_warps,
+        "num_stages": _GPU_NUM_STAGES,
+        "num_programs": num_programs,
+    }
+    return KernelSpec(
+        backend=Backend.TRITON,
+        op_name="GGML_OP_MUL_MAT",
+        arch=arch,
+        input_tensors=input_tensors,
+        output_tensor=output_tensor,
+        function=gemm_kernel,
+        config=config,
+    )
+
+
 def ggml_op_mul_mat(
     arch: str, input_tensors: list, output_tensor, op_params: bytearray
 ) -> list[KernelSpec]:
     """Return KernelSpecs for GGML_OP_MUL_MAT (IRON primary, Triton fallback).
+
+    On GPU (gfx) targets only the Triton -> hsaco AOT spec is returned, or none if the tensors
+    are unsupported (e.g. a batched MUL_MAT). The rest of this describes NPU targets.
 
     IRON is tried first; the Triton spec is reached only if IRON compilation
     fails. Set ``GGML_HSA_JIT_COMPILER_ORDER=triton,iron`` to flip the order.
@@ -241,6 +350,13 @@ def ggml_op_mul_mat(
         List of KernelSpecs: IRON first, then Triton (reordered by
         CompilerConfig.compilers / ``GGML_HSA_JIT_COMPILER_ORDER``).
     """
+    if arch_kind(arch) is ArchKind.GPU:
+        try:
+            return [
+                _make_triton_gpu_matmul_kernel_spec(arch, input_tensors, output_tensor)
+            ]
+        except ValueError:
+            return []
     return [
         _make_iron_matmul_kernel_spec(arch, input_tensors, output_tensor),
         _make_triton_matmul_kernel_spec(arch, input_tensors, output_tensor),

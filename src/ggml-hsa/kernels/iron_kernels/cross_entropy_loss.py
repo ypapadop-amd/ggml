@@ -38,6 +38,9 @@ from .utils import (
 # absent ... but it needs N bytes"); older toolchains built it and corrupted memory at run time.
 # Same pattern as softmax.py and gemm.py.
 _STACK_SIZE_BYTES = 3072
+# aie2p's rows of up to 16 elements, one per lane, keep 64-lane values live across exp(): aiecc
+# measures up to 6528 bytes.
+_AIE2P_STACK_SIZE_BYTES = 7168
 
 # Fewest rows a worker gets when the rows are fanned out: one group of the kernel's vector log.
 _MIN_ROWS_PER_WORKER = 16
@@ -120,6 +123,7 @@ def cross_entropy_loss(arch: str, input_tensors: list, output_tensor):
     rows_per_tile = divisor_tile_size(arch, num_rows // num_workers, row_tys)
 
     function = _create_external_function(
+        arch=arch,
         logits_tensor=logits_tensor,
         labels_tensor=labels_tensor,
         output_tensor=output_tensor,
@@ -241,7 +245,7 @@ def create_reduction_program(
                 w == 0,
                 *(of_sum.cons() for of_sum in (of_sums if w == 0 else [])),
             ],
-            stack_size=_STACK_SIZE_BYTES,
+            stack_size=_AIE2P_STACK_SIZE_BYTES if arch == "aie2p" else _STACK_SIZE_BYTES,
         )
         for w in range(num_workers)
     ]
@@ -278,6 +282,7 @@ def create_reduction_program(
 
 
 def _create_external_function(
+    arch: str,
     logits_tensor,
     labels_tensor,
     output_tensor,
@@ -287,6 +292,7 @@ def _create_external_function(
     """Create the ExternalFunction wrapping cross_entropy_loss.cc.
 
     Args:
+        arch: Target AIE architecture.
         logits_tensor: Logits tensor.
         labels_tensor: Labels tensor.
         output_tensor: Output tensor.
@@ -310,4 +316,6 @@ def _create_external_function(
         object_file_name="cross_entropy_loss_core_function.o",
         source_file=str(current_dir / "cross_entropy_loss.cc"),
         arg_types=arg_types,
+        # aie2p runs rows of up to 16 elements one per lane, the row length known at build time.
+        compile_flags=[f"-DGGML_CEL_ROW_LEN={tile_size}"] if arch == "aie2p" else [],
     )
