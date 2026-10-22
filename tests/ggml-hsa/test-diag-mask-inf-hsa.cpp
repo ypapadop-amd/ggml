@@ -125,6 +125,14 @@ int main() {
         {77, 24, 2, 13, "77 npast13"},
         {20, 16, 2, 1, "20 npast1"},
         {33, 16, 2, 40, "33 npast40"},
+        // GPT-2 attention: prefill of 64, 256 and 1024 tokens over 12 heads, and one decode token
+        // after 64 and 1024 (rows of 65 and 1025 floats, unaligned for a vector access). On aie2p
+        // these run on 1, 2 and 8 workers.
+        {64, 64, 12, 0, "gpt2 p64"},
+        {256, 256, 12, 0, "gpt2 p256"},
+        {1024, 1024, 12, 0, "gpt2 p1024"},
+        {65, 1, 12, 64, "gpt2 d64"},
+        {1025, 1, 12, 1024, "gpt2 d1024"},
     };
 
     bool any_fail = false;

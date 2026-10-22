@@ -7,6 +7,7 @@
 
 """IRON design for diag_mask_inf (causal masking) over dim 0, in tiles of whole rows."""
 
+import math
 import struct
 from pathlib import Path
 
@@ -145,6 +146,11 @@ def diag_mask_inf(arch: str, input_tensors: list, output_tensor, op_params: byte
 # fastest on eight.
 _ELEMS_PER_WORKER = 3072
 
+# aie2p: a worker adds a fixed cost to every dispatch, which in a graph (GPT-2 attention's scale ->
+# diag_mask_inf -> soft_max) outweighs its share of the bandwidth until the op is large: workers =
+# sqrt(elements / this), rounded, at least one, at most one per column.
+_AIE2P_WORKER_ELEMENTS = 128 * 1024
+
 
 def _tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
     """Rows per tile and worker count.
@@ -152,7 +158,7 @@ def _tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
     The op is bound by data movement, not by the kernel. Each worker streams a contiguous band of
     tiles through its own shim DMA channel pair, so up to two workers per column, but each one
     also adds to the dispatch's fixed cost, so there is one per _ELEMS_PER_WORKER elements (and at
-    least two).
+    least two); on aie2p, see _AIE2P_WORKER_ELEMENTS.
     Over the row counts that divide the rows and whose double-buffered tiles fit half of L1,
     this takes the split whose busiest worker has the fewest rows, preferring larger tiles.
 
@@ -177,6 +183,11 @@ def _tiling(arch, input_tensor, output_tensor) -> tuple[int, int]:
     max_workers = min(
         2 * arch_num_columns(arch), max(2, num_rows * row_length // _ELEMS_PER_WORKER)
     )
+    if arch == "aie2p":
+        max_workers = min(
+            arch_num_columns(arch),
+            max(1, round(math.sqrt(num_rows * row_length / _AIE2P_WORKER_ELEMENTS))),
+        )
 
     def busiest_worker_rows(rows):
         num_tiles = num_rows // rows

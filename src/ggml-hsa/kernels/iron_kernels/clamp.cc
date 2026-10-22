@@ -39,6 +39,10 @@ void ggml_op_clamp(const INPUT_DTYPE * __restrict in,
     // Aligned accesses only when clamp.py guaranteed the tile is a whole number of vectors.
     constexpr bool aligned = tile_vector_aligned_v<OUTPUT_DTYPE>;
     if constexpr (std::is_same_v<INPUT_DTYPE, float> && std::is_same_v<OUTPUT_DTYPE, float>) {
+        // On aie2p the floats are walked as their int32 bits: float_order_keys masks a float
+        // vector's bits with 0x7fffffff, which LLVM folds into a vector fabs that aie2p runs one
+        // lane at a time. The key of negative bits, -(bits & 0x7fffffff), is INT32_MIN - bits.
+#if __AIEARCH__ == 20
         const std::int32_t klo = float_order_key(min_val);
         const std::int32_t khi = float_order_key(max_val);
         transform_vector_n<aligned>(
@@ -54,6 +58,28 @@ void ggml_op_clamp(const INPUT_DTYPE * __restrict in,
                 return (k < khi ? k : khi) > klo ? m : min_val;
             },
             in);
+#else  // __AIEARCH__ != 20
+        const std::int32_t klo = float_order_key(min_val);
+        const std::int32_t khi = float_order_key(max_val);
+        const std::int32_t blo = __builtin_bit_cast(std::int32_t, min_val);
+        const std::int32_t bhi = __builtin_bit_cast(std::int32_t, max_val);
+        transform_vector_n<aligned>(
+            reinterpret_cast<std::int32_t *>(out), N,
+            [=](auto v) {
+                using IV = decltype(v);
+                const auto k =
+                    aie::select(v, aie::sub(aie::broadcast<std::int32_t, IV::size()>(INT32_MIN), v),
+                                aie::lt(v, aie::zeros<std::int32_t, IV::size()>()));
+                const auto m = aie::select(bhi, v, aie::lt(k, khi));
+                return aie::select(blo, m, aie::gt(aie::min(k, khi), klo));
+            },
+            [=](std::int32_t v) {
+                const std::int32_t k = v < 0 ? INT32_MIN - v : v;
+                const std::int32_t m = k < khi ? v : bhi;
+                return (k < khi ? k : khi) > klo ? m : blo;
+            },
+            reinterpret_cast<const std::int32_t *>(in));
+#endif // __AIEARCH__ == 20
     } else {
         const auto lo = static_cast<INPUT_DTYPE>(min_val);
         const auto hi = static_cast<INPUT_DTYPE>(max_val);
