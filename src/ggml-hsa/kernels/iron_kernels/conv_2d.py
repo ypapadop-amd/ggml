@@ -11,7 +11,6 @@ import struct
 from pathlib import Path
 
 import numpy as np
-from aie.helpers.taplib import TensorAccessPattern
 from aie.iron import (
     Buffer,
     ExternalFunction,
@@ -62,36 +61,6 @@ _V = 16
 
 # A compute tile's data memory (aie2), which holds every buffer of a worker and its stack.
 _TILE_MEMORY_BYTES = 64 * 1024
-
-
-# Lanes of the aie2p flat path's bf16 limb products.
-_FLAT_V = 64
-
-# Stack of the aie2p flat path's core, at least.
-_FLAT_STACK_BYTES = 8192
-
-
-def _flat_geometry(shape: dict) -> tuple[int, int, int] | None:
-    """Return conv_2d.cc's aie2p flat layout (namespace flat): row pitch, output vectors, plane length.
-
-    Args:
-        shape: The -DGGML_CONV2D_* extents and op_params (S0 = S1 = 1).
-
-    Returns:
-        (pw, n_vec, L): the row pitch, the 64-lane output vectors of one plane (in pairs), and the bf16
-        elements of one limb plane of one input channel; None if a row's taps span 32 columns or
-        more, which the flat path does not take.
-
-    """
-    span = (shape["KW"] - 1) * shape["D0"]
-    if span >= 32:
-        return None
-    pw = shape["OW"] + span
-    while any((ikh * shape["D1"] * pw) % 32 + span > 31 for ikh in range(shape["KH"])):
-        pw += 1
-    n_vec = -(-shape["OH"] * pw // (2 * _FLAT_V)) * 2
-    rows = (shape["KH"] - 1) * shape["D1"] * pw
-    return pw, n_vec, -(-(n_vec * _FLAT_V + rows + 32) // 32) * 32
 
 
 def _split_image_elems(shape: dict) -> int:
@@ -261,33 +230,6 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         + stack_size
     )
     use_split_image = vector_path and split_tile_bytes <= _TILE_MEMORY_BYTES - 4096
-    # On aie2p, at unit strides, each image is split into flat bf16 limb planes once, into a buffer
-    # of the worker's, and each output channel's call computes its plane at flat positions, whose
-    # DMA streams only the OW columns of each row (conv_2d.cc, namespace flat).
-    flat_elems = 0
-    flat_plane = plane_size
-    to_stream = None
-    geometry = _flat_geometry(shape) if arch != "aie2" and s0 == 1 and s1 == 1 else None
-    if geometry is not None:
-        pw, n_vec, flat_len = geometry
-        # The flat path's frames measured up to 4352 B at 3x3 (MNIST conv2) and 7360 B for a 9-tap
-        # row; ggml_op_conv_2d_flat_image also stages one padded channel in f32 on the stack.
-        flat_stack = max(_FLAT_STACK_BYTES, -(-(flat_len * 4 + 1024) // 256) * 256)
-        # conv_2d.cc's static table of broadcast weights: 384 B a tap of one pass.
-        pass_rows = kh if kw * kh <= 9 else 1
-        flat_tile_bytes = (
-            2 * image_size * 4
-            + wts_size * 4
-            + 2 * n_vec * _FLAT_V * 4
-            + ic * 3 * flat_len * 2
-            + pass_rows * kw * 384
-            + flat_stack
-        )
-        if flat_tile_bytes <= _TILE_MEMORY_BYTES - 4096:
-            flat_elems = ic * 3 * flat_len
-            flat_plane = n_vec * _FLAT_V
-            stack_size = flat_stack
-            to_stream = TensorAccessPattern((flat_plane,), 0, [oh, ow], [pw, 1])
     # Otherwise the ring path, if its ring fits the stack it is given; the cap passed to
     # conv_2d.cc (GGML_CONV2D_RING_BYTES) is derived from that stack, so the two cannot disagree.
     # A shape that still overflows fails aiecc's stack check rather than running.
@@ -304,8 +246,6 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
         shape=shape,
         split_elems=split_elems if use_split_image else 0,
         ring_cap=stack_size - _RING_FRAME_BYTES,
-        flat_elems=flat_elems,
-        flat_plane=flat_plane,
     )
 
     # Distribute the N images across compute tiles. Each worker owns independent
@@ -318,7 +258,7 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
     image_tile_ty = np.ndarray[(image_size,), np.dtype[image_tensor.dtype]]
     wts_tile_ty = np.ndarray[(wts_size,), np.dtype[kernel_tensor.dtype]]
-    plane_tile_ty = np.ndarray[(flat_plane,), np.dtype[output_tensor.dtype]]
+    plane_tile_ty = np.ndarray[(plane_size,), np.dtype[output_tensor.dtype]]
 
     # depth=1: the full weight tensor is broadcast once to all workers through a
     # single shim channel (one producer, one consumer handle per worker), then
@@ -327,10 +267,7 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     of_wts = ObjectFifo(wts_tile_ty, depth=1, name="wts")
     wts_conss = [of_wts.cons() for _ in range(num_workers)]
     of_ins = [ObjectFifo(image_tile_ty, name=f"in{w}") for w in range(num_workers)]
-    of_outs = [
-        ObjectFifo(plane_tile_ty, name=f"out{w}", to_stream=to_stream)
-        for w in range(num_workers)
-    ]
+    of_outs = [ObjectFifo(plane_tile_ty, name=f"out{w}") for w in range(num_workers)]
 
     # Outer loop: one image per iteration (AIE loop).
     # Inner loop: plain Python range over OC channels — unrolled at build time
@@ -369,8 +306,8 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
         return ext_core_fn
 
-    if use_split_image or flat_elems:
-        split_ty = np.ndarray[(flat_elems or split_elems,), np.dtype[bfloat16]]
+    if use_split_image:
+        split_ty = np.ndarray[(split_elems,), np.dtype[bfloat16]]
         workers = [
             Worker(
                 make_split_core_fn(images_per_worker[w]),
@@ -439,8 +376,6 @@ def _create_external_functions(
     shape: dict,
     split_elems: int,
     ring_cap: int,
-    flat_elems: int = 0,
-    flat_plane: int = 0,
 ) -> list[ExternalFunction]:
     """Create the ExternalFunctions for the conv_2d core functions.
 
@@ -457,13 +392,10 @@ def _create_external_functions(
         split_elems: Elements of the split image (aie2), or 0 to compute each plane straight
             from the image.
         ring_cap: Bytes the aie2 ring path may keep on the stack (GGML_CONV2D_RING_BYTES).
-        flat_elems: Elements of the aie2p flat split image, or 0 for the other paths.
-        flat_plane: Elements of the aie2p flat output plane (with flat_elems).
 
     Returns:
         [ggml_op_conv_2d] or, with a split image, [ggml_op_conv_2d_split_image,
-        ggml_op_conv_2d_split] (aie2) or [ggml_op_conv_2d_flat_image, ggml_op_conv_2d_flat]
-        (aie2p): the core functions in the order the worker takes them.
+        ggml_op_conv_2d_split]: the core functions in the order the worker takes them.
 
     """
     op_name = "GGML_OP_CONV_2D"
@@ -479,26 +411,6 @@ def _create_external_functions(
     image_ty = np.ndarray[(image_size,), np.dtype[image_tensor.dtype]]
     wts_ty = np.ndarray[(wts_size,), np.dtype[image_tensor.dtype]]
     plane_ty = np.ndarray[(plane_size,), np.dtype[output_tensor.dtype]]
-    if flat_elems:
-        split_ty = np.ndarray[(flat_elems,), np.dtype[bfloat16]]
-        flat_plane_ty = np.ndarray[(flat_plane,), np.dtype[output_tensor.dtype]]
-        compile_flags.append(f"-DGGML_CONV2D_FLAT={flat_elems}")
-        return [
-            ExternalFunction(
-                name=f"{op_name.lower()}_flat_image",
-                object_file_name=object_file_name,
-                source_file=source_file,
-                arg_types=[image_ty, split_ty],
-                compile_flags=compile_flags,
-            ),
-            ExternalFunction(
-                name=f"{op_name.lower()}_flat",
-                object_file_name=object_file_name,
-                source_file=source_file,
-                arg_types=[split_ty, wts_ty, flat_plane_ty, np.int32],
-                compile_flags=compile_flags,
-            ),
-        ]
     if split_elems == 0:
         return [
             ExternalFunction(
