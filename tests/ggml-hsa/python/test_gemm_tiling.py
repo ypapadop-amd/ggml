@@ -26,8 +26,10 @@ from iron_kernels.gemm import (  # noqa: E402
     ceildiv,
     microkernel_expansion_map,
     microkernel_mac_dim_map,
+    operand_group_map,
     resolve_expansion,
     resolve_mac_dims,
+    resolve_operand_groups,
     select_gemm_tile,
 )
 
@@ -649,3 +651,60 @@ def test_shift_limits_below_one_group_raise(n_limit, m_limit):
     """No tile exists when B or C is narrower than one minimum column group / row block."""
     with pytest.raises(ValueError, match="minimum"):
         _f32_b_tile(512, 512, 512, n_limit, m_limit)
+
+
+@pytest.mark.parametrize("dev", DEVICE_NAMES)
+@pytest.mark.parametrize("dtype_in_str", sorted(DTYPES))
+def test_operand_groups_hold_whole_expansions(dev, dtype_in_str):
+    """An interleaved group is one microkernel step's blocks, or the plain layout.
+
+    The aie2 4x4 kernel loads the four A (and B) blocks of a K step from one pointer, which is
+    only right if the DMA put all four in one group; and the tile granularity (expansion * mac
+    dim) is then a whole number of groups, so the DMA layout tiles m (n).
+    """
+    a_group, b_group = resolve_operand_groups(dev, dtype_in_str)
+    row_expand, col_expand = resolve_expansion(dev, dtype_in_str)
+    assert a_group in (1, row_expand)
+    assert b_group in (1, col_expand)
+
+
+def test_operand_group_map_entries_exist():
+    for dev, dtypes in operand_group_map.items():
+        assert set(dtypes) <= set(microkernel_mac_dim_map[dev]), dev
+
+
+def _call_my_matmul(dev, M, K, N, m, k, n):
+    """Call my_matmul with only the shape varied; it must fail before generating any MLIR."""
+    n_aie_cols = dict(DEVICES)[dev]
+    return gemm_module.my_matmul(
+        dev, M, K, N, m, k, n, n_aie_cols, "bf16", "f32",
+        b_col_maj=False, c_col_maj=True, use_scalar=False,
+        emulate_bf16_mmul_with_bfp16=False, trace_size=0,
+        zero_fn=None, matmul_fn=None, object_file=None,
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("dev", DEVICE_NAMES)
+@pytest.mark.parametrize(
+    ("bad", "match"),
+    [("M", r"A \(M="), ("K", r"K=\d+ must"), ("N", r"B \(N="), ("mk", "microkernel")],
+)
+def test_my_matmul_rejects_untileable_shapes_with_value_error(dev, bad, match):
+    """Shape checks raise ValueError, not assert, so they survive ``python -O``."""
+    r, s, t = resolve_mac_dims(dev, "bf16")
+    a_group, b_group = resolve_operand_groups(dev, "bf16")
+    m, k, n = 4 * a_group * r, 4 * s, 4 * b_group * t
+    n_aie_cols = dict(DEVICES)[dev]
+    M, K, N = m * N_AIE_ROWS, 2 * k, n * n_aie_cols
+    if bad == "M":
+        M += 1
+    elif bad == "K":
+        K += 1
+    elif bad == "N":
+        N += 1
+    else:
+        # Odd, so not a multiple of the (even) microkernel granularity; M stays tileable by m.
+        m = 2 * a_group * r + 1
+        M = m * N_AIE_ROWS
+    with pytest.raises(ValueError, match=match):
+        _call_my_matmul(dev, M, K, N, m, k, n)

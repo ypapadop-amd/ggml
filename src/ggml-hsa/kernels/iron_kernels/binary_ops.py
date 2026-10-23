@@ -12,10 +12,13 @@ from pathlib import Path
 
 import numpy as np
 from aie.dialects.arith import index_cast
+from aie.helpers.taplib import TensorAccessPattern
 from aie.ir import IntegerType
 from aie.iron import (
     ExternalFunction,
     ObjectFifo,
+    Program,
+    Runtime,
     Worker,
     dtype_to_str,
 )
@@ -23,11 +26,16 @@ from aie.iron.controlflow import range_
 
 from .utils import (
     CoreFunctionSpec,
+    _arch_params,
     align_to_arch,
     arch_aligned_num_elements,
+    arch_num_columns,
+    arch_to_device,
     core_function_object,
     fill_drain_program,
     max_tile_size,
+    partition_units,
+    shape_defines,
     tiled_tile_size,
     vector_lanes,
 )
@@ -50,6 +58,29 @@ from .utils import (
 _STACK_SIZE_BYTES = 4096
 
 
+# Fewest tiles worth a worker of their own. The shared fan_out_worker_count asks for 256K
+# elements per worker, which a binary op passes only well above MNIST sizes; but these designs are
+# DMA- and per-tile-bound once the kernel is vectorized, and spreading tiles over columns paid off
+# far below that. Measured on aie2, ADD, min us, 1 -> 4 workers: 500 rows of 10 (500 tiles)
+# 263 -> 166, 512 rows of 100 242 -> 167, 256x256 element-wise (64 tiles) 212 -> 169, 16 tiles of
+# 1024 143 -> 139; but 8 rows of 32 117 -> 131 and 16 rows of 64 123 -> 133, the fixed cost of
+# the extra fills, drains and cores showing.
+_MIN_TILES_PER_WORKER = 16
+
+
+def _worker_count(arch: str, num_tiles: int) -> int:
+    """Workers (one per column) to spread num_tiles tiles over, at least _MIN_TILES_PER_WORKER each.
+
+    Args:
+        arch: Target architecture.
+        num_tiles: Tiles the op streams.
+
+    Returns:
+        The worker count (>= 1).
+    """
+    return max(1, min(arch_num_columns(arch), num_tiles // _MIN_TILES_PER_WORKER))
+
+
 def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
     """Whether t0 can be repeated to fill t1 (GGML broadcast: t1[i] % t0[i] == 0).
 
@@ -61,6 +92,73 @@ def _ggml_can_repeat(t0_shape: tuple, t1_shape: tuple) -> bool:
         True if t0 can be broadcast to t1.
     """
     return all(t1_shape[i] % t0_shape[i] == 0 for i in range(4))
+
+
+def _banded_program(
+    arch: str,
+    workers: list,
+    *,
+    num_elements: int,
+    tile_size: int,
+    tiles_per_worker: list[int],
+    first_tiles: list[int],
+    input_tys: list,
+    output_ty,
+    in_prods: list[list],
+    out_conses: list,
+    banded: list[bool],
+):
+    """Program for workers that each stream a contiguous band of the tiles.
+
+    Worker w handles tiles [first_tiles[w], first_tiles[w] + tiles_per_worker[w]) of every
+    banded input and of the output, each moved linearly by its own column's shim DMA. A
+    non-banded input is filled whole into every worker (an operand each worker reuses).
+
+    Args:
+        arch: Target architecture.
+        workers: One Worker per band.
+        num_elements: Elements in each banded tensor.
+        tile_size: Elements per tile.
+        tiles_per_worker: Tiles in each worker's band.
+        first_tiles: Index of each worker's first tile.
+        input_tys: Host buffer type per input tensor, in src order.
+        output_ty: Host buffer type for the output tensor.
+        in_prods: in_prods[i][w] is worker w's producer for input i.
+        out_conses: Output consumer per worker.
+        banded: Per input, whether it is split in bands (else filled whole into each worker).
+
+    Returns:
+        The resolved IRON program (MLIR module).
+    """
+    num_inputs = len(input_tys)
+    n_workers = len(workers)
+
+    def band(w):
+        return TensorAccessPattern(
+            (num_elements,),
+            first_tiles[w] * tile_size,
+            [1, 1, tiles_per_worker[w], tile_size],
+            [0, 0, tile_size, 1],
+        )
+
+    # Bound positionally by Runtime: (*input buffers, output buffer, *producer lists,
+    # consumer list). Every drain is waited on: the bands can finish in any order.
+    def sequence(*args):
+        in_bufs = args[:num_inputs]
+        out_buf = args[num_inputs]
+        prods = args[num_inputs + 1 : -1]
+        conses = args[-1]
+        for i in range(num_inputs):
+            for w in range(n_workers):
+                if banded[i]:
+                    prods[i][w].fill(in_bufs[i], band(w))
+                else:
+                    prods[i][w].fill(in_bufs[i])
+        for w in range(n_workers):
+            conses[w].drain(out_buf, band(w), wait=True)
+
+    rt = Runtime(sequence, [*input_tys, output_ty, *in_prods, out_conses])
+    return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
 def _binary_op(
@@ -96,21 +194,32 @@ def _binary_op(
         (np.ndarray[(tile_size,), np.dtype[input_tensor.dtype]])
         for input_tensor in input_tensors
     ]
-    of_ins = [
-        ObjectFifo(input_tile_ty, name=f"in{index}")
-        for index, input_tile_ty in enumerate(input_tile_tys)
-    ]
     output_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
-    of_out = ObjectFifo(output_tile_ty, name="out")
 
-    # Create a worker to run the task on a compute tile
-    worker = None
+    # Fan the tiles out across columns in contiguous bands, one worker and shim DMA each: with
+    # the vector body, one column's DMA and the per-tile round trips are what bound the op.
+    n_workers = _worker_count(arch, num_tiles)
+    tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
+
+    def suffix(w):
+        return "" if n_workers == 1 else f"_{w}"
+
+    of_ins = [
+        [
+            ObjectFifo(input_tile_ty, name=f"in{index}{suffix(w)}")
+            for index, input_tile_ty in enumerate(input_tile_tys)
+        ]
+        for w in range(n_workers)
+    ]
+    of_outs = [
+        ObjectFifo(output_tile_ty, name=f"out{suffix(w)}") for w in range(n_workers)
+    ]
     function = function_spec.external_function
 
     # Task for the core to perform with an external function
-    def ext_core_fn(of_in0, of_in1, of_out, function):
+    def ext_core_fn(of_in0, of_in1, of_out, function, n_tiles):
         # Number of sub-vector "tile" iterations
-        for _ in range_(num_tiles):
+        for _ in range_(n_tiles):
             elem_in0 = of_in0.acquire(1)
             elem_in1 = of_in1.acquire(1)
             elem_out = of_out.acquire(1)
@@ -119,11 +228,16 @@ def _binary_op(
             of_in1.release(1)
             of_out.release(1)
 
-    worker = Worker(
-        ext_core_fn,
-        fn_args=[x.cons() for x in of_ins] + [of_out.prod(), function],
-        stack_size=_STACK_SIZE_BYTES,
-    )
+    # Create a worker per band to run the task on a compute tile
+    workers = [
+        Worker(
+            ext_core_fn,
+            fn_args=[x.cons() for x in of_ins[w]]
+            + [of_outs[w].prod(), function, tiles_per_worker[w]],
+            stack_size=_STACK_SIZE_BYTES,
+        )
+        for w in range(n_workers)
+    ]
 
     # Runtime operations to move data to/from the AIE-array
     input_tensor_tys = [
@@ -133,13 +247,27 @@ def _binary_op(
     output_tensor_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return fill_drain_program(
+    if n_workers == 1:
+        return fill_drain_program(
+            arch,
+            workers,
+            input_tys=input_tensor_tys,
+            output_ty=output_tensor_ty,
+            in_prods=[of_in.prod() for of_in in of_ins[0]],
+            out_cons=of_outs[0].cons(),
+        )
+    return _banded_program(
         arch,
-        [worker],
+        workers,
+        num_elements=num_elements,
+        tile_size=tile_size,
+        tiles_per_worker=tiles_per_worker,
+        first_tiles=first_tiles,
         input_tys=input_tensor_tys,
         output_ty=output_tensor_ty,
-        in_prods=[of_in.prod() for of_in in of_ins],
-        out_cons=of_out.cons(),
+        in_prods=[[of_ins[w][i].prod() for w in range(n_workers)] for i in range(2)],
+        out_conses=[of_out.cons() for of_out in of_outs],
+        banded=[True, True],
     )
 
 
@@ -217,9 +345,9 @@ def _create_external_function(
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            # L1-budgeted tile, so the shared transform_vector_n may use its vector body.
-            # This builder serves ADD/SUB/MUL/DIV; DIV has no vector body and simply ignores
-            # the flag. The generic broadcast path keeps the one-register tile and is
+            # L1-budgeted tile, so the shared transform_vector_walk_n may use its vector body.
+            # This builder serves ADD/SUB/MUL/DIV; DIV's vector body (div_n) does not use it
+            # and simply ignores the flag. The generic broadcast path keeps the one-register tile and is
             # deliberately left without it.
             "-DGGML_VECTORIZED_TILING=1",
             *(
@@ -332,17 +460,21 @@ def _create_row_external_function(
     op_name: str,
     input_tensors: list,
     output_tensor,
+    src1_rows: bool = False,
 ) -> CoreFunctionSpec:
     """Create the CoreFunctionSpec for a row-tiled broadcast kernel.
 
-    src1 is a single row (ne0 elements) reused across all dst rows. The tile
-    is exactly one dst row, so tile_size == ne0.
+    src1 is a single row (ne0 elements) reused across all dst rows, or with src1_rows, a src1
+    of several ne0-element rows, each dst row reading the one GGML's repeat maps it to. The
+    tile is exactly one dst row, so tile_size == ne0.
 
     Args:
         arch: Target architecture.
         op_name: Name of the binary operation (e.g. "GGML_OP_ADD").
         input_tensors: Two input tensors [src0, src1].
         output_tensor: Output tensor.
+        src1_rows: src1 has several rows (the GGML_OP_<op>_ROWS kernels, which also take the
+            dst row index).
 
     Returns:
         The configured CoreFunctionSpec.
@@ -365,7 +497,24 @@ def _create_row_external_function(
     # reads only the first N == ne0 elements, N being a separate runtime argument.
     num_elements_src1 = arch_aligned_num_elements(arch=arch, tensor=input_tensors[1])
 
-    row_op_name = f"{op_name}_ROW"
+    row_op_name = f"{op_name}_ROWS" if src1_rows else f"{op_name}_ROW"
+    # The shapes that map a dst row to its src1 row, baked in so the kernel's divisions are by
+    # constants.
+    src1_ne, dst_ne = input_tensors[1].shape, output_tensor.shape
+    row_defines = (
+        shape_defines(
+            "GGML_BCAST",
+            {
+                "DST_NE1": dst_ne[1],
+                "DST_NE2": dst_ne[2],
+                "SRC1_NE1": src1_ne[1],
+                "SRC1_NE2": src1_ne[2],
+                "SRC1_NE3": src1_ne[3],
+            },
+        )
+        if src1_rows
+        else []
+    )
     current_dir = Path(__file__).resolve().parent
     func = ExternalFunction(
         name=row_op_name.lower(),
@@ -376,13 +525,15 @@ def _create_row_external_function(
             np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]],
             np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]],
             np.int32,
+            *([np.int32, np.int32] if src1_rows else []),
         ],
         compile_flags=[
             f"-D{row_op_name}=1",
+            *row_defines,
             f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
             f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
             f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            # Tile is one whole dst row, so the shared transform_vector_n may use its vector
+            # Tile is one whole dst row, so the shared transform_vector_walk_n may use its vector
             # body. (For a narrow row that tile is still below one vector register; the body
             # then degrades to its scalar tail.) The generic broadcast path keeps the
             # one-register tile and is deliberately left without this flag.
@@ -397,19 +548,113 @@ def _create_row_external_function(
     return CoreFunctionSpec(external_function=func, num_elements=num_elements)
 
 
+def _create_scalar_rows_external_function(
+    arch: str,
+    op_name: str,
+    input_tensors: list,
+    output_tensor,
+) -> tuple[CoreFunctionSpec, int] | None:
+    """Create the CoreFunctionSpec for a src1 of one element per dst row (a conv bias).
+
+    src1 is 1 along dst's leading dims (at least ne0), so dst folds into rows of the longest
+    run of leading dims that fits a tile, each row combined with the one src1 element GGML's
+    repeat maps it to. A tile holds the largest whole number of rows dividing the row count
+    that fits half the core's data memory next to the resident src1.
+
+    Args:
+        arch: Target architecture.
+        op_name: Name of the binary operation (e.g. "GGML_OP_ADD").
+        input_tensors: Two input tensors [src0, src1], all three tensors of one dtype.
+        output_tensor: Output tensor.
+
+    Returns:
+        The CoreFunctionSpec and the row length, or None when not even one row of ne0
+        elements fits a tile or a row is not a whole number of 4-byte words.
+    """
+    src1_ne, dst_ne = input_tensors[1].shape, output_tensor.shape
+    dtype = output_tensor.dtype
+    num_elements = output_tensor.numel()
+    num_elements_src1 = arch_aligned_num_elements(arch=arch, tensor=input_tensors[1])
+    budget = (
+        _arch_params(arch)["core_data_mem_bytes"] // 2
+        - num_elements_src1 * input_tensors[1].dtype.itemsize
+    )
+    cap = budget // (2 * (input_tensors[0].dtype.itemsize + dtype.itemsize))
+
+    # Fold the leading dims src1 is 1 in, as many as fit a tile.
+    k, row_len = 0, 1
+    while k < 4 and src1_ne[k] == 1 and row_len * dst_ne[k] <= cap:
+        row_len *= dst_ne[k]
+        k += 1
+    if k == 0 or (row_len * dtype.itemsize) % 4 != 0:
+        return None
+    n_rows = num_elements // row_len
+    rows = next(r for r in range(cap // row_len, 0, -1) if n_rows % r == 0)
+    tile_size = rows * row_len
+
+    # dst rows over the remaining dims, src1 viewed as rows of one element.
+    rest_dst = (*dst_ne[k:], 1, 1, 1)
+    rest_src1 = (*src1_ne[k:], 1, 1, 1)
+    row_op_name = f"{op_name}_SCALAR_ROWS"
+    current_dir = Path(__file__).resolve().parent
+    func = ExternalFunction(
+        name=row_op_name.lower(),
+        **core_function_object(f"{row_op_name.lower()}_core_function"),
+        source_file=str(current_dir / "binary_ops.cc"),
+        arg_types=[
+            np.ndarray[(tile_size,), np.dtype[input_tensors[0].dtype]],
+            np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]],
+            np.ndarray[(tile_size,), np.dtype[dtype]],
+            np.int32,
+            np.int32,
+            np.int32,
+            np.int32,
+        ],
+        compile_flags=[
+            f"-D{row_op_name}=1",
+            *shape_defines(
+                "GGML_BCAST",
+                {
+                    "DST_NE1": rest_dst[0],
+                    "DST_NE2": rest_dst[1],
+                    "SRC1_NE1": rest_src1[0],
+                    "SRC1_NE2": rest_src1[1],
+                    "SRC1_NE3": rest_src1[2],
+                },
+            ),
+            f"-DINPUT0_DTYPE={dtype_to_str(input_tensors[0].dtype)}",
+            f"-DINPUT1_DTYPE={dtype_to_str(input_tensors[1].dtype)}",
+            f"-DOUTPUT_DTYPE={dtype_to_str(dtype)}",
+            # Rows are whole tiles' worth of elements, so the shared transform_vector_walk_n may
+            # use its vector body; it checks each row's alignment.
+            "-DGGML_VECTORIZED_TILING=1",
+        ],
+    )
+    return CoreFunctionSpec(external_function=func, num_elements=num_elements), row_len
+
+
 def _binary_op_row(
     arch: str,
     input_tensors: list,
     function_spec: CoreFunctionSpec,
     output_tensor,
+    src1_rows: bool = False,
+    scalar_row_len: int = 0,
 ):
     """Row-tiled broadcast: out[row] = op(src0[row], src1) (one src1 row reused).
 
+    With src1_rows, src1 holds several rows and the kernel also gets the dst row index, to
+    pick the src1 row GGML's repeat maps that dst row to. With scalar_row_len, a tile holds
+    tile_size // scalar_row_len rows of that many elements, each combined with one src1
+    element (the GGML_OP_<op>_SCALAR_ROWS kernels).
+
     Args:
         arch: Target architecture.
-        input_tensors: Input tensors [src0, src1]; src1 is one ne0-element row.
-        function_spec: Core function specification (tile_size == ne0).
+        input_tensors: Input tensors [src0, src1]; src1 is one ne0-element row, or several.
+        function_spec: Core function specification (tile_size == ne0, or whole scalar rows).
         output_tensor: Output tensor.
+        src1_rows: src1 has several rows (the GGML_OP_<op>_ROWS kernels).
+        scalar_row_len: Elements per row for the GGML_OP_<op>_SCALAR_ROWS kernels, else 0.
 
     Returns:
         The resolved IRON program (MLIR module).
@@ -423,40 +668,100 @@ def _binary_op_row(
     src1_row_ty = np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]]
     out_tile_ty = np.ndarray[(tile_size,), np.dtype[output_tensor.dtype]]
 
-    of_src0 = ObjectFifo(src0_tile_ty, name="src0")
-    of_src1 = ObjectFifo(src1_row_ty, depth=1, name="src1")  # loaded once, reused
-    of_out = ObjectFifo(out_tile_ty, name="out")
+    # Rows fan out across columns in contiguous bands, as in _binary_op; each worker gets its
+    # own copy of the src1 row.
+    n_workers = _worker_count(arch, num_tiles)
+    tiles_per_worker, first_tiles = partition_units(n_workers, num_tiles)
+
+    def suffix(w):
+        return "" if n_workers == 1 else f"_{w}"
+
+    of_src0s = [
+        ObjectFifo(src0_tile_ty, name=f"src0{suffix(w)}") for w in range(n_workers)
+    ]
+    # loaded once, reused
+    of_src1s = [
+        ObjectFifo(src1_row_ty, depth=1, name=f"src1{suffix(w)}")
+        for w in range(n_workers)
+    ]
+    of_outs = [
+        ObjectFifo(out_tile_ty, name=f"out{suffix(w)}") for w in range(n_workers)
+    ]
 
     function = function_spec.external_function
 
-    def ext_core_fn(of_src0, of_src1, of_out, function):
-        src1_buf = of_src1.acquire(1)  # one src1 row, reused across all tiles
-        for _ in range_(num_tiles):
+    def ext_core_fn(of_src0, of_src1, of_out, function, n_tiles, first_tile):
+        src1_buf = of_src1.acquire(1)  # src1, reused across all tiles
+        for tile_idx in range_(n_tiles):
             src0_tile = of_src0.acquire(1)
             out_tile = of_out.acquire(1)
-            function(src0_tile, src1_buf, out_tile, tile_size)
+            if scalar_row_len:
+                # first dst row = (first_tile + tile_idx) * rows, formed in the kernel
+                rows = tile_size // scalar_row_len
+                tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
+                function(
+                    src0_tile,
+                    src1_buf,
+                    out_tile,
+                    scalar_row_len,
+                    rows,
+                    first_tile * rows,
+                    tile_idx_i32,
+                )
+            elif src1_rows:
+                # dst row = first_tile + tile_idx, added in the kernel
+                tile_idx_i32 = index_cast(IntegerType.get_signless(32), tile_idx)
+                function(
+                    src0_tile, src1_buf, out_tile, tile_size, first_tile, tile_idx_i32
+                )
+            else:
+                function(src0_tile, src1_buf, out_tile, tile_size)
             of_src0.release(1)
             of_out.release(1)
         of_src1.release(1)
 
-    worker = Worker(
-        ext_core_fn,
-        fn_args=[of_src0.cons(), of_src1.cons(), of_out.prod(), function],
-        stack_size=_STACK_SIZE_BYTES,
-    )
+    workers = [
+        Worker(
+            ext_core_fn,
+            fn_args=[
+                of_src0s[w].cons(),
+                of_src1s[w].cons(),
+                of_outs[w].prod(),
+                function,
+                tiles_per_worker[w],
+                first_tiles[w],
+            ],
+            stack_size=_STACK_SIZE_BYTES,
+        )
+        for w in range(n_workers)
+    ]
 
     # Buffers in src order then dst (kernarg layout contract).
     src0_ty = np.ndarray[(num_elements,), np.dtype[input_tensors[0].dtype]]
     src1_ty = np.ndarray[(num_elements_src1,), np.dtype[input_tensors[1].dtype]]
     out_ty = np.ndarray[(num_elements,), np.dtype[output_tensor.dtype]]
 
-    return fill_drain_program(
+    if n_workers == 1:
+        return fill_drain_program(
+            arch,
+            workers,
+            input_tys=[src0_ty, src1_ty],
+            output_ty=out_ty,
+            in_prods=[of_src0s[0].prod(), of_src1s[0].prod()],
+            out_cons=of_outs[0].cons(),
+        )
+    return _banded_program(
         arch,
-        [worker],
+        workers,
+        num_elements=num_elements,
+        tile_size=tile_size,
+        tiles_per_worker=tiles_per_worker,
+        first_tiles=first_tiles,
         input_tys=[src0_ty, src1_ty],
         output_ty=out_ty,
-        in_prods=[of_src0.prod(), of_src1.prod()],
-        out_cons=of_out.cons(),
+        in_prods=[[of.prod() for of in of_src0s], [of.prod() for of in of_src1s]],
+        out_conses=[of.cons() for of in of_outs],
+        banded=[True, False],
     )
 
 
@@ -624,6 +929,67 @@ def binary_op(
             function_spec=function_spec,
             output_tensor=output_tensor,
         )
+
+    # src1 rows as long as dst's, repeated along the other dimensions: tile by dst row, with
+    # each row reading its whole src1 row, rather than mapping every element to src1 (the
+    # generic path below, which divides per element). A row whose bytes are not a whole number
+    # of 4-byte words for some operand cannot be one DMA tile, and takes the generic path.
+    rows_tileable = all(
+        (dst_shape[0] * dtype.itemsize) % 4 == 0
+        for dtype in (
+            input_tensors[0].dtype,
+            input_tensors[1].dtype,
+            output_tensor.dtype,
+        )
+    )
+    if (
+        op_name in _ROW_BROADCAST_OPS
+        and needs_broadcast
+        and src1_shape[0] == dst_shape[0]
+        and rows_tileable
+        and _ggml_can_repeat(src1_shape, dst_shape)
+    ):
+        function_spec = _create_row_external_function(
+            arch=arch,
+            op_name=op_name,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+            src1_rows=True,
+        )
+        return _binary_op_row(
+            arch=arch,
+            input_tensors=input_tensors,
+            function_spec=function_spec,
+            output_tensor=output_tensor,
+            src1_rows=True,
+        )
+
+    # src1 one element per run of dst's leading dims (a conv bias [1, 1, C]): tile by whole
+    # runs, each combined with its src1 element, rather than mapping every element to src1.
+    # aie2p only so far: aie2 keeps the generic path below.
+    if (
+        arch == "aie2p"
+        and op_name in _ROW_BROADCAST_OPS
+        and needs_broadcast
+        and same_dtype
+        and src1_shape[0] == 1
+        and _ggml_can_repeat(src1_shape, dst_shape)
+    ):
+        scalar_rows = _create_scalar_rows_external_function(
+            arch=arch,
+            op_name=op_name,
+            input_tensors=input_tensors,
+            output_tensor=output_tensor,
+        )
+        if scalar_rows is not None:
+            function_spec, row_len = scalar_rows
+            return _binary_op_row(
+                arch=arch,
+                input_tensors=input_tensors,
+                function_spec=function_spec,
+                output_tensor=output_tensor,
+                scalar_row_len=row_len,
+            )
 
     if needs_broadcast:
         # Validate broadcasting is supported per GGML semantics

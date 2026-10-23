@@ -135,6 +135,74 @@ inline float scalar_log(float x) {
 }
 
 /**
+ * @brief Computes the natural logarithm of every lane, for positive normal finite lanes.
+ *
+ * Vector form of @ref scalar_log without its special cases, so it calls no runtime routine:
+ * ln(x) = ln(m) + e * ln(2), with x = m * 2^e and m folded into [sqrt(1/2), sqrt(2)), and ln(m)
+ * by the Cephes logf polynomial in f = m - 1 (no divide); ln(2) is split in two parts so that the
+ * large part of e * ln(2) is exact.
+ *
+ * Zero, negative, subnormal, infinite and NaN lanes give unspecified values; callers that can see
+ * them must handle them (@ref scalar_log does).
+ *
+ * @tparam V Vector width.
+ * @param[in] x The input vector.
+ * @return The element-wise natural logarithm.
+ */
+template <unsigned V>
+inline aie::vector<float, V> vec_log(const aie::vector<float, V> & x) {
+    using fvec = aie::vector<float, V>;
+    using ivec = aie::vector<int32_t, V>;
+    const auto mul = [](const fvec & a, const auto & b) {
+        return aie::mul(a, b).template to_vector<float>();
+    };
+
+    const ivec bits = aie::vector_cast<int32_t>(x);
+    const ivec mantissa = aie::bit_and(int32_t{0x007FFFFF}, bits);
+    // m >= sqrt(2) (mantissa bits >= 0x3504F3) is halved into [sqrt(1/2), 1) and its exponent
+    // raised by one. Adds build the bit patterns rather than bit_or: aie2p cannot legalize the
+    // vector OR.
+    const auto halve = aie::ge(mantissa, aie::broadcast<int32_t, V>(0x003504F3));
+    const fvec m = aie::vector_cast<float>(
+        aie::add(mantissa, aie::select(aie::broadcast<int32_t, V>(0x3F800000),
+                                       aie::broadcast<int32_t, V>(0x3F000000), halve)));
+    const ivec e_int =
+        aie::add(aie::sub(aie::downshift(bits, 23), aie::broadcast<int32_t, V>(127)),
+                 aie::select(aie::zeros<int32_t, V>(), aie::broadcast<int32_t, V>(1), halve));
+    // int -> float of the small exponent by the 1.5 * 2^23 magic number (exact for |e| < 2^22).
+    constexpr int32_t magic_bits = 0x4B400000; // 1.5 * 2^23
+    const fvec e =
+        aie::sub(aie::vector_cast<float>(aie::add(e_int, aie::broadcast<int32_t, V>(magic_bits))),
+                 aie::broadcast<float, V>(12582912.0f));
+
+#if __AIE_ARCH__ != 20
+    // aie2p's vadd.f has no guard bit, so m - 1 drops m's last bit when m < 1. In two halves each
+    // subtraction is exact: m - 1/2 shares m's exponent or the result's, and so does the rest.
+    const fvec f = aie::sub(aie::sub(m, 0.5f), 0.5f);
+#else
+    const fvec f = aie::sub(m, aie::broadcast<float, V>(1.0f));
+#endif
+    const fvec z = mul(f, f);
+
+    constexpr float log_coeffs[] = {7.0376836292e-2f,  -1.1514610310e-1f, 1.1676998740e-1f,
+                                    -1.2420140846e-1f, 1.4249322787e-1f,  -1.6668057665e-1f,
+                                    2.0000714765e-1f,  -2.4999993993e-1f, 3.3333331174e-1f};
+    constexpr int32_t NUM_LOG_COEFFS = sizeof(log_coeffs) / sizeof(log_coeffs[0]);
+    fvec poly = aie::broadcast<float, V>(log_coeffs[0]);
+    AIE_LOOP_UNROLL_FULL
+    for (int32_t i = 1; i < NUM_LOG_COEFFS; ++i) {
+        poly = aie::add(mul(poly, f), aie::broadcast<float, V>(log_coeffs[i]));
+    }
+
+    constexpr float ln2_lo = -2.12194440e-4f; // ln(2) = ln2_hi + ln2_lo
+    constexpr float ln2_hi = 0.693359375f;    // exact in 9 bits, so e * ln2_hi is exact
+    fvec y = mul(mul(poly, f), z);
+    y = aie::add(y, mul(e, ln2_lo));
+    y = aie::sub(y, mul(z, 0.5f));
+    return aie::add(aie::add(f, y), mul(e, ln2_hi));
+}
+
+/**
  * @brief Computes floor(log2(x)) for positive integers.
  *
  * Finds the position of the most significant bit set in x.
@@ -301,6 +369,218 @@ inline aie::vector<float, VecSize> vec_exp(aie::vector<float, VecSize> & x) {
     return result;
 }
 
+/// @ref vec_exp_nonpositive on up to 32 lanes, always inlined so that its caller can interleave
+/// independent calls.
+template <int32_t VecSize>
+__attribute__((always_inline)) inline aie::vector<float, VecSize>
+vec_exp_nonpositive_lanes(aie::vector<float, VecSize> x) {
+    using vec = aie::vector<float, VecSize>;
+    constexpr float log2e = 1.4426950408889634f;
+    // Cody-Waite split of ln(2): n * ln2_hi is exact for the n here.
+    constexpr float ln2_hi = 6.93145751953125e-1f;
+    constexpr float ln2_lo = 1.4286068203094172321e-6f;
+    constexpr float magic = 12582912.0f; // 1.5 * 2^23
+
+    x = aie::max(x, aie::broadcast<float, VecSize>(-86.0f));
+
+    // n = floor(t), t = x * log2(e) + 1/2: round with the magic number, then step down where that
+    // rounded up.
+    aie::accum<accfloat, VecSize> t_acc;
+    t_acc.from_vector(aie::broadcast<float, VecSize>(0.5f));
+    const vec t = aie::mac(t_acc, x, log2e).template to_vector<float>();
+    const vec v_magic = aie::broadcast<float, VecSize>(magic);
+    vec n_f = aie::sub(aie::add(t, v_magic), v_magic);
+    n_f = aie::sub(n_f, aie::select(aie::zeros<float, VecSize>(),
+                                    aie::broadcast<float, VecSize>(1.0f), aie::lt(t, n_f)));
+
+    vec r = aie::sub(x, aie::mul(n_f, ln2_hi).template to_vector<float>());
+    r = aie::sub(r, aie::mul(n_f, ln2_lo).template to_vector<float>());
+
+    // exp(r) by Horner's rule, 1/7! down to 1/0!.
+    constexpr float coeffs[] = {1.0f / 5040.0f, 1.0f / 720.0f, 1.0f / 120.0f, 1.0f / 24.0f,
+                                1.0f / 6.0f,    0.5f,          1.0f,          1.0f};
+    vec poly = aie::broadcast<float, VecSize>(coeffs[0]);
+    AIE_LOOP_UNROLL_FULL
+    for (int32_t i = 1; i < static_cast<int32_t>(sizeof(coeffs) / sizeof(coeffs[0])); ++i) {
+        aie::accum<accfloat, VecSize> acc;
+        acc.from_vector(aie::broadcast<float, VecSize>(coeffs[i]));
+        poly = aie::mac(acc, poly, r).template to_vector<float>();
+    }
+
+    // poly * 2^n: n << 23 added to the exponent field (n_f is a whole number, so exact).
+    return aie::add(poly.template cast_to<int32_t>(), aie::to_fixed<int32_t>(n_f, 23))
+        .template cast_to<float>();
+}
+
+/**
+ * @brief Computes exp(x) for x <= 0, the arguments of softmax and log-sum-exp once the row
+ * maximum is subtracted, in fewer steps than @ref vec_exp.
+ *
+ * exp(x) = 2^n * exp(r) with n = floor(x * log2(e) + 1/2), so r = x - n * ln(2) lies in
+ * [-ln2/2, ln2/2], where a degree-7 Taylor polynomial is within 6e-9 of exp(r) (against degree 13
+ * on [0, ln2) in @ref vec_exp). 2^n is applied by adding n to the result's exponent field. Every
+ * fp32 multiply here is emulated and dominates the cost: 10 of them, against 17 in @ref vec_exp.
+ *
+ * Each step waits on the previous one, so one call leaves most of the core idle: 64 lanes run as
+ * two independent 32-lane halves, which the scheduler interleaves (887 bundles against 674 for 32
+ * lanes on aie2; 32 is the widest fp32 accumulator).
+ *
+ * @tparam VecSize The SIMD vector width: up to 32, or 64.
+ * @param[in] x Arguments, <= 0. Below -86 they are taken as -86: exp(-86) ~ 4.5e-38 is still a
+ *              normal float, so the exponent field cannot underflow. A positive argument is
+ *              outside the contract.
+ * @return exp(x) in each lane.
+ */
+template <int32_t VecSize>
+inline aie::vector<float, VecSize> vec_exp_nonpositive(const aie::vector<float, VecSize> & x) {
+    if constexpr (VecSize > 32) {
+        static_assert(VecSize == 64, "vec_exp_nonpositive takes up to 32 lanes, or 64");
+        return aie::concat(vec_exp_nonpositive_lanes<32>(x.template extract<32>(0)),
+                           vec_exp_nonpositive_lanes<32>(x.template extract<32>(1)));
+    } else {
+        return vec_exp_nonpositive_lanes<VecSize>(x);
+    }
+}
+
+#if __AIE_ARCH__ != 20
+
+/**
+ * @brief Applies the GELU activation (tanh approximation) to 32 lanes; aie2p form.
+ *
+ * Same sigmoid form as the aie2 version below, x / (1 + exp(-2y)), rearranged so that every step
+ * is a multiply, an add or a bit operation:
+ *
+ * - Only e = exp(-2|y|) = 2^-w <= 1 is computed, w = 2 log2(e) |y| clamped at 125:
+ *   gelu(x) = x / (1 + e) for x >= 0 and x e / (1 + e) for x < 0. 2^-w = 2^-n 2^-r, with n the
+ *   nearest integer by the 1.5 * 2^23 magic number (whose low bits then hold n, so 2^-n is a
+ *   subtraction from the exponent field), and 2^-r on [-1/2, 1/2] by a degree-5 minimax
+ *   polynomial (relative error 1.5e-7). The clamp compares w's bits as integers, so it needs no
+ *   emulated f32 min/max and takes infinite and NaN magnitudes too.
+ * - 1 / (1 + e), on [1, 2], is the linear minimax seed 24/17 - 8/17 d (relative error 1/17)
+ *   refined by three Newton steps, instead of aie::inv, which aie2p runs as one scalar inverse per
+ *   lane.
+ * - The emulated f32 products are aie2p's "fast" six bf16 partial products, not aie::mul's nine,
+ *   and fewer where a later step corrects or damps the error.
+ *
+ * Within 1.5e-6 relative of the exact tanh form, against ggml's CPU f32 GELU's fp16 table at
+ * 3.8e-3. Always inlined: Peano otherwise calls it once per vector.
+ *
+ * @param[in] x The input vector.
+ * @return The element-wise GELU.
+ */
+__attribute__((always_inline)) inline aie::vector<float, 32>
+vec_gelu_32(const aie::vector<float, 32> & x) {
+    using fvec = aie::vector<float, 32>;
+    using ivec = aie::vector<int32_t, 32>;
+    using acc = aie::accum<accfloat, 32>;
+    // Emulated f32 products, at two accuracies: "fast", six of the nine bf16 partial products
+    // of aie::mul (within ~1 ulp), and "low", three (relative error ~2^-16), where a later step
+    // corrects or damps the error.
+    const auto mul = [](const fvec & a, const fvec & b) -> fvec {
+        return acc(::mul_elem_32_accuracy_fast(a, b)).template to_vector<float>();
+    };
+    const auto mul_low = [](const fvec & a, const fvec & b) -> fvec {
+        return acc(::mul_elem_32_accuracy_low(a, b)).template to_vector<float>();
+    };
+    // c + a * b at low accuracy.
+    const auto mac_low = [](float c, const fvec & a, const fvec & b) -> fvec {
+        return acc(::mac_elem_32_accuracy_low(a, b, aie::broadcast<float, 32>(c), 0, 0, 0))
+            .template to_vector<float>();
+    };
+    // c - a * b at low accuracy.
+    const auto msc_low = [](float c, const fvec & a, const fvec & b) -> fvec {
+        return acc(::msc_elem_32_accuracy_low(a, b, aie::broadcast<float, 32>(c), 0, 0, 0))
+            .template to_vector<float>();
+    };
+    const auto bc = [](float c) { return aie::broadcast<float, 32>(c); };
+    const auto to_bf16 = [](const fvec & v) { return acc(v).template to_vector<bfloat16>(); };
+
+    constexpr float kSqrt2OverPi = 0.7978845608028654f; // sqrt(2/pi)
+    constexpr float kCoefA = 0.044715f;
+    constexpr float kLog2e = 1.4426950408889634f;
+    // 2y log2(e) = x (k1 + k2 x^2).
+    constexpr float kK1 = 2.0f * kLog2e * kSqrt2OverPi;
+    constexpr float kK2 = kK1 * kCoefA;
+    // w = 2 |y| log2(e) is clamped at 125: 2^-125 and 2^-n 2^-r are still normal floats.
+    constexpr int32_t kWMaxBits = __builtin_bit_cast(int32_t, 125.0f);
+    constexpr float kMagic = 12582912.0f; // 1.5 * 2^23
+    constexpr uint32_t kTenBits = __builtin_bit_cast(uint32_t, 10.0f);
+    constexpr uint32_t kSignBit = 0x80000000u;
+    // 2^-r on [-1/2, 1/2], highest degree first: the minimax 2^r's with odd terms negated.
+    constexpr float kExp2Coeffs[] = {-1.3276466634e-3f, 9.6755418926e-3f,  -5.5507134646e-2f,
+                                     2.4022120237e-1f,  -6.9314694405e-1f, 1.0000001192e+0f};
+
+    const ivec x_bits = aie::vector_cast<int32_t>(x);
+    const ivec abs_bits =
+        aie::bit_and(int32_t{0x7FFFFFFF},
+                     aie::vector_cast<int32_t>(mul(x, aie::add(mul(mul(x, x), bc(kK2)), kK1))));
+    const fvec w = aie::vector_cast<float>(
+        aie::select(abs_bits, aie::broadcast<int32_t, 32>(kWMaxBits),
+                    aie::gt(abs_bits, aie::broadcast<int32_t, 32>(kWMaxBits))));
+
+    // w = n + r: w + magic rounds to the nearest integer n, held in its low bits.
+    const fvec wm = aie::add(w, kMagic);
+    const fvec r = aie::sub(w, aie::sub(wm, kMagic));
+    // Horner's rule; |r| <= 1/2 damps the low-accuracy error of the inner steps below 1e-7.
+    fvec p = bc(kExp2Coeffs[0]);
+    AIE_LOOP_UNROLL_FULL
+    for (int32_t i = 1; i < 4; ++i) {
+        p = mac_low(kExp2Coeffs[i], p, r);
+    }
+    p = aie::add(mul(p, r), kExp2Coeffs[4]);
+    p = aie::add(mul(p, r), kExp2Coeffs[5]);
+    // e = 2^-r * 2^-n: n << 23 taken off the exponent field. The magic number's bits shift out.
+    const fvec e = aie::vector_cast<float>(
+        aie::sub(aie::vector_cast<int32_t>(p), aie::upshift(aie::vector_cast<int32_t>(wm), 23)));
+
+    // q = 1 / d, d = 1 + e in [1, 2]. Newton's step q (2 - d q) squares the relative error, so
+    // the seed and the first step run in bf16 and the second at low accuracy (1/17, ~7e-3,
+    // ~7e-5), and only the last needs the fast product.
+    const fvec d = aie::add(e, 1.0f);
+    const auto d16 = to_bf16(d);
+    fvec q = aie::mac(acc(bc(24.0f / 17.0f)), d16, static_cast<bfloat16>(-8.0f / 17.0f))
+                 .template to_vector<float>();
+    const auto q16 = to_bf16(q);
+    q = aie::mul(q16, to_bf16(aie::msc(acc(bc(2.0f)), d16, q16).template to_vector<float>()))
+            .template to_vector<float>();
+    q = mul_low(q, msc_low(2.0f, d, q));
+    q = mul(q, aie::sub(bc(2.0f), mul(d, q)));
+
+    // y < 0 (the sign of x): x e / (1 + e), else x / (1 + e).
+    const fvec num = aie::select(x, mul(x, e), aie::lt(x_bits, aie::zeros<int32_t, 32>()));
+    // As ggml's CPU GELU: x for x >= 10, 0 for x <= -10, decided on the bits of x (unsigned,
+    // the negatives order above the positives). This also keeps infinities, whose emulated
+    // product is NaN, and x^3 overflowing out of the result.
+    const auto ux = aie::vector_cast<uint32_t>(x);
+    fvec y = aie::select(mul(num, q), x,
+                         aie::ge(ux, aie::broadcast<uint32_t, 32>(kTenBits)) &
+                             aie::lt(ux, aie::broadcast<uint32_t, 32>(kSignBit)));
+    return aie::select(y, aie::zeros<float, 32>(),
+                       aie::ge(ux, aie::broadcast<uint32_t, 32>(kSignBit | kTenBits)));
+}
+
+/**
+ * @brief Applies the GELU activation (tanh approximation) to every lane; see @ref vec_gelu_32.
+ *
+ * Narrower vectors run at 32 lanes: the emulated f32 multiply costs the same at 16 lanes as at 32.
+ *
+ * @tparam VecSize Vector width, up to 32.
+ * @param[in] x The input vector.
+ * @return The element-wise GELU.
+ */
+template <unsigned VecSize>
+__attribute__((always_inline)) inline aie::vector<float, VecSize>
+vec_gelu(const aie::vector<float, VecSize> & x) {
+    static_assert(VecSize <= 32, "vec_gelu takes up to 32 lanes");
+    if constexpr (VecSize < 32) {
+        return vec_gelu_32(x.template grow<32>()).template extract<VecSize>(0);
+    } else {
+        return vec_gelu_32(x);
+    }
+}
+
+#else // __AIE_ARCH__ == 20
+
 /**
  * @brief Applies the GELU activation (tanh approximation) to every lane.
  *
@@ -330,13 +610,18 @@ inline aie::vector<float, VecSize> vec_gelu(const aie::vector<float, VecSize> & 
     const aie::vector<float, VecSize> inner =
         aie::add(x, aie::mul(x3, kCoefA).template to_vector<float>());
 
-    // t = -2y, then exp(t); vec_exp clamps, so no overflow guard is needed here
+    // t = -2y, then exp(t). vec_exp clamps t at 88, but 1 + e^88 is too large for aie::inv: on aie2
+    // it returned NaN for every x <= -11, where GELU is -0. At t = 80 the reciprocal is still a
+    // normal float, so the result is a tiny negative number instead.
     aie::vector<float, VecSize> t =
         aie::mul(inner, -2.0f * kSqrt2OverPi).template to_vector<float>();
+    t = aie::min(t, 80.0f);
     const aie::vector<float, VecSize> e = vec_exp<static_cast<int32_t>(VecSize)>(t);
 
     return aie::mul(x, aie::inv(aie::add(e, 1.0f))).template to_vector<float>();
 }
+
+#endif // __AIE_ARCH__ != 20
 
 /**
  * @brief Returns |v| for one element.

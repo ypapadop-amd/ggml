@@ -209,6 +209,31 @@ def tiled_tile_size(
     return max_tile_size(arch, dtype, num_elements)
 
 
+def divisor_tile_size(
+    arch: str, num_elements: int, fifo_dtypes: Sequence[np.dtype]
+) -> int:
+    """Largest divisor of num_elements whose tiles fit half the core data memory.
+
+    For kernels that take any tile width (a vector body plus a scalar tail): unlike
+    tiled_tile_size, the tile need not be a multiple of the vector width, so a count such
+    as 500 streams as one tile rather than as 125 tiles of 4. Tiles that are not a whole
+    number of vectors need not start 512-bit aligned; the kernel must load them unaligned.
+
+    Args:
+        arch: Target architecture.
+        num_elements: Total number of elements to tile.
+        fifo_dtypes: Element type of every object fifo streaming tiles through the core,
+            one entry per fifo, each double-buffered.
+
+    Returns:
+        The chosen tile size in elements; always divides num_elements.
+    """
+    budget = _arch_params(arch)["core_data_mem_bytes"] // 2
+    bytes_per_tile_element = 2 * sum(d.itemsize for d in fifo_dtypes)
+    cap = max(1, min(num_elements, budget // bytes_per_tile_element))
+    return next(t for t in range(cap, 0, -1) if num_elements % t == 0)
+
+
 # Minimum valid elements a worker must process for its share of the copy/convert to outweigh the
 # fixed per-worker cost (an extra shim-DMA fill+drain pair and its completion fence). Below this,
 # fanning out costs more than the single-core compute it saves; small ops (e.g. the MNIST FC
@@ -217,12 +242,16 @@ _MIN_ELEMS_PER_WORKER = 256 * 1024
 
 
 def fan_out_worker_count(
-    arch: str, total_elems: int, n_units: int, max_workers: int | None = None
+    arch: str,
+    total_elems: int,
+    n_units: int,
+    max_workers: int | None = None,
+    min_elems_per_worker: int = _MIN_ELEMS_PER_WORKER,
 ) -> int:
     """Number of data-parallel workers to fan a transform across, scaled to the work size.
 
     Capped by (a) the caller's max_workers (defaults to the array column count), (b) the number of
-    independent units to split (n_units), and (c) the work: at least _MIN_ELEMS_PER_WORKER valid
+    independent units to split (n_units), and (c) the work: at least min_elems_per_worker valid
     elements per worker, so tiny ops stay single-worker and avoid per-worker DMA/fence overhead.
 
     Args:
@@ -230,13 +259,14 @@ def fan_out_worker_count(
         total_elems: Total valid elements the transform processes.
         n_units: Number of independent units available to split across workers.
         max_workers: Hard cap on workers; defaults to the array's column count.
+        min_elems_per_worker: Fewest valid elements worth a worker of its own.
 
     Returns:
         The worker count (>= 1).
     """
     if max_workers is None:
         max_workers = arch_num_columns(arch)
-    by_work = max(1, total_elems // _MIN_ELEMS_PER_WORKER)
+    by_work = max(1, total_elems // min_elems_per_worker)
     return max(1, min(max_workers, n_units, by_work))
 
 
@@ -368,6 +398,19 @@ def fill_drain_program(arch, workers, *, input_tys, output_ty, in_prods, out_con
 
     rt = Runtime(sequence, [*input_tys, output_ty, *in_prods, out_cons])
     return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
+
+
+def shape_defines(prefix: str, shape: dict[str, int]) -> list[str]:
+    """Compile flags baking an op's shape into its kernel: one -D<prefix>_<key>=<value> per entry.
+
+    Args:
+        prefix: Macro prefix, e.g. "GGML_POOL".
+        shape: Extents and op_params by name.
+
+    Returns:
+        The -D flags, in the dict's order.
+    """
+    return [f"-D{prefix}_{key}={value}" for key, value in shape.items()]
 
 
 def batch_slice_tap(num_units, unit_size, start_unit, count):

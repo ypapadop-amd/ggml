@@ -114,6 +114,25 @@ int main() {
         {48, 16, 1, 5, "npast5"},
         {32, 32, 4, 0, "3d npast0"},
         {64, 32, 3, 12, "3d npast12"},
+        // Row lengths that are not a whole number of 16-lane vectors: a tail, one shorter than a
+        // vector, and one vector plus one element.
+        {40, 24, 1, 3, "tail npast3"},
+        {10, 12, 1, 0, "narrow npast0"},
+        {17, 20, 1, 2, "17 npast2"},
+        // Tiles of several rows, whose rows start alternately aligned and unaligned for a vector
+        // access: 77 wide (4 vectors and a tail) and 20 wide (1 vector and a tail). Then a cut-off
+        // past the row end on every row.
+        {77, 24, 2, 13, "77 npast13"},
+        {20, 16, 2, 1, "20 npast1"},
+        {33, 16, 2, 40, "33 npast40"},
+        // GPT-2 attention: prefill of 64, 256 and 1024 tokens over 12 heads, and one decode token
+        // after 64 and 1024 (rows of 65 and 1025 floats, unaligned for a vector access). On aie2p
+        // these run on 1, 2 and 8 workers.
+        {64, 64, 12, 0, "gpt2 p64"},
+        {256, 256, 12, 0, "gpt2 p256"},
+        {1024, 1024, 12, 0, "gpt2 p1024"},
+        {65, 1, 12, 64, "gpt2 d64"},
+        {1025, 1, 12, 1024, "gpt2 d1024"},
     };
 
     bool any_fail = false;

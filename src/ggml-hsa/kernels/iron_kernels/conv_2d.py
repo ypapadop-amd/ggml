@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 from aie.iron import (
+    Buffer,
     ExternalFunction,
     ObjectFifo,
     Program,
@@ -20,8 +21,9 @@ from aie.iron import (
     dtype_to_str,
 )
 from aie.iron.controlflow import range_
+from ml_dtypes import bfloat16
 
-from .utils import arch_to_device, batch_slice_tap, partition_units
+from .utils import arch_to_device, batch_slice_tap, partition_units, shape_defines
 
 # Number of int32 op_params: {s0, s1, p0, p1, d0, d1}
 _CONV2D_PARAMS_SIZE = 6 * 4
@@ -41,8 +43,55 @@ _MAX_WORKERS = 7
 # measures 2752 bytes. Larger windows compile without the unroll and need far less. Verified at
 # 3x3, 5x5, 7x7 and 11x11. If a future change raises the unroll bound, mlir-aie fails the build
 # with "stack_size = N is insufficient: this core needs M bytes", which is the signal to raise this
-# constant rather than a silent overrun.
-_STACK_SIZE_BYTES = 4096
+# constant rather than a silent overrun. On aie2 the kernel's vector paths (conv_2d.cc) need more:
+# the split-image path's frame measured 3776 B (MNIST conv1), and the ring path adds its ring of
+# split rows to the frame (see _ring_bytes).
+_STACK_SIZE_BYTES = {"aie2": 6144}
+_DEFAULT_STACK_SIZE_BYTES = 4096
+
+# Stack the aie2 ring path's frame needs beside its ring: it measured at most 1344 B (MNIST conv1)
+# and the core's main adds ~128 B.
+_RING_FRAME_BYTES = 2048
+
+# Largest ring the aie2 ring path may keep on the stack; a larger one takes the per-row path.
+_MAX_RING_BYTES = 8192
+
+# Lanes of the aie2 vector paths (f32 in a 512-bit register).
+_V = 16
+
+# A compute tile's data memory (aie2), which holds every buffer of a worker and its stack.
+_TILE_MEMORY_BYTES = 64 * 1024
+
+
+def _split_image_elems(shape: dict) -> int:
+    """Return the bf16 elements of conv_2d.cc's split image (limb::image_rows split rows per channel).
+
+    Args:
+        shape: The -DGGML_CONV2D_* extents and op_params.
+
+    Returns:
+        IC * image_rows * 3 * pw, as conv_2d.cc's namespace limb lays it out.
+
+    """
+    pw = ((shape["OW"] + _V - 1) // _V + 1) * _V
+    image_rows = (shape["OH"] - 1) * shape["S1"] + (shape["KH"] - 1) * shape["D1"] + 1
+    return shape["IC"] * image_rows * 3 * pw
+
+
+def _ring_bytes(shape: dict) -> int:
+    """Return the bytes of conv_2d.cc's aie2 ring: R split rows per input channel, and the weights.
+
+    Args:
+        shape: The -DGGML_CONV2D_* extents and op_params.
+
+    Returns:
+        (R * IC * 3 * pw + 3 * n_wts_pad) bf16, as conv_2d.cc's ring path declares them.
+
+    """
+    pw = ((shape["OW"] + _V - 1) // _V + 1) * _V
+    rows = (shape["KH"] - 1) * shape["D1"] + 1
+    n_wts_pad = -(-shape["IC"] * shape["KH"] * shape["KW"] // _V) * _V
+    return (rows * shape["IC"] * 3 * pw + 3 * n_wts_pad) * 2
 
 
 def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray):
@@ -150,27 +199,53 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     wts_size = kw * kh * ic * oc  # full weight tensor (same for all images)
     plane_size = ow * oh  # one output plane for a single output channel
 
-    function = _create_external_function(
+    shape = {
+        "IW": iw,
+        "IH": ih,
+        "IC": ic,
+        "KW": kw,
+        "KH": kh,
+        "OW": ow,
+        "OH": oh,
+        "S0": s0,
+        "S1": s1,
+        "P0": p0,
+        "P1": p1,
+        "D0": d0,
+        "D1": d1,
+    }
+
+    # On aie2, shapes the vector paths take split each image into bf16 limbs once, into a buffer
+    # of the worker's, which every output channel's call then reads (conv_2d.cc, namespace limb),
+    # if that buffer fits in the tile next to the double-buffered image and planes, the weights
+    # and the stack. Otherwise each call splits the rows it reads itself.
+    vector_path = arch == "aie2" and s0 == 1 and (kw - 1) * d0 <= _V
+    stack_size = _STACK_SIZE_BYTES.get(arch, _DEFAULT_STACK_SIZE_BYTES)
+    split_elems = _split_image_elems(shape)
+    split_tile_bytes = (
+        2 * image_size * 4
+        + wts_size * 4
+        + 2 * plane_size * 4
+        + split_elems * 2
+        + stack_size
+    )
+    use_split_image = vector_path and split_tile_bytes <= _TILE_MEMORY_BYTES - 4096
+    # Otherwise the ring path, if its ring fits the stack it is given; the cap passed to
+    # conv_2d.cc (GGML_CONV2D_RING_BYTES) is derived from that stack, so the two cannot disagree.
+    # A shape that still overflows fails aiecc's stack check rather than running.
+    ring_bytes = _ring_bytes(shape)
+    if vector_path and not use_split_image and ring_bytes <= _MAX_RING_BYTES:
+        stack_size = max(stack_size, -(-(ring_bytes + _RING_FRAME_BYTES) // 256) * 256)
+
+    functions = _create_external_functions(
         image_tensor=image_tensor,
         output_tensor=output_tensor,
         image_size=image_size,
         wts_size=wts_size,
         plane_size=plane_size,
-        shape={
-            "IW": iw,
-            "IH": ih,
-            "IC": ic,
-            "KW": kw,
-            "KH": kh,
-            "OW": ow,
-            "OH": oh,
-            "S0": s0,
-            "S1": s1,
-            "P0": p0,
-            "P1": p1,
-            "D0": d0,
-            "D1": d1,
-        },
+        shape=shape,
+        split_elems=split_elems if use_split_image else 0,
+        ring_cap=stack_size - _RING_FRAME_BYTES,
     )
 
     # Distribute the N images across compute tiles. Each worker owns independent
@@ -214,14 +289,48 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
 
         return ext_core_fn
 
-    workers = [
-        Worker(
-            make_core_fn(images_per_worker[w]),
-            fn_args=[wts_conss[w], of_ins[w].cons(), of_outs[w].prod(), function],
-            stack_size=_STACK_SIZE_BYTES,
-        )
-        for w in range(num_workers)
-    ]
+    # The split image is complete before the first plane, so the image goes back to its fifo
+    # (and the DMA can fill the next one) while this one's planes are computed.
+    def make_split_core_fn(image_count):
+        def ext_core_fn(of_wts, of_in, of_out, split, split_function, function):
+            wts = of_wts.acquire(1)
+            for _ in range_(image_count):
+                img = of_in.acquire(1)
+                split_function(img, split)
+                of_in.release(1)
+                for oc_idx in range(oc):
+                    plane = of_out.acquire(1)
+                    function(split, wts, plane, oc_idx)
+                    of_out.release(1)
+            of_wts.release(1)
+
+        return ext_core_fn
+
+    if use_split_image:
+        split_ty = np.ndarray[(split_elems,), np.dtype[bfloat16]]
+        workers = [
+            Worker(
+                make_split_core_fn(images_per_worker[w]),
+                fn_args=[
+                    wts_conss[w],
+                    of_ins[w].cons(),
+                    of_outs[w].prod(),
+                    Buffer(split_ty, name=f"split{w}"),
+                    *functions,
+                ],
+                stack_size=stack_size,
+            )
+            for w in range(num_workers)
+        ]
+    else:
+        workers = [
+            Worker(
+                make_core_fn(images_per_worker[w]),
+                fn_args=[wts_conss[w], of_ins[w].cons(), of_outs[w].prod(), *functions],
+                stack_size=stack_size,
+            )
+            for w in range(num_workers)
+        ]
 
     # Buffer-mapping contract: declare buffers in src0, src1, dst order.
     # src0 is the kernel weights; src1 is the input image.
@@ -258,15 +367,17 @@ def conv_2d(arch: str, input_tensors: list, output_tensor, op_params: bytearray)
     return Program(arch_to_device(arch), rt, workers=workers).resolve_program()
 
 
-def _create_external_function(
+def _create_external_functions(
     image_tensor,
     output_tensor,
     image_size: int,
     wts_size: int,
     plane_size: int,
     shape: dict,
-) -> ExternalFunction:
-    """Create the ExternalFunction for the conv_2d core function.
+    split_elems: int,
+    ring_cap: int,
+) -> list[ExternalFunction]:
+    """Create the ExternalFunctions for the conv_2d core functions.
 
     Args:
         image_tensor: Image input tensor (src1); also supplies the dtype for
@@ -278,26 +389,53 @@ def _create_external_function(
         shape: Extents and op_params to bake in as -DGGML_CONV2D_* literals, so
             the core function compiles with constant loop bounds and strides
             instead of runtime arguments.
+        split_elems: Elements of the split image (aie2), or 0 to compute each plane straight
+            from the image.
+        ring_cap: Bytes the aie2 ring path may keep on the stack (GGML_CONV2D_RING_BYTES).
 
     Returns:
-        The configured ExternalFunction.
+        [ggml_op_conv_2d] or, with a split image, [ggml_op_conv_2d_split_image,
+        ggml_op_conv_2d_split]: the core functions in the order the worker takes them.
 
     """
     op_name = "GGML_OP_CONV_2D"
     current_dir = Path(__file__).resolve().parent
-    return ExternalFunction(
-        name=op_name.lower(),
-        object_file_name=f"{op_name.lower()}_core_function.o",
-        source_file=str(current_dir / "conv_2d.cc"),
-        arg_types=[
-            np.ndarray[(image_size,), np.dtype[image_tensor.dtype]],  # in
-            np.ndarray[(wts_size,), np.dtype[image_tensor.dtype]],  # wts
-            np.ndarray[(plane_size,), np.dtype[output_tensor.dtype]],  # out
-            np.int32,  # oc_idx
-        ],
-        compile_flags=[
-            f"-DINPUT_DTYPE={dtype_to_str(image_tensor.dtype)}",
-            f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
-            *(f"-DGGML_CONV2D_{name}={value}" for name, value in shape.items()),
-        ],
-    )
+    object_file_name = f"{op_name.lower()}_core_function.o"
+    source_file = str(current_dir / "conv_2d.cc")
+    compile_flags = [
+        f"-DINPUT_DTYPE={dtype_to_str(image_tensor.dtype)}",
+        f"-DOUTPUT_DTYPE={dtype_to_str(output_tensor.dtype)}",
+        *shape_defines("GGML_CONV2D", shape),
+        f"-DGGML_CONV2D_RING_BYTES={ring_cap}",
+    ]
+    image_ty = np.ndarray[(image_size,), np.dtype[image_tensor.dtype]]
+    wts_ty = np.ndarray[(wts_size,), np.dtype[image_tensor.dtype]]
+    plane_ty = np.ndarray[(plane_size,), np.dtype[output_tensor.dtype]]
+    if split_elems == 0:
+        return [
+            ExternalFunction(
+                name=op_name.lower(),
+                object_file_name=object_file_name,
+                source_file=source_file,
+                arg_types=[image_ty, wts_ty, plane_ty, np.int32],
+                compile_flags=compile_flags,
+            )
+        ]
+    split_ty = np.ndarray[(split_elems,), np.dtype[bfloat16]]
+    compile_flags.append(f"-DGGML_CONV2D_SPLIT_IMAGE={split_elems}")
+    return [
+        ExternalFunction(
+            name=f"{op_name.lower()}_split_image",
+            object_file_name=object_file_name,
+            source_file=source_file,
+            arg_types=[image_ty, split_ty],
+            compile_flags=compile_flags,
+        ),
+        ExternalFunction(
+            name=f"{op_name.lower()}_split",
+            object_file_name=object_file_name,
+            source_file=source_file,
+            arg_types=[split_ty, wts_ty, plane_ty, np.int32],
+            compile_flags=compile_flags,
+        ),
+    ]

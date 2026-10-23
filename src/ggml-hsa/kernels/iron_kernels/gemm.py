@@ -100,6 +100,32 @@ def resolve_expansion(dev, dtype_in_str):
     return microkernel_expansion_map[dev][dtype_in_str]
 
 
+# Per-device, per-dtype (A, B) block interleaving of the L1 operand layout: the blocks of
+# operand_group consecutive block rows of A (block columns of column-major B) are interleaved
+# by K step, so the blocks one microkernel K step reads are adjacent and it can walk each
+# operand with one pointer. Only aie2 bf16 does this (its matmul_vectorized_4x4 needs it);
+# everything else keeps the plain layout, (1, 1). aie2/mm.cc receives the same values as
+# -DGEMM_A_GROUP / -DGEMM_B_GROUP.
+operand_group_map = {
+    "npu": {
+        "bf16": (4, 4),
+    },
+}
+
+
+def resolve_operand_groups(dev, dtype_in_str):
+    """Return the (A, B) block interleaving of the L1 operand layout for a device/dtype.
+
+    Args:
+        dev: Target device ("npu" or "npu2").
+        dtype_in_str: Input dtype name (e.g. "bf16", "i8", "i16").
+
+    Returns:
+        The (a_group, b_group) tuple from operand_group_map, (1, 1) if absent.
+    """
+    return operand_group_map.get(dev, {}).get(dtype_in_str, (1, 1))
+
+
 def resolve_mac_dims(dev, dtype_in_str, emulate_bf16_mmul_with_bfp16=False):
     """Return the (r, s, t) microkernel MAC-instruction dims for a device/dtype.
 
@@ -700,6 +726,7 @@ def my_matmul(
     # Resolved through the same helper select_gemm_tile uses, so the tile selector
     # and this design generator can never disagree on the microkernel shape.
     r, s, t = resolve_mac_dims(dev, dtype_in_str, emulate_bf16_mmul_with_bfp16)
+    a_group, b_group = resolve_operand_groups(dev, dtype_in_str)
 
     # npu is a 4 row x 4 col array
     if dev == "npu" and n_aie_cols > 4:
@@ -715,24 +742,28 @@ def my_matmul(
     # blocks are _broadcast_ across AIE core columns, then _distributed_ across
     # rows, s.t. each of the n_rows compute cores in a column receives a
     # contiguous (m, k)-sized block of A.
-    assert M % (m * n_aie_rows) == 0, (
-        """A must be tileable into (m * n_aie_rows, k)-sized blocks"""
-    )
+    if M % (m * n_aie_rows) != 0:
+        msg = f"A (M={M}) must be tileable into (m * n_aie_rows={m * n_aie_rows}, k)-sized blocks"
+        raise ValueError(msg)
 
     # Both A and B are tiled in the K dimension into size k.
-    assert K % k == 0
+    if K % k != 0:
+        msg = f"K={K} must be a multiple of k={k}"
+        raise ValueError(msg)
 
     # Input matrix B:
     # Conceptually, we do the same as with A, but instead of broadcasting
     # across columns we broadcast across rows and distribute across columns.
-    assert N % (n * n_aie_cols) == 0, (
-        """B must be tileable into (k, n * n_aie_cols)-sized blocks"""
-    )
+    if N % (n * n_aie_cols) != 0:
+        msg = f"B (N={N}) must be tileable into (k, n * n_aie_cols={n * n_aie_cols})-sized blocks"
+        raise ValueError(msg)
 
-    if not use_scalar:
-        assert m % r == 0
-        assert k % s == 0
-        assert n % t == 0
+    if not use_scalar and (m % (a_group * r) or k % s or n % (b_group * t)):
+        msg = (
+            f"Tile (m={m}, k={k}, n={n}) must be a multiple of the microkernel's "
+            f"(a_group * r={a_group * r}, s={s}, b_group * t={b_group * t})"
+        )
+        raise ValueError(msg)
 
     # If you get errors during CDO generation due to running out of program
     # memory, it may be because too much code is generated due to ObjectFIFO
@@ -861,9 +892,9 @@ def my_matmul(
                 A_l1_ty,
                 (
                     [
-                        (m // r, r * k),
+                        (m // (a_group * r), a_group * r * k),
                         (k // s, s),
-                        (r, k),
+                        (a_group * r, k),
                         (s, 1),
                     ]
                     if not use_scalar
@@ -919,9 +950,9 @@ def my_matmul(
                         ]
                         if not b_col_maj
                         else [
-                            (n // t, t * k),
+                            (n // (b_group * t), b_group * t * k),
                             (k // s, s),
-                            (t, k),
+                            (b_group * t, k),
                             (s, 1),
                         ]
                     )
@@ -1483,10 +1514,13 @@ def create_mat_mul_external_functions(
     dtype_in_name = dtype_to_str(dtype_in)
     dtype_b_name = dtype_to_str(dtype_b)
     dtype_out_name = dtype_to_str(dtype_out)
+    a_group, b_group = resolve_operand_groups(dev, dtype_in_str)
     compile_args = [
         f"-DDIM_M={m}",
         f"-DDIM_N={n}",
         f"-DDIM_K={k}",
+        f"-DGEMM_A_GROUP={a_group}",
+        f"-DGEMM_B_GROUP={b_group}",
         f"-D{dtype_in_name}_{dtype_out_name}_ONLY",
         "-DB_COL_MAJ",
         "-DC_COL_MAJ",
