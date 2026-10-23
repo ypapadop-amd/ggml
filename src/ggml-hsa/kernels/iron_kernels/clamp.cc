@@ -18,14 +18,21 @@ extern "C" {
  * @brief Clamps each element to a specified range: out[i] = max(min(in[i], max_val), min_val).
  *
  * The bounds apply in the CPU backend's order, MAX(MIN(x, max), min), so a range with
- * min_val > max_val gives min_val everywhere, as it does there.
+ * min_val > max_val gives min_val everywhere, as it does there. MIN(NaN, max) takes the ternary's
+ * false branch (NaN < max is always false) and returns max regardless of x, so every NaN clamps to
+ * MAX(max, min): max_val when max_val is above min_val in the same sense the non-NaN path already
+ * uses (@ref float_order_key order, so -0 and +0 do not count as either above the other), min_val
+ * otherwise -- including when min_val == max_val, or the pair is {-0, +0} in either order, where
+ * MAX's `>` is false and it returns its second argument, min_val. This kernel checks for a NaN
+ * explicitly and overrides the order-key or bit-threshold compare below with that constant (a
+ * negative NaN's key/bits otherwise sort below every real number, which would select min_val even
+ * when max_val is what MAX(max, min) gives).
  *
  * f32 compares on @ref float_order_key instead of as floats: the aie2 vector unit has no f32
  * min/max (aie::min/max subtract in the accumulator and test the sign after a bf16 conversion) and
  * the scalar unit has no float compare at all (a runtime call). The key orders non-NaN floats as
  * `<` does, -0 equal to +0, and the result is selected from the input or bound bits, so every
- * non-NaN result is the CPU's bit for bit. A NaN with the sign bit clear clamps to max_val, as on
- * the CPU; one with it set clamps to min_val, where the CPU gives max_val.
+ * non-NaN result is the CPU's bit for bit.
  *
  * @param[in]  in      Input array of N elements.
  * @param[out] out     Output array of N elements.
@@ -47,14 +54,20 @@ void ggml_op_clamp(const INPUT_DTYPE * __restrict in,
 #if __AIEARCH__ == 20
         const std::int32_t klo = float_order_key(min_val);
         const std::int32_t khi = float_order_key(max_val);
+        const float nan_result = klo < khi ? max_val : min_val; // MAX(max, min), x discarded
         transform_vector_n<aligned>(
             out, N,
             [=](auto v) {
-                const auto k = float_order_keys<static_cast<int>(decltype(v)::size())>(v);
+                constexpr int VV = static_cast<int>(decltype(v)::size());
+                const auto k = float_order_keys<VV>(v);
                 const auto m = aie::select(max_val, v, aie::lt(k, khi));
-                return aie::select(min_val, m, aie::gt(aie::min(k, khi), klo));
+                const auto clamped = aie::select(min_val, m, aie::gt(aie::min(k, khi), klo));
+                return aie::select(clamped, nan_result, floats_are_nan<VV>(v));
             },
             [=](float v) {
+                if (float_is_nan(v)) {
+                    return nan_result;
+                }
                 const std::int32_t k = float_order_key(v);
                 const float m = k < khi ? v : max_val;
                 return (k < khi ? k : khi) > klo ? m : min_val;
@@ -78,9 +91,13 @@ void ggml_op_clamp(const INPUT_DTYPE * __restrict in,
        // above), so the output keeps the bound's bits separately: selecting the threshold itself
        // would store -0 for a +0 bound, or garbage for a min-not-below-max range.
        //
-       // Every non-NaN result is the CPU's bit for bit (a zero bound included). A NaN with the
-       // sign bit clear clamps to max_val, as on the CPU; one with it set to min_val, where the
-       // CPU gives max_val.
+       // Every non-NaN result is the CPU's bit for bit (a zero bound included); every NaN, either
+       // sign, is overridden below to MAX(max, min)'s bits (nan_bits; see the function comment).
+       //
+       // Vectors stay typed as float* throughout (never reinterpret_cast to int32_t*): the
+       // compare/select logic works on each vector's int32 bit pattern via cast_to, an in-register
+       // bit-reinterpret, not a pointer cast through storage whose dynamic type is float (which
+       // strict aliasing forbids and an optimizing compiler is free to miscompile).
         const std::int32_t blo = std::bit_cast<std::int32_t>(min_val);
         const std::int32_t bhi = std::bit_cast<std::int32_t>(max_val);
         const bool hi_signed = bhi > 0;
@@ -90,14 +107,16 @@ void ggml_op_clamp(const INPUT_DTYPE * __restrict in,
         const std::int32_t lo_thresh = !below ? INT32_MAX : (blo == INT32_MIN ? 0 : blo);
         const auto uhi = static_cast<std::uint32_t>(hi_thresh);
         const auto ulo = static_cast<std::uint32_t>(lo_thresh);
+        const std::int32_t nan_bits = below ? bhi : blo; // MAX(max, min), x discarded
 
         const auto run = [&](auto hi_signed_c, auto lo_signed_c) {
             constexpr bool HiSigned = decltype(hi_signed_c)::value;
             constexpr bool LoSigned = decltype(lo_signed_c)::value;
             transform_vector_n<aligned>(
-                reinterpret_cast<std::int32_t *>(out), N,
-                [=](auto v) {
-                    const auto u = v.template cast_to<std::uint32_t>();
+                out, N,
+                [=](auto vf) {
+                    const auto v = vf.template cast_to<std::int32_t>();
+                    const auto u = vf.template cast_to<std::uint32_t>();
                     const auto at_hi = [&] {
                         if constexpr (HiSigned) {
                             return aie::ge(v, hi_thresh);
@@ -112,15 +131,22 @@ void ggml_op_clamp(const INPUT_DTYPE * __restrict in,
                             return aie::lt(u, ulo);
                         }
                     }();
-                    return aie::select(blo, aie::select(v, bhi, at_hi), above_lo);
+                    const auto clamped = aie::select(blo, aie::select(v, bhi, at_hi), above_lo);
+                    const auto is_nan = aie::gt(aie::bit_and(0x7fffffff, v), 0x7f800000);
+                    return aie::select(clamped, nan_bits, is_nan).template cast_to<float>();
                 },
-                [=](std::int32_t b) {
+                [=](float bf) {
+                    const std::int32_t b = std::bit_cast<std::int32_t>(bf);
+                    if ((b & 0x7fffffff) > 0x7f800000) {
+                        return std::bit_cast<float>(nan_bits); // MAX(max, min), x discarded
+                    }
                     const auto u = static_cast<std::uint32_t>(b);
                     const bool at_hi = HiSigned ? b >= hi_thresh : u <= uhi;
                     const bool above_lo = LoSigned ? b > lo_thresh : u < ulo;
-                    return above_lo ? (at_hi ? bhi : b) : blo;
+                    const std::int32_t res = above_lo ? (at_hi ? bhi : b) : blo;
+                    return std::bit_cast<float>(res);
                 },
-                reinterpret_cast<const std::int32_t *>(in));
+                in);
         };
         if (hi_signed) {
             lo_signed ? run(std::true_type{}, std::true_type{})

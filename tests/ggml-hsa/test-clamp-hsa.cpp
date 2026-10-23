@@ -7,8 +7,8 @@
 // count that fits L1, split across up to one worker per column for large counts. A tile runs the
 // vector loop (with a minimum-trip-count copy from 4 vectors up) and a scalar tail for the rest.
 // The shapes below pick each of those. Inputs cover the full exponent range, signed zeros,
-// infinities, subnormals, values equal to the bounds and +NaN. A NaN with the sign bit set is left
-// out: the kernel clamps it to min, where the CPU gives max (see clamp.cc).
+// infinities, subnormals, values equal to the bounds and NaN of both signs (the CPU discards x's
+// sign and bit pattern for a NaN and returns MAX(max, min); see clamp.cc).
 
 #include <cmath>
 #include <cstddef>
@@ -77,6 +77,7 @@ bool run_case(ggml_backend_t backend, int64_t n, float lo, float hi, const char 
                               std::nextafter(lo, -inf),
                               std::nextafter(hi, inf),
                               std::numeric_limits<float>::quiet_NaN(),
+                              -std::numeric_limits<float>::quiet_NaN(),
                               std::numeric_limits<float>::denorm_min(),
                               -std::numeric_limits<float>::denorm_min()};
     const int64_t n_specials = static_cast<int64_t>(sizeof specials / sizeof specials[0]);
