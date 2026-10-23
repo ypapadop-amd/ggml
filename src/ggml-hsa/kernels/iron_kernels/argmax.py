@@ -39,7 +39,7 @@ def argmax_op(arch: str, input_tensors: list, output_tensor):
         The resolved IRON program (MLIR module).
 
     Raises:
-        ValueError: On invalid tensor count, contiguity, output size, or dtype.
+        ValueError: On invalid tensor count, contiguity, empty rows, output size, or dtype.
     """
     if len(input_tensors) != 1:
         msg = "Operation requires exactly one input tensor."
@@ -55,6 +55,12 @@ def argmax_op(arch: str, input_tensors: list, output_tensor):
         raise ValueError(msg)
 
     row_length, num_rows = row_dimensions(input_tensor)
+
+    # A [0, R] input has a non-empty [R] output, so ggml_is_empty does not skip it. Decline it
+    # here; the CPU then returns index 0 per row.
+    if row_length == 0:
+        msg = "Input rows must not be empty."
+        raise ValueError(msg)
 
     if output_tensor.numel() != num_rows:
         msg = (

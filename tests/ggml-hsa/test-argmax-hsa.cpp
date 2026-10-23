@@ -129,6 +129,57 @@ bool run_rows(ggml_backend_t backend, const std::vector<test_row> & rows) {
     return all_ok;
 }
 
+/// Runs ARGMAX over a [0, nr] tensor. Its output has nr elements, so ggml_is_empty does not skip
+/// it; the backend must either decline it (the CPU then runs it) or, like the reference, return
+/// index 0 for every row.
+bool run_zero_wide(ggml_backend_t backend, int64_t nr) {
+    const std::size_t ctx_size = 2 * ggml_tensor_overhead() + ggml_graph_overhead();
+    ggml_init_params params{
+        /*.mem_size   =*/ctx_size,
+        /*.mem_buffer =*/nullptr,
+        /*.no_alloc   =*/true,
+    };
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx{ggml_init(params), ggml_free};
+
+    ggml_tensor * src = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 0, nr);
+    ggml_set_name(src, "src");
+    ggml_tensor * dst = ggml_argmax(ctx.get(), src);
+    ggml_set_name(dst, "dst");
+
+    if (!ggml_backend_supports_op(backend, dst)) {
+        printf("  ARGMAX [0 x %lld]: declined (falls back)  OK\n", (long long)nr);
+        return true;
+    }
+
+    ggml_cgraph * gf = ggml_new_graph(ctx.get());
+    ggml_build_forward_expand(gf, dst);
+
+    std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)> galloc{
+        ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend)), ggml_gallocr_free};
+    if (!ggml_gallocr_alloc_graph(galloc.get(), gf)) {
+        printf("  ARGMAX [0 x %lld]: graph allocation failed\n", (long long)nr);
+        return false;
+    }
+
+    // Poison the output so a kernel that writes nothing cannot pass.
+    std::vector<int32_t> got(static_cast<std::size_t>(nr), -1);
+    ggml_backend_tensor_set(dst, got.data(), 0, ggml_nbytes(dst));
+
+    if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+        printf("  ARGMAX [0 x %lld]: graph compute failed\n", (long long)nr);
+        return false;
+    }
+
+    ggml_backend_tensor_get(dst, got.data(), 0, ggml_nbytes(dst));
+    bool all_ok = true;
+    for (int64_t r = 0; r < nr; ++r) {
+        all_ok = all_ok && got[static_cast<std::size_t>(r)] == 0;
+    }
+    printf("  ARGMAX [0 x %lld]: supported, %s\n", (long long)nr,
+           all_ok ? "every row 0  OK" : "MISMATCH (want 0 in every row)");
+    return all_ok;
+}
+
 } // namespace
 
 int main() {
@@ -277,6 +328,8 @@ int main() {
     all_ok = run_rows(backend, rows13x20) && all_ok;
     printf("ARGMAX 100-wide:\n");
     all_ok = run_rows(backend, rows100) && all_ok;
+    printf("ARGMAX 0-wide:\n");
+    all_ok = run_zero_wide(backend, 10) && all_ok;
 
     ggml_backend_free(backend);
     printf("%s\n", all_ok ? "ALL PASSED" : "FAILURES");
