@@ -671,3 +671,40 @@ def test_operand_groups_hold_whole_expansions(dev, dtype_in_str):
 def test_operand_group_map_entries_exist():
     for dev, dtypes in operand_group_map.items():
         assert set(dtypes) <= set(microkernel_mac_dim_map[dev]), dev
+
+
+def _call_my_matmul(dev, M, K, N, m, k, n):
+    """Call my_matmul with only the shape varied; it must fail before generating any MLIR."""
+    n_aie_cols = dict(DEVICES)[dev]
+    return gemm_module.my_matmul(
+        dev, M, K, N, m, k, n, n_aie_cols, "bf16", "f32",
+        b_col_maj=False, c_col_maj=True, use_scalar=False,
+        emulate_bf16_mmul_with_bfp16=False, trace_size=0,
+        zero_fn=None, matmul_fn=None, object_file=None,
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("dev", DEVICE_NAMES)
+@pytest.mark.parametrize(
+    ("bad", "match"),
+    [("M", r"A \(M="), ("K", r"K=\d+ must"), ("N", r"B \(N="), ("mk", "microkernel")],
+)
+def test_my_matmul_rejects_untileable_shapes_with_value_error(dev, bad, match):
+    """Shape checks raise ValueError, not assert, so they survive ``python -O``."""
+    r, s, t = resolve_mac_dims(dev, "bf16")
+    a_group, b_group = resolve_operand_groups(dev, "bf16")
+    m, k, n = 4 * a_group * r, 4 * s, 4 * b_group * t
+    n_aie_cols = dict(DEVICES)[dev]
+    M, K, N = m * N_AIE_ROWS, 2 * k, n * n_aie_cols
+    if bad == "M":
+        M += 1
+    elif bad == "K":
+        K += 1
+    elif bad == "N":
+        N += 1
+    else:
+        # Odd, so not a multiple of the (even) microkernel granularity; M stays tileable by m.
+        m = 2 * a_group * r + 1
+        M = m * N_AIE_ROWS
+    with pytest.raises(ValueError, match=match):
+        _call_my_matmul(dev, M, K, N, m, k, n)

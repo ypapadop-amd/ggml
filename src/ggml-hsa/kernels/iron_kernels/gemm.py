@@ -742,24 +742,28 @@ def my_matmul(
     # blocks are _broadcast_ across AIE core columns, then _distributed_ across
     # rows, s.t. each of the n_rows compute cores in a column receives a
     # contiguous (m, k)-sized block of A.
-    assert M % (m * n_aie_rows) == 0, (
-        """A must be tileable into (m * n_aie_rows, k)-sized blocks"""
-    )
+    if M % (m * n_aie_rows) != 0:
+        msg = f"A (M={M}) must be tileable into (m * n_aie_rows={m * n_aie_rows}, k)-sized blocks"
+        raise ValueError(msg)
 
     # Both A and B are tiled in the K dimension into size k.
-    assert K % k == 0
+    if K % k != 0:
+        msg = f"K={K} must be a multiple of k={k}"
+        raise ValueError(msg)
 
     # Input matrix B:
     # Conceptually, we do the same as with A, but instead of broadcasting
     # across columns we broadcast across rows and distribute across columns.
-    assert N % (n * n_aie_cols) == 0, (
-        """B must be tileable into (k, n * n_aie_cols)-sized blocks"""
-    )
+    if N % (n * n_aie_cols) != 0:
+        msg = f"B (N={N}) must be tileable into (k, n * n_aie_cols={n * n_aie_cols})-sized blocks"
+        raise ValueError(msg)
 
-    if not use_scalar:
-        assert m % (a_group * r) == 0
-        assert k % s == 0
-        assert n % (b_group * t) == 0
+    if not use_scalar and (m % (a_group * r) or k % s or n % (b_group * t)):
+        msg = (
+            f"Tile (m={m}, k={k}, n={n}) must be a multiple of the microkernel's "
+            f"(a_group * r={a_group * r}, s={s}, b_group * t={b_group * t})"
+        )
+        raise ValueError(msg)
 
     # If you get errors during CDO generation due to running out of program
     # memory, it may be because too much code is generated due to ObjectFIFO
