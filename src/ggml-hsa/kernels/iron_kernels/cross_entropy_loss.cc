@@ -78,9 +78,14 @@ void ggml_op_cross_entropy_loss(const float * __restrict logits,
     float total = loss_out[0];
     for (int32_t g = 0; g < rows; g += V) {
         const int32_t g_rows = rows - g < V ? rows - g : V;
-        alignas(aie::vector_decl_align) float row_max[V];
-        alignas(aie::vector_decl_align) float row_sum[V];
-        alignas(aie::vector_decl_align) float row_lse[V];
+        // Zero-initialized: for the last, partial group (g_rows < V) only the first g_rows
+        // lanes are ever written before a later aie::load_v(row_*) reads all V. The lanes past
+        // g_rows are masked out of every subsequent use, but reading them unwritten is still
+        // undefined behavior; zeroing costs nothing here (the compiler elides it once the loop
+        // below overwrites every lane for a full group) and removes the UB.
+        alignas(aie::vector_decl_align) float row_max[V] = {};
+        alignas(aie::vector_decl_align) float row_sum[V] = {};
+        alignas(aie::vector_decl_align) float row_lse[V] = {};
 
         // Passes 1 and 2, two rows at a time: max(logits), then sum(exp(logits - max)). An exp is
         // one long dependency chain per vector; running the two rows' vectors through one 32-lane
