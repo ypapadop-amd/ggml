@@ -195,17 +195,28 @@
  * fewer times would have its pipelined prologue run the body too often), so the promise gets its
  * own copy of the loop, taken only when end >= min_trips * step. @p min_trips must be a literal:
  * the pragma stringifies it.
+ *
+ * @p end and @p step are each evaluated exactly once (into local temporaries), and the whole
+ * expansion is one braced block (not a bare `if`/`else`), so the macro is safe to use as the
+ * single statement of an `if (...) GGML_AIE_LOOP_MIN_TRIPS(...); else ...` without a dangling-else
+ * hazard, and safe to call with an expression that has side effects. A braced block needs no
+ * trailing `;` at the call site, same as the macro's previous expansion, so none of its call sites
+ * needed to change.
  */
 #define GGML_AIE_LOOP_MIN_TRIPS(min_trips, var, end, step, ...)                                    \
-    if ((end) >= (min_trips) * (step)) {                                                           \
-        AIE_LOOP_MIN_ITERATION_COUNT(min_trips)                                                    \
-        for (int32_t var = 0; var < (end); var += (step)) {                                        \
-            __VA_ARGS__                                                                            \
-        }                                                                                          \
-    } else {                                                                                       \
-        for (int32_t var = 0; var < (end); var += (step)) {                                        \
-            __VA_ARGS__                                                                            \
-        }                                                                                          \
+    {                                                                                               \
+        const int32_t ggml_aie_loop_end_ = (end);                                                  \
+        const int32_t ggml_aie_loop_step_ = (step);                                                \
+        if (ggml_aie_loop_end_ >= (min_trips) * ggml_aie_loop_step_) {                              \
+            AIE_LOOP_MIN_ITERATION_COUNT(min_trips)                                                \
+            for (int32_t var = 0; var < ggml_aie_loop_end_; var += ggml_aie_loop_step_) {           \
+                __VA_ARGS__                                                                        \
+            }                                                                                      \
+        } else {                                                                                   \
+            for (int32_t var = 0; var < ggml_aie_loop_end_; var += ggml_aie_loop_step_) {           \
+                __VA_ARGS__                                                                        \
+            }                                                                                      \
+        }                                                                                           \
     }
 
 /** @} */ /* End of loop_macros group */
